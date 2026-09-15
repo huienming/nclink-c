@@ -823,7 +823,18 @@ static void test_invalid_url(void)
     ncl_mqtt_client_options_default(&options);
     options.client_id = "c";
     options.url = "ssl://broker:8883";
-    NCL_CHECK(ncl_mqtt_client_create(&options) == NULL);
+    if (ncl_socket_tls_available()) {
+        /* A TLS capable build accepts the scheme; only the connect can fail. */
+        ncl_mqtt_client *tls_client = ncl_mqtt_client_create(&options);
+        options.connect_timeout_ms = 500;
+        NCL_CHECK(tls_client != NULL);
+        if (tls_client != NULL) {
+            NCL_CHECK(ncl_mqtt_client_connect(tls_client) != NCL_OK);
+            ncl_mqtt_client_destroy(tls_client);
+        }
+    } else {
+        NCL_CHECK(ncl_mqtt_client_create(&options) == NULL);
+    }
 
     options.url = "ws://broker:80";
     NCL_CHECK(ncl_mqtt_client_create(&options) == NULL);

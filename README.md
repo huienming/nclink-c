@@ -118,6 +118,20 @@ NCL_TEST_MQTT_BROKER=tcp://host:1883 ./build-linux/bin/test_broker
 NCL_TEST_MQTT_BROKER=tcp://host:1883 .\build\tests\ncl_test_broker.exe   # Windows
 ```
 
+### TLS（可选的 MQTT over ssl://）
+
+默认构建**零依赖、不含 TLS**；需要 `ssl://` 时用 OpenSSL 打开（可选，不影响默认交付）：
+
+```bash
+cmake -S . -B build-tls -DNCLINK_WITH_TLS=ON     # CMake 路线
+NCL_WITH_TLS=1 ./build-linux.sh build-linux-tls   # 免 cmake 路线
+```
+
+Linux 链接时加 `-lssl -lcrypto`（包内 `lib/linux-x86_64-gcc-tls/` 就是这份）。
+客户端选项：`tls_ca_file`（PEM 信任库，NULL 用系统信任库）、`tls_verify_peer`
+（默认 true，校验链与主机名）、`tls_server_name`（SNI/校验名，默认取 URL 主机）、
+`tls_client_cert` / `tls_client_key`（双向认证，可选）。
+
 ### 发布包
 
 ```powershell
@@ -450,6 +464,7 @@ static const ncl_tool_method methods[] = {
 | `event` | Event 消息线格式与往返校验、事件主题构造、`ncl_server_push_event` 的发布与参数校验、客户端事件订阅/回调/未注册处理器丢弃、methodCall 的 `check` 语义（校验消息、`参数数量不匹配`、`没有找到方法`、不执行工具）、文件工具的参数 schema |
 | `license` | `LICENSE` 存在且完整、每个源文件都带 `SPDX-License-Identifier: MIT` 头（缺一个就失败），`tools/check_license.ps1 -Fix` 可批量补齐 |
 | `broker` | **可选套件**：对真实 broker（EMQX / Mosquitto，`tools/interop.sh` 一键起）验证 CONNECT/SUBSCRIBE/PUBLISH 的 QoS 0/1/2、通配订阅、40 KB 报文、退订、空闲保活、会话被顶替（0x8E）与显式重连后订阅恢复；不设 `NCL_TEST_MQTT_BROKER` 时自动跳过 |
+| `tls` | **可选套件**：内置 TLS 服务端（OpenSSL）+ MQTT over `ssl://`——握手、CONNECT/SUBSCRIBE、8 KB 报文跨 TLS 记录、服务端推送；证书校验（正确 CA 通过、陌生 CA 拒绝、主机名不符拒绝）与 `verify_peer=false` 模式。未启用 TLS 的构建自动跳过 |
 
 ## 许可
 

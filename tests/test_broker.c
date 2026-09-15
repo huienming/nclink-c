@@ -171,6 +171,11 @@ static ncl_mqtt_client *make_client(const char *url, const char *client_id,
     options.on_disconnect = on_disconnect;
     options.on_message = on_message;
     options.on_trace = on_trace;
+    /* TLS settings come from the environment so the same suite can run against
+     * an "ssl://" broker (tools/interop.sh does that for Mosquitto). */
+    options.tls_ca_file = getenv("NCL_TEST_MQTT_CA");
+    options.tls_server_name = getenv("NCL_TEST_MQTT_SERVER_NAME");
+    options.tls_verify_peer = getenv("NCL_TEST_MQTT_INSECURE") == NULL;
     options.user = &g_inbox;
     return ncl_mqtt_client_create(&options);
 }

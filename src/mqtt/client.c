@@ -47,6 +47,11 @@ struct ncl_mqtt_client {
     char    *host;
     unsigned port;
     bool     tls;
+    char    *tls_ca_file;
+    char    *tls_client_cert;
+    char    *tls_client_key;
+    char    *tls_server_name;
+    bool     tls_verify_peer;
     char    *client_id;
     char    *username;
     char    *password;
@@ -102,6 +107,7 @@ void ncl_mqtt_client_options_default(ncl_mqtt_client_options *options)
     options->automatic_reconnect = true;
     options->reconnect_delay_ms = 1000;
     options->reconnect_max_delay_ms = 30000;
+    options->tls_verify_peer = true;
 }
 
 static void ncl_mqtt_client_set_error(ncl_mqtt_client *client, const char *fmt, ...)
@@ -656,8 +662,22 @@ static ncl_err ncl_mqtt_client_open_socket(ncl_mqtt_client *client)
     ncl_socket *sock;
 
     err[0] = '\0';
-    sock = ncl_socket_connect(client->host, client->port,
-                              client->connect_timeout_ms, err, sizeof(err));
+    if (client->tls) {
+        ncl_socket_tls_options tls_options;
+
+        memset(&tls_options, 0, sizeof(tls_options));
+        tls_options.ca_file = client->tls_ca_file;
+        tls_options.client_cert = client->tls_client_cert;
+        tls_options.client_key = client->tls_client_key;
+        tls_options.server_name = client->tls_server_name;
+        tls_options.verify_peer = client->tls_verify_peer;
+        sock = ncl_socket_connect_tls(client->host, client->port,
+                                      client->connect_timeout_ms, &tls_options,
+                                      err, sizeof(err));
+    } else {
+        sock = ncl_socket_connect(client->host, client->port,
+                                  client->connect_timeout_ms, err, sizeof(err));
+    }
     if (sock == NULL) {
         ncl_mqtt_client_set_error(client, "连接 MQTT 服务器失败: %s", err);
         return NCL_ERR_CONNECT;
@@ -1046,9 +1066,12 @@ ncl_mqtt_client *ncl_mqtt_client_create(const ncl_mqtt_client_options *options)
         return NULL;
     }
     if (tls) {
-        ncl_log_error("暂不支持 TLS 连接: %s", options->url);
-        free(host);
-        return NULL;
+        if (!ncl_socket_tls_available()) {
+            ncl_log_error("TLS 未编译进本库（用 -DNCLINK_WITH_TLS=ON 重新构建）: %s",
+                          options->url);
+            free(host);
+            return NULL;
+        }
     }
 
     client = (ncl_mqtt_client *)calloc(1, sizeof(*client));
@@ -1063,6 +1086,19 @@ ncl_mqtt_client *ncl_mqtt_client_create(const ncl_mqtt_client_options *options)
     client->host = host;
     client->port = port;
     client->tls = tls;
+    client->tls_ca_file = options->tls_ca_file != NULL
+                              ? ncl_strdup(options->tls_ca_file)
+                              : NULL;
+    client->tls_client_cert = options->tls_client_cert != NULL
+                                  ? ncl_strdup(options->tls_client_cert)
+                                  : NULL;
+    client->tls_client_key = options->tls_client_key != NULL
+                                 ? ncl_strdup(options->tls_client_key)
+                                 : NULL;
+    client->tls_server_name = options->tls_server_name != NULL
+                                  ? ncl_strdup(options->tls_server_name)
+                                  : NULL;
+    client->tls_verify_peer = options->tls_verify_peer;
     client->client_id = ncl_strdup(options->client_id);
     client->username = options->username != NULL ? ncl_strdup(options->username) : NULL;
     client->password = options->password != NULL ? ncl_strdup(options->password) : NULL;
@@ -1127,6 +1163,10 @@ void ncl_mqtt_client_destroy(ncl_mqtt_client *client)
     }
     free(client->url);
     free(client->host);
+    free(client->tls_ca_file);
+    free(client->tls_client_cert);
+    free(client->tls_client_key);
+    free(client->tls_server_name);
     free(client->client_id);
     free(client->username);
     free(client->password);

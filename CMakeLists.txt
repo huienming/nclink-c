@@ -32,6 +32,7 @@ option(NCLINK_BUILD_TESTS "Build nclink unit tests" ON)
 option(NCLINK_BUILD_EXAMPLES "Build the example programs" ON)
 option(NCLINK_WITH_ZLIB "Enable zlib based compress codec" OFF)
 option(NCLINK_WITH_MQTT "Build the MQTT 5.0 transport layer" ON)
+option(NCLINK_WITH_TLS "Enable TLS (OpenSSL) for MQTT over ssl://" OFF)
 
 # ---------------------------------------------------------------- library ----
 file(GLOB_RECURSE NCLINK_CORE_SOURCES CONFIGURE_DEPENDS
@@ -60,6 +61,12 @@ if(NCLINK_WITH_ZLIB)
     find_package(ZLIB REQUIRED)
     target_compile_definitions(nclink_core PUBLIC NCL_HAVE_ZLIB=1)
     target_link_libraries(nclink_core PRIVATE ZLIB::ZLIB)
+endif()
+
+if(NCLINK_WITH_TLS)
+    find_package(OpenSSL REQUIRED)
+    target_compile_definitions(nclink_core PUBLIC NCL_WITH_TLS=1)
+    target_link_libraries(nclink_core PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 if(MSVC)

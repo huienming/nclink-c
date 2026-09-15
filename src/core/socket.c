@@ -11,6 +11,12 @@
 #include "nclink/ncl_logger.h"
 #include "nclink/ncl_platform.h"
 
+#if defined(NCL_WITH_TLS)
+#  include <openssl/err.h>
+#  include <openssl/ssl.h>
+#  include <openssl/x509v3.h>
+#endif
+
 #if defined(NCL_OS_WINDOWS)
 #  include <ws2tcpip.h>
 #  include <iphlpapi.h>
@@ -38,6 +44,8 @@ struct ncl_socket {
     ncl_sock_handle handle;
     unsigned        local_port;
     ncl_mutex      *lock;      /**< guards @p handle against shutdown races */
+    void           *tls;       /**< SSL* when the connection is encrypted */
+    void           *tls_ctx;   /**< SSL_CTX* owned by this socket */
 };
 
 /* ------------------------------------------------------------ life cycle -- */
@@ -344,6 +352,276 @@ ncl_socket *ncl_socket_connect(const char *host, unsigned port,
     }
     return ncl_socket_wrap(handle, 0);
 }
+
+/* --------------------------------------------------------------------- TLS -- */
+
+bool ncl_socket_tls_available(void)
+{
+#if defined(NCL_WITH_TLS)
+    return true;
+#else
+    return false;
+#endif
+}
+
+#if defined(NCL_WITH_TLS)
+
+static ncl_mutex *g_tls_mutex = NULL;
+static bool       g_tls_ready = false;
+
+static void ncl_tls_error(char *err, size_t err_len, const char *what)
+{
+    unsigned long code = ERR_get_error();
+    char text[256];
+
+    if (err == NULL || err_len == 0) {
+        return;
+    }
+    if (code == 0) {
+        snprintf(err, err_len, "%s failed", what);
+        return;
+    }
+    ERR_error_string_n(code, text, sizeof(text));
+    snprintf(err, err_len, "%s failed: %s", what, text);
+}
+
+static bool ncl_tls_init(char *err, size_t err_len)
+{
+    bool ok = true;
+
+    if (g_tls_mutex == NULL) {
+        g_tls_mutex = ncl_mutex_create();
+    }
+    if (g_tls_mutex == NULL) {
+        if (err != NULL && err_len > 0) {
+            snprintf(err, err_len, "out of memory");
+        }
+        return false;
+    }
+    ncl_mutex_lock(g_tls_mutex);
+    if (!g_tls_ready) {
+        if (OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS |
+                                 OPENSSL_INIT_LOAD_CRYPTO_STRINGS,
+                             NULL) != 1) {
+            ncl_tls_error(err, err_len, "OPENSSL_init_ssl");
+            ok = false;
+        } else {
+            g_tls_ready = true;
+        }
+    }
+    ncl_mutex_unlock(g_tls_mutex);
+    return ok;
+}
+
+/** True when @p name is an IPv4/IPv6 literal rather than a DNS name. */
+static bool ncl_tls_name_is_ip(const char *name)
+{
+    unsigned char buf[16];
+
+    return inet_pton(AF_INET, name, buf) == 1 ||
+           inet_pton(AF_INET6, name, buf) == 1;
+}
+
+/** Run SSL_connect() with a deadline, driving WANT_READ/WANT_WRITE with select. */
+static ncl_err ncl_tls_handshake(SSL *ssl, ncl_sock_handle handle,
+                                 unsigned timeout_ms, char *err, size_t err_len)
+{
+    int64_t deadline = ncl_time_monotonic_millis() + (int64_t)timeout_ms;
+
+#if defined(NCL_OS_WINDOWS)
+    u_long mode = 1;
+    ioctlsocket(handle, FIONBIO, &mode);
+#else
+    {
+        int flags = fcntl(handle, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(handle, F_SETFL, flags | O_NONBLOCK);
+        }
+    }
+#endif
+
+    for (;;) {
+        int rc = SSL_connect(ssl);
+
+        if (rc == 1) {
+            break;
+        }
+        {
+            int code = SSL_get_error(ssl, rc);
+            int64_t left = deadline - ncl_time_monotonic_millis();
+
+            if (code != SSL_ERROR_WANT_READ && code != SSL_ERROR_WANT_WRITE) {
+                ncl_tls_error(err, err_len, "TLS handshake");
+                return NCL_ERR_CONNECT;
+            }
+            if (left <= 0) {
+                if (err != NULL && err_len > 0) {
+                    snprintf(err, err_len, "TLS handshake timed out");
+                }
+                return NCL_ERR_TIMEOUT;
+            }
+            if (ncl_socket_wait(handle, code == SSL_ERROR_WANT_WRITE,
+                                (unsigned)left) <= 0) {
+                if (err != NULL && err_len > 0) {
+                    snprintf(err, err_len, "TLS handshake timed out");
+                }
+                return NCL_ERR_TIMEOUT;
+            }
+        }
+    }
+
+    /* Back to blocking mode: the client drives timeouts with select(). */
+#if defined(NCL_OS_WINDOWS)
+    {
+        u_long mode = 0;
+        ioctlsocket(handle, FIONBIO, &mode);
+    }
+#else
+    {
+        int flags = fcntl(handle, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(handle, F_SETFL, flags & ~O_NONBLOCK);
+        }
+    }
+#endif
+    return NCL_OK;
+}
+
+ncl_socket *ncl_socket_connect_tls(const char *host, unsigned port,
+                                   unsigned timeout_ms,
+                                   const ncl_socket_tls_options *options,
+                                   char *err, size_t err_len)
+{
+    ncl_socket_tls_options defaults;
+    ncl_socket *s;
+    SSL_CTX *ctx;
+    SSL *ssl;
+    const char *server_name;
+
+    if (options == NULL) {
+        memset(&defaults, 0, sizeof(defaults));
+        defaults.verify_peer = true;
+        options = &defaults;
+    }
+    if (!ncl_tls_init(err, err_len)) {
+        return NULL;
+    }
+    server_name = options->server_name != NULL ? options->server_name : host;
+
+    s = ncl_socket_connect(host, port, timeout_ms, err, err_len);
+    if (s == NULL) {
+        return NULL;
+    }
+
+    ctx = SSL_CTX_new(TLS_client_method());
+    if (ctx == NULL) {
+        ncl_tls_error(err, err_len, "SSL_CTX_new");
+        ncl_socket_close(s);
+        return NULL;
+    }
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_mode(ctx, SSL_MODE_AUTO_RETRY);
+
+    if (options->verify_peer) {
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+        if (options->ca_file != NULL) {
+            if (SSL_CTX_load_verify_locations(ctx, options->ca_file, NULL) != 1) {
+                ncl_tls_error(err, err_len, "loading the CA file");
+                SSL_CTX_free(ctx);
+                ncl_socket_close(s);
+                return NULL;
+            }
+        } else if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+            ncl_tls_error(err, err_len, "loading the platform trust store");
+            SSL_CTX_free(ctx);
+            ncl_socket_close(s);
+            return NULL;
+        }
+    } else {
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+    }
+
+    if (options->client_cert != NULL) {
+        if (SSL_CTX_use_certificate_chain_file(ctx, options->client_cert) != 1 ||
+            SSL_CTX_use_PrivateKey_file(ctx, options->client_key != NULL
+                                                 ? options->client_key
+                                                 : options->client_cert,
+                                    SSL_FILETYPE_PEM) != 1) {
+            ncl_tls_error(err, err_len, "loading the client certificate");
+            SSL_CTX_free(ctx);
+            ncl_socket_close(s);
+            return NULL;
+        }
+    }
+
+    ssl = SSL_new(ctx);
+    if (ssl == NULL) {
+        ncl_tls_error(err, err_len, "SSL_new");
+        SSL_CTX_free(ctx);
+        ncl_socket_close(s);
+        return NULL;
+    }
+    SSL_set_fd(ssl, (int)s->handle);
+    if (server_name != NULL && !ncl_tls_name_is_ip(server_name)) {
+        SSL_set_tlsext_host_name(ssl, server_name); /* SNI */
+    }
+    if (options->verify_peer && server_name != NULL) {
+        X509_VERIFY_PARAM *param = SSL_get0_param(ssl);
+
+        X509_VERIFY_PARAM_set_hostflags(param,
+                                        X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+        if (ncl_tls_name_is_ip(server_name)) {
+            if (X509_VERIFY_PARAM_set1_ip_asc(param, server_name) != 1) {
+                ncl_tls_error(err, err_len, "setting the expected IP");
+                SSL_free(ssl);
+                SSL_CTX_free(ctx);
+                ncl_socket_close(s);
+                return NULL;
+            }
+        } else if (X509_VERIFY_PARAM_set1_host(param, server_name, 0) != 1) {
+            ncl_tls_error(err, err_len, "setting the expected host name");
+            SSL_free(ssl);
+            SSL_CTX_free(ctx);
+            ncl_socket_close(s);
+            return NULL;
+        }
+    }
+
+    if (ncl_tls_handshake(ssl, s->handle,
+                          timeout_ms == 0 ? 10000u : timeout_ms,
+                          err, err_len) != NCL_OK) {
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        ncl_socket_close(s);
+        return NULL;
+    }
+
+    s->tls = ssl;
+    s->tls_ctx = ctx;
+    ncl_log_debug("TLS 握手完成: %s (%s)", server_name != NULL ? server_name : "?",
+                  SSL_get_version(ssl));
+    return s;
+}
+
+#else /* !NCL_WITH_TLS */
+
+ncl_socket *ncl_socket_connect_tls(const char *host, unsigned port,
+                                   unsigned timeout_ms,
+                                   const ncl_socket_tls_options *options,
+                                   char *err, size_t err_len)
+{
+    (void)host;
+    (void)port;
+    (void)timeout_ms;
+    (void)options;
+    if (err != NULL && err_len > 0) {
+        snprintf(err, err_len,
+                 "TLS support is not compiled in (build with -DNCLINK_WITH_TLS=ON)");
+    }
+    return NULL;
+}
+
+#endif /* NCL_WITH_TLS */
 
 ncl_socket *ncl_socket_listen(unsigned port, char *err, size_t err_len)
 {
@@ -670,16 +948,47 @@ ncl_err ncl_socket_send(ncl_socket *s, const void *data, size_t len)
     const unsigned char *cursor = (const unsigned char *)data;
     size_t remaining = len;
     ncl_sock_handle handle;
+    void *tls;
 
     if (s == NULL || (data == NULL && len > 0)) {
         return NCL_ERR_INVALID_ARG;
     }
     ncl_mutex_lock(s->lock);
     handle = s->handle;
+    tls = s->tls;
     ncl_mutex_unlock(s->lock);
     if (handle == NCL_INVALID_SOCK) {
         return NCL_ERR_CLOSED;
     }
+#if defined(NCL_WITH_TLS)
+    if (tls != NULL) {
+        SSL *ssl = (SSL *)tls;
+
+        while (remaining > 0) {
+            int written = SSL_write(ssl, cursor, (int)remaining);
+
+            if (written > 0) {
+                cursor += written;
+                remaining -= (size_t)written;
+                continue;
+            }
+            {
+                int code = SSL_get_error(ssl, written);
+
+                if (code == SSL_ERROR_WANT_READ ||
+                    code == SSL_ERROR_WANT_WRITE) {
+                    if (ncl_socket_wait(handle, code == SSL_ERROR_WANT_WRITE,
+                                        10000) <= 0) {
+                        return NCL_ERR_TIMEOUT;
+                    }
+                    continue;
+                }
+            }
+            return NCL_ERR_IO;
+        }
+        return NCL_OK;
+    }
+#endif
     while (remaining > 0) {
         int sent = send(handle, (const char *)cursor, (int)remaining, 0);
         if (sent <= 0) {
@@ -701,16 +1010,61 @@ int ncl_socket_recv(ncl_socket *s, void *buf, size_t len, unsigned timeout_ms)
 {
     int rc;
     ncl_sock_handle handle;
+    void *tls;
 
     if (s == NULL || buf == NULL || len == 0) {
         return -1;
     }
     ncl_mutex_lock(s->lock);
     handle = s->handle;
+    tls = s->tls;
     ncl_mutex_unlock(s->lock);
     if (handle == NCL_INVALID_SOCK) {
         return -1;
     }
+#if defined(NCL_WITH_TLS)
+    if (tls != NULL) {
+        SSL *ssl = (SSL *)tls;
+        int64_t deadline = ncl_time_monotonic_millis() + (int64_t)timeout_ms;
+
+        for (;;) {
+            int64_t left;
+
+            /* Decrypted bytes may already sit inside the SSL object, in which
+             * case select() would block for nothing. */
+            if (SSL_pending(ssl) == 0) {
+                left = deadline - ncl_time_monotonic_millis();
+                if (left <= 0) {
+                    return NCL_SOCKET_TIMEOUT;
+                }
+                if (ncl_socket_wait(handle, false, (unsigned)left) <= 0) {
+                    return NCL_SOCKET_TIMEOUT;
+                }
+            }
+            rc = SSL_read(ssl, buf, (int)len);
+            if (rc > 0) {
+                return rc;
+            }
+            {
+                int code = SSL_get_error(ssl, rc);
+
+                if (code == SSL_ERROR_WANT_READ) {
+                    continue; /* another TLS record is needed */
+                }
+                if (code == SSL_ERROR_WANT_WRITE) {
+                    if (ncl_socket_wait(handle, true, 10000) <= 0) {
+                        return NCL_SOCKET_TIMEOUT;
+                    }
+                    continue;
+                }
+                if (code == SSL_ERROR_ZERO_RETURN) {
+                    return 0; /* clean TLS shutdown by the peer */
+                }
+            }
+            return -1;
+        }
+    }
+#endif
     rc = ncl_socket_wait(handle, false, timeout_ms);
     if (rc == 0) {
         return NCL_SOCKET_TIMEOUT;
@@ -777,6 +1131,21 @@ void ncl_socket_close(ncl_socket *s)
         return;
     }
     ncl_socket_shutdown(s);
+#if defined(NCL_WITH_TLS)
+    {
+        SSL *ssl = (SSL *)s->tls;
+        SSL_CTX *ctx = (SSL_CTX *)s->tls_ctx;
+
+        s->tls = NULL;
+        s->tls_ctx = NULL;
+        if (ssl != NULL) {
+            SSL_free(ssl);
+        }
+        if (ctx != NULL) {
+            SSL_CTX_free(ctx);
+        }
+    }
+#endif
     ncl_mutex_destroy(s->lock);
     free(s);
 }
@@ -788,6 +1157,13 @@ void ncl_socket_shutdown(ncl_socket *s)
     }
     ncl_mutex_lock(s->lock);
     if (s->handle != NCL_INVALID_SOCK) {
+#if defined(NCL_WITH_TLS)
+        /* Best effort close_notify; the SSL objects themselves are released by
+         * ncl_socket_close(), which only the owning thread calls. */
+        if (s->tls != NULL) {
+            SSL_shutdown((SSL *)s->tls);
+        }
+#endif
 #if defined(NCL_OS_WINDOWS)
         shutdown(s->handle, SD_BOTH);
         closesocket(s->handle);

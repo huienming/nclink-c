@@ -364,6 +364,13 @@ typedef struct {
     bool        automatic_reconnect;
     unsigned    reconnect_delay_ms;  /**< base backoff, default 1000 */
     unsigned    reconnect_max_delay_ms; /**< default 30000 */
+    /* TLS (only used for "ssl://" / "tls://" URLs, and only when the library
+     * was built with NCLINK_WITH_TLS=ON; see ncl_socket_tls_available()). */
+    const char *tls_ca_file;      /**< PEM bundle; NULL = platform trust store */
+    const char *tls_client_cert;  /**< optional PEM client certificate */
+    const char *tls_client_key;   /**< optional PEM key for the client cert */
+    const char *tls_server_name;  /**< SNI/host name check; NULL = URL host */
+    bool        tls_verify_peer;  /**< default true: verify chain and host */
     ncl_mqtt_connected_fn    on_connect;
     ncl_mqtt_disconnected_fn on_disconnect;
     ncl_mqtt_message_fn      on_message;

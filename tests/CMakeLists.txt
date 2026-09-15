@@ -100,3 +100,11 @@ add_executable(ncl_test_broker test_broker.c)
 target_link_libraries(ncl_test_broker PRIVATE nclink_core)
 add_test(NAME broker COMMAND ncl_test_broker)
 set_tests_properties(broker PROPERTIES TIMEOUT 120)
+
+# TLS transport: skipped unless the library was built with NCLINK_WITH_TLS=ON.
+add_executable(ncl_test_tls test_tls.c)
+target_link_libraries(ncl_test_tls PRIVATE nclink_core)
+target_compile_definitions(ncl_test_tls PRIVATE
+        NCL_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+add_test(NAME tls COMMAND ncl_test_tls)
+set_tests_properties(tls PROPERTIES TIMEOUT 120)

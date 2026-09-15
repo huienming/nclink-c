@@ -6,6 +6,9 @@
 #
 #   ./build-linux.sh [输出目录]        # 默认 build-linux
 #
+# 可选：NCL_WITH_TLS=1 打开 ssl:// 支持（需要 OpenSSL 的头文件与库），
+# 例如 NCL_WITH_TLS=1 ./build-linux.sh build-linux-tls
+#
 # 产出：
 #   <输出目录>/libnclink_core.a        静态库
 #   <输出目录>/bin/*                   示例与测试可执行文件
@@ -30,6 +33,12 @@ CFLAGS="$CFLAGS -D_POSIX_C_SOURCE=200809L"
 # GCC 的 -Wformat-truncation 会对这类定长拼接给出大量保守告警，这里显式关闭。
 CFLAGS="$CFLAGS -Wno-format-truncation"
 LDLIBS="-lpthread"
+
+# TLS 是可选的：默认零依赖，打开后链接系统 OpenSSL，用于 MQTT over ssl://。
+if [ "${NCL_WITH_TLS:-0}" = "1" ]; then
+    CFLAGS="$CFLAGS -DNCL_WITH_TLS=1"
+    LDLIBS="$LDLIBS -lssl -lcrypto"
+fi
 
 rm -rf "$OUT/obj"
 mkdir -p "$OUT/obj" "$OUT/bin"
@@ -60,6 +69,10 @@ for t in tests/test_*.c; do
     esac
     case "$name" in
         test_model|test_message)
+            extra="$extra -DNCL_TEST_DATA_DIR=\"$ROOT/tests/data\"" ;;
+    esac
+    case "$name" in
+        test_tls)
             extra="$extra -DNCL_TEST_DATA_DIR=\"$ROOT/tests/data\"" ;;
     esac
     case "$name" in

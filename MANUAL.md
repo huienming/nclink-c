@@ -60,7 +60,7 @@ examples/           两个可运行示例：设备端 / 客户端
 MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 
 src/<模块>/         实现，共 13 个模块目录        ← 以下仅源码仓库有
-tests/              20 个测试套件（含可选的真实 broker 互操作套件）+ 协议黄金样本
+tests/              21 个测试套件（含可选的 broker 互操作与 TLS 套件）+ 协议黄金样本
 tools/              许可头检查、broker 互操作、文档生成与发布打包脚本
 build.ps1           Windows 一键：配置 + 编译 + ctest
 build-linux.sh      Linux 免 cmake 构建
@@ -126,6 +126,13 @@ ctest --test-dir build-linux --output-on-failure
 该套件覆盖 QoS 0/1/2、通配订阅、40 KB 报文、退订、空闲保活、会话被顶替（0x8E）
 与显式重连后的订阅恢复；不设该环境变量时自动跳过，普通构建不需要 broker。
 
+**TLS**（可选，默认构建零依赖、不含 TLS）：需要 `ssl://` 时按 2.4 打开
+`NCLINK_WITH_TLS`，链接时加 `-lssl -lcrypto`（发布包里
+`lib/linux-x86_64-gcc-tls/` 就是这份）。客户端侧配置见 5.5 的
+`tls_ca_file` / `tls_verify_peer` / `tls_server_name` / `tls_client_cert`；
+自签证书把证书本身当 `tls_ca_file` 传即可，主机名要与证书 SAN 一致。
+`tools/interop.sh` 会对 Mosquitto 的 TLS 监听再跑一遍互操作套件。
+
 ### 2.4 CMake 选项
 
 | 选项 | 默认 | 作用 |
@@ -134,6 +141,7 @@ ctest --test-dir build-linux --output-on-failure
 | `NCLINK_BUILD_EXAMPLES` | ON | 编译 `examples/` 下的两个示例 |
 | `NCLINK_WITH_MQTT` | ON | 编译 MQTT 传输层、客户端、服务端、文件与 FTP |
 | `NCLINK_WITH_ZLIB` | OFF | 启用 zlib 压缩编解码 |
+| `NCLINK_WITH_TLS` | OFF | 启用 OpenSSL，支持 MQTT over `ssl://`（需要的现场才打开） |
 
 ### 2.5 集成到自己的工程
 

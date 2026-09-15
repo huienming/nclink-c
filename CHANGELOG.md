@@ -33,6 +33,20 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   「断开后自动重连并恢复订阅、且恢复过程不阻塞接收线程」与「服务器 0x8E 停止
   自动重连」——不装 Docker 也能挡住这两个问题。
 
+### TLS（可选）
+
+- 新增可选的 TLS 传输：`ncl_socket_connect_tls()` / `ncl_socket_tls_available()`
+  与 MQTT 客户端上的 `ssl://`、`tls_ca_file`、`tls_verify_peer`、
+  `tls_server_name`、`tls_client_cert/key`。默认构建仍然零依赖，
+  用 `-DNCLINK_WITH_TLS=ON`（CMake）或 `NCL_WITH_TLS=1 ./build-linux.sh` 打开，
+  链接 `-lssl -lcrypto`。校验链与主机名默认开启（IP 与 DNS 名都支持），
+  可显式关掉用于自签调试。
+- 新增 `tests/test_tls.c`（第 21 个套件，未启用 TLS 时自动跳过）：内置 TLS
+  服务端，覆盖握手、CONNECT/SUBSCRIBE、8 KB 报文跨记录、服务端推送、陌生 CA
+  与错误主机名必须失败、`verify_peer=false` 必须成功。
+- `tools/interop.sh` 增加 Mosquitto 的 TLS 监听（18832），互操作套件再对
+  `ssl://` 跑一遍（本机实测 44 检查全通过）。
+
 ### 协议与基础
 
 - JSON DOM（有序对象、空值省略、忽略未知字段、数字保留原文）、

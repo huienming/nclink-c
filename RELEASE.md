@@ -10,6 +10,7 @@
 include/nclink/*.h                     21 个公共头文件（全部对外 API）
 lib/windows-x64-msvc/nclink_core.lib   Windows x64 静态库（MSVC，Release）
 lib/linux-x86_64-gcc/libnclink_core.a  Linux x86_64 静态库（gcc，-O2）
+lib/linux-x86_64-gcc-tls/…             同上，但启用了 TLS（ssl://，链接 -lssl -lcrypto）
 MANUAL.md / MANUAL.docx                使用手册（Word 版由 md 生成，内容一致）
 README.md                              工程概览与测试清单
 CHANGELOG.md                           版本变更记录
@@ -42,12 +43,13 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | 项 | 结果 |
 |----|------|
 | Windows 编译 | 零警告（`/W4 /utf-8`） |
-| Windows 测试 | 20/20 通过；ASan（`/fsanitize=address`）20/20 |
+| Windows 测试 | 21/21 通过；ASan（`/fsanitize=address`）21/21 |
 | Linux 编译 | 零警告（`-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes`） |
-| Linux 测试 | 20/20 通过（同一批测试源码） |
+| Linux 测试 | 21/21 通过（含 TLS 套件，同一批测试源码） |
 | 稳定性 | Windows Release 连跑 8 轮、ASan 12 轮无失败 |
 | 示例 | 设备端与客户端两个示例已实测对跑：模型交换、读写、参数校验、文件传输、事件推送 |
 | broker 互操作 | `tools/interop.sh` 对 **EMQX 5.8.9** 与 **Mosquitto 2** 各跑一遍 `broker` 套件（QoS 0/1/2、通配订阅、40 KB 报文、退订、保活、会话顶替、重连后订阅恢复），两个 broker 均通过 |
+| TLS 互操作 | 同一脚本对 Mosquitto 的 TLS 监听（18832）再跑一遍 `broker` 套件（`ssl://`），本机实测通过 |
 | MQTT 重连回归 | 假 broker 套件覆盖断线自动重连 + 订阅恢复（含"恢复不阻塞接收线程"的时间断言）与 0x8E 停止重连，无需 broker 即可回归 |
 
 测试套件：json、common、topic、model、message、codec、thread、mqtt、mqtt_client、
@@ -142,7 +144,7 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 
 | 项 | 说明 |
 |----|------|
-| TLS | MQTT 的 `ssl://`/`tls://` 未实现，返回 `NCL_ERR_NOT_SUPPORTED`；需要时接 OpenSSL/mbedTLS 或平台 TLS |
+| TLS | 可选：`-DNCLINK_WITH_TLS=ON`（或 `NCL_WITH_TLS=1 ./build-linux.sh`）链接 OpenSSL 后即支持 `ssl://`；包内 `lib/linux-x86_64-gcc-tls/` 是这份，默认的两个库仍零依赖、对 `ssl://` 返回 `NCL_ERR_NOT_SUPPORTED` |
 | 压缩编解码 | 默认关闭；开启需 zlib（`NCLINK_WITH_ZLIB=ON`） |
 | 驱动层 | Modbus RTU、串口、Q0/Q1 继电器接口未实现（按需求排除） |
 | 边缘接口 | `Edge/*` 主题未实现（暂不使用） |

@@ -29,6 +29,7 @@ $zip = Join-Path $root "dist\$Name.zip"
 
 $msvcLib = Join-Path $root "build\nclink_core.lib"
 $gccLib = Join-Path $root "build-linux\libnclink_core.a"
+$gccTlsLib = Join-Path $root "build-linux-tls\libnclink_core.a"
 
 foreach ($required in @($msvcLib, $gccLib)) {
     if (-not (Test-Path -LiteralPath $required)) {
@@ -73,6 +74,14 @@ New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x64-msvc") -Forc
 New-Item -ItemType Directory -Path (Join-Path $pkg "lib\linux-x86_64-gcc") -Force | Out-Null
 Copy-Item -LiteralPath $msvcLib -Destination (Join-Path $pkg "lib\windows-x64-msvc\nclink_core.lib") -Force
 Copy-Item -LiteralPath $gccLib -Destination (Join-Path $pkg "lib\linux-x86_64-gcc\libnclink_core.a") -Force
+
+# Optional: the Linux library built with TLS support (ssl:// over OpenSSL).
+if (Test-Path -LiteralPath $gccTlsLib) {
+    New-Item -ItemType Directory -Path (Join-Path $pkg "lib\linux-x86_64-gcc-tls") -Force | Out-Null
+    Copy-Item -LiteralPath $gccTlsLib -Destination (Join-Path $pkg "lib\linux-x86_64-gcc-tls\libnclink_core.a") -Force
+} else {
+    Write-Host "  note: build-linux-tls/libnclink_core.a not found, the TLS variant is not packaged"
+}
 
 # docs
 foreach ($doc in @("README.md", "MANUAL.md", "MANUAL.docx", "RELEASE.md",

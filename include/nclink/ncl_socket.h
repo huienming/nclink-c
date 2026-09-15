@@ -43,6 +43,38 @@ void ncl_socket_system_release(void);
 ncl_socket *ncl_socket_connect(const char *host, unsigned port,
                                unsigned timeout_ms, char *err, size_t err_len);
 
+/* ------------------------------------------------------------------- TLS -- */
+
+/**
+ * TLS settings for ncl_socket_connect_tls(). The library is built with TLS
+ * support when NCLINK_WITH_TLS=ON (see ncl_socket_tls_available()), otherwise
+ * the TLS entry points report NCL_ERR_NOT_SUPPORTED.
+ */
+typedef struct {
+    const char *ca_file;      /**< PEM bundle or directory to verify with;
+                                   NULL uses the platform trust store        */
+    const char *client_cert;  /**< optional PEM client certificate           */
+    const char *client_key;   /**< optional PEM private key (client_cert)    */
+    const char *server_name;  /**< name checked against the certificate and
+                                   sent as SNI; NULL uses the connect host   */
+    bool        verify_peer;  /**< verify the chain and the host name        */
+} ncl_socket_tls_options;
+
+/** True when this build can speak TLS. */
+bool ncl_socket_tls_available(void);
+
+/**
+ * Connect to @p host:@p port like ncl_socket_connect() and then run the TLS
+ * handshake. @p options may be NULL, which means "verify with the platform
+ * trust store and the host name". Returns NULL on failure, with a diagnostic
+ * in @p err. NCL_ERR_NOT_SUPPORTED is reported through @p err when the build
+ * has no TLS.
+ */
+ncl_socket *ncl_socket_connect_tls(const char *host, unsigned port,
+                                   unsigned timeout_ms,
+                                   const ncl_socket_tls_options *options,
+                                   char *err, size_t err_len);
+
 /** Create a listening socket bound to @p port (0 picks an ephemeral port). */
 ncl_socket *ncl_socket_listen(unsigned port, char *err, size_t err_len);
 
