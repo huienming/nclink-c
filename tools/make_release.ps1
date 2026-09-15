@@ -70,6 +70,9 @@ if ($WithSource) {
     Copy-Tree "tools" "tools" @("*.py", "*.mjs", "*.ps1")
 }
 
+# Go bindings: sources only, the static libraries are staged by the user
+Copy-Tree "bindings/go" "bindings/go" @("*.go", "*.mod", "*.md")
+
 # libraries
 New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x64-msvc") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $pkg "lib\linux-x86_64-gcc") -Force | Out-Null

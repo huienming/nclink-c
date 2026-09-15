@@ -154,6 +154,32 @@ ncl::Client::shutdown();
 构建开关：CMake `-DNCLINK_BUILD_CPP=ON`（默认开，加 `cpp` 测试套件）；
 `build-linux.sh` 在检测到 `g++` 时会一并编译 `tests/test_*.cpp` 与 C++ 示例。
 
+### 2.4.2 Go 绑定（cgo）
+
+`bindings/go/` 是 cgo 绑定（模块 `github.com/huienming/nclink-c/bindings/go`），
+用法与 C/C++ 示例一一对应：
+
+```go
+if err := nclink.Open("tcp://broker:1883", "", ""); err != nil { log.Fatal(err) }
+defer nclink.Shutdown()
+
+client, _ := nclink.Get("V203243111F")
+model, _ := client.Probe(5000)          // 拉设备模型
+v, _ := client.Value("/STATUS", 5000)   // 读值
+defer v.Close()
+
+client.SubscribeSamples(2, func(topic string, msg *nclink.Message) {
+    // msg 只在回调期间有效（与 C 侧一致）
+})
+```
+
+链接：`tools/stage-go-libs.sh` 把 `build-linux/libnclink_core.a`（Linux）与
+`build-mingw/libnclink_core.a`（Windows）暂存到 `bindings/go/lib/<goos>-<goarch>/`
+（不入库）。**Windows 上 cgo 只认 mingw 工具链，且必须链 mingw 编的库**——
+MSVC 的 `nclink_core.lib` 链不上；装 mingw 后用
+`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw` 编一份即可。
+TLS 用 `-tags nclink_tls`。
+
 ### 2.4 CMake 选项
 
 | 选项 | 默认 | 作用 |
