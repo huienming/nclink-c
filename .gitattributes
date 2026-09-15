@@ -1,0 +1,12 @@
+# 统一换行：源码与文档一律 LF，避免跨平台 diff 噪声
+* text=auto eol=lf
+
+# 二进制文件不做任何转换
+*.docx binary
+*.lib binary
+*.a binary
+*.zip binary
+*.png binary
+
+# 黄金样本按原样保存（测试要求往返字节一致）
+tests/data/*.json -text
