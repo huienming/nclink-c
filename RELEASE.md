@@ -14,6 +14,7 @@ MANUAL.md / MANUAL.docx                使用手册（Word 版由 md 生成，�
 README.md                              工程概览与测试清单
 CHANGELOG.md                           版本变更记录
 RELEASE.md                             本文件
+LICENSE                                 MIT 许可全文
 examples/                              两个示例程序（设备端 / 客户端）及其 CMakeLists
 SHA256SUMS.txt                         包内每个文件的 SHA-256
 ```
@@ -152,3 +153,14 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 sha256sum -c SHA256SUMS.txt      # Linux
 certutil -hashfile <文件> SHA256  # Windows，或 PowerShell Get-FileHash
 ```
+
+## 8. 许可
+
+本包（头文件、静态库、文档与示例）以 **MIT License** 授权，全文见 `LICENSE`：
+
+```
+Copyright (c) 2026 huienming
+```
+
+再分发或嵌入到自己的产品时，只需保留版权声明与许可声明；软件按"现状"提供，
+不附带任何担保。

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
+
 """Structural check of a generated DOCX: content census, fonts, page setup.
 
 The point is to catch the failure modes that a missing renderer would hide:

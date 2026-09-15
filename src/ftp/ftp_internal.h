@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * NC-Link core - shared FTP helpers used by the client and the server.
  * Not installed; meant for the sources under src/ftp only.

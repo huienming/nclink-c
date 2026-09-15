@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * HTTP server tests. A raw socket client drives the server so that the wire
  * format (status line, headers, body) is verified, not just the handler API.

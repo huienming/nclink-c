@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * SHA-256 (FIPS 180-4), the checksum of the file transfer.
  *

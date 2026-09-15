@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* NC-Link core - hex and (optional) zlib payload codecs. */
 #include "nclink/ncl_codec.h"
 

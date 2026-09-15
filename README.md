@@ -434,4 +434,13 @@ static const ncl_tool_method methods[] = {
 
 ## 许可
 
-本库未附带开源许可文件；分发与使用条款以授权约定为准。
+**MIT License**，全文见 [LICENSE](LICENSE)。
+
+```
+Copyright (c) 2026 huienming
+```
+
+所有源文件（`include/`、`src/`、`tests/`、`examples/`、`tools/`）都带
+`SPDX-License-Identifier: MIT` 头，复制单个文件出去时许可信息不会丢。
+静态库（`nclink_core.lib` / `libnclink_core.a`）与文档同样以 MIT 授权；
+引用时请保留版权声明。

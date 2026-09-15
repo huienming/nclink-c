@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
+
 # NC-Link core - Linux build without CMake.
 #
 #   ./build-linux.sh [输出目录]        # 默认 build-linux

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * End-to-end test of the MQTT 5.0 client against an in-process fake broker.
  *

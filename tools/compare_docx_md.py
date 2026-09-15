@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
+
 """Compare the markdown block model against what ended up in the DOCX.
 
 Guards the renderer against silent content loss: headings, code lines and table

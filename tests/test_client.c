@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * End-to-end test of the NC-Link client layer against the fake server:
  * process wide client -> channel -> MQTT -> request/response correlation.

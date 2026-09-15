@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* NC-Link core - MQTT 5.0 packet codec. */
 #include "nclink/ncl_mqtt.h"
 

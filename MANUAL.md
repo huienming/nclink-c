@@ -12,7 +12,8 @@
 5. [模块手册](#5-模块手册)
 6. [典型任务速查](#6-典型任务速查)
 7. [常见问题与排错](#7-常见问题与排错)
-8. 附录：[A · API 索引](#附录-a--api-索引) ·
+8. [许可](#8-许可)
+9. 附录：[A · API 索引](#附录-a--api-索引) ·
    [B · 错误码](#附录-b--错误码全表) ·
    [C · 主题](#附录-c--主题前缀一览) ·
    [D · 目录布局](#附录-d--安装根目录布局)
@@ -1579,6 +1580,21 @@ curl -X POST http://<设备IP>:9008/api/nclinkServer/addSample \
 
 ---
 
+## 8. 许可
+
+本库以 **MIT License** 授权，全文见包内 `LICENSE`：
+
+```
+Copyright (c) 2026 huienming
+```
+
+- 可以自由使用、修改、分发、商用与再授权，只需在副本或实质部分中保留上述
+  版权声明与许可声明。
+- 所有源文件都带 `SPDX-License-Identifier: MIT` 头；静态库与文档同样适用。
+- 软件按"现状"提供，不附带任何明示或默示担保（详见 `LICENSE` 全文）。
+
+---
+
 ## 附录 A · API 索引
 
 按头文件分组，由 `tools/gen_api_index.py` 从 `include/nclink/*.h` 自动生成（重新生成：`python tools/gen_api_index.py`）。
@@ -2349,4 +2365,3 @@ curl -X POST http://<设备IP>:9008/api/nclinkServer/addSample \
   temp/                   文件通道的临时交换目录
   <sn>/                   客户端侧文件镜像（相对路径的基准）
 ```
-

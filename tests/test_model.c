@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * Model tests driven by the sample model file
  * (conf/model/nclink.json). Re-serialising it must reproduce the original bytes

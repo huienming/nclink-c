@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* NC-Link core - environment paths, mqtt.cfg, sn.txt, file helpers. */
 #include "nclink/ncl_env.h"
 

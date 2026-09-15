@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
+
 """Render MANUAL.md (or any of the project's markdown docs) as a Word document.
 
 The markdown is parsed into a small block model which is then emitted twice:

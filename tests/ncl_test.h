@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * Tiny test harness for the NC-Link C port.
  * Header-only, no external dependencies, works with CTest.

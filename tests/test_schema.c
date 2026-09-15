@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * JSON Schema validation tests: the regular expression engine behind
  * `pattern`, every supported keyword, and the one shot entry points.

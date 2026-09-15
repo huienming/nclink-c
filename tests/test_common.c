@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* Unit tests for ncl_common (error names, strings, strbuf, ptrvec). */
 #include "ncl_test.h"
 

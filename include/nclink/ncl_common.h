@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * NC-Link core - common types: error codes, string helpers, string buffer,
  * pointer vector.

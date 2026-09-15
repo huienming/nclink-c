@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
+
 /*
  * Screenshot the HTML rendering of the manual for a visual check.
  *

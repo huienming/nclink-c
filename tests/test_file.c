@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * File transfer tests: attributes and helpers, the SHA-256 checksum, bin/ftp.txt,
  * the FTP file tool against a real FTP server, and the whole MQTT + FTP file

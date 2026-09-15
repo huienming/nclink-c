@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* Unit tests for the thread pool, the shared pool and the TTL cache. */
 #include "ncl_test.h"
 

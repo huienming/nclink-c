@@ -8,6 +8,9 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 首个 C 版本，零第三方依赖（仅可选的 zlib），Windows（MSVC）与 Linux（gcc）
 双平台编译并跑通全部测试。
 
+以 **MIT License** 授权（见 `LICENSE`），所有源文件带
+`SPDX-License-Identifier: MIT` 头。
+
 ### 协议与基础
 
 - JSON DOM（有序对象、空值省略、忽略未知字段、数字保留原文）、

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* Unit tests for the hex codec and the optional zlib codec. */
 #include "ncl_test.h"
 

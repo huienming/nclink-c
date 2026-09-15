@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * NC-Link core - shared FTP helpers: control connection line IO, reply
  * formatting, LIST formatting and parsing, timestamp conversion, path

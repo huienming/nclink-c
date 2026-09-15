@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * NC-Link core - the small regular expression engine behind JSON Schema
  * `pattern`. Compiled to a program and run by a backtracking VM.

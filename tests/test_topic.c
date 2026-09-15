@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* Unit tests for the topic builders and the serial number extraction. */
 #include "ncl_test.h"
 

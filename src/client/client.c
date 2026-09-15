@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* NC-Link core - per device client. */
 #include "nclink/ncl_client.h"
 #include "nclink/ncl_file.h"

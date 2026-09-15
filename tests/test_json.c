@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* Unit tests for the JSON DOM (parse / write / accessors). */
 #include "ncl_test.h"
 

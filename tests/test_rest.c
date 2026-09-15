@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * REST layer tests: the Result envelope, the generated OpenAPI document and the
  * /api/schema + /swagger-ui endpoints, all driven over a real socket.

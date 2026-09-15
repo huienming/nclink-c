@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* NC-Link core - error names, string helpers, string buffer, pointer vector. */
 #include "nclink/ncl_common.h"
 

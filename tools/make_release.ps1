@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
+
 # Assemble the release package: headers, both static libraries and the docs.
 #
 # 发布包默认**不含实现源码**：头文件 + 两个平台的库 + 文档 + 示例程序。
@@ -73,7 +76,7 @@ Copy-Item -LiteralPath $gccLib -Destination (Join-Path $pkg "lib\linux-x86_64-gc
 
 # docs
 foreach ($doc in @("README.md", "MANUAL.md", "MANUAL.docx", "RELEASE.md",
-                   "CHANGELOG.md")) {
+                   "CHANGELOG.md", "LICENSE")) {
     Copy-Item -LiteralPath (Join-Path $root $doc) -Destination (Join-Path $pkg $doc) -Force
 }
 if ($WithSource) {

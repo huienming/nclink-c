@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* NC-Link core - platform services (time, sleep, entropy). */
 #include "nclink/ncl_platform.h"
 

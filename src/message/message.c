@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* NC-Link core - message container: life cycle, validation, JSON both ways. */
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
+
 """Append the API index / error code / topic appendices to MANUAL.md.
 
 The appendices are generated from the public headers so they can never drift

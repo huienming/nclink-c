@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * End-to-end test of the NC-Link server: requests arrive over MQTT, are
  * dispatched to a registered tool through the model path bindings, and the

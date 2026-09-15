@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
+
 # Configure and build nclink-core-c.
 #
 #   .\build.ps1              # configure + build + run tests (MSVC)

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * FTP transport tests: the C server and the C client exercised against each
  * other in both active and passive mode, plus the protocol details the file

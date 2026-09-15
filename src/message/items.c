@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* NC-Link core - message item types and the shared params accessors. */
 #include <stdlib.h>
 #include <string.h>

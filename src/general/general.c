@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /* NC-Link core - constants, enumerations and validity helpers. */
 #include "nclink/ncl_general.h"
 

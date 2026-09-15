@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
 /*
  * NC-Link core - the "file" tool bound to /CONTROLLER/FILE, plus the two FTP
  * endpoints (device side and process wide client side).
