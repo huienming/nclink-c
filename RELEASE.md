@@ -9,7 +9,7 @@
 ```
 include/nclink/*.h                     21 个公共头文件（全部对外 API）
 lib/windows-x64-msvc/nclink_core.lib   Windows x64 静态库（MSVC，Release）
-lib/windows-x64-msvc-tls/…             同上，但启用了 TLS（ssl://，运行时需要 OpenSSL 3 DLL）
+lib/windows-x64-msvc-tls/…             同上，但启用了 TLS（ssl://，OpenSSL 静态链接，无 DLL 依赖）
 lib/linux-x86_64-gcc/libnclink_core.a  Linux x86_64 静态库（gcc，-O2）
 lib/linux-x86_64-gcc-tls/…             同上，但启用了 TLS（ssl://，链接 -lssl -lcrypto）
 MANUAL.md / MANUAL.docx                使用手册（Word 版由 md 生成，内容一致）
@@ -147,7 +147,7 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 | 项 | 说明 |
 |----|------|
 | TLS | 可选：`-DNCLINK_WITH_TLS=ON`（或 `NCL_WITH_TLS=1 ./build-linux.sh`）链接 OpenSSL 后即支持 `ssl://`；包内 `lib/*-tls/` 就是这两份，默认的两个库仍零依赖、对 `ssl://` 返回 `NCL_ERR_NOT_SUPPORTED` |
-| TLS 运行时依赖 | Linux 用系统 `libssl.so.3` / `libcrypto.so.3`；**Windows 版需要把 `libssl-3-x64.dll`、`libcrypto-3-x64.dll` 放在程序目录或 PATH**（OpenSSL 3.x 的任何一份即可，本包不附带） |
+| TLS 运行时依赖 | Linux 用系统 `libssl.so.3` / `libcrypto.so.3`；**Windows 版是 OpenSSL 静态链接**（`no-shared no-asm`），除 MSVC 运行库外无额外 DLL |
 | 压缩编解码 | 默认关闭；开启需 zlib（`NCLINK_WITH_ZLIB=ON`） |
 | 驱动层 | Modbus RTU、串口、Q0/Q1 继电器接口未实现（按需求排除） |
 | 边缘接口 | `Edge/*` 主题未实现（暂不使用） |

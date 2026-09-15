@@ -129,9 +129,9 @@ NCL_WITH_TLS=1 ./build-linux.sh build-linux-tls   # 免 cmake 路线
 ```
 
 Linux 链接时加 `-lssl -lcrypto`（包内 `lib/linux-x86_64-gcc-tls/` 就是这份）；
-Windows 需要 OpenSSL 3（`OPENSSL_ROOT_DIR`、vcpkg 或本机安装，`-OpenSslRoot <dir>`
-可显式指定），**运行时要把 `libssl-3-x64.dll` / `libcrypto-3-x64.dll` 放到程序
-目录或 PATH**（包内 `lib/windows-x64-msvc-tls/` 是这份）。
+Windows 需要 OpenSSL 3 的**静态库**（`OPENSSL_ROOT_DIR`、vcpkg 或自编
+`no-shared`，`-OpenSslRoot <dir>` 可显式指定），配 `-DOPENSSL_USE_STATIC_LIBS=ON`
+即静态链入、**运行时不带任何 OpenSSL DLL**（包内 `lib/windows-x64-msvc-tls/` 是这份）。
 客户端选项：`tls_ca_file`（PEM 信任库，NULL 用系统信任库）、`tls_verify_peer`
 （默认 true，校验链与主机名）、`tls_server_name`（SNI/校验名，默认取 URL 主机）、
 `tls_client_cert` / `tls_client_key`（双向认证，可选）。
