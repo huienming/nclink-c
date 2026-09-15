@@ -80,7 +80,11 @@ public:
     explicit Json(ncl_json *owned) : value_(owned) {}
 
     static Json parse(const std::string &text) {
-        return Json(ncl_json_parse_cstr(text.c_str(), nullptr));
+        ncl_json *value = ncl_json_parse_cstr(text.c_str(), nullptr);
+        if (value == nullptr) {
+            throw Error(NCL_ERR_PARSE, "text is not valid JSON");
+        }
+        return Json(value);
     }
 
     Json(const Json &other) : value_(ncl_json_clone(other.value_)) {}
