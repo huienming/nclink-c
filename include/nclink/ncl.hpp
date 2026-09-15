@@ -24,6 +24,10 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 
 #include "nclink/ncl_client.h"
 #include "nclink/ncl_common.h"
@@ -301,6 +305,41 @@ public:
                       "ncl_client_set_value");
     }
 
+    /** get_length: the collected length of @p path. */
+    long long length(const std::string &path, unsigned timeout_ms = 5000) {
+        long long out = 0;
+        detail::check(ncl_client_get_length(value_, path.c_str(), timeout_ms, &out),
+                      "ncl_client_get_length");
+        return out;
+    }
+
+    /** methodCall: takes the request over, returns the response. */
+    Message method_call(Message request, unsigned timeout_ms = 5000) {
+        ncl_message *response = nullptr;
+        detail::check(ncl_client_method_call(value_, request.release(),
+                                             timeout_ms, &response),
+                      "ncl_client_method_call");
+        return Message(response);
+    }
+
+    /** Sample and event callbacks; the C callbacks are adapted with
+     *  std::function, one small holder per client (replacing a handler frees
+     *  the previous one). */
+    using SampleHandler = std::function<void(const char *, const ncl_message *)>;
+    using EventHandler = std::function<void(const char *, const ncl_message *)>;
+
+    void on_sample(SampleHandler handler) {
+        install(Sample, std::move(handler));
+        ncl_client_set_sample_handler(value_, &Client::sample_thunk,
+                                      holder(Sample).get());
+    }
+
+    void on_event(EventHandler handler) {
+        install(Event, std::move(handler));
+        ncl_client_set_event_handler(value_, &Client::event_thunk,
+                                     holder(Event).get());
+    }
+
     /** Probe the device and install its model. */
     Model probe(unsigned timeout_ms = 5000) {
         ncl_message *response = nullptr;
@@ -315,6 +354,33 @@ public:
     }
 
 private:
+    enum Slot { Sample = 0, Event = 1 };
+
+    static std::shared_ptr<SampleHandler> &holder(Slot slot) {
+        static std::mutex mutex;
+        static std::unordered_map<int, std::shared_ptr<SampleHandler>> handlers;
+        (void)mutex;
+        return handlers[slot];
+    }
+
+    void install(Slot slot, SampleHandler handler) {
+        holder(slot) = std::make_shared<SampleHandler>(std::move(handler));
+    }
+
+    static void sample_thunk(ncl_client *client, const char *topic,
+                             const ncl_message *message, void *user) {
+        (void)client;
+        auto *fn = static_cast<SampleHandler *>(user);
+        if (fn != nullptr && *fn) {
+            (*fn)(topic, message);
+        }
+    }
+
+    static void event_thunk(ncl_client *client, const char *topic,
+                            const ncl_message *message, void *user) {
+        sample_thunk(client, topic, message, user);
+    }
+
     ncl_client *value_ = nullptr;
 };
 
@@ -330,6 +396,13 @@ private:
  */
 class Server {
 public:
+    /** Create a server for @p sn (options zero initialised, sn filled in). */
+    static Server create(const std::string &sn) {
+        ncl_server_options options{};
+        options.sn = sn.c_str();
+        return Server(ncl_server_create(&options));
+    }
+
     explicit Server(ncl_server *owned) : value_(owned) {
         if (value_ == nullptr) {
             throw Error(NCL_ERR_INVALID_ARG, "ncl::Server needs a server object");

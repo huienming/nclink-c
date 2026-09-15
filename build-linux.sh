@@ -98,7 +98,7 @@ if [ "${NCL_BUILD_CPP:-1}" = "1" ] && command -v g++ >/dev/null 2>&1; then
         [ -e "$t" ] || continue
         name=$(basename "$t" .cpp)
         # shellcheck disable=SC2086
-        if ! g++ -std=c++17 -Wall -Wextra -Iinclude -Itests "$t" \
+        if ! g++ -std=c++"${NCLINK_CXX_STANDARD:-17}" -Wall -Wextra -Iinclude -Itests "$t" \
                 "$OUT/libnclink_core.a" $LDLIBS -o "$OUT/bin/$name" \
                 2>"$OUT/bin/$name.build.log"; then
             echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"
