@@ -81,7 +81,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### Linux（已验证：gcc 13.4，19/19 测试通过）
+### Linux（已验证：gcc 13.4，20/20 测试通过）
 
 没有 CMake 也能编（只需要 gcc/binutils 与 sh）：
 
@@ -100,6 +100,23 @@ cmake --build build-linux -j && ctest --test-dir build-linux --output-on-failure
 自行手工编译（不用上面两个脚本）时注意两点：`-Iinclude -Isrc`，以及
 `-D_POSIX_C_SOURCE=200809L`（`-std=c11` 会隐藏 `strdup`/`getaddrinfo`/
 `localtime_r`/`pthread_*` 等 POSIX 接口）。
+
+### 与真实 broker 的互操作验证
+
+`tests/test_broker.c` 需要真实 broker，默认跳过；用 Docker 一键跑
+EMQX 与 Mosquitto（各自监听 18830 / 18831，不动你本机 1883 上的 broker）：
+
+```bash
+./tools/interop.sh               # 两个 broker 都跑
+./tools/interop.sh emqx          # 只跑一个
+```
+
+也可以手工指定任意 broker：
+
+```bash
+NCL_TEST_MQTT_BROKER=tcp://host:1883 ./build-linux/bin/test_broker
+NCL_TEST_MQTT_BROKER=tcp://host:1883 .\build\tests\ncl_test_broker.exe   # Windows
+```
 
 ### 发布包
 
@@ -432,6 +449,7 @@ static const ncl_tool_method methods[] = {
 | `schema` | 自带正则引擎（字面量/字符类/分组/选择/锚点/量词/转义）、JSON Schema draft-07 子集（类型、required、properties、additionalProperties、items 元组与逐项、长度、数值上下界与 multipleOf、enum/const、allOf/anyOf/oneOf/not/if-then-else、`$ref`、format）、错误消息与列表形式的聚合 |
 | `event` | Event 消息线格式与往返校验、事件主题构造、`ncl_server_push_event` 的发布与参数校验、客户端事件订阅/回调/未注册处理器丢弃、methodCall 的 `check` 语义（校验消息、`参数数量不匹配`、`没有找到方法`、不执行工具）、文件工具的参数 schema |
 | `license` | `LICENSE` 存在且完整、每个源文件都带 `SPDX-License-Identifier: MIT` 头（缺一个就失败），`tools/check_license.ps1 -Fix` 可批量补齐 |
+| `broker` | **可选套件**：对真实 broker（EMQX / Mosquitto，`tools/interop.sh` 一键起）验证 CONNECT/SUBSCRIBE/PUBLISH 的 QoS 0/1/2、通配订阅、40 KB 报文、退订、空闲保活、会话被顶替（0x8E）与显式重连后订阅恢复；不设 `NCL_TEST_MQTT_BROKER` 时自动跳过 |
 
 ## 许可
 

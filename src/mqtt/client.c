@@ -72,6 +72,8 @@ struct ncl_mqtt_client {
     bool         connected;    /**< broker session established */
     bool         stopping;     /**< destroy requested */
     bool         user_disconnect;
+    bool         server_disconnected;  /**< server sent a DISCONNECT packet */
+    uint8_t      server_disconnect_reason;
     uint16_t     next_packet_id;
     char        *last_error;
 
@@ -721,6 +723,8 @@ static ncl_err ncl_mqtt_client_handshake(ncl_mqtt_client *client, bool reconnect
 
     ncl_mutex_lock(client->mutex);
     client->connected = true;
+    client->server_disconnected = false;
+    client->server_disconnect_reason = NCL_MQTT_REASON_SUCCESS;
     ncl_cond_broadcast(client->cond);
     ncl_mutex_unlock(client->mutex);
 
@@ -731,12 +735,46 @@ static ncl_err ncl_mqtt_client_handshake(ncl_mqtt_client *client, bool reconnect
     return NCL_OK;
 }
 
-/** Re-subscribe every remembered topic after a reconnect. */
+/**
+ * Send SUBSCRIBE without waiting for the SUBACK.
+ *
+ * The synchronous ncl_mqtt_client_subscribe() waits for a reply that only the
+ * reader thread can deliver, so calling it from the reader thread (or before
+ * that thread runs) would stall packet processing for the whole timeout - and
+ * with several subscriptions, for several timeouts in a row. Restoring a
+ * session therefore only sends the packets and lets the reader thread process
+ * the acknowledgements.
+ */
+static void ncl_mqtt_client_subscribe_async(ncl_mqtt_client *client,
+                                            const char *filter, int qos)
+{
+    uint16_t packet_id;
+    ncl_mqtt_pending_sub *slot;
+    ncl_buffer packet;
+
+    ncl_mqtt_subscription_remember(client, filter, qos);
+    if (!ncl_mqtt_client_is_connected(client)) {
+        return;
+    }
+    memset(&packet, 0, sizeof(packet));
+    packet_id = ncl_mqtt_client_next_id(client);
+    slot = ncl_mqtt_suback_acquire(client, packet_id, true);
+    if (slot == NULL) {
+        ncl_log_warn("订阅槽位已满，未能恢复订阅: %s", filter);
+        return;
+    }
+    if (ncl_mqtt_encode_subscribe(packet_id, filter, qos, NULL, &packet) == NCL_OK) {
+        ncl_mqtt_client_send(client, &packet);
+    }
+    ncl_buffer_free(&packet);
+    ncl_mqtt_suback_release(client, slot);
+}
+
+/** Re-subscribe every remembered topic after a (re)connect. */
 static void ncl_mqtt_client_restore_subscriptions(ncl_mqtt_client *client)
 {
     size_t i;
     size_t count;
-    int granted = -1;
 
     ncl_mutex_lock(client->mutex);
     count = client->subscription_count;
@@ -745,6 +783,7 @@ static void ncl_mqtt_client_restore_subscriptions(ncl_mqtt_client *client)
     for (i = 0; i < count; i++) {
         char filter[256];
         int qos;
+
         ncl_mutex_lock(client->mutex);
         if (i >= client->subscription_count) {
             ncl_mutex_unlock(client->mutex);
@@ -753,7 +792,7 @@ static void ncl_mqtt_client_restore_subscriptions(ncl_mqtt_client *client)
         snprintf(filter, sizeof(filter), "%s", client->subscriptions[i].filter);
         qos = client->subscriptions[i].qos;
         ncl_mutex_unlock(client->mutex);
-        ncl_mqtt_client_subscribe(client, filter, qos, 10000, &granted);
+        ncl_mqtt_client_subscribe_async(client, filter, qos);
     }
 }
 
@@ -774,8 +813,12 @@ static ncl_err ncl_mqtt_client_do_connect(ncl_mqtt_client *client, bool reconnec
         return rc;
     }
 
-    if (reconnect) {
+    /* A new session never inherits the previous one (clean start), so the
+     * remembered subscriptions are restored on every connect. */
+    if (ncl_mqtt_client_subscription_count(client) > 0) {
         ncl_mqtt_client_restore_subscriptions(client);
+    }
+    if (reconnect) {
         ncl_log_info("MQTT 已重连: %s", client->url);
     } else {
         ncl_log_info("MQTT 已连接: %s (clientId=%s)", client->url,
@@ -891,7 +934,16 @@ static void ncl_mqtt_client_reader(void *arg)
         case NCL_MQTT_PKT_DISCONNECT: {
             ncl_mqtt_disconnect info;
             if (ncl_mqtt_decode_disconnect(body, body_len, &info) == NCL_OK) {
-                ncl_log_warn("MQTT 服务器断开连接: 0x%02X", info.reason_code);
+                ncl_mutex_lock(client->mutex);
+                client->server_disconnected = true;
+                client->server_disconnect_reason = info.reason_code;
+                ncl_mutex_unlock(client->mutex);
+                if (info.reason_code == NCL_MQTT_REASON_SESSION_TAKEN_OVER) {
+                    ncl_log_warn("MQTT 会话被顶替 (0x8E)：不再自动重连，"
+                                 "请检查是否有重复的 clientId/SN");
+                } else {
+                    ncl_log_warn("MQTT 服务器断开连接: 0x%02X", info.reason_code);
+                }
                 ncl_mqtt_disconnect_free(&info);
             }
             break;
@@ -920,11 +972,25 @@ static void ncl_mqtt_client_reader(void *arg)
         }
 
         {
-            bool will_reconnect =
-                client->automatic_reconnect && !client->user_disconnect;
-            ncl_mqtt_client_mark_disconnected(
-                client, NCL_MQTT_REASON_UNSPECIFIED_ERROR, will_reconnect);
-            if (!will_reconnect ||
+            uint8_t reason = NCL_MQTT_REASON_UNSPECIFIED_ERROR;
+            bool reconnect = false;
+            bool displaced = false;
+
+            ncl_mutex_lock(client->mutex);
+            if (client->server_disconnected) {
+                reason = client->server_disconnect_reason;
+                displaced = reason == NCL_MQTT_REASON_SESSION_TAKEN_OVER;
+            }
+            reconnect = client->automatic_reconnect && !client->user_disconnect &&
+                        !displaced;
+            ncl_mutex_unlock(client->mutex);
+
+            /* 0x8E means another connection took the client identifier over:
+             * reconnecting would take it back and start a takeover loop, so the
+             * application has to reconnect explicitly if it wants the identity
+             * back. */
+            ncl_mqtt_client_mark_disconnected(client, reason, reconnect);
+            if (!reconnect ||
                 !ncl_mqtt_client_reconnect_with_backoff(client)) {
                 break;
             }
@@ -1059,7 +1125,19 @@ ncl_err ncl_mqtt_client_connect(ncl_mqtt_client *client)
         return NCL_ERR_INVALID_ARG;
     }
     if (client->running) {
-        return NCL_OK; /* already running */
+        /* The reader thread may still be finishing a session (it exits after a
+         * server DISCONNECT, for example). Give it a moment before deciding
+         * that this call is a no-op. */
+        int64_t deadline = ncl_time_monotonic_millis() + 2000;
+
+        ncl_mutex_lock(client->mutex);
+        while (client->running && ncl_time_monotonic_millis() < deadline) {
+            ncl_cond_wait_timeout(client->cond, client->mutex, 50);
+        }
+        ncl_mutex_unlock(client->mutex);
+        if (client->running) {
+            return NCL_OK; /* already running */
+        }
     }
     client->stopping = false;
     client->user_disconnect = false;

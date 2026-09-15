@@ -60,8 +60,8 @@ examples/           两个可运行示例：设备端 / 客户端
 MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 
 src/<模块>/         实现，共 13 个模块目录        ← 以下仅源码仓库有
-tests/              19 个测试套件 + 协议黄金样本
-tools/              许可头检查、文档生成与发布打包脚本
+tests/              20 个测试套件（含可选的真实 broker 互操作套件）+ 协议黄金样本
+tools/              许可头检查、broker 互操作、文档生成与发布打包脚本
 build.ps1           Windows 一键：配置 + 编译 + ctest
 build-linux.sh      Linux 免 cmake 构建
 ```
@@ -87,7 +87,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### 2.3 Linux（已验证：gcc 13.4，19/19 测试通过）
+### 2.3 Linux（已验证：gcc 13.4，20/20 测试通过）
 
 源码是 C11，套接字层有 Winsock / BSD 两套实现，两个平台都已在真机编过并跑通
 全部测试（Windows 见 2.2，Linux 见下）。
@@ -113,6 +113,18 @@ ctest --test-dir build-linux --output-on-failure
 | `-D_POSIX_C_SOURCE=200809L` | `-std=c11` 会隐藏 `strdup`、`getaddrinfo`、`localtime_r`、`pthread_*` 等 POSIX 接口 |
 | `-lpthread` | 线程、互斥量、条件变量 |
 | 可加 `-Wno-format-truncation` | 库内用定长路径缓冲（4096），GCC 对此的保守告警没有意义 |
+
+**与真实 broker 的互操作验证**（可选，`tools/interop.sh` 用 Docker 起 broker，
+默认监听 18830 Mosquitto / 18831 EMQX，不碰你本机 1883 上的 broker）：
+
+```bash
+./tools/interop.sh              # Mosquitto + EMQX 各跑一遍
+./tools/interop.sh emqx         # 只跑其中一个
+```
+
+也可以直接对任意 broker 跑：`NCL_TEST_MQTT_BROKER=tcp://host:1883 <test_broker>`。
+该套件覆盖 QoS 0/1/2、通配订阅、40 KB 报文、退订、空闲保活、会话被顶替（0x8E）
+与显式重连后的订阅恢复；不设该环境变量时自动跳过，普通构建不需要 broker。
 
 ### 2.4 CMake 选项
 
@@ -1574,6 +1586,8 @@ curl -X POST http://<设备IP>:9008/api/nclinkServer/addSample \
 | `ncl_sn_read()` 每次启动都变 | 根目录是否可写、`bin/sn.txt` 是否被 `/api/cfg/init` 覆盖过（该接口无条件重写，见 4.1） |
 | 中文字符串编译报 C4819/C2001 | MSVC 没加 `/utf-8` |
 | 端口被占用导致启动失败 | HTTP 9008 / 设备 FTP 2121 / 客户端 FTP 2323；同一进程内不能起两个同端口服务 |
+| 日志出现「MQTT 会话被顶替 (0x8E)」 | 有另一个连接用了同一个 clientId（设备端就是 SN）。此时客户端**不会**自动重连（否则两边会互相顶替、死循环），需要检查是否有重复的 SN，确认后调用 `ncl_mqtt_client_connect()` 显式抢回身份 |
+| 设备重启后旧进程还在跑 | 新进程用同一 SN 连接会顶掉旧进程，旧进程收到 0x8E 后停止重连并记警告，不会与新进程反复抢占 |
 | ASan 报 `use-after-free` | 检查所有权表（4.7）：最常见是保存了事件回调里的 `ncl_message*`，或用了 `ncl_ptrvec_at()` 拿到的借用指针却去 free |
 | 程序退出时偶发崩溃 | 释放顺序：先 `ncl_server_free()`（停采样/FTP/线程池任务）→ 再 `ncl_mqtt_client_destroy()` → 最后 `ncl_env_shutdown()`；不要在两个线程同时销毁同一对象 |
 | 想看线上报文 | `ncl_log_set_level(NCL_LOG_DEBUG)`；解析失败时 `ncl_message_parse()` 返回 NULL 并记 WARN |

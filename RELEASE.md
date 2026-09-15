@@ -19,7 +19,7 @@ examples/                              两个示例程序（设备端 / 客户�
 SHA256SUMS.txt                         包内每个文件的 SHA-256
 ```
 
-实现源码（`src/`）与 19 个测试套件（`tests/`）不在本包内，见第 5 节；
+实现源码（`src/`）与 20 个测试套件（`tests/`）不在本包内，见第 5 节；
 手册第 3 章另有一份最小可用示例代码，可直接抄进你的工程。
 
 ## 2. 平台与 ABI
@@ -42,14 +42,16 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | 项 | 结果 |
 |----|------|
 | Windows 编译 | 零警告（`/W4 /utf-8`） |
-| Windows 测试 | 19/19 通过；ASan（`/fsanitize=address`）19/19 |
+| Windows 测试 | 20/20 通过；ASan（`/fsanitize=address`）20/20 |
 | Linux 编译 | 零警告（`-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes`） |
-| Linux 测试 | 19/19 通过（同一批测试源码） |
+| Linux 测试 | 20/20 通过（同一批测试源码） |
 | 稳定性 | Windows Release 连跑 8 轮、ASan 12 轮无失败 |
 | 示例 | 设备端与客户端两个示例已实测对跑：模型交换、读写、参数校验、文件传输、事件推送 |
+| broker 互操作 | `tools/interop.sh` 对 **EMQX 5.8.9** 与 **Mosquitto 2** 各跑一遍 `broker` 套件（QoS 0/1/2、通配订阅、40 KB 报文、退订、保活、会话顶替、重连后订阅恢复），两个 broker 均通过 |
 
 测试套件：json、common、topic、model、message、codec、thread、mqtt、mqtt_client、
-client、server、http、rest、config、ftp、file、schema、event、license。
+client、server、http、rest、config、ftp、file、schema、event、license、broker
+（最后一个是可选的：需要真实 broker，`tools/interop.sh` 一键起）。
 
 ## 4. 在你的工程里使用
 

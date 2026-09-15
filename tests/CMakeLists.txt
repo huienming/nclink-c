@@ -93,3 +93,10 @@ target_link_libraries(ncl_test_license PRIVATE nclink_core)
 target_compile_definitions(ncl_test_license PRIVATE
         NCL_TEST_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
 add_test(NAME license COMMAND ncl_test_license)
+
+# Interoperability against a real broker: skipped unless NCL_TEST_MQTT_BROKER
+# is set (tools/interop.sh starts one in Docker and runs this suite).
+add_executable(ncl_test_broker test_broker.c)
+target_link_libraries(ncl_test_broker PRIVATE nclink_core)
+add_test(NAME broker COMMAND ncl_test_broker)
+set_tests_properties(broker PROPERTIES TIMEOUT 120)
