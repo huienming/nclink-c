@@ -28,6 +28,7 @@ $pkg = Join-Path $root "dist\$Name"
 $zip = Join-Path $root "dist\$Name.zip"
 
 $msvcLib = Join-Path $root "build\nclink_core.lib"
+$msvcTlsLib = Join-Path $root "build-tls\nclink_core.lib"
 $gccLib = Join-Path $root "build-linux\libnclink_core.a"
 $gccTlsLib = Join-Path $root "build-linux-tls\libnclink_core.a"
 
@@ -73,6 +74,15 @@ if ($WithSource) {
 New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x64-msvc") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $pkg "lib\linux-x86_64-gcc") -Force | Out-Null
 Copy-Item -LiteralPath $msvcLib -Destination (Join-Path $pkg "lib\windows-x64-msvc\nclink_core.lib") -Force
+
+# Optional: the Windows library built with TLS support (needs the OpenSSL DLLs
+# at run time, see RELEASE.md).
+if (Test-Path -LiteralPath $msvcTlsLib) {
+    New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x64-msvc-tls") -Force | Out-Null
+    Copy-Item -LiteralPath $msvcTlsLib -Destination (Join-Path $pkg "lib\windows-x64-msvc-tls\nclink_core.lib") -Force
+} else {
+    Write-Host "  note: build-tls/nclink_core.lib not found, the Windows TLS variant is not packaged"
+}
 Copy-Item -LiteralPath $gccLib -Destination (Join-Path $pkg "lib\linux-x86_64-gcc\libnclink_core.a") -Force
 
 # Optional: the Linux library built with TLS support (ssl:// over OpenSSL).

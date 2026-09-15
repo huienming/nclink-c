@@ -46,6 +46,10 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   与错误主机名必须失败、`verify_peer=false` 必须成功。
 - `tools/interop.sh` 增加 Mosquitto 的 TLS 监听（18832），互操作套件再对
   `ssl://` 跑一遍（本机实测 44 检查全通过）。
+- Windows 也可用：`.\build.ps1 -Tls`（或 `-DNCLINK_WITH_TLS=ON -DOPENSSL_ROOT_DIR=…`）
+  自动定位 OpenSSL 3 并编译，两个平台的 TLS 构建均 21/21 通过；发布包附带
+  `lib/windows-x64-msvc-tls/` 与 `lib/linux-x86_64-gcc-tls/`，Windows 版运行时
+  需要 OpenSSL 3 的 DLL（`libssl-3-x64.dll`、`libcrypto-3-x64.dll`）。
 
 ### 协议与基础
 

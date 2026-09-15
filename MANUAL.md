@@ -143,6 +143,11 @@ ctest --test-dir build-linux --output-on-failure
 | `NCLINK_WITH_ZLIB` | OFF | 启用 zlib 压缩编解码 |
 | `NCLINK_WITH_TLS` | OFF | 启用 OpenSSL，支持 MQTT over `ssl://`（需要的现场才打开） |
 
+Windows 打开 TLS：`.\build.ps1 -Tls`（自动在 `OPENSSL_ROOT_DIR`、常见安装目录与
+vcpkg 里找 OpenSSL；用 `-OpenSslRoot <目录>` 指定），运行时需要
+`libssl-3-x64.dll` / `libcrypto-3-x64.dll`；Linux：`NCL_WITH_TLS=1 ./build-linux.sh`，
+链接 `-lssl -lcrypto`。
+
 ### 2.5 集成到自己的工程
 
 最小做法：把 `include/` 与 `src/` 纳入你的构建，或先编出静态库再链接。

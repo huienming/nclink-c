@@ -361,6 +361,11 @@ static bool srv_start(tls_server *server)
     char path[512];
 
     memset(server, 0, sizeof(*server));
+    /* Windows needs the networking stack before the raw socket calls below. */
+    if (ncl_socket_system_init() != NCL_OK) {
+        printf("    TLS server could not start: socket system init failed\n");
+        return false;
+    }
     server->mutex = ncl_mutex_create();
     server->cond = ncl_cond_create();
     server->listener = TEST_INVALID_SOCK;

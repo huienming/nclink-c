@@ -6,13 +6,16 @@
 #   .\build.ps1              # configure + build + run tests (MSVC)
 #   .\build.ps1 -Clean       # wipe the build directory first
 #   .\build.ps1 -Target test # build and run ctest only
+#   .\build.ps1 -Tls         # also enable MQTT over ssl:// (needs OpenSSL)
 #
 [CmdletBinding()]
 param(
     [string]$Configuration = "Release",
     [switch]$Clean,
     [string]$BuildDir = "build",
-    [switch]$NoTest
+    [switch]$NoTest,
+    [switch]$Tls,
+    [string]$OpenSslRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -61,6 +64,24 @@ Write-Host "generator: $generator"
 Write-Host "config:    $Configuration"
 
 $configure = "`"$cmake`" -S `"$root`" -B `"$build`" -G `"$generator`" -DCMAKE_BUILD_TYPE=$Configuration"
+if ($Tls) {
+    if ($OpenSslRoot -eq "") {
+        foreach ($candidate in @($env:OPENSSL_ROOT_DIR,
+                                "C:\ProgramData\anaconda3\Library",
+                                "C:\OpenSSL-Win64", "C:\Program Files\OpenSSL-Win64",
+                                "C:\vcpkg\installed\x64-windows")) {
+            if ($candidate -and (Test-Path -LiteralPath (Join-Path $candidate "include\openssl\ssl.h"))) {
+                $OpenSslRoot = $candidate
+                break
+            }
+        }
+    }
+    if ($OpenSslRoot -eq "") {
+        throw "OpenSSL not found: install it, set OPENSSL_ROOT_DIR, or pass -OpenSslRoot <dir>"
+    }
+    Write-Host "TLS enabled, OpenSSL root: $OpenSslRoot"
+    $configure += " -DNCLINK_WITH_TLS=ON -DOPENSSL_ROOT_DIR=`"$OpenSslRoot`""
+}
 Invoke-VsEnv $configure
 Invoke-VsEnv "`"$cmake`" --build `"$build`""
 
