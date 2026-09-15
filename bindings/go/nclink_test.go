@@ -66,3 +66,21 @@ func TestNilReceiverSafe(t *testing.T) {
 	}
 	j.Close() // must not panic
 }
+
+func TestOpenFailsOnUnreachableBroker(t *testing.T) {
+	err := Open("tcp://127.0.0.1:1", "", "") // port 1 is reserved
+	if err == nil {
+		t.Fatal("Open accepted an unreachable broker")
+	}
+	var nerr *Error
+	if !errors.As(err, &nerr) {
+		t.Fatalf("error type = %T, want *Error", err)
+	}
+	t.Logf("Open returned %v (code %d)", nerr, nerr.Code)
+}
+
+func TestGetBeforeOpenFails(t *testing.T) {
+	if _, err := Get("V000000000"); err == nil {
+		t.Fatal("Get succeeded without Open")
+	}
+}

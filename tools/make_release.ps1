@@ -31,6 +31,7 @@ $msvcLib = Join-Path $root "build\nclink_core.lib"
 $msvcTlsLib = Join-Path $root "build-tls\nclink_core.lib"
 $gccLib = Join-Path $root "build-linux\libnclink_core.a"
 $gccTlsLib = Join-Path $root "build-linux-tls\libnclink_core.a"
+$mingwLib = Join-Path $root "build-mingw\libnclink_core.a"
 
 foreach ($required in @($msvcLib, $gccLib)) {
     if (-not (Test-Path -LiteralPath $required)) {
@@ -94,6 +95,15 @@ if (Test-Path -LiteralPath $gccTlsLib) {
     Copy-Item -LiteralPath $gccTlsLib -Destination (Join-Path $pkg "lib\linux-x86_64-gcc-tls\libnclink_core.a") -Force
 } else {
     Write-Host "  note: build-linux-tls/libnclink_core.a not found, the TLS variant is not packaged"
+}
+
+# Optional: the mingw build of the Windows library, used by the Go bindings
+# (cgo on Windows links with mingw, not MSVC).
+if (Test-Path -LiteralPath $mingwLib) {
+    New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-amd64-mingw") -Force | Out-Null
+    Copy-Item -LiteralPath $mingwLib -Destination (Join-Path $pkg "lib\windows-amd64-mingw\libnclink_core.a") -Force
+} else {
+    Write-Host "  note: build-mingw/libnclink_core.a not found, the Go binding needs it staged separately"
 }
 
 # docs
