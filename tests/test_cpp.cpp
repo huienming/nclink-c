@@ -58,7 +58,10 @@ int main() {
 
     ncl::Model model = ncl::Model::parse("");  // built in default model
     CHECK(model.valid());
-    CHECK(model.find("01") != nullptr);
+    // find() is a depth first lookup *below* the node, so the root's own id
+    // ("01") is not a hit: look the built in PLC device up instead.
+    CHECK(model.find("01") == nullptr);
+    CHECK(model.find("02") != nullptr);
     CHECK(model.dump().find("nclink") != std::string::npos);
 
     std::printf("%s: %d failures\n", __FILE__, failures);
