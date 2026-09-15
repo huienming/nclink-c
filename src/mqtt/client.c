@@ -72,6 +72,7 @@ struct ncl_mqtt_client {
     bool         connected;    /**< broker session established */
     bool         stopping;     /**< destroy requested */
     bool         user_disconnect;
+    bool         link_closed;  /**< the peer closed the socket (EOF/error) */
     bool         server_disconnected;  /**< server sent a DISCONNECT packet */
     uint8_t      server_disconnect_reason;
     uint16_t     next_packet_id;
@@ -416,6 +417,7 @@ static bool ncl_mqtt_client_read_packet(ncl_mqtt_client *client,
         return false; /* caller treats this as "idle", not an error */
     }
     if (rc <= 0) {
+        client->link_closed = true; /* EOF or error: the session is over */
         return false;
     }
 
@@ -426,6 +428,9 @@ static bool ncl_mqtt_client_read_packet(ncl_mqtt_client *client,
         rc = ncl_socket_recv(sock, &length_bytes[length_used], 1,
                              client->connect_timeout_ms);
         if (rc <= 0) {
+            /* A partial packet never resolves into a frame, so the stream
+             * cannot be resynchronised: drop the connection. */
+            client->link_closed = true;
             return false;
         }
         length_used++;
@@ -453,9 +458,11 @@ static bool ncl_mqtt_client_read_packet(ncl_mqtt_client *client,
     if (remaining > 0 &&
         ncl_socket_recv_exact(sock, buffer, remaining,
                               client->connect_timeout_ms) != NCL_OK) {
+        client->link_closed = true;
         free(buffer);
         return false;
     }
+    client->link_closed = false; /* a complete frame arrived */
 
     *type = (ncl_mqtt_packet_type)((first >> 4) & 0x0F);
     *flags = (uint8_t)(first & 0x0F);
@@ -866,6 +873,7 @@ static void ncl_mqtt_client_reader(void *arg)
         int64_t last_send = ncl_time_monotonic_millis();
         int64_t ping_sent_at = 0;
         bool ping_outstanding = false;
+        bool session_over = false;
         unsigned keep_alive = client->keep_alive_seconds;
 
         /* ---------------------------------------------------- session loop -- */
@@ -878,6 +886,12 @@ static void ncl_mqtt_client_reader(void *arg)
         if (!ncl_mqtt_client_read_packet(client, &type, &flags, &body, &body_len,
                                          1000)) {
             if (client->stopping) {
+                break;
+            }
+            if (client->link_closed) {
+                /* The peer closed the socket: no point waiting for the keep
+                 * alive watchdog to notice. */
+                ncl_mqtt_client_set_error(client, "MQTT 连接已被对端关闭");
                 break;
             }
             /* Idle tick: run keep alive and watch for a dead link. */
@@ -946,6 +960,9 @@ static void ncl_mqtt_client_reader(void *arg)
                 }
                 ncl_mqtt_disconnect_free(&info);
             }
+            /* The server closes the network connection right after a DISCONNECT,
+             * so the session is over either way. */
+            session_over = true;
             break;
         }
         default:
@@ -954,6 +971,9 @@ static void ncl_mqtt_client_reader(void *arg)
             break;
         }
         free(body);
+        if (session_over) {
+            break;
+        }
         } /* session loop */
 
         /* The connection is gone. Detach first: no sender can reach the socket

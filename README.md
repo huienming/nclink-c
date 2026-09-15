@@ -437,7 +437,7 @@ static const ncl_tool_method methods[] = {
 | `codec` | 十六进制编解码（含非法输入）、zlib 往返（可选） |
 | `thread` | 线程池（5/10/100 + CallerRuns）、单例服务、TTL 缓存过期策略 |
 | `mqtt` | MQTT 5.0 报文：变长整数、CONNECT/CONNACK、PUBLISH、ACK 系列、SUBSCRIBE/SUBACK、PING、DISCONNECT、属性块（按 OASIS 规范逐字节校验） |
-| `mqtt_client` | MQTT 客户端端到端：连接/保活、QoS 0/1/2 状态机（含 PUBREL 段）、入站消息投递与应答、退订、断开、连接失败处理（内置假 broker） |
+| `mqtt_client` | MQTT 客户端端到端（内置假 broker，可接受多次连接）：连接/保活、QoS 0/1/2 状态机（含 PUBREL 段）、入站消息投递与应答、退订、断开、连接失败，**断线自动重连 + 订阅恢复（并断言恢复不阻塞接收线程）**、**服务器 DISCONNECT 0x8E 停止重连** |
 | `client` | 客户端全链路：管理器初始化、按 SN 分配客户端、getValue/getLength/setValue（含索引与区间）、probe 装载模型、路径/ID 互查、addSample/removeSample、**采样订阅 `Sample/<sn>/#` 与回调（含通道/周期/多值解析、未注册处理器丢弃）**、请求超时（内置假 NC-Link 服务器） |
 | `server` | 服务端全链路：模型装载与后构造、工具/路径绑定、Query/Set/MethodCall 分发、probe 返回模型、Ping→Pong、addSample/removeSample（经 MQTT 往返验证） |
 | `server`（采样） | 采样通道启停、按 `sampleInterval` 采集、按 `uploadInterval` 聚合上报，校验 `Sample/<sn>/<通道id>` 报文结构与取值 |

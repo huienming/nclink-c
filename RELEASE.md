@@ -48,6 +48,7 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | 稳定性 | Windows Release 连跑 8 轮、ASan 12 轮无失败 |
 | 示例 | 设备端与客户端两个示例已实测对跑：模型交换、读写、参数校验、文件传输、事件推送 |
 | broker 互操作 | `tools/interop.sh` 对 **EMQX 5.8.9** 与 **Mosquitto 2** 各跑一遍 `broker` 套件（QoS 0/1/2、通配订阅、40 KB 报文、退订、保活、会话顶替、重连后订阅恢复），两个 broker 均通过 |
+| MQTT 重连回归 | 假 broker 套件覆盖断线自动重连 + 订阅恢复（含"恢复不阻塞接收线程"的时间断言）与 0x8E 停止重连，无需 broker 即可回归 |
 
 测试套件：json、common、topic、model、message、codec、thread、mqtt、mqtt_client、
 client、server、http、rest、config、ftp、file、schema、event、license、broker

@@ -26,7 +26,13 @@ typedef struct {
     ncl_cond   *cond;
     volatile bool stop;
 
+    /* scripted behaviour */
+    volatile bool drop_session;   /**< close the current session without DISCONNECT */
+    volatile int  disconnect_reason; /**< >= 0: send DISCONNECT with it, then close */
+
     /* observations */
+    int  connections;           /* accepted sessions */
+    int  disconnect_sent;
     int  connect_count;
     int  subscribe_count;
     int  unsubscribe_count;
@@ -312,18 +318,11 @@ static void broker_service(fake_broker *broker, ncl_socket *sock,
     }
 }
 
-static void broker_thread(void *arg)
+/* Serve one connection until the client goes away or the test asks for a drop. */
+static void broker_session(fake_broker *broker, ncl_socket *sock)
 {
-    fake_broker *broker = (fake_broker *)arg;
-    ncl_socket *sock;
-
-    sock = ncl_socket_accept(broker->listener, 5000);
-    if (sock == NULL) {
-        ncl_log_error("fake broker: accept 超时");
-        return;
-    }
-
-    while (!broker->stop) {
+    while (!broker->stop && !broker->drop_session &&
+           broker->disconnect_reason < 0) {
         ncl_mqtt_packet_type type;
         uint8_t flags = 0;
         unsigned char *body = NULL;
@@ -340,7 +339,53 @@ static void broker_thread(void *arg)
         /* Idle tick: push an injected PUBLISH when asked to. */
         broker_inject_publish(broker, sock);
     }
-    ncl_socket_close(sock);
+
+    /* A server side DISCONNECT (0x8E and friends) is sent before closing. */
+    if (broker->disconnect_reason >= 0 && !broker->stop) {
+        ncl_buffer packet;
+        ncl_mqtt_properties props;
+
+        ncl_mqtt_properties_init(&props);
+        if (ncl_mqtt_encode_disconnect((uint8_t)broker->disconnect_reason, &props,
+                                       &packet) == NCL_OK) {
+            ncl_socket_send(sock, packet.data, packet.len);
+            ncl_buffer_free(&packet);
+            ncl_mutex_lock(broker->mutex);
+            broker->disconnect_sent++;
+            ncl_cond_broadcast(broker->cond);
+            ncl_mutex_unlock(broker->mutex);
+        }
+        ncl_mqtt_properties_free(&props);
+    }
+}
+
+static void broker_thread(void *arg)
+{
+    fake_broker *broker = (fake_broker *)arg;
+
+    /* Accepting repeatedly lets a test drop a session and watch the client
+     * reconnect, which is what the reconnect cases need. */
+    while (!broker->stop) {
+        ncl_socket *listener = broker->listener;
+        ncl_socket *sock;
+
+        if (listener == NULL) {
+            break;
+        }
+        sock = ncl_socket_accept(listener, 200);
+        if (sock == NULL) {
+            continue;
+        }
+        ncl_mutex_lock(broker->mutex);
+        broker->connections++;
+        broker->drop_session = false;
+        broker->disconnect_reason = -1;
+        ncl_cond_broadcast(broker->cond);
+        ncl_mutex_unlock(broker->mutex);
+
+        broker_session(broker, sock);
+        ncl_socket_close(sock);
+    }
 }
 
 static void broker_start(fake_broker *broker)
@@ -349,6 +394,7 @@ static void broker_start(fake_broker *broker)
     memset(broker, 0, sizeof(*broker));
     broker->mutex = ncl_mutex_create();
     broker->cond = ncl_cond_create();
+    broker->disconnect_reason = -1;
     broker->listener = ncl_socket_listen(0, err, sizeof(err));
     NCL_CHECK(broker->listener != NULL);
     if (broker->listener == NULL) {
@@ -403,6 +449,8 @@ typedef struct {
     int  connect_calls;
     int  disconnect_calls;
     bool last_reconnect_flag;
+    uint8_t last_disconnect_reason;
+    bool last_will_reconnect;
     int  message_count;
     char last_topic[256];
     char last_payload[512];
@@ -424,9 +472,9 @@ static void on_disconnected(void *user, uint8_t reason_code, bool will_reconnect
     client_events *events = (client_events *)user;
     ncl_mutex_lock(events->mutex);
     events->disconnect_calls++;
+    events->last_disconnect_reason = reason_code;
+    events->last_will_reconnect = will_reconnect;
     ncl_mutex_unlock(events->mutex);
-    (void)reason_code;
-    (void)will_reconnect;
 }
 
 static void on_message(void *user, const ncl_mqtt_publish *publish)
@@ -465,6 +513,23 @@ static bool client_wait_messages(client_events *events, int expected,
     ok = events->message_count >= expected;
     ncl_mutex_unlock(events->mutex);
     return ok;
+}
+
+static bool client_wait_disconnect(client_events *events, int expected,
+                                   unsigned timeout_ms)
+{
+    int64_t deadline = ncl_time_monotonic_millis() + (int64_t)timeout_ms;
+    bool ok;
+
+    for (;;) {
+        ncl_mutex_lock(events->mutex);
+        ok = events->disconnect_calls >= expected;
+        ncl_mutex_unlock(events->mutex);
+        if (ok || ncl_time_monotonic_millis() >= deadline) {
+            return ok;
+        }
+        ncl_sleep_millis(20);
+    }
 }
 
 static bool pred_connected(fake_broker *broker)
@@ -510,6 +575,58 @@ static bool pred_disconnect(fake_broker *broker)
 static bool pred_inbound_puback(fake_broker *broker)
 {
     return broker->puback_from_client > 0;
+}
+
+static bool pred_second_session(fake_broker *broker)
+{
+    return broker->connections >= 2;
+}
+
+static bool pred_server_disconnect(fake_broker *broker)
+{
+    return broker->disconnect_sent > 0;
+}
+
+/** Wait until the broker saw @p want more SUBSCRIBE packets than @p base. */
+static bool wait_subscribes(fake_broker *broker, int base, int want,
+                            unsigned timeout_ms)
+{
+    int64_t deadline = ncl_time_monotonic_millis() + (int64_t)timeout_ms;
+
+    for (;;) {
+        int count;
+
+        ncl_mutex_lock(broker->mutex);
+        count = broker->subscribe_count;
+        ncl_mutex_unlock(broker->mutex);
+        if (count >= base + want) {
+            return true;
+        }
+        if (ncl_time_monotonic_millis() >= deadline) {
+            return false;
+        }
+        ncl_sleep_millis(50);
+    }
+}
+
+static int broker_subscribes(fake_broker *broker)
+{
+    int count;
+
+    ncl_mutex_lock(broker->mutex);
+    count = broker->subscribe_count;
+    ncl_mutex_unlock(broker->mutex);
+    return count;
+}
+
+static int broker_sessions(fake_broker *broker)
+{
+    int count;
+
+    ncl_mutex_lock(broker->mutex);
+    count = broker->connections;
+    ncl_mutex_unlock(broker->mutex);
+    return count;
 }
 
 /* ================================================================== tests == */
@@ -624,6 +741,63 @@ static void test_client_end_to_end(void)
     NCL_CHECK(broker_wait(&broker, pred_unsubscribed, 3000));
     NCL_CHECK_EQ_STR(broker.last_unsub_topic, "Query/Response/V1");
     NCL_CHECK_EQ_INT(ncl_mqtt_client_subscription_count(client), 0);
+
+    NCL_TEST_CASE("a dropped session reconnects and restores subscriptions");
+    {
+        int subs_before;
+        int64_t started;
+
+        NCL_CHECK_EQ_INT(ncl_mqtt_client_subscribe(client, "Query/Response/V1", 1,
+                                                   3000, &granted), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_mqtt_client_subscribe(client, "Set/Response/V1", 1,
+                                                   3000, &granted), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_mqtt_client_subscribe(client, "Sample/V1/#", 2, 3000,
+                                                   &granted), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_mqtt_client_subscription_count(client), 3);
+        subs_before = broker_subscribes(&broker);
+
+        /* Kill the session without a DISCONNECT: the client is expected to come
+         * back on its own and re-send the three SUBSCRIBEs. */
+        broker.drop_session = true;
+        NCL_CHECK(broker_wait(&broker, pred_second_session, 6000));
+        NCL_CHECK(wait_subscribes(&broker, subs_before, 3, 6000));
+
+        /* Restoring must not stall the reader thread: before the fix it waited
+         * one subscribe timeout per topic, so this publish timed out. */
+        started = ncl_time_monotonic_millis();
+        NCL_CHECK_EQ_INT(ncl_mqtt_client_publish(client, "Query/Request/V3", "{}",
+                                                 2, 1, NULL, 3000), NCL_OK);
+        NCL_CHECK((ncl_time_monotonic_millis() - started) < 2000);
+    }
+
+    NCL_TEST_CASE("a server DISCONNECT with 0x8E stops the reconnect");
+    {
+        int sessions_before;
+        int subs_before;
+
+        sessions_before = broker_sessions(&broker);
+        subs_before = broker_subscribes(&broker);
+        ncl_mutex_lock(events.mutex);
+        events.disconnect_calls = 0;
+        ncl_mutex_unlock(events.mutex);
+
+        /* Taking the session over must be reported as 0x8E and must not start a
+         * reconnect loop (two connections would take each other over forever). */
+        broker.disconnect_reason = NCL_MQTT_REASON_SESSION_TAKEN_OVER;
+        NCL_CHECK(broker_wait(&broker, pred_server_disconnect, 3000));
+        NCL_CHECK(client_wait_disconnect(&events, 1, 3000));
+        NCL_CHECK_EQ_INT(events.last_disconnect_reason,
+                         NCL_MQTT_REASON_SESSION_TAKEN_OVER);
+        NCL_CHECK(events.last_will_reconnect == false);
+        ncl_sleep_millis(1200); /* long enough for an unwanted reconnect */
+        NCL_CHECK_EQ_INT(broker_sessions(&broker), sessions_before);
+        NCL_CHECK(!ncl_mqtt_client_is_connected(client));
+
+        /* An explicit connect takes the identity back and restores the topics. */
+        NCL_CHECK_EQ_INT(ncl_mqtt_client_connect(client), NCL_OK);
+        NCL_CHECK(ncl_mqtt_client_is_connected(client));
+        NCL_CHECK(wait_subscribes(&broker, subs_before, 3, 6000));
+    }
 
     NCL_TEST_CASE("disconnect sends DISCONNECT and closes the session");
     NCL_CHECK_EQ_INT(ncl_mqtt_client_disconnect(client), NCL_OK);
