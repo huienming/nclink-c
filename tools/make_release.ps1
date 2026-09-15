@@ -58,7 +58,7 @@ function Copy-Tree([string]$from, [string]$to, [string[]]$include) {
 Write-Host "assembling $pkg$(if ($WithSource) { ' (with source)' } else { ' (binaries + docs only)' })"
 
 # headers
-Copy-Tree "include" "include" @("*.h")
+Copy-Tree "include" "include" @("*.h", "*.hpp")
 
 # examples ship with every release: they are part of the documentation
 Copy-Tree "examples" "examples" @("*.c", "*.txt")

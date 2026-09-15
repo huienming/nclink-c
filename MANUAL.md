@@ -133,6 +133,27 @@ ctest --test-dir build-linux --output-on-failure
 自签证书把证书本身当 `tls_ca_file` 传即可，主机名要与证书 SAN 一致。
 `tools/interop.sh` 会对 Mosquitto 的 TLS 监听再跑一遍互操作套件。
 
+### 2.4.1 C++ 封装（C++17，header-only）
+
+`include/nclink/ncl.hpp` 在 C 库之上提供 RAII + 异常的薄封装，协议核心仍是 C：
+
+```cpp
+#include "nclink/ncl.hpp"
+
+ncl::Client::init("tcp://broker:1883");     // ssl:// 需要启用 TLS 的构建
+ncl::Client client("V203243111F");
+ncl::Model  model = client.probe();          // 拉取设备模型
+ncl::Json   v     = client.value("/STATUS"); // 读值
+client.set("/STATUS", ncl::Json::parse("42"));
+// 出错抛 ncl::Error（继承 std::runtime_error，e.code() 是 ncl_err）
+ncl::Client::shutdown();
+```
+
+`ncl::Json` / `ncl::Message` / `ncl::Model` 是独占所有权的包装（禁拷贝、可移动、
+可 `release()`），析构自动释放；`ncl::Server` 接管已有 `ncl_server*`。
+构建开关：CMake `-DNCLINK_BUILD_CPP=ON`（默认开，加 `cpp` 测试套件）；
+`build-linux.sh` 在检测到 `g++` 时会一并编译 `tests/test_*.cpp` 与 C++ 示例。
+
 ### 2.4 CMake 选项
 
 | 选项 | 默认 | 作用 |

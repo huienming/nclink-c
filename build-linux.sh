@@ -92,6 +92,27 @@ for t in tests/test_*.c; do
     fi
 done
 
+# C++ 封装测试（header-only，需要 g++）
+if [ "${NCL_BUILD_CPP:-1}" = "1" ] && command -v g++ >/dev/null 2>&1; then
+    for t in tests/test_*.cpp; do
+        [ -e "$t" ] || continue
+        name=$(basename "$t" .cpp)
+        # shellcheck disable=SC2086
+        if ! g++ -std=c++17 -Wall -Wextra -Iinclude -Itests "$t" \
+                "$OUT/libnclink_core.a" $LDLIBS -o "$OUT/bin/$name" \
+                2>"$OUT/bin/$name.build.log"; then
+            echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"
+            fail=$((fail+1)); continue
+        fi
+        if (cd "$OUT/bin" && ./"$name" >"$name.log" 2>&1); then
+            echo "   [通过] $name"; pass=$((pass+1))
+        else
+            echo "   [失败] $name"; tail -8 "$OUT/bin/$name.log"
+            fail=$((fail+1))
+        fi
+    done
+fi
+
 echo
 echo "测试：通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

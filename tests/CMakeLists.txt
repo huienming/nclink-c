@@ -108,3 +108,13 @@ target_compile_definitions(ncl_test_tls PRIVATE
         NCL_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 add_test(NAME tls COMMAND ncl_test_tls)
 set_tests_properties(tls PROPERTIES TIMEOUT 120)
+
+# C++ wrapper: RAII, moves and exception mapping (header only, C++17).
+if(NCLINK_BUILD_CPP)
+    enable_language(CXX)
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    add_executable(ncl_test_cpp test_cpp.cpp)
+    target_link_libraries(ncl_test_cpp PRIVATE nclink_core)
+    add_test(NAME cpp COMMAND ncl_test_cpp)
+endif()
