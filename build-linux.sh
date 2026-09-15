@@ -62,6 +62,10 @@ for t in tests/test_*.c; do
         test_model|test_message)
             extra="$extra -DNCL_TEST_DATA_DIR=\"$ROOT/tests/data\"" ;;
     esac
+    case "$name" in
+        test_license)
+            extra="$extra -DNCL_TEST_SOURCE_ROOT=\"$ROOT\"" ;;
+    esac
     # shellcheck disable=SC2086
     if ! $CC $CFLAGS "$t" $extra -o "$OUT/bin/$name" \
             "$OUT/libnclink_core.a" $LDLIBS 2>"$OUT/bin/$name.build.log"; then

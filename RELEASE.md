@@ -19,7 +19,7 @@ examples/                              两个示例程序（设备端 / 客户�
 SHA256SUMS.txt                         包内每个文件的 SHA-256
 ```
 
-实现源码（`src/`）与 18 个测试套件（`tests/`）不在本包内，见第 5 节；
+实现源码（`src/`）与 19 个测试套件（`tests/`）不在本包内，见第 5 节；
 手册第 3 章另有一份最小可用示例代码，可直接抄进你的工程。
 
 ## 2. 平台与 ABI
@@ -42,14 +42,14 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | 项 | 结果 |
 |----|------|
 | Windows 编译 | 零警告（`/W4 /utf-8`） |
-| Windows 测试 | 18/18 通过；ASan（`/fsanitize=address`）18/18 |
+| Windows 测试 | 19/19 通过；ASan（`/fsanitize=address`）19/19 |
 | Linux 编译 | 零警告（`-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes`） |
-| Linux 测试 | 18/18 通过（同一批测试源码） |
+| Linux 测试 | 19/19 通过（同一批测试源码） |
 | 稳定性 | Windows Release 连跑 8 轮、ASan 12 轮无失败 |
 | 示例 | 设备端与客户端两个示例已实测对跑：模型交换、读写、参数校验、文件传输、事件推送 |
 
 测试套件：json、common、topic、model、message、codec、thread、mqtt、mqtt_client、
-client、server、http、rest、config、ftp、file、schema、event。
+client、server、http、rest、config、ftp、file、schema、event、license。
 
 ## 4. 在你的工程里使用
 
@@ -164,3 +164,6 @@ Copyright (c) 2026 huienming
 
 再分发或嵌入到自己的产品时，只需保留版权声明与许可声明；软件按"现状"提供，
 不附带任何担保。
+
+包内每个头文件与示例的首行都是 `SPDX-License-Identifier: MIT`，单文件复制
+出去也不会丢许可信息；源码仓库侧由测试套件 `license` 强制检查。

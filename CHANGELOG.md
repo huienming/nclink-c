@@ -59,8 +59,8 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   典型任务、排错表、API 索引）、`README.md` 工程说明、`RELEASE.md` 发布包说明。
 - `examples/`：设备端与客户端两个可运行示例（模型、工具与 schema、采样、
   事件、文件、参数校验全覆盖）。
-- `tests/`：18 个测试套件（含假 MQTT broker），Windows ctest 与 Linux
-  `build-linux.sh` 均 18/18；ASan 构建全绿。
+- `tests/`：19 个测试套件（含假 MQTT broker 与许可头检查），Windows ctest 与
+  Linux `build-linux.sh` 均 19/19；ASan 构建全绿。
 - `tools/`：markdown → docx 转换与校验、发布打包脚本。
 
 ### 未实现部分

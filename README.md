@@ -81,7 +81,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### Linux（已验证：gcc 13.4，18/18 测试通过）
+### Linux（已验证：gcc 13.4，19/19 测试通过）
 
 没有 CMake 也能编（只需要 gcc/binutils 与 sh）：
 
@@ -431,6 +431,7 @@ static const ncl_tool_method methods[] = {
 | `file` | 文件传输全链路：SHA-256 标准向量、文件属性的字段顺序与往返、`needCompression`/`totalChunks`、`bin/ftp.txt` 往返、FTP 文件工具对真实 FTP 服务的写/列/建目录/下载/删除、`/CONTROLLER/FILE` 工具经协议往返（客户端上传→设备落地→回传）、methodCall 的 `@file` 标记与 `fileKeys` 替换、设备端 FTP 端点 |
 | `schema` | 自带正则引擎（字面量/字符类/分组/选择/锚点/量词/转义）、JSON Schema draft-07 子集（类型、required、properties、additionalProperties、items 元组与逐项、长度、数值上下界与 multipleOf、enum/const、allOf/anyOf/oneOf/not/if-then-else、`$ref`、format）、错误消息与列表形式的聚合 |
 | `event` | Event 消息线格式与往返校验、事件主题构造、`ncl_server_push_event` 的发布与参数校验、客户端事件订阅/回调/未注册处理器丢弃、methodCall 的 `check` 语义（校验消息、`参数数量不匹配`、`没有找到方法`、不执行工具）、文件工具的参数 schema |
+| `license` | `LICENSE` 存在且完整、每个源文件都带 `SPDX-License-Identifier: MIT` 头（缺一个就失败），`tools/check_license.ps1 -Fix` 可批量补齐 |
 
 ## 许可
 

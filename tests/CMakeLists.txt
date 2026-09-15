@@ -87,3 +87,9 @@ add_executable(ncl_test_event test_event.c)
 target_link_libraries(ncl_test_event PRIVATE nclink_core)
 add_test(NAME event COMMAND ncl_test_event)
 set_tests_properties(event PROPERTIES TIMEOUT 60)
+
+add_executable(ncl_test_license test_license.c)
+target_link_libraries(ncl_test_license PRIVATE nclink_core)
+target_compile_definitions(ncl_test_license PRIVATE
+        NCL_TEST_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
+add_test(NAME license COMMAND ncl_test_license)

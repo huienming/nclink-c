@@ -60,7 +60,8 @@ examples/           两个可运行示例：设备端 / 客户端
 MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 
 src/<模块>/         实现，共 13 个模块目录        ← 以下仅源码仓库有
-tests/              18 个测试套件 + 协议黄金样本
+tests/              19 个测试套件 + 协议黄金样本
+tools/              许可头检查、文档生成与发布打包脚本
 build.ps1           Windows 一键：配置 + 编译 + ctest
 build-linux.sh      Linux 免 cmake 构建
 ```
@@ -86,7 +87,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### 2.3 Linux（已验证：gcc 13.4，18/18 测试通过）
+### 2.3 Linux（已验证：gcc 13.4，19/19 测试通过）
 
 源码是 C11，套接字层有 Winsock / BSD 两套实现，两个平台都已在真机编过并跑通
 全部测试（Windows 见 2.2，Linux 见下）。
@@ -1592,6 +1593,10 @@ Copyright (c) 2026 huienming
   版权声明与许可声明。
 - 所有源文件都带 `SPDX-License-Identifier: MIT` 头；静态库与文档同样适用。
 - 软件按"现状"提供，不附带任何明示或默示担保（详见 `LICENSE` 全文）。
+
+新增源文件请照抄这两行头（脚本类文件放在 shebang 之后）。构建末尾的
+`license` 测试套件会逐个检查，缺头直接判失败；也可以手工跑
+`tools/check_license.ps1` 检查、`-Fix` 批量补齐。
 
 ---
 
