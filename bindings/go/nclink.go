@@ -30,9 +30,10 @@ package nclink
 #include "nclink/ncl_model.h"
 #include "nclink/ncl_server.h"
 
-// Declared for cgo so its address can be handed to the C client.
-extern void nclinkGoSampleThunk(ncl_client *client, const char *topic,
-                                const ncl_message *message, void *user);
+// Declared for cgo so its address can be handed to the C client. The types must
+// match what cgo generates for the exported Go function (no const).
+extern void nclinkGoSampleThunk(ncl_client *client, char *topic,
+                                ncl_message *message, void *user);
 
 // Tiny shim: a Go function value can only be converted to a C function pointer
 // through a void* here, so the cast happens in C.
@@ -71,7 +72,7 @@ func check(rc C.ncl_err, op string) error {
 }
 
 // Version is the C library version string.
-func Version() string { return C.GoString(C.NCL_VERSION) }
+func Version() string { return C.NCL_VERSION } // a string literal macro
 
 // ---------------------------------------------------------------- JSON ------
 
