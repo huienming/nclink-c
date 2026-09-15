@@ -144,7 +144,7 @@ static void on_sample(ncl_client *client, const char *topic,
 int main(int argc, char **argv)
 {
     const char *url = argc > 1 ? argv[1] : NULL;
-    const char *sn = argc > 2 ? argv[2] : "V203243111F";
+    const char *sn = argc > 2 ? argv[2] : "HNC_VDEV_00000";
     int seconds = argc > 3 ? atoi(argv[3]) : 8;
     ncl_mqtt_config config;
     ncl_client *client;
