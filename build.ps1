@@ -3,14 +3,17 @@
 
 # Configure and build nclink-core-c.
 #
-#   .\build.ps1              # configure + build + run tests (MSVC)
+#   .\build.ps1              # configure + build + run tests (MSVC x64)
 #   .\build.ps1 -Clean       # wipe the build directory first
+#   .\build.ps1 -Arch x86 -BuildDir build-x86   # 32-bit (Win32/x86) build
 #   .\build.ps1 -Target test # build and run ctest only
 #   .\build.ps1 -Tls         # also enable MQTT over ssl:// (needs OpenSSL)
 #
 [CmdletBinding()]
 param(
     [string]$Configuration = "Release",
+    [ValidateSet("x64", "x86")]
+    [string]$Arch = "x64",
     [switch]$Clean,
     [string]$BuildDir = "build",
     [switch]$NoTest,
@@ -37,8 +40,17 @@ if (-not (Test-Path -LiteralPath $cmake)) {
 
 $ninja = Join-Path ${env:ProgramFiles(x86)} `
     "Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
-$vcvars = Join-Path ${env:ProgramFiles(x86)} `
-    "Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+# vcvars32 gives the Win32 (x86) toolchain, vcvars64 the x64 one. With the Ninja
+# generator the target architecture follows the compiler in the environment, so
+# switching arch is just switching this batch file.
+if ($Arch -eq "x86") {
+    $vcvars = Join-Path ${env:ProgramFiles(x86)} `
+        "Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat"
+} else {
+    $vcvars = Join-Path ${env:ProgramFiles(x86)} `
+        "Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+}
+if (-not (Test-Path -LiteralPath $vcvars)) { throw "vcvars not found for arch $Arch : $vcvars" }
 
 function Invoke-VsEnv([string]$command) {
     $script = "@echo off`r`ncall `"$vcvars`" >nul`r`n$command"
@@ -61,10 +73,16 @@ if (Test-Path -LiteralPath $ninja) {
 
 Write-Host "cmake:     $cmake"
 Write-Host "generator: $generator"
+Write-Host "arch:      $Arch"
 Write-Host "config:    $Configuration"
 
 $configure = "`"$cmake`" -S `"$root`" -B `"$build`" -G `"$generator`" -DCMAKE_BUILD_TYPE=$Configuration"
 if ($Tls) {
+    if ($Arch -eq "x86" -and $OpenSslRoot -eq "") {
+        # A 32-bit OpenSSL static lib is uncommon (anaconda ships x64); pass
+        # -OpenSslRoot <dir> explicitly when building TLS for x86.
+        Write-Host "note: TLS + x86 needs a 32-bit OpenSSL static lib, pass -OpenSslRoot <dir>"
+    }
     if ($OpenSslRoot -eq "") {
         foreach ($candidate in @($env:OPENSSL_ROOT_DIR,
                                 "C:\ProgramData\anaconda3\Library",

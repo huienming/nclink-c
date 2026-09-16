@@ -17,7 +17,7 @@ package nclink
 #cgo CFLAGS: -I${SRCDIR}/../../include
 
 #cgo linux LDFLAGS: -L${SRCDIR}/lib/linux-amd64 -lnclink_core -lpthread
-#cgo windows LDFLAGS: -L${SRCDIR}/lib/windows-amd64 -lnclink_core -lws2_32 -liphlpapi
+#cgo windows LDFLAGS: -L${SRCDIR}/lib/windows-amd64 -lnclink_core -lws2_32 -liphlpapi -lwinmm
 #cgo nclink_tls,linux LDFLAGS: -lssl -lcrypto
 #cgo nclink_tls,windows LDFLAGS: -lssl -lcrypto -lgdi32 -lcrypt32
 

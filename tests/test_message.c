@@ -303,11 +303,12 @@ static void test_sample_normalise(void)
         NCL_CHECK(ncl_message_sample_is_complete(m));
         item = (const ncl_sample_item *)ncl_message_item_at(m, 0);
         NCL_CHECK(item != NULL && ncl_json_is_null(ncl_json_arr_get(item->data, 0)));
+        /* 行数取最多的一列：3 列各 1 点 → 1 行 */
         NCL_CHECK_EQ_INT(ncl_message_sample_point_count(m), 1);
         ncl_message_free(m);
     }
 
-    NCL_TEST_CASE("normalise leaves a mixed scalar/batch table alone");
+    NCL_TEST_CASE("mixed scalar/batch columns are complete as they are");
     payload = "{\"id\":\"sample_channel2\",\"beginTime\":\"1\","
               "\"paths\":[\"/STATUS\",\"/PART_COUNT\",\"/CONTROLLER/WARNNING\"],"
               "\"data\":[{\"data\":[[1,2]]},{\"data\":[11]},"
@@ -316,10 +317,32 @@ static void test_sample_normalise(void)
                           strlen(payload));
     NCL_CHECK(m != NULL);
     if (m != NULL) {
-        NCL_CHECK_EQ_INT(ncl_message_sample_normalise(m, root), NCL_ERR_STATE);
-        NCL_CHECK(!ncl_message_sample_is_complete(m));
+        /* 一列批量、两列标量：外层槽位数一致就够，内层各列自理 */
+        NCL_CHECK(ncl_message_sample_is_complete(m));
+        NCL_CHECK_EQ_INT(ncl_message_sample_normalise(m, root), NCL_OK);
         item = (const ncl_sample_item *)ncl_message_item_at(m, 0);
         NCL_CHECK(item != NULL && ncl_json_arr_len(ncl_json_arr_get(item->data, 0)) == 2);
+        NCL_CHECK(ncl_sample_item_is_nested(item));
+        NCL_CHECK_EQ_INT(ncl_sample_item_value_count(item), 2);
+        NCL_CHECK_EQ_INT(ncl_message_sample_point_count(m), 2); /* 最多的一列 2 点 */
+
+        /* 按行消费：行轴是那列 2 点的批量列，标量列两行都取同一个点 */
+        {
+            long long value = 0;
+            const ncl_json *row0 = ncl_message_sample_value_at(m, 0, 0);
+            const ncl_json *row1 = ncl_message_sample_value_at(m, 1, 0);
+            const ncl_json *flat0 = ncl_message_sample_value_at(m, 0, 1);
+            const ncl_json *flat1 = ncl_message_sample_value_at(m, 1, 1);
+
+            NCL_CHECK(row0 != NULL && row1 != NULL);
+            NCL_CHECK(ncl_json_as_int(row0, &value) && value == 1);
+            NCL_CHECK(ncl_json_as_int(row1, &value) && value == 2);
+            /* 标量列只有 1 个点：两行都落在同一段，取到的都是它 */
+            NCL_CHECK(flat0 != NULL && ncl_json_as_int(flat0, &value) && value == 11);
+            NCL_CHECK(flat1 != NULL && ncl_json_as_int(flat1, &value) && value == 11);
+            NCL_CHECK(ncl_message_sample_value_at(m, 2, 0) == NULL); /* 越界 */
+            NCL_CHECK(ncl_message_sample_value_at(m, 0, 3) == NULL);
+        }
         ncl_message_free(m);
     }
 

@@ -3,6 +3,78 @@
 本文件记录 NC-Link C 实现（`nclink-core-c`）的版本变更。版本号跟随
 NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
+## 3.1.0
+
+采样链路的消费侧补齐、设备端示例改成现场跑法、C# 绑定可用，发布包直接带**编好的
+示例可执行文件**（Windows x64 / x86 与 Linux）。
+
+### 采样与报文
+
+- `ncl_message_sample_value_at()`：**按行**取某列的值。行数 = 数据最多的那一列的
+  点数（最细的那根时间轴），更粗的列在覆盖该行的段里反复取第一个点 —— 1 ms 的功率
+  列与 0.25 ms 的振动列可以放在同一张表里逐行读，消费端不用自己判断谁粗谁细。
+- `ncl_message_sample_point_count()` 的语义明确为"行数 = 最多那列的点数"（此前要求
+  各列点数相同，现在不同也能读）。
+- **完整性口径放宽到只看外层**：表头项数 == 列数、各列槽位数一致即可，内层（每槽
+  装几个点）各列自便，每槽点数抖动也照常上报。整列 `[]` 仍按"本周期无数据"处理，
+  由 `ncl_message_sample_normalise()` 按列换成 `null`（不再要求"换完能回到统一
+  标量形状"）。
+- 设备端/客户端示例按新口径消费：逐列打印编码与点数，再按行打前 8 行。
+
+### 设备端示例（ncl_device_demo）
+
+- **默认一直运行**：省略运行秒数（或写 0）就一直跑到 Ctrl+C / SIGTERM；给正数则跑完
+  自动退出（脚本、冒烟）。Ctrl+C 走正常清理路径（停采样、停 FTP/HTTP、断开 MQTT），
+  退出码 0；SIGINT/SIGTERM 的处理函数只置标志，主循环 100 ms 一跳，响应不迟。
+- 默认模型的采样整理成**两个通道**：
+  - 通道 0 `sample_channel0`（1 s / 1 s，机床运行状态八项）：加工计件、进给倍率、
+    当前加工程序名、当前刀号、主轴转速、设备状态、加工模式、报警号；
+  - 通道 1 `EdgeSersors`（`sampleInterval` 1 ms / `uploadInterval` 100 ms，十二项）：
+    5 轴的功率与振动（振动每槽 4 点 = 0.25 ms）；主轴 S 上挂**两路**传感器，用数据项的
+    `number` 区分。一条报文 100 个槽位（功率列 100 点、振动列 400 点）。
+- **数据项支持 `number`**：一个部件挂多路同类传感器时就是"同 `type`、不同 `number`、
+  不同 id"的几个数据项，路径变成 `/<父路径>/<type>@<number>`（`/AXIS@S/POWER@1`、
+  `/AXIS@S/POWER@2`），工具绑定、采样表头、按路径查询都按这条完整路径走；没有
+  `number` 的项就是单路，路径不带后缀。`tests/test_model.c` 增补了路径、按路径反查、
+  同一个通道两路传感器各成一列，以及 `number` 的序列化字段顺序（在 `dataType` 之前）。
+- 主轴转速按"轴 + 物理量"写在主轴 S 轴上：`/AXIS@S/SPEED`（`SPEED` 数据项），不再
+  是设备级自成一类的 `SPINDLE_SPEED`；示例补上对应工具绑定与模拟值。
+- 三个示例（设备端、C 客户端、C++ 客户端）都会打印轴上的量（`路径 含义`），
+  `SPEED` 读作"转速"：`/AXIS@S/SPEED 主轴转速`。
+- 模拟产件数与主循环计数改成 64 位，长时间运行（现场是"一直跑"）不会溢出。
+- 日志同时写 `<root>/log/out.txt`（UTF-8，10 MB 轮转）与控制台（stderr，真控制台
+  走 `WriteConsoleW`，中文在任何代码页下都对）。
+
+### 平台与定时精度
+
+- **短等待不再被 Windows 的时钟粒度拖住**（默认 ~15.6 ms）。`ncl_cond_wait_timeout()`
+  与 `ncl_sleep_millis()` 对 ≤ 100 ms 的等待改走高精度计时器：优先 Win10 1803+ 的
+  `CreateWaitableTimerEx`（`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`，精度 ~0.5 ms，
+  计时器按线程持有并用 `WaitForMultipleObjects` 与"被唤醒"事件一起等），老系统上
+  回退到 `timeBeginPeriod(1)`（~1.7 ms）。Windows 侧条件变量随之改成"计数信号量 +
+  等人数"实现，语义不变（没有等待者时信号同样丢弃）。
+  本机实测：`ncl_sleep_millis(1)` 由 14.1 ms → **1.56 ms**，
+  `ncl_cond_wait_timeout(_, _, 1)` 由 15.5 ms → **1.56 ms**，`ncl_sleep_millis(100)`
+  不变；示例的 `EdgeSersors`（1 ms 槽位 / 100 ms 上报）从 ~1.4 s 一条变成 ~222 ms
+  一条（剩下的开销是每槽 12 次完整 Query）。Windows 链接多一个 `winmm`
+  （MSVC 由源码里的 `#pragma comment` 自动带上，MinGW 需 `-lwinmm`；Go 绑定的 cgo
+  LDFLAGS 已加）。
+
+### 构建与发布
+
+- `build.ps1 -Arch x86 -BuildDir build-x86`：新增 **32 位（Win32/x86）** 构建
+  （库、示例、测试都是 x86，同一个 Ninja 工程换 `vcvars32` 即可）。
+- 发布包新增 `lib/windows-x86-msvc/`、`examples/bin/{windows-x64-msvc,windows-x86-msvc,
+  linux-x86_64-gcc}/`：**编好的示例可执行文件**随包交付，拿到即可跑（Windows 版是
+  `/MD`，需要 VC++ 2015-2022 x64/x86 运行库；Linux 版需要 glibc 2.31+）。
+- 包内同时带上语言绑定源码（`bindings/go`、`bindings/csharp`，都只放源码）。
+
+### 文档
+
+- 手册（`MANUAL.md` / `MANUAL.docx`）跟改：两个采样通道与各自的实测输出、按行消费、
+  亚毫秒采样、设备端"一直运行 + Ctrl+C"、日志与编码说明。
+- `RELEASE.md` 的包内清单、ABI 表与验证状态按本次实测更新。
+
 ## 3.0.0
 
 首个 C 版本，零第三方依赖（仅可选的 zlib），Windows（MSVC）与 Linux（gcc）

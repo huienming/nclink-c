@@ -302,8 +302,129 @@ static void test_component_paths_and_sample_header(void)
     ncl_node_free(root);
 }
 
+
+/*
+ * 数据项自己也能带 number：一个部件挂多路同类传感器时，就是"同 type、不同 number"
+ * 的几个数据项，路径变成 /<父路径>/<类型>@<number>（主轴两路功率：/AXIS@S/POWER@1、
+ * /AXIS@S/POWER@2）。没有 number 的项就是单路，路径不带后缀。
+ */
+static const char *kSensorNumberModel =
+    "{\"id\":\"01\",\"type\":\"NC_LINK_ROOT\",\"devices\":["
+    "{\"id\":\"02\",\"type\":\"MACHINE\",\"configs\":[{"
+    "\"id\":\"ch1\",\"type\":\"SAMPLE_CHANNEL\",\"sampleInterval\":1000,"
+    "\"uploadInterval\":1000,\"ids\":[{\"id\":\"030010\"},{\"id\":\"030011\"}]}],"
+    "\"components\":[{\"id\":\"0300\",\"type\":\"AXIS\",\"number\":\"S\","
+    "\"configs\":[],\"dataItems\":["
+    "{\"id\":\"030010\",\"type\":\"POWER\",\"number\":\"1\"},"
+    "{\"id\":\"030011\",\"type\":\"POWER\",\"number\":\"2\"},"
+    "{\"id\":\"030012\",\"type\":\"SPEED\"}]}],"
+    "\"dataItems\":[{\"id\":\"030020\",\"type\":\"STATUS\",\"number\":\"1\"}],"
+    "\"version\":\"2.0\"}]}";
+
+static void test_data_item_number_paths(void)
+{
+    ncl_node *root = ncl_root_node_parse(kSensorNumberModel);
+    ncl_node *device;
+    ncl_node *axis;
+    ncl_node *config;
+    ncl_node *item;
+    ncl_sample_ref *ref;
+    ncl_node_map paths;
+    char *path;
+
+    NCL_TEST_CASE("数据项带 number 时路径为 /<类型>@<number>");
+    NCL_CHECK(root != NULL);
+    if (root == NULL) {
+        return;
+    }
+    device = ncl_node_device_at(root, 0);
+    axis = ncl_node_component_at(device, 0);
+    NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(axis, 0)),
+                     "/AXIS@S/POWER@1");
+    NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(axis, 1)),
+                     "/AXIS@S/POWER@2");
+    /* 没有 number 的项（单路）路径不带后缀 */
+    NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(axis, 2)),
+                     "/AXIS@S/SPEED");
+    /* 设备下的数据项：父前缀清空，自己带的 number 仍然进路径 */
+    NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(device, 0)),
+                     "/STATUS@1");
+
+    NCL_TEST_CASE("带 number 的数据项也能按路径反查");
+    ncl_node_map_init(&paths);
+    NCL_CHECK_EQ_INT(ncl_root_node_path_map(root, &paths), NCL_OK);
+    NCL_CHECK(ncl_node_map_get(&paths, "/AXIS@S/POWER@1") != NULL);
+    NCL_CHECK(ncl_node_map_get(&paths, "/AXIS@S/POWER@2") != NULL);
+    NCL_CHECK(ncl_node_map_get(&paths, "/AXIS@S/SPEED") != NULL);
+    ncl_node_map_free(&paths);
+
+    NCL_TEST_CASE("同一通道里两路传感器各自成为一列表头");
+    config = ncl_node_config_at(device, 0);
+    NCL_CHECK(ncl_node_is_sample_node(config));
+    NCL_CHECK_EQ_INT(ncl_node_sample_count(config), 2);
+    ref = ncl_node_sample_at(config, 0);
+    path = ncl_sample_ref_path(ref);
+    NCL_CHECK_EQ_STR(path, "/AXIS@S/POWER@1");
+    free(path);
+    ref = ncl_node_sample_at(config, 1);
+    path = ncl_sample_ref_path(ref);
+    NCL_CHECK_EQ_STR(path, "/AXIS@S/POWER@2");
+    free(path);
+
+    ncl_node_free(root);
+}
+
+static void test_data_item_number_serialisation(void)
+{
+    ncl_node *root = ncl_node_new(NCL_NODE_ROOT);
+    ncl_node *device = ncl_node_new(NCL_NODE_DEVICE);
+    ncl_node *item = ncl_node_new(NCL_NODE_DATA_ITEM);
+    char *text;
+
+    ncl_node_set_id(root, "01");
+    ncl_node_set_type_name(root, "NC_LINK_ROOT");   /* 与解析出来的根节点一致 */
+    ncl_node_set_id(device, "02");
+    ncl_node_set_type_name(device, "MACHINE");
+    ncl_node_set_version(device, "2.0");
+    ncl_node_set_id(item, "030001");
+    ncl_node_set_type_name(item, "TRACE");
+    ncl_node_set_number(item, "2");
+    ncl_node_set_data_type(item, "LIST");
+    NCL_CHECK_EQ_INT(ncl_node_add_data_item(device, item), NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_node_add_device(root, device), NCL_OK);
+    NCL_CHECK(ncl_root_node_post_construct(root) == root);
+
+    NCL_TEST_CASE("数据项的 number 序列化在 dataType 之前");
+    text = ncl_node_write_string(root);
+    NCL_CHECK_EQ_STR(text,
+        "{\"id\":\"01\",\"type\":\"NC_LINK_ROOT\",\"devices\":["
+        "{\"id\":\"02\",\"type\":\"MACHINE\",\"dataItems\":["
+        "{\"id\":\"030001\",\"type\":\"TRACE\",\"number\":\"2\","
+        "\"dataType\":\"LIST\"}],\"version\":\"2.0\"}]}");
+    free(text);
+
+    NCL_TEST_CASE("带 number 的模型文本能原样往返");
+    {
+        ncl_node *parsed = ncl_root_node_parse(kSensorNumberModel);
+        char *written = parsed != NULL ? ncl_node_write_string(parsed) : NULL;
+
+        NCL_CHECK(parsed != NULL);
+        /* 解析 → 序列化后，两路传感器与单路项的路径都还在 */
+        NCL_CHECK(written != NULL &&
+                  strstr(written, "\"type\":\"POWER\",\"number\":\"1\"") != NULL);
+        NCL_CHECK(written != NULL &&
+                  strstr(written, "\"type\":\"POWER\",\"number\":\"2\"") != NULL);
+        free(written);
+        ncl_node_free(parsed);
+    }
+
+    ncl_node_free(root);
+}
+
 NCL_TEST_MAIN_BEGIN()
     test_component_paths_and_sample_header();
+    test_data_item_number_paths();
+    test_data_item_number_serialisation();
     test_round_trip();
     test_default_model();
     test_invalid_payload();

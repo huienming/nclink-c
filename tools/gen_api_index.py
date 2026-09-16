@@ -18,8 +18,8 @@ INCLUDE = os.path.join(ROOT, "include", "nclink")
 MANUAL = os.path.join(ROOT, "MANUAL.md")
 
 DECL = re.compile(
-    r"^(ncl_|const char|char|bool|void|size_t|int|long long|int64_t|double|"
-    r"ncl_err|uint\w+|float|unsigned|static inline)"
+    r"^(ncl_|const char|const ncl_json|char|bool|void|size_t|int|long long|"
+    r"int64_t|double|ncl_err|uint\w+|float|unsigned|static inline)"
 )
 
 

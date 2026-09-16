@@ -39,3 +39,10 @@ __pycache__/
 /HNC_VDEV_*/
 # 设备端示例生成的 9 位数字 SN：客户端示例会在当前目录按 SN 建同名目录
 /[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
+
+# C# 绑定的构建产物（源码在 bindings/csharp，产物不入库）
+/bindings/csharp/**/bin/
+/bindings/csharp/**/obj/
+*.dll
+*.exp
+*.so

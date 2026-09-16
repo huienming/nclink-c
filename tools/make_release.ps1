@@ -10,12 +10,20 @@
 # 转义书写，见下面的 $forbidden，本文件自身也满足该审查）。
 #
 #   .\tools\make_release.ps1                        # 头文件 + 库 + 文档 + 示例
-#   .\tools\make_release.ps1 -Version 3.0.0
+#   .\tools\make_release.ps1 -Version 3.1.0
 #   .\tools\make_release.ps1 -WithSource             # 额外含 src/tests/tools 与构建脚本
+#
+# 库与示例可执行文件按下面的位置收集，缺哪个就跳过哪个（并打印 note）：
+#   build/nclink_core.lib            lib/windows-x64-msvc/ + examples/bin/windows-x64-msvc/
+#   build-x86/nclink_core.lib        lib/windows-x86-msvc/ + examples/bin/windows-x86-msvc/
+#   build-tls/nclink_core.lib        lib/windows-x64-msvc-tls/
+#   build-linux/libnclink_core.a     lib/linux-x86_64-gcc/ + examples/bin/linux-x86_64-gcc/
+#   build-linux-tls/libnclink_core.a lib/linux-x86_64-gcc-tls/
+#   build-mingw/libnclink_core.a     lib/windows-amd64-mingw/
 #
 [CmdletBinding()]
 param(
-    [string]$Version = "3.0.0",
+    [string]$Version = "3.1.0",
     [string]$Name = "",
     [switch]$NoZip,
     [switch]$WithSource
@@ -42,11 +50,13 @@ foreach ($required in @($msvcLib, $gccLib)) {
 if (Test-Path -LiteralPath $pkg) { Remove-Item -LiteralPath $pkg -Recurse -Force }
 New-Item -ItemType Directory -Path $pkg -Force | Out-Null
 
-function Copy-Tree([string]$from, [string]$to, [string[]]$include) {
+function Copy-Tree([string]$from, [string]$to, [string[]]$include,
+                    [string]$SkipPattern = "") {
     $dest = Join-Path $pkg $to
     New-Item -ItemType Directory -Path $dest -Force | Out-Null
     foreach ($pattern in $include) {
         Get-ChildItem -Path (Join-Path $root $from) -Filter $pattern -Recurse -File |
+            Where-Object { $SkipPattern -eq "" -or $_.FullName -notmatch $SkipPattern } |
             ForEach-Object {
                 $relative = $_.FullName.Substring((Join-Path $root $from).Length + 1)
                 $target = Join-Path $dest $relative
@@ -64,6 +74,28 @@ Copy-Tree "include" "include" @("*.h", "*.hpp")
 # examples ship with every release: they are part of the documentation
 Copy-Tree "examples" "examples" @("*.c", "*.cpp", "*.txt")
 
+# Prebuilt example executables: run them straight from the package.
+#   build\examples\*.exe    -> examples/bin/windows-x64-msvc/  (same MSVC x64 Release as the lib)
+#   build-linux\bin\ncl_*   -> examples/bin/linux-x86_64-gcc/  (gcc 13 + glibc, built in Docker)
+$exeSources = @(
+    @{ From = "build\examples";  Dst = "examples\bin\windows-x64-msvc"; Filter = "ncl_*.exe" },
+    @{ From = "build-x86\examples"; Dst = "examples\bin\windows-x86-msvc"; Filter = "ncl_*.exe" },
+    @{ From = "build-linux\bin"; Dst = "examples\bin\linux-x86_64-gcc"; Filter = "ncl_*" }
+)
+foreach ($exe in $exeSources) {
+    $from = Join-Path $root $exe.From
+    if (-not (Test-Path -LiteralPath $from)) {
+        Write-Host ("  note: {0} not found, {1} stays empty" -f $exe.From, $exe.Dst)
+        continue
+    }
+    $dest = Join-Path $pkg $exe.Dst
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    Get-ChildItem -Path $from -Filter $exe.Filter -File | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dest $_.Name) -Force
+        Write-Host ("  + {0}/{1}" -f $exe.Dst, $_.Name)
+    }
+}
+
 # implementation source and tests: only when explicitly requested
 if ($WithSource) {
     Copy-Tree "src" "src" @("*.c", "*.h")
@@ -71,8 +103,10 @@ if ($WithSource) {
     Copy-Tree "tools" "tools" @("*.py", "*.mjs", "*.ps1")
 }
 
-# Go bindings: sources only, the static libraries are staged by the user
+# Language bindings: sources only, they link the packaged static libraries
 Copy-Tree "bindings/go" "bindings/go" @("*.go", "*.mod", "*.md")
+# obj/ 与 bin/ 是编译产物（.gitignore 里也排除了），不进包
+Copy-Tree "bindings/csharp" "bindings/csharp" @("*.cs", "*.csproj", "*.md", "*.c", "*.h") "\\obj\\|\\bin\\"
 
 # libraries
 New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x64-msvc") -Force | Out-Null
@@ -95,6 +129,15 @@ if (Test-Path -LiteralPath $gccTlsLib) {
     Copy-Item -LiteralPath $gccTlsLib -Destination (Join-Path $pkg "lib\linux-x86_64-gcc-tls\libnclink_core.a") -Force
 } else {
     Write-Host "  note: build-linux-tls/libnclink_core.a not found, the TLS variant is not packaged"
+}
+
+# Optional: the 32-bit (Win32/x86) MSVC build: .\build.ps1 -Arch x86 -BuildDir build-x86
+$x86Lib = Join-Path $root "build-x86\nclink_core.lib"
+if (Test-Path -LiteralPath $x86Lib) {
+    New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x86-msvc") -Force | Out-Null
+    Copy-Item -LiteralPath $x86Lib -Destination (Join-Path $pkg "lib\windows-x86-msvc\nclink_core.lib") -Force
+} else {
+    Write-Host "  note: build-x86/nclink_core.lib not found, the 32-bit library is not packaged"
 }
 
 # Optional: the mingw build of the Windows library, used by the Go bindings

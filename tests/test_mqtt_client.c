@@ -68,17 +68,31 @@ static bool broker_read_packet(ncl_socket *sock, unsigned timeout_ms,
     size_t length_used = 0;
     uint32_t remaining = 0;
     unsigned char *buffer;
+    int64_t deadline;
     int rc;
 
     rc = ncl_socket_recv(sock, &first, 1, timeout_ms);
     if (rc <= 0) {
         return false;
     }
+    /* 首个字节已经拿到，剩下的**必须收全**：半途放弃会把后面那些字节当成新的报文头，
+     * 整个会话从此错帧 —— 表现出来就是"某个计数一直不涨、等满超时"的偶发失败。
+     * 所以这里用 2 s 的重试预算把剩余字节收完（真断了才认输）。 */
+    deadline = ncl_time_monotonic_millis() + 2000;
     while (length_used < 4) {
         uint32_t value = 0;
-        rc = ncl_socket_recv(sock, &length_bytes[length_used], 1, 1000);
-        if (rc <= 0) {
+        int64_t left = deadline - ncl_time_monotonic_millis();
+
+        if (left <= 0) {
             return false;
+        }
+        rc = ncl_socket_recv(sock, &length_bytes[length_used], 1,
+                             (unsigned)left);
+        if (rc < 0) {
+            return false;
+        }
+        if (rc == 0) {
+            continue;   /* 这一字节还没到：接着等，别丢已经读到的东西 */
         }
         length_used++;
         if (ncl_mqtt_varint_decode(length_bytes, length_used, &value) != 0) {
@@ -559,7 +573,11 @@ static bool pred_qos1(fake_broker *broker)
 
 static bool pred_qos2_complete(fake_broker *broker)
 {
-    return broker->publish_count[2] > 0 && broker->pubrel_count > 0;
+    /* broker 收到 PUBREL 之后才发 PUBCOMP，而下面要断言 pubcomp_sent：
+     * 只等 pubrel_count 会撞上"PUBREL 已记数、PUBCOMP 还没写完"的窗口（偶发失败），
+     * 所以把 pubcomp_sent 也放进谓词。 */
+    return broker->publish_count[2] > 0 && broker->pubrel_count > 0 &&
+           broker->pubcomp_sent > 0;
 }
 
 static bool pred_ping(fake_broker *broker)

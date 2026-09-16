@@ -93,6 +93,82 @@ static void log_sample_channels(const ncl_node *node)
     }
 }
 
+/* ---------------------------------------------- 轴的功率、转速与加速度 -- */
+
+/**
+ * 轴下面这几类数据项的中文含义（T/CMTBA 1008.4—2020 表4 物理量数据项）。
+ *
+ * 含义按"**对象 + 物理量**"的说法写，和"主轴振动"（主轴 + 振动）是同一种写法：
+ *
+ *     POWER        → 功率      （瓦特 W）
+ *     SPEED        → 转速      （转每分 r/min）
+ *     ACCELERATION → 加速度    （毫米每秒平方 mm/s²）
+ *
+ * 打印时再把轴补在前面，于是有"X轴功率""主轴转速""主轴加速度"；数据项带 number
+ * （一个部件多路传感器）时再跟一个 #<number>。返回 NULL 表示不是本函数关心的数据项。
+ */
+static const char *axis_quantity_meaning_cn(const char *type)
+{
+    if (type == NULL) {
+        return NULL;
+    }
+    if (strcmp(type, "POWER") == 0) {
+        return "功率";
+    }
+    if (strcmp(type, "SPEED") == 0) {
+        return "转速";
+    }
+    if (strcmp(type, "ACCELERATION") == 0) {
+        return "加速度";
+    }
+    return NULL;
+}
+
+/**
+ * 打印模型里**每个轴**的功率、转速与加速度，一行一条，格式为
+ *
+ *     路径 中文含义
+ *
+ * 含义是"轴 + 物理量"的说法：/AXIS@X/POWER 是"X轴功率"、/AXIS@S/SPEED 是
+ * "主轴转速"、/AXIS@S/ACCELERATION 是"主轴加速度"。路径就是设备端对这几个
+ * 数据项取值用的路径：可以直接拿去做 getValue，也可以写进采样通道的 ids 里
+ * 当采样项。
+ */
+static void log_axis_quantities(const ncl_node *node)
+{
+    size_t i;
+
+    if (node == NULL) {
+        return;
+    }
+    /* 只认组件里的 AXIS；功率/加速度是挂在轴下面的数据项。 */
+    if (node->type == NCL_NODE_COMPONENT && node->node_type_name != NULL &&
+        strcmp(node->node_type_name, "AXIS") == 0) {
+        /* 轴的中文名（X轴 / 主轴）就是含义里的那个"对象" */
+        const char *axis_name = node->name != NULL ? node->name : "轴";
+
+        for (i = 0; ncl_node_data_item_at(node, i) != NULL; i++) {
+            const ncl_node *item = ncl_node_data_item_at(node, i);
+            const char *meaning = axis_quantity_meaning_cn(item->node_type_name);
+
+            if (meaning != NULL) {
+                /* 一个部件多路传感器时（数据项带 number），含义后面跟
+                 * #<number>，否则两行打印一样，看不出是哪一路。 */
+                ncl_log_info("%-24s %s%s%s%s", ncl_node_path(item),
+                             axis_name, meaning,
+                             item->number != NULL ? " #" : "",
+                             item->number != NULL ? item->number : "");
+            }
+        }
+    }
+    for (i = 0; ncl_node_device_at(node, i) != NULL; i++) {
+        log_axis_quantities(ncl_node_device_at(node, i));
+    }
+    for (i = 0; ncl_node_component_at(node, i) != NULL; i++) {
+        log_axis_quantities(ncl_node_component_at(node, i));
+    }
+}
+
 /**
  * 采样回调：设备按 uploadInterval 聚合后上报一个 Sample 报文。
  *   topic                         Sample/<sn>/<通道id>
@@ -100,6 +176,11 @@ static void log_sample_channels(const ncl_node *node)
  *   interval / upload_interval    采样周期 / 上报周期（毫秒）
  *   paths[i]                      第 i 个采样项的路径
  *   data[i]                       第 i 个采样项的数据（values 数组，按时间先后）
+ *
+ * 消费方式：**按行**。行轴是数据最多的那一列（最细的采样率）——
+ *   ncl_message_sample_point_count(msg)          行数（= 最多那列的点数）
+ *   ncl_message_sample_value_at(msg, row, col)   第 row 行、第 col 列的值
+ * 采样率更低的列在同一段里会连着几行读到同一个点（覆盖该行的第一个点）。
  */
 static void on_sample(ncl_client *client, const char *topic,
                       const ncl_message *msg, void *user)
@@ -204,6 +285,39 @@ static void on_sample(ncl_client *client, const char *topic,
             ncl_strbuf_free(&line);
         }
     }
+
+    /* 按行消费：行数取"数据最多的那一列"的点数，然后一行一行读，每列一次
+     * ncl_message_sample_value_at()。1 ms 的列配 0.25 ms 的列时，前者在同一个
+     * 槽位的 4 行里读到的是同一个点（覆盖该行的第一个点）。 */
+    {
+        size_t rows = ncl_message_sample_point_count(msg);
+        size_t shown = rows < 8 ? rows : 8;
+        size_t row;
+
+        ncl_log_info("    按行消费: %u 行（数据最多的那一列的点数）",
+                     (unsigned)rows);
+        for (row = 0; row < shown; row++) {
+            ncl_strbuf line;
+
+            ncl_strbuf_init(&line);
+            for (i = 0; i < items; i++) {
+                const char *path = i < paths ? ncl_strvec_at(&msg->as.sample.paths, i)
+                                             : "?";
+                const ncl_json *value = ncl_message_sample_value_at(msg, row, i);
+                char *text = value != NULL ? ncl_json_as_text(value) : NULL;
+
+                ncl_strbuf_printf(&line, "%s%s=%s", i == 0 ? "" : "  ", path,
+                                  text != NULL ? text : "null");
+                free(text);
+            }
+            ncl_log_info("      行[%u] %s", (unsigned)row, ncl_strbuf_cstr(&line));
+            ncl_strbuf_free(&line);
+        }
+        if (rows > shown) {
+            ncl_log_info("      ...（共 %u 行，这里只打前 %u 行）", (unsigned)rows,
+                         (unsigned)shown);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ main -- */
@@ -267,6 +381,8 @@ int main(int argc, char **argv)
                          id != NULL ? id : "?");
             free(id);
             log_sample_channels(root);
+            ncl_log_info("各轴的功率、转速与加速度（路径 含义）:");
+            log_axis_quantities(root);
         }
     } else {
         ncl_log_warn("probe 失败，继续尝试直接读值");

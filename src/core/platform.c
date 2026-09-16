@@ -10,14 +10,23 @@
 #include <time.h>
 
 #if defined(NCL_OS_WINDOWS)
+#  include <mmsystem.h>
 #  include <process.h>
 #  include <wincrypt.h>
 #  pragma comment(lib, "advapi32.lib")
+#  pragma comment(lib, "winmm.lib")
 #else
 #  include <errno.h>
 #  include <pthread.h>
 #  include <sys/time.h>
 #  include <unistd.h>
+#endif
+
+/* 每线程变量：Windows/MSVC 用 __declspec(thread)，POSIX 用 C11 的 _Thread_local。 */
+#if defined(NCL_OS_WINDOWS)
+#  define NCL_THREAD_LOCAL __declspec(thread)
+#else
+#  define NCL_THREAD_LOCAL _Thread_local
 #endif
 
 struct ncl_mutex {
@@ -86,13 +95,125 @@ void ncl_mutex_unlock(ncl_mutex *m)
 #endif
 }
 
+/* ------------------------------------------------- Windows 高精度等待 --- */
+
+#if defined(NCL_OS_WINDOWS)
+
+/*
+ * Windows 默认的时钟粒度是 ~15.6 ms：`Sleep(1)`、`SleepConditionVariableCS(_, _, 1)`
+ * 实测都要 14~15 ms，于是 1 ms 的采样槽位变成 15 ms 一跳。这里让小等待改走两条路，
+ * 优先第一条：
+ *
+ *   1. **高精度可等待计时器**（Win10 1803+）：`CreateWaitableTimerEx` 带
+ *      `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`，精度 ~0.5 ms，不动系统时钟；
+ *   2. **回退**：把系统时钟粒度提到 1 ms（`timeBeginPeriod(1)`）再用普通等待 ——
+ *      精度约 1.7~1.9 ms，够 1 ms 槽位用了（老系统上才走这条）。
+ *
+ * 计时器对象自带"到期时间"状态，多线程共用会互相踩，所以按线程持有
+ * （`NCL_THREAD_LOCAL`），线程退出时在 `ncl_thread_trampoline()` 里收掉。
+ * 只有 ≤ NCL_HR_WAIT_MAX_MS 的等待走这条路；更长的等待仍交给系统 wait（省电，也
+ * 不必一直吊着高精度计时器）。
+ */
+#define NCL_HR_WAIT_MAX_MS 100u
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#  define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+static NCL_THREAD_LOCAL HANDLE t_hr_timer;   /* 本线程的高精度计时器，惰性创建 */
+static bool g_hr_timer_probed = false;       /* 是否探测过系统支持 */
+static bool g_hr_timer_usable = false;       /* 支持则为 true，否则走回退路径 */
+static volatile LONG g_timer_period_raised = 0;
+
+/** 回退路径：把系统时钟粒度提到 1 ms，只提一次（进程退出时系统自己复位）。 */
+static void ncl_win_timer_period_raise(void)
+{
+    if (InterlockedCompareExchange(&g_timer_period_raised, 1, 0) == 0) {
+        timeBeginPeriod(1);
+    }
+}
+
+static HANDLE ncl_win_hr_timer_create(void)
+{
+    return CreateWaitableTimerExW(NULL, NULL,
+                                  CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                  TIMER_ALL_ACCESS);
+}
+
+/** 本线程的高精度计时器；系统不支持时返回 NULL（调用方走回退路径）。 */
+static HANDLE ncl_win_hr_timer(void)
+{
+    if (!g_hr_timer_probed) {
+        g_hr_timer_probed = true;
+        t_hr_timer = ncl_win_hr_timer_create();
+        g_hr_timer_usable = t_hr_timer != NULL;
+        if (!g_hr_timer_usable) {
+            ncl_win_timer_period_raise();
+        }
+    }
+    if (!g_hr_timer_usable) {
+        return NULL;
+    }
+    if (t_hr_timer == NULL) {
+        t_hr_timer = ncl_win_hr_timer_create();
+        if (t_hr_timer == NULL) {
+            ncl_win_timer_period_raise();
+        }
+    }
+    return t_hr_timer;
+}
+
+/** 线程收尾：把本线程的计时器句柄还掉（线程退出不会自动关句柄）。 */
+static void ncl_win_hr_timer_thread_cleanup(void)
+{
+    if (t_hr_timer != NULL) {
+        CloseHandle(t_hr_timer);
+        t_hr_timer = NULL;
+    }
+}
+
+/** 等 @p millis 毫秒，尽量准（高精度计时器 → 回退到提高粒度后的 Sleep）。 */
+static void ncl_win_wait_millis(unsigned millis)
+{
+    HANDLE timer = millis > 0 && millis <= NCL_HR_WAIT_MAX_MS
+                       ? ncl_win_hr_timer()
+                       : NULL;
+
+    if (timer != NULL) {
+        LARGE_INTEGER due;
+        /* 负值 = 相对时间，单位 100 ns */
+        due.QuadPart = -(LONGLONG)millis * 10000;
+        if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE) &&
+            WaitForSingleObject(timer, INFINITE) == WAIT_OBJECT_0) {
+            return;
+        }
+        ncl_win_timer_period_raise();
+    }
+    if (millis > 0 && millis <= NCL_HR_WAIT_MAX_MS) {
+        ncl_win_timer_period_raise();
+    }
+    Sleep((DWORD)millis);
+}
+
+#else
+
+#define NCL_HR_WAIT_MAX_MS 100u
+
+#endif /* NCL_OS_WINDOWS */
+
 /* ------------------------------------------------------- condition vars --- */
 
 struct ncl_cond {
 #if defined(NCL_OS_WINDOWS)
-    CONDITION_VARIABLE cv;
+    /* 不用 CONDITION_VARIABLE 的原因：它的超时精度是系统时钟粒度（~15.6 ms），
+     * 而这里的等待要能和"高精度计时器"一起等（WaitForMultipleObjects），所以改成
+     * 计数信号量 + 等人数：signal 放 1 个、broadcast 放 waiters 个，等待方回到
+     * 用户锁后再由调用方复查谓词。语义与 condvar 一致（没有等的人时信号同样丢弃）。 */
+    HANDLE           sem;
+    CRITICAL_SECTION lock;
+    unsigned         waiters;
 #else
-    pthread_cond_t     handle;
+    pthread_cond_t   handle;
 #endif
 };
 
@@ -103,7 +224,12 @@ ncl_cond *ncl_cond_create(void)
         return NULL;
     }
 #if defined(NCL_OS_WINDOWS)
-    InitializeConditionVariable(&c->cv);
+    c->sem = CreateSemaphoreW(NULL, 0, 0x7fffffffL, NULL);
+    if (c->sem == NULL) {
+        free(c);
+        return NULL;
+    }
+    InitializeCriticalSection(&c->lock);
 #else
     if (pthread_cond_init(&c->handle, NULL) != 0) {
         free(c);
@@ -118,7 +244,10 @@ void ncl_cond_destroy(ncl_cond *c)
     if (c == NULL) {
         return;
     }
-#if !defined(NCL_OS_WINDOWS)
+#if defined(NCL_OS_WINDOWS)
+    DeleteCriticalSection(&c->lock);
+    CloseHandle(c->sem);
+#else
     pthread_cond_destroy(&c->handle);
 #endif
     free(c);
@@ -135,10 +264,49 @@ bool ncl_cond_wait_timeout(ncl_cond *c, ncl_mutex *m, unsigned timeout_ms)
         return false;
     }
 #if defined(NCL_OS_WINDOWS)
-    return SleepConditionVariableCS(&c->cv, &m->cs,
-                                    timeout_ms == 0 ? INFINITE : (DWORD)timeout_ms)
-               ? true
-               : false;
+    {
+        bool signalled = false;
+        HANDLE timer = (timeout_ms > 0 && timeout_ms <= NCL_HR_WAIT_MAX_MS)
+                           ? ncl_win_hr_timer()
+                           : NULL;
+
+        EnterCriticalSection(&c->lock);
+        c->waiters++;
+        LeaveCriticalSection(&c->lock);
+        LeaveCriticalSection(&m->cs);
+
+        if (timer != NULL) {
+            LARGE_INTEGER due;
+            HANDLE waits[2];
+
+            /* 负值 = 相对时间，单位 100 ns */
+            due.QuadPart = -(LONGLONG)timeout_ms * 10000;
+            waits[0] = c->sem;      /* 0：被 signal 唤醒 */
+            waits[1] = timer;       /* 1：等够时间（高精度） */
+            if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+                signalled = WaitForMultipleObjects(2, waits, FALSE, INFINITE) ==
+                            WAIT_OBJECT_0;
+            } else {
+                ncl_win_timer_period_raise();
+                signalled = WaitForSingleObject(c->sem, (DWORD)timeout_ms) ==
+                            WAIT_OBJECT_0;
+            }
+        } else {
+            if (timeout_ms > 0 && timeout_ms <= NCL_HR_WAIT_MAX_MS) {
+                ncl_win_timer_period_raise();
+            }
+            signalled = WaitForSingleObject(c->sem,
+                                            timeout_ms == 0 ? INFINITE
+                                                            : (DWORD)timeout_ms) ==
+                        WAIT_OBJECT_0;
+        }
+
+        EnterCriticalSection(&c->lock);
+        c->waiters--;
+        LeaveCriticalSection(&c->lock);
+        EnterCriticalSection(&m->cs);
+        return signalled;
+    }
 #else
     if (timeout_ms == 0) {
         return pthread_cond_wait(&c->handle, &m->handle) == 0;
@@ -167,7 +335,11 @@ void ncl_cond_signal(ncl_cond *c)
         return;
     }
 #if defined(NCL_OS_WINDOWS)
-    WakeConditionVariable(&c->cv);
+    EnterCriticalSection(&c->lock);
+    if (c->waiters > 0) {
+        ReleaseSemaphore(c->sem, 1, NULL);
+    }
+    LeaveCriticalSection(&c->lock);
 #else
     pthread_cond_signal(&c->handle);
 #endif
@@ -179,7 +351,11 @@ void ncl_cond_broadcast(ncl_cond *c)
         return;
     }
 #if defined(NCL_OS_WINDOWS)
-    WakeAllConditionVariable(&c->cv);
+    EnterCriticalSection(&c->lock);
+    if (c->waiters > 0) {
+        ReleaseSemaphore(c->sem, (LONG)c->waiters, NULL);
+    }
+    LeaveCriticalSection(&c->lock);
 #else
     pthread_cond_broadcast(&c->handle);
 #endif
@@ -202,6 +378,7 @@ static unsigned __stdcall ncl_thread_trampoline(void *param)
 {
     ncl_thread *t = (ncl_thread *)param;
     t->fn(t->arg);
+    ncl_win_hr_timer_thread_cleanup();
     return 0;
 }
 #else
@@ -306,6 +483,10 @@ int64_t ncl_time_monotonic_millis(void)
 void ncl_sleep_millis(unsigned ms)
 {
 #if defined(NCL_OS_WINDOWS)
+    if (ms > 0 && ms <= NCL_HR_WAIT_MAX_MS) {
+        ncl_win_wait_millis(ms);
+        return;
+    }
     Sleep((DWORD)ms);
 #else
     struct timespec ts;

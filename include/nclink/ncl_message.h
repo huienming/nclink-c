@@ -314,8 +314,14 @@ char *ncl_message_sample_header(const ncl_message *msg, const char *separator);
  * non-empty header (paths), one data block per header entry (same order), the
  * same number of slots in every column, and at least one slot.
  *
- * 亚毫秒采样（值本身是数组）时还要求**内外层都对齐**：一条报文只允许一种统一
- * 形状 —— 要么每个位置都是标量，要么每个位置都是数组且所有内层长度完全相同。
+ * 只要求**外层（槽位）对齐**，内层不设统一形状：采样率不同的数据项可以放在同
+ * 一个通道里，靠"每槽装几个点"体现各自的采样率（1 ms 槽位里功率装 1 个点、
+ * 振动装 4 个点 = 0.25 ms）。所以一条报文里可以同时有标量列、批量列，甚至某列
+ * 每槽点数不等 —— 消费端按列读（见下面的 _is_nested / _value_count / _value_at
+ * 助手），不要按下标跨列对读。
+ *
+ * 唯一的例外是**整列 `[]`**：那是设备"本周期该项没有数据"的占位，判为还没填完，
+ * 交给 ncl_message_sample_normalise() 换成 null 之后再发。
  *
  * The device side checks this before publishing, so a consumer never sees a
  * half-filled report (header without data, or columns of different lengths).
@@ -331,25 +337,26 @@ bool ncl_message_sample_is_complete(const ncl_message *msg);
  *      按它声明的采样项顺序补出表头。模型的项数必须与 data 列数一致，否则
  *      无从对应，报文原样返回。
  *   2. 空列：整列都是空数组（设备用 `[]` 表示"本周期该项没有数据"）时，把该列
- *      换成等长的 null 标量 —— 只在其余列都是标量、换完能回到统一标量形状时
- *      才做；亚毫秒批量列里混一个空列是补不了的，保持原样。
+ *      换成等长的 null。按列处理，不看别的列是什么形状。
  *
- * 补不了就绝不猜：通道查不到、模型项数对不上、形状统一不了，一律保持原样，
- * 让 ncl_message_sample_is_complete() 继续如实报"不完整"。
+ * 补不了就绝不猜：通道查不到、模型项数对不上，一律保持原样，让
+ * ncl_message_sample_is_complete() 继续如实报"不完整"。
  *
  * 返回 NCL_OK 表示补完后 ncl_message_sample_is_complete() 为真；
  * NCL_ERR_INVALID_ARG 表示 @p msg 不是 Sample 报文；NCL_ERR_NOT_FOUND 表示
  * 模型里没有能对上号、项数一致的采集通道；NCL_ERR_STATE 表示映射补上了、但
- * 报文仍不满足完整性（例如形状没法统一）。
+ * 报文仍不满足完整性（表头与列数不一致、各列槽位数不齐等）。
  */
 ncl_err ncl_message_sample_normalise(ncl_message *msg, ncl_node *root);
 
 /**
- * 亚毫秒采样（值本身是数组）时，一列的元素可能是标量，也可能是"一个采样槽位内
- * 的一批值"。这几个助手让消费端不必自己判断两层结构：
+ * 一列的元素可能是标量，也可能是"一个采样槽位内的一批值"，甚至两者混着来。
+ * 这几个助手让消费端不必自己判断两层结构：
  *
  *   sampleInterval = 1ms, uploadInterval = 200ms，工具每次返回 10 个值
  *   → 一条报文 200 个槽位，每槽一个 10 元素数组（合计 2000 点）
+ *
+ *   同一条报文里另一列每槽只装 1 个点（标量）也完全合法：各列按自己的采样率走。
  */
 
 /** 该列是否含数组元素（即是否是亚毫秒批量采样）。 */
@@ -365,8 +372,30 @@ size_t ncl_sample_item_value_count(const ncl_sample_item *item);
 const ncl_json *ncl_sample_item_value_at(const ncl_sample_item *item,
                                          size_t index);
 
-/** 整个报文的总点数（各列应相同，否则报文不完整）。 */
+/**
+ * 行数（= 整个报文的点数）：**数据最多的那一列**的点数。
+ *
+ * 各列采样率不同时（例如功率每槽 1 点、振动每槽 4 点），最细的那一列就是行轴：
+ * 行数 = 它的点数；其余列按 ncl_message_sample_value_at() 的"覆盖该行的第一个
+ * 点"补齐，于是按行遍历就能把不同采样率的列放在一张表里读。
+ */
 size_t ncl_message_sample_point_count(const ncl_message *msg);
+
+/**
+ * 按行读某一列的值：@p row 取 [0, ncl_message_sample_point_count())，@p column 取
+ * [0, 列数)。
+ *
+ * 行轴是最细的那一列（点数最多的），所以：
+ *
+ *   - 最多的那一列：逐点展开，第 row 行就是它的第 row 个点；
+ *   - 更粗的列：落在同一段里就**反复取该段的第一个点** —— 1 ms 一列配 0.25 ms
+ *     一列时，4 行对应同一段，读到的都是那段（那个槽位）里覆盖该行的第一个点。
+ *
+ * 返回借用指针（该列已按 ncl_sample_item_value_at() 摊平）；越界或该列没有点时
+ * 返回 NULL。
+ */
+const ncl_json *ncl_message_sample_value_at(const ncl_message *msg, size_t row,
+                                            size_t column);
 
 /* Validation and matching ------------------------------------------------ */
 

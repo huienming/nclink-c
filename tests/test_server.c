@@ -1080,7 +1080,7 @@ static void test_sub_millisecond_samples(void)
         NCL_CHECK_EQ_INT(ncl_server_remove_sample(server, "chNested"), NCL_OK);
     }
 
-    NCL_TEST_CASE("同一槽位各列结构不一致的报文按不完整丢弃");
+    NCL_TEST_CASE("采样率不同的一标量列 + 一批量列可以在同一个通道里");
     {
         ncl_node *config = config_from_json(
             "{\"id\":\"chMixed\",\"type\":\"SAMPLE_CHANNEL\","
@@ -1094,10 +1094,57 @@ static void test_sub_millisecond_samples(void)
             NCL_CHECK_EQ_INT(ncl_server_add_sample(server, config), NCL_OK);
             ncl_node_free(config);
         }
-        /* 通道确实在采（工具被调用），但一列标量、一列批次 → 不对齐 → 不发 */
-        ncl_sleep_millis(400);
+        /* 外层槽位一致即可：/STATUS 每槽 1 点、/TRACE@0 每槽 10 点 */
+        for (i = 0; i < 150 && ncl_server_sample_upload_count(server) == uploads_before;
+             i++) {
+            ncl_sleep_millis(20);
+        }
         NCL_CHECK(tool.trace_calls > trace_before);
-        NCL_CHECK_EQ_INT(ncl_server_sample_upload_count(server), uploads_before);
+        NCL_CHECK(ncl_server_sample_upload_count(server) > uploads_before);
+        NCL_CHECK(ncl_fake_server_publish_at(broker, 0, topic, sizeof(topic),
+                                             payload, sizeof(payload)));
+        NCL_CHECK(strstr(payload, "\"paths\":[\"/STATUS\",\"/TRACE@0\"]") != NULL);
+        {
+            ncl_message *sample = ncl_message_parse(topic, payload, strlen(payload));
+            NCL_CHECK(sample != NULL);
+            if (sample != NULL) {
+                const ncl_sample_item *flat =
+                    (const ncl_sample_item *)ncl_message_item_at(sample, 0);
+                const ncl_sample_item *nested =
+                    (const ncl_sample_item *)ncl_message_item_at(sample, 1);
+                NCL_CHECK(ncl_message_sample_is_complete(sample));
+                NCL_CHECK(flat != NULL && !ncl_sample_item_is_nested(flat));
+                NCL_CHECK(nested != NULL && ncl_sample_item_is_nested(nested));
+                NCL_CHECK_EQ_INT(ncl_sample_item_value_count(flat), 2);    /* 2 个槽位 */
+                NCL_CHECK_EQ_INT(ncl_sample_item_value_count(nested), 20); /* 2×10 点 */
+                /* 行数取最多的一列（批量列 20 点） */
+                NCL_CHECK_EQ_INT(ncl_message_sample_point_count(sample), 20);
+                /* 按行读：批量列逐点展开，标量列每 10 行取同一个点 */
+                {
+                    long long value = 0;
+                    const ncl_json *row0 = ncl_message_sample_value_at(sample, 0, 0);
+                    const ncl_json *row9 = ncl_message_sample_value_at(sample, 9, 0);
+                    const ncl_json *row10 = ncl_message_sample_value_at(sample, 10, 0);
+                    const ncl_json *batch9 = ncl_message_sample_value_at(sample, 9, 1);
+                    const ncl_json *batch10 = ncl_message_sample_value_at(sample, 10, 1);
+
+                    NCL_CHECK(row0 != NULL && ncl_json_as_int(row0, &value));
+                    NCL_CHECK(row9 != NULL && ncl_json_as_int(row9, &value));
+                    NCL_CHECK(row10 != NULL && ncl_json_as_int(row10, &value));
+                    /* 标量列只有 2 个点（2 个槽位）：第 0~9 行都取第 1 个点（42） */
+                    NCL_CHECK_EQ_INT(value, 42);
+                    NCL_CHECK(ncl_json_as_int(row0, &value) && value == 42);
+                    NCL_CHECK(ncl_json_as_int(row9, &value) && value == 42);
+                    /* 批量列就是行轴，逐点展开：第 9 行 = 第 1 槽最后一点，
+                     * 第 10 行 = 第 2 槽的第一点（每批的第一个点 % 100 == 0） */
+                    NCL_CHECK(batch9 != NULL && ncl_json_as_int(batch9, &value) &&
+                              value % 100 == 9);
+                    NCL_CHECK(batch10 != NULL && ncl_json_as_int(batch10, &value) &&
+                              value % 100 == 0);
+                }
+                ncl_message_free(sample);
+            }
+        }
         NCL_CHECK_EQ_INT(ncl_server_remove_sample(server, "chMixed"), NCL_OK);
     }
 
@@ -1135,7 +1182,7 @@ static void test_sub_millisecond_samples(void)
         NCL_CHECK_EQ_INT(ncl_server_remove_sample(server, "chFlat"), NCL_OK);
     }
 
-    NCL_TEST_CASE("完整性校验：内层长度在所有槽位之间也必须一致");
+    NCL_TEST_CASE("完整性校验：外层槽位对齐即可，内层长度不强制一致");
     {
         ncl_message *msg = ncl_message_new(NCL_MSG_SAMPLE);
         ncl_sample_item *item = ncl_sample_item_new();
@@ -1159,7 +1206,7 @@ static void test_sub_millisecond_samples(void)
         NCL_CHECK(ncl_message_sample_is_complete(msg));
         NCL_CHECK_EQ_INT(ncl_message_sample_point_count(msg), 20);
 
-        /* 把第二个槽位换成 9 个点 → 内层不齐 → 整条报文判为不完整 */
+        /* 把第二个槽位换成 9 个点 → 内层不齐，但外层（2 个槽位）仍对齐 → 依然完整 */
         ncl_json_free(ncl_json_arr_take(item->data, 1));
         batch = ncl_json_new_array();
         for (i = 0; i < 9; i++) {
@@ -1168,13 +1215,14 @@ static void test_sub_millisecond_samples(void)
         ncl_json_arr_push(item->data, batch);
         NCL_CHECK_EQ_INT(ncl_json_arr_len(item->data), 2);
         NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_arr_get(item->data, 1)), 9);
-        NCL_CHECK(!ncl_message_sample_is_complete(msg));
-        /* 外层仍一致，所以 is_valid 依旧成立——不完整是额外收紧的检查 */
+        NCL_CHECK(ncl_message_sample_is_complete(msg));
         NCL_CHECK(ncl_message_is_valid(msg));
+        NCL_CHECK_EQ_INT(ncl_sample_item_value_count(item), 19);
+        NCL_CHECK_EQ_INT(ncl_message_sample_point_count(msg), 19);
         ncl_message_free(msg);
     }
 
-    NCL_TEST_CASE("内层恢复一致后通道继续正常上报（只是不齐的窗口被丢）");
+    NCL_TEST_CASE("每槽点数抖动也照常上报（各列/各槽自便）");
     {
         ncl_node *config = config_from_json(
             "{\"id\":\"chJitter\",\"type\":\"SAMPLE_CHANNEL\","
@@ -1188,7 +1236,7 @@ static void test_sub_millisecond_samples(void)
             NCL_CHECK_EQ_INT(ncl_server_add_sample(server, config), NCL_OK);
             ncl_node_free(config);
         }
-        /* 第一个窗口是 [10, 9] 会被丢；之后每槽都是 9 点 → 正常上报 */
+        /* 工具第一槽给 10 点、之后 9 点：外层始终对齐，所以每个窗口都发 */
         for (i = 0; i < 200 && ncl_server_sample_upload_count(server) == uploads_before;
              i++) {
             ncl_sleep_millis(20);

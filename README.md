@@ -68,6 +68,7 @@ nclink-c/
 ```powershell
 .\build.ps1                 # 配置 + 编译 + 运行全部测试
 .\build.ps1 -Clean          # 先清空 build 目录
+.\build.ps1 -Arch x86 -BuildDir build-x86   # 32 位（Win32）：库 + 示例 + 测试
 ```
 
 `build.ps1` 会自动定位 Visual Studio Build Tools 自带的 CMake 与 Ninja，
@@ -81,7 +82,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### Linux（已验证：gcc 13.4，20/20 测试通过）
+### Linux（已验证：gcc 13.4，22/22 测试通过）
 
 没有 CMake 也能编（只需要 gcc/binutils 与 sh）：
 
@@ -102,6 +103,9 @@ cmake --build build-linux -j && ctest --test-dir build-linux --output-on-failure
 `localtime_r`/`pthread_*` 等 POSIX 接口）。
 
 ### 与真实 broker 的互操作验证
+
+套件之间用固定端口（FTP 2323/3131 等）与相对路径：**别在同一个构建目录里并发跑两份
+ctest**，否则会互相抢端口/文件，表现为偶发失败（单跑稳定通过）。
 
 `tests/test_broker.c` 需要真实 broker，默认跳过；用 Docker 一键跑
 EMQX 与 Mosquitto（各自监听 18830 / 18831，不动你本机 1883 上的 broker）：
@@ -139,16 +143,19 @@ Windows 需要 OpenSSL 3 的**静态库**（`OPENSSL_ROOT_DIR`、vcpkg 或自编
 ### 发布包
 
 ```powershell
-.\build.ps1                 # 1. Windows 静态库 + 测试
-# 2. Linux 静态库（任选其一）
+.\build.ps1                                    # 1. Windows 静态库 + 示例 exe + 测试
+.\build.ps1 -Tls -BuildDir build-tls           #    （可选）Windows TLS 版
+.\build.ps1 -Arch x86 -BuildDir build-x86  #    （可选）Windows 32 位
+# 2. Linux 静态库与示例（任选其一；TLS 版加 NCL_WITH_TLS=1 与 libssl-dev）
 docker run --rm -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh build-linux"
 ./build-linux.sh            # 或直接在 Linux 机器上
-# 3. 组装
-.\tools\make_release.ps1 -Version 3.0.0
+# 3. 组装（会带上 build/ 与 build-linux/bin 里编好的示例可执行文件）
+.\tools\make_release.ps1 -Version 3.1.0
 ```
 
-产物：`dist/nclink-core-c-<版本>/`（头文件 + 两个平台静态库 + 文档 + 示例 + 源码
-+ `SHA256SUMS.txt`）与同名 `.zip`；包内说明见 [RELEASE.md](RELEASE.md)。
+产物：`dist/nclink-core-c-<版本>/`（头文件 + Windows x64/x86 与 Linux 静态库 + 文档 +
+示例源码与**编好的示例可执行文件** + 语言绑定 + `SHA256SUMS.txt`）与同名 `.zip`；
+包内说明见 [RELEASE.md](RELEASE.md)。
 
 ### 构建选项
 
@@ -450,7 +457,7 @@ static const ncl_tool_method methods[] = {
 | `json` | JSON 解析/序列化、转义、数字格式、深克隆与相等 |
 | `common` | 错误码命名、字符串工具、缓冲区、指针/字符串容器 |
 | `topic` | 全部主题构造函数、从主题提取序列号的规则 |
-| `model` | 模型文件往返字节一致、路径计算、采样通道绑定、映射表 |
+| `model` | 模型文件往返字节一致、路径计算（含组件/数据项的 `number`）、采样通道绑定、映射表 |
 | `message` | 全部 18 种消息的线格式、校验规则、匹配规则、按主题解析 |
 | `codec` | 十六进制编解码（含非法输入）、zlib 往返（可选） |
 | `thread` | 线程池（5/10/100 + CallerRuns）、单例服务、TTL 缓存过期策略 |

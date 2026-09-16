@@ -60,7 +60,7 @@ examples/           两个可运行示例：设备端 / 客户端
 MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 
 src/<模块>/         实现，共 13 个模块目录        ← 以下仅源码仓库有
-tests/              21 个测试套件（含可选的 broker 互操作与 TLS 套件）+ 协议黄金样本
+tests/              22 个测试套件（含可选的 broker 互操作与 TLS 套件）+ 协议黄金样本
 tools/              许可头检查、broker 互操作、文档生成与发布打包脚本
 build.ps1           Windows 一键：配置 + 编译 + ctest
 build-linux.sh      Linux 免 cmake 构建
@@ -75,10 +75,11 @@ build-linux.sh      Linux 免 cmake 构建
 .\build.ps1                 # 配置 + 编译 + 跑全部测试
 .\build.ps1 -Clean          # 先清空 build 目录再全量编译
 .\build.ps1 -NoTest         # 只编译
+.\build.ps1 -Arch x86 -BuildDir build-x86   # 32 位（Win32）：库 + 示例 + 测试
 ```
 
-脚本会自动定位 Visual Studio 2022 Build Tools 自带的 CMake/Ninja 并调用
-`vcvars64.bat`，不用先开 VS 命令行。手工构建等价于：
+脚本会自动定位 Visual Studio 2022 Build Tools 自带的 CMake/Ninja，并按架构调用对应的
+`vcvars64.bat` / `vcvars32.bat`，不用先开 VS 命令行；`-Arch x86` 出的就是 32 位
 
 ```bat
 call "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
@@ -87,7 +88,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### 2.3 Linux（已验证：gcc 13.4，20/20 测试通过）
+### 2.3 Linux（已验证：gcc 13.4，22/22 测试通过）
 
 源码是 C11，套接字层有 Winsock / BSD 两套实现，两个平台都已在真机编过并跑通
 全部测试（Windows 见 2.2，Linux 见下）。
@@ -209,15 +210,17 @@ target_link_libraries(your_app PRIVATE nclink::core)
 1. **字符集**：源码与字符串字面量都是 UTF-8（日志与设备描述含中文），
    MSVC 必须加 `/utf-8`。否则在非 UTF-8 代码页上会出现 C4819，甚至中文字符串
    把结尾引号“吞掉”导致 C2001。CMake 工程已对全部目标统一设置。
-2. **平台库**：Windows 需要 `ws2_32`（套接字）与 `iphlpapi`（网卡枚举，供
+2. **平台库**：Windows 需要 `ws2_32`（套接字）、`iphlpapi`（网卡枚举，供
    `ncl_net_ip_map_json()` 使用）。MSVC 下源码自带 `#pragma comment(lib, ...)`，
-   MinGW/其它工具链需显式 `-lws2_32 -liphlpapi`；POSIX 需要 `-pthread`。
+   `ncl_net_ip_map_json()` 使用）与 `winmm`（1 ms 级等待的 `timeBeginPeriod`，见 4.5）；
+   MinGW/其它工具链需显式 `-lws2_32 -liphlpapi -lwinmm`；POSIX 需要 `-pthread`。
 3. **收尾**：进程退出前可调用一次 `ncl_socket_system_release()` 显式释放网络栈。
    不调用也可以——库默认让网络栈存活到进程结束，以免误伤同进程内其它套接字。
 
-Windows 用 MSVC 时还要注意 ABI 一致：发布包里的 `nclink_core.lib` 是
-**x64 + Release + /MD（动态 CRT）**，你的工程必须用同样的运行库设置；
-不一致时请用仓库里的源码重新编译（见 2.3）。
+Windows 用 MSVC 时还要注意 ABI 一致：发布包里的 `nclink_core.lib` 有 **x64 与 x86（32 位）**
+两份，都是 **Release + /MD（动态 CRT）**，你的工程要用同样的架构与运行库设置；包内示例
+可执行文件同样是 `/MD`，运行需要 VC++ 2015-2022 运行库。不一致时请用仓库里的源码重新
+编译（见 2.3）。
 
 ---
 
@@ -227,9 +230,14 @@ Windows 用 MSVC 时还要注意 ABI 一致：发布包里的 `nclink_core.lib` 
 
 ```powershell
 .\build.ps1
-build\examples\ncl_device_demo.exe <安装根目录> <运行秒数>   # 设备端
+build\examples\ncl_device_demo.exe <安装根目录>        # 设备端：一直运行到 Ctrl+C
+build\examples\ncl_device_demo.exe <安装根目录> 60     # 只想跑一会儿（脚本/冒烟）
 build\examples\ncl_client_demo.exe <broker> <设备SN> <秒数>  # 客户端
 ```
+
+设备端示例默认**一直运行**（真实设备就是这个跑法），只有 Ctrl+C（或 POSIX 的
+SIGTERM）才停，停下时走正常清理：停采样、停 FTP/HTTP、断开 MQTT。给它第二个参数
+（秒数）就只跑那么久，方便脚本里跑出确定长度的输出。
 
 ### 3.1 设备端最小程序
 
@@ -370,40 +378,81 @@ int main(void) {
 
 ### 3.3 示例实测输出
 
-设备端（`ncl_device_demo.exe <安装根目录> 16`）与客户端（`ncl_client_demo.exe
-tcp://127.0.0.1:1883 344289212 8`）对跑，客户端侧输出。`344289212` 是设备端首次
-启动时生成的 9 位 SN（见 3.4），broker 是本机 EMQX 5.8.9（匿名 1883）：
+设备端（`ncl_device_demo.exe <安装根目录> 20`）与客户端（`ncl_client_demo.exe
+tcp://127.0.0.1:1883 166587125 12`）对跑，客户端侧输出（下面是客户端那 12 s 窗口里
+的内容，头两条与结尾；SN 每次首启都会换一个，这里只是当次跑出来的那个）。
+`166587125` 是设备端首次启动时生成的 9 位 SN（见 3.4），broker 是本机
+MQTT 5.0 broker（mochi-mqtt v2.7.9，匿名 1883；更早几次实测用的是 EMQX 5.8.9，
+行为一致）：
 
 ```
 设备模型已装载: /NC_LINK_ROOT，/STATUS 的节点 id = 010302
-模型里的采集通道 sample_channel0: 4 个采样项
-    [0] /STATUS
-    [1] /PART_COUNT
-    [2] /CONTROLLER/WARNING
-    [3] /CONTROLLER/PROGRAM
+模型里的采集通道 sample_channel0: 8 个采样项
+    [0] /PART_COUNT
+    [1] /FEED_OVERRIDE
+    [2] /CONTROLLER/PROGRAM
+    [3] /CONTROLLER/TOOL_NUMBER
+    [4] /AXIS@S/SPEED
+    [5] /STATUS
+    [6] /MACHINING_MODE
+    [7] /CONTROLLER/WARNING
+模型里的采集通道 EdgeSersors: 12 个采样项
+    [0] /AXIS@X/POWER@1
+    [1] /AXIS@X/ACCELERATION@1
+    ...（X/Y/Z/C 各一路 + 主轴两路，共 12 项）
 GET /STATUS = 1
 SET /STATUS = 42 成功
 check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
-文件回传路径: D:\...\344289212\demo.txt
+文件回传路径: D:\...\166587125\demo.txt
   远端文件 demo.txt (14 字节)
-收到采样 [Sample/344289212/sample_channel0] 通道=sample_channel0 采样周期=10ms 上报周期=2000ms 采样项=4
-    表头 paths(4 项) = ["/STATUS","/PART_COUNT","/CONTROLLER/WARNING","/CONTROLLER/PROGRAM"]
-    原始报文: {"paths":["/STATUS","/PART_COUNT","/CONTROLLER/WARNING","/CONTROLLER/PROGRAM"],
-              "id":"sample_channel0","beginTime":"1789524623425",
-              "data":[{"data":[42,42,42,...]},{"data":[61,61,62,...]},...],
-              "interval":10,"uploadInterval":2000}
-    /STATUS             编码=raw 本轮 200 个值: [42, 42, 42, 42, ...]
-    /PART_COUNT         编码=raw 本轮 200 个值: [61, 61, 61, 61, ...]
-    /CONTROLLER/WARNING 编码=raw 本轮 200 个值: [0, 0, 0, 0, ...]
-    /CONTROLLER/PROGRAM 编码=raw 本轮 200 个值: [1004, 1004, 1004, ...]
-收到事件 [Event/344289212] id=010307 key=PART_COUNT value=30
+收到采样 [Sample/166587125/EdgeSersors] 通道=EdgeSersors 采样周期=1ms 上报周期=100ms 采样项=12
+    表头 paths(12 项) = ["/AXIS@X/POWER@1","/AXIS@X/ACCELERATION@1",...,"/AXIS@S/ACCELERATION@2"]
+    原始报文: {"paths":[...同上 12 项...],"id":"EdgeSersors","beginTime":"1789573512114",
+              "data":[{"data":[800.0,812.5,...(中间省略)...,1100.0]},        ← 功率：100 个值
+                      {"data":[[-1.0,-0.875,-0.75,-0.625],...]},          ← 振动：每槽一批
+                      ...],"interval":1,"uploadInterval":100}
+    /AXIS@X/POWER@1  编码=raw 本轮 100 个值: [800.0, 812.5, 825.0, 837.5, ...]
+    ...
+    /AXIS@S/POWER@2  编码=raw 本轮 100 个值: [2175.0, 2187.5, 2200.0, ...]   ← 主轴第二路
+    /AXIS@S/ACCELERATION@2 批量采样: 100 个槽位 × 每槽约 4 点 = 400 点，首个=0.875
+    按行消费: 400 行（数据最多的那一列的点数）
+      行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-1.0  /AXIS@Y/POWER@1=1137.5  ...
+      行[1] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-0.875  /AXIS@Y/POWER@1=1137.5  ...
+      ...（共 400 行，这里只打前 8 行）
+收到采样 [Sample/166587125/sample_channel0] 通道=sample_channel0 采样周期=1000ms 上报周期=1000ms 采样项=8
+    表头 paths(8 项) = ["/PART_COUNT","/FEED_OVERRIDE","/CONTROLLER/PROGRAM","/CONTROLLER/TOOL_NUMBER","/AXIS@S/SPEED","/STATUS","/MACHINING_MODE","/CONTROLLER/WARNING"]
+    /PART_COUNT      编码=raw 本轮 1 个值: [30]
+    /FEED_OVERRIDE   编码=raw 本轮 1 个值: [70]
+    /CONTROLLER/PROGRAM 编码=raw 本轮 1 个值: [1002]
+    /CONTROLLER/TOOL_NUMBER 编码=raw 本轮 1 个值: [3]
+    /AXIS@S/SPEED    编码=raw 本轮 1 个值: [4200]
+    /STATUS          编码=raw 本轮 1 个值: [1]
+    /MACHINING_MODE  编码=raw 本轮 1 个值: [1]
+    /CONTROLLER/WARNING 编码=raw 本轮 1 个值: [0]
+    按行消费: 1 行（数据最多的那一列的点数）
+      行[0] /PART_COUNT=30  /FEED_OVERRIDE=70  /CONTROLLER/PROGRAM=1002  /CONTROLLER/TOOL_NUMBER=3  /AXIS@S/SPEED=4200  /STATUS=1  /MACHINING_MODE=1  /CONTROLLER/WARNING=0
+收到事件 [Event/166587125] id=010307 key=PART_COUNT value=60
 ...
-共收到 8 条事件、3 条采样上报
+共收到 12 条事件、65 条采样上报
 ```
 
 这六步分别验证了：模型交换、读、写、参数校验、采样上报、文件通道、事件推送。
-默认模型是 10 ms 采样 / 2 s 上报，所以一条采样报文里每列 200 个值（上面按
-`...` 省略）；嫌长就改 `conf/model/nclink.json` 里的 `sampleInterval`。
+默认模型把采样分成两个通道，正好是两种典型节奏：
+
+| 通道 | 采样 / 上报 | 内容 | 一条报文里每列多少点 |
+|------|-------------|------|----------------------|
+| `sample_channel0` | 1 s / 1 s | 机床运行状态（上面八项，含报警号） | 1 点（也是"1 行"） |
+| `EdgeSersors` | 1 ms / 100 ms | 5 轴的功率与振动（主轴两路，共 12 列） | 功率 100 点、振动 400 点 |
+
+所以"一条报文多大"由通道自己决定：秒级的量走一个通道，毫秒级的波形走另一个通道，
+慢的不会被快的撑大；12 s 的实测里 `sample_channel0` 出了 11 条、`EdgeSersors` 出了
+54 条（≈ 222 ms 一条）。`uploadInterval` 是"采样次数"，而 1 ms 的槽位要真跑到 1 ms
+得让等待不落在系统时钟粒度上 —— 库里对短等待走**高精度计时器**（Win10 1803+ 的
+`CreateWaitableTimerEx`，不支持才回退到 `timeBeginPeriod(1)`），细节见 4.5；同一份
+模型在 Linux 上实测 ≈ 118 ms 一条。两条通道的列采样率各自一致，所以"按行"与"按列"
+读到的是同一条时间轴；同一通道内采样率不同时的行为见 4.5 的"按行消费"
+（`EdgeSersors` 里功率 1 ms 一列 + 振动 0.25 ms 一列，行数 400）。
+
 
 ### 3.4 设备端示例的首次启动（自举）
 
@@ -411,36 +460,102 @@ check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
 按"出厂默认值"补齐，已经存在的一律不动。
 
 ```powershell
-build\examples\ncl_device_demo.exe D:\sim4 60   # 第一次：准备 D:\sim4 并运行 60 秒
-build\examples\ncl_device_demo.exe D:\sim4 60   # 第二次：沿用上一次的 SN 与配置
+build\examples\ncl_device_demo.exe D:\sim4        # 第一次：准备 D:\sim4，然后一直运行
+build\examples\ncl_device_demo.exe D:\sim4        # 第二次：沿用上一次的 SN 与配置
+build\examples\ncl_device_demo.exe D:\sim4 60     # 也可以给秒数：跑 60 秒就自己退出
 ```
+
+秒数省略（或写 0）就一直运行到 Ctrl+C —— 现场就是这么跑的；给正数则跑完自动退出，
+步骤 1~8 完全一样，只是主循环多了一个"跑满就走"的出口。
 
 首次启动补上这三样，它们也是设备身份与配置的来源：
 
 | 文件 | 首次启动写什么 |
 |------|----------------|
 | `bin/sn.txt` | 随机生成的 **9 位 SN**（9 个十进制数字）。库里的 `ncl_sn_read()` 默认是 `V2` + 9 位十六进制（见 4.1），示例按现场习惯先用纯数字生成好落盘，再让它去读 |
-| `conf/model/nclink.json` | 默认设备模型：一台数控机床（X/Y/Z/C 四轴 + 数控系统），带采样通道 `sample_channel0`（10 ms 采样 / 2 s 上报） |
+| `conf/model/nclink.json` | 默认设备模型：一台数控机床（X/Y/Z/C 四轴 + 主轴 S + 数控系统），带两个采样通道：`sample_channel0`（机床运行状态，1 s 采样 / 1 s 上报，八项）、`EdgeSersors`（5 轴的功率与振动，主轴挂两路，共十二项；数据项带 number，路径形如 `/AXIS@S/POWER@1`） |
 | `conf/mqtt.cfg` | 本机 broker：`url=tcp://127.0.0.1:1883`，`username=`/`password=` 留空 = 匿名连接（空值不会写进 MQTT 连接报文） |
 
 之后以文件为准，示例不再覆盖：换模型改 `conf/model/nclink.json`（或走 REST 的
 `/api/setModel`），换 broker 改 `conf/mqtt.cfg`（或 `/api/setMqttUrl`），下次启动
 生效；把根目录删掉重跑，等于换一台新设备。
 
-`sample_channel0` 的四个采样项是 `010302 / 010307 / 01035412 / 01035409`。设备端
-按 id 找到节点、取节点路径当表头，再按路径找工具取值，所以示例的 `kBindings`
-里注册的是这四条路径：
+`sample_channel0`（通道 0）的八个采样项是 `010307 / 010305 / 01035409 / 01035413 /
+01035506 / 010302 / 010309 / 01035412`，全是 1 s 采样 / 1 s 上报（机床那些"按秒看就
+够了"的量）。设备端按 id 找到节点、取节点路径当表头，再按路径找工具取值，所以示例
+的 `kBindings` 里注册的是这八条路径：
 
-| 采样项 id | 路径（表头里的名字） | 示例工具 |
-|-----------|----------------------|----------|
-| `010302` | `/STATUS` | `plc/getValue`（可写：`plc/setValue`） |
-| `010307` | `/PART_COUNT` | `plc/getCount` |
-| `01035412` | `/CONTROLLER/WARNING` | `plc/getWarning` |
-| `01035409` | `/CONTROLLER/PROGRAM` | `plc/getProgram` |
+| 采样项 id | 路径（表头里的名字） | 示例工具 | 含义 |
+|-----------|----------------------|----------|------|
+| `010307` | `/PART_COUNT` | `plc/getCount` | 加工计件（件） |
+| `010305` | `/FEED_OVERRIDE` | `plc/getFeedOverride` | 进给倍率（%） |
+| `01035409` | `/CONTROLLER/PROGRAM` | `plc/getProgram` | 当前加工程序名 |
+| `01035413` | `/CONTROLLER/TOOL_NUMBER` | `plc/getToolNumber` | 当前刀号 |
+| `01035506` | `/AXIS@S/SPEED` | `plc/getSpeedS` | 主轴转速（r/min；SPEED 挂在主轴 S 轴上） |
+| `010302` | `/STATUS` | `plc/getValue`（可写：`plc/setValue`） | 设备状态 |
+| `010309` | `/MACHINING_MODE` | `plc/getMachiningMode` | 加工模式（0 手动 / 1 录入 / 2 自动） |
+| `01035412` | `/CONTROLLER/WARNING` | `plc/getWarning` | 报警号（`0` = 无报警） |
+
+模型里还有进给速度（`010303`）、主轴倍率（`010306`）等其他数据项，没进这个通道；
+要采就把 id 加进 `ids`（见 4.5 的 `addSample`）。
+
+功率与振动（= 加速度）挂在 `AXIS` 组件下，路径形如 `/AXIS@<轴号>/<类型>@<传感器号>`，
+十二项都在通道 1 `EdgeSersors` 里（`sampleInterval` 1 ms 槽位 / `uploadInterval` 100 ms
+上报，即 100 个槽位一条报文）：X/Y/Z/C 各一路，**主轴 S
+挂两路**（功率 1/2、加速度 1/2）—— 一个部件多个传感器就是这么写的（同 `type`、不同
+`number`、不同 id，见下面的"路径的组成"）。采样率靠"每槽装几个点"区分：
+功率每槽 1 点（1 ms 一个），振动每槽 4 点（0.25 ms 一个 = 4 kHz）—— 就是 4.5 里的
+亚毫秒采样：
+
+| 采样项 id | 路径（表头里的名字） | 示例工具 | 每槽点数 |
+|-----------|----------------------|----------|----------|
+| `01035004` | `/AXIS@X/POWER@1` | `plc/getPowerX1` | 1 |
+| `01035104` | `/AXIS@Y/POWER@1` | `plc/getPowerY1` | 1 |
+| `01035204` | `/AXIS@Z/POWER@1` | `plc/getPowerZ1` | 1 |
+| `01035304` | `/AXIS@C/POWER@1` | `plc/getPowerC1` | 1 |
+| `01035504` | `/AXIS@S/POWER@1` | `plc/getPowerS1` | 1 |
+| **`01035507`** | **`/AXIS@S/POWER@2`** | **`plc/getPowerS2`** | 1 |
+| `01035005` | `/AXIS@X/ACCELERATION@1` | `plc/getAccelerationX1` | 4 |
+| `01035105` | `/AXIS@Y/ACCELERATION@1` | `plc/getAccelerationY1` | 4 |
+| `01035205` | `/AXIS@Z/ACCELERATION@1` | `plc/getAccelerationZ1` | 4 |
+| `01035305` | `/AXIS@C/ACCELERATION@1` | `plc/getAccelerationC1` | 4 |
+| `01035505` | `/AXIS@S/ACCELERATION@1` | `plc/getAccelerationS1` | 4 |
+| **`01035508`** | **`/AXIS@S/ACCELERATION@2`** | **`plc/getAccelerationS2`** | 4 |
+
+一条路径一套绑定：服务端按「路径 → 方法」取值，而工具方法的签名里拿不到路径，
+所以这十二条路径各配了一个方法（方法体是同一份样板，示例里用宏生成，名字带轴与
+传感器号，如 `getPowerS2`）。轴的功率
+（W）每次给 1 个标量、振动（mm/s²）每次给 4 个值（0.125 一格的三角波，即"每次
+查询生成 4 个"），都由示例内部"一次一格推进"的假寄存器生成 —— 真机换成从驱动器/
+传感器读即可。消费端按行读（见 4.5 的"按行消费"）：行数 400（振动列的点数），功率
+列在同一个槽位的 4 行里读到同一个点。上报周期写 100 ms：Linux 上实测 ≈118 ms 一条，
+Windows 上（库里对短等待走高精度计时器，见 4.5）实测 ≈222 ms 一条 —— 多出来的那部分
+主要是取值本身的开销（每槽 12 次完整 Query）。C 与 C++ 两个客户端示例的回调都这么消费。
+
+轴上的量都按"轴 + 物理量"写：主轴转速就是主轴 S 轴的 `SPEED` 数据项（`01035506` →
+`/AXIS@S/SPEED`，工具 `plc/getSpeedS`），它是 S 轴上的单路量，走的是通道 0（见上）。
+设备端与两个客户端示例会把轴上的这几项按"路径 含义"打出来，同一个部件多路传感器
+时含义后面跟 `#<number>`，一眼能看出是哪一路：
+
+```
+/AXIS@S/POWER@1          主轴功率 #1
+/AXIS@S/SPEED            主轴转速
+/AXIS@S/ACCELERATION@2   主轴加速度 #2
+```
 
 注意路径的组成：挂在设备（`MACHINE`）下的数据项是 `/<TYPE>`，挂在组件
-（`CONTROLLER`）下的数据项才带组件名。路径对不上（比如把报警注册成 `/WARNING`）
-时采样照样发，但那一列只能是 `null`。
+（`CONTROLLER`）下的数据项才带组件名，挂在轴（`AXIS`）下的则是
+`/AXIS@<轴号>/<类型>`（主轴是 `/AXIS@S/...`）。
+
+**数据项自己也可以带 `number`**：一个部件上挂多路同类传感器时，就是"同 `type`、不同
+`number`、不同 id"的几个数据项，路径变成 `/<父路径>/<type>@<number>`
+（`/AXIS@S/POWER@1`、`/AXIS@S/POWER@2`）。没有 `number` 的项就是单路，路径不带后缀
+（`/AXIS@S/SPEED`）。`number` 是字符串、内容自定，示例里用 `"1"`、`"2"`；模型文本里它
+写在 `type` 之后、`dataType` 之前。采样表头、工具绑定、按路径查询都用带 `number` 的
+完整路径，所以多路传感器在采样报文里天然是各自一列。
+
+路径对不上（比如把报警注册成 `/WARNING`，或漏了 `@2`）时采样照样发，但那一列只能是
+`null`。
 
 ---
 
@@ -576,6 +691,54 @@ ncl_server_stop_all_samples(server);
 
 上报报文发在 `Sample/<sn>/<通道id>`，结构见 `ncl_message` 的 `sample` 分支。
 
+#### 采样周期是通道级的，而且只有整数毫秒
+
+`sampleInterval` / `uploadInterval` 都是**通道级**字段（`ncl_node.sample_interval` /
+`upload_interval`，类型 `long long`）：`sampleInterval` 是通道的**槽位节奏**，通道里
+所有采样项每一轮各取一次。采样率不同不用拆通道 —— 各列的采样率由"每槽装几个点"
+体现（见上面的亚毫秒采样）：1 ms 的列每槽 1 点、0.25 ms 的列每槽 4 点，同处一个
+通道，按行读即可（见"按行消费"）。只有比槽位还慢的列（例如 10 ms 一列配 1 ms
+一列）才需要另想办法：拆通道，或者让该列在多个槽位里重复同一个值。
+
+单位是毫秒，且必须是整数，最小 1 ms：
+
+- `"sampleInterval": 0.25` 这类小数会被判成非法值（解析走整数通道），整个通道起不来。
+- 1 ms 的槽位要真跑到 1 ms，得让等待别落在系统时钟粒度上（Windows 默认 ~15.6 ms）。
+  库里的做法是"**短等待走高精度计时器**"，按优先级两条路：
+
+  1. **高精度可等待计时器**（Win10 1803+）：`CreateWaitableTimerEx` 带
+     `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`，精度 ~0.5 ms，不动系统时钟；
+     `ncl_cond_wait_timeout()` 用 `WaitForMultipleObjects` 同时等"被唤醒"与"计时器到期"，
+     采样循环因此不再被时钟粒度拖住（计时器按线程持有，避免共用时互相踩到期时间）。
+  2. **回退**（老系统上该计时器建不出来时）：`timeBeginPeriod(1)` 把系统时钟粒度提到
+     1 ms，再走普通等待，精度 ~1.7 ms。
+
+  只有 ≤ 100 ms 的等待走这条路，更长的等待仍交给系统 wait（省电）。本机实测
+  （500 次平均）：
+
+  | 等待 | 调优前 | 现在 |
+  |------|--------|------|
+  | `ncl_sleep_millis(1)` | 14.1 ms | **1.56 ms** |
+  | `ncl_cond_wait_timeout(_, _, 1)`（采样循环走的这条） | 15.5 ms | **1.56 ms** |
+  | `ncl_sleep_millis(100)` | ~100 ms | ~100 ms（长等待不变） |
+
+  效果：示例的 `EdgeSersors`（1 ms 槽位 / 100 ms 上报）在本机从 ~1.4 s 一条变成
+  ~222 ms 一条 —— 剩下的 ~1.2 ms/槽是取值本身的开销（每槽 12 次完整 Query，见下面
+  最后一条）。Linux 上走 `nanosleep` / `pthread_cond_timedwait`，本来就是微秒级。
+  Windows 侧的依赖：MSVC 由源码里的 `#pragma comment(lib, "winmm.lib")` 自动带上，
+  MinGW/GCC 手工链接时加 `-lwinmm`。
+- 真要做 0.25 ms（4 kHz 振动）得先扩库，至少要动四处：`ncl_node` 加亚毫秒字段（或让
+  `sampleInterval` 支持小数）、模型编解码两侧跟改、`ncl_sample_collect()` 的调度从
+  毫秒换成微秒、`ncl_platform` 补一个微秒级等待（Windows 上高精度计时器也只到
+  ~0.5 ms，250 µs 还得配自旋补尾或独立的采集线程）。
+  注意区分两件事：要的是"**0.25 ms 一个点**"的数据，上面 4.5 的亚毫秒采样就够
+  （示例的 EdgeSersors 通道就是这么做的：1 ms 槽位，功率每槽 1 点、振动每槽 4 点）；
+  要的是"**每 0.25 ms 真的采一次**"（精度、抖动有要求），才需要上面这一圈扩库。
+- 更硬的瓶颈在采样环路的形状：`ncl_sample_collect()` 是**每个采样项每一轮**走一次
+  完整的 Query 调用（建消息、生成 UUID、JSON 编解码、绑定查表）。1 ms × 10 项已经是
+  每秒上万次调用；真要做 4 kHz 波形，应该改成「一次回调给一批值」的批量取值接口，
+  而不是把周期继续往下压。
+
 #### 采样通道的两种形态与异常处理
 
 `ncl_server_add_sample()`（以及 `addSample` 方法调用）只接受两种形态，**其余一律返回
@@ -610,42 +773,74 @@ ncl_err rc = ncl_server_add_sample(server, config);   /* 前提：/EXT/A@0 上�
 
 #### 亚毫秒采样：值本身可以是数组（数组套数组）
 
-采样周期最小仍是 1 ms（**外层槽位**）；但**一次采样可以返回一批值**——工具返回
-数组时，这一列的每个槽位就是那个数组，报文自然变成"槽位数组套批次数组"。
-库不配置、报文不加字段，批次长度完全由数据决定：
+采样周期最小仍是 1 ms（**外层槽位**，通道级）；但**一次采样可以返回一批值**——工具
+返回数组时，这一列的每个槽位就是那个数组，报文自然变成"槽位数组套批次数组"。
+库不配置、报文不加字段，每槽装几个点完全由数据决定，而且**各列可以不一样**：
 
 ```
 sampleInterval = 1ms（槽位）, uploadInterval = 200ms
-工具每次返回 10 个值（相当于槽位内 0.1ms 分辨率）
-→ 外层 200 个槽位，每槽 10 点，合计 2000 点
-   "data":[ [10 个值], [10 个值], ..., [10 个值] ]
+功率列：工具每次返回 1 个值  → 200 个槽位 × 每槽 1 点  = 200 点
+振动列：工具每次返回 10 个值 → 200 个槽位 × 每槽 10 点 = 2000 点（槽内 0.1ms）
+   "data":[ {"data":[[10 个值],[10 个值],...]}, {"data":[1,2,3,...]} ]
+              ↑ 批量列（每槽一批）              ↑ 标量列（每槽 1 点）
 ```
 
-消费端不必自己判断两层结构，用助手即可（标量列同样适用）：
+**采样率就是"每槽装几个点"**，所以采样率不同的数据项可以放进同一个通道：1 ms 的
+列每槽 1 点、0.25 ms 的列每槽 4 点即可（`sampleInterval` 只能写整数毫秒，比槽位还
+细的周期一律靠"每槽多装点"实现）。外层槽位一致就够，内层各列自便。
+
+列内不用自己判断两层结构，用助手即可（标量列、批量列、混杂都适用）：
 
 ```c
 const ncl_sample_item *item = ncl_message_item_at(msg, 0);
-if (ncl_sample_item_is_nested(item)) {                 /* 是批量列 */
+if (ncl_sample_item_is_nested(item)) {                 /* 该列含数组元素 */
     size_t slots  = ncl_json_arr_len(item->data);      /* 槽位数 */
-    size_t points = ncl_sample_item_value_count(item); /* 总点数 */
-    const ncl_json *first = ncl_sample_item_value_at(item, 0);   /* 扁平取值 */
+    size_t points = ncl_sample_item_value_count(item); /* 该列总点数 */
+    const ncl_json *first = ncl_sample_item_value_at(item, 0);   /* 列内扁平取值 */
 }
-size_t total = ncl_message_sample_point_count(msg);    /* 整条报文点数 */
 ```
 
-#### 消费端拿到的报文一定是完整的（内外层都要对齐）
+#### 按行消费：行轴是最细的那一列
 
-设备端发布前会校验 `ncl_message_sample_is_complete()`，**内外层都必须对齐**，
-一条报文只允许一种统一形状：
+各列采样率不同时，**按行**读最省事：行数取"数据最多的那一列"的点数（最细的那根
+时间轴），其余列取**覆盖该行的第一个点**，于是不同采样率的列能在同一张表里逐行对齐：
+
+```c
+size_t rows = ncl_message_sample_point_count(msg);   /* 行数 = 最多那列的点数 */
+for (size_t row = 0; row < rows; row++) {
+    for (size_t col = 0; col < ncl_message_item_count(msg); col++) {
+        const ncl_json *v = ncl_message_sample_value_at(msg, row, col);
+        ...
+    }
+}
+```
+
+规则：最多那列逐点展开（第 `row` 行就是它的第 `row` 个点）；更粗的列落在同一段里
+就反复取该段的第一个点。示例（一个通道：功率 1 ms + 振动 0.25 ms）：
+
+```
+按行消费: 400 行（数据最多的那一列的点数；100 个槽位 × 每槽 4 点）
+  行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-1.0      ← 功率 4 行共用同一个点
+  行[1] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-0.875
+  行[2] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-0.75
+  行[3] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-0.625
+  行[4] /AXIS@X/POWER@1=812.5  /AXIS@X/ACCELERATION@1=-0.5
+```
+
+C 与 C++ 两个客户端示例的回调都是这么消费的（各打前 8 行）。
+
+#### 消费端拿到的报文一定是完整的（外层槽位对齐即可）
+
+设备端发布前会校验 `ncl_message_sample_is_complete()`：
 
 | 层次 | 要求 |
 |------|------|
 | 外层 | 表头（`paths`）非空；表头项数 == 数据块列数；**每列槽位数相同**且 ≥ 1 |
-| 内层 | 要么所有位置都是标量/null；要么所有位置都是数组，且**所有内层长度完全相同** |
+| 内层 | 不设统一形状：标量、数组、每槽点数不等都可以（各列按自己的采样率走） |
 
-判为"标量混批量"或"内层长度不一致"的窗口会被**丢弃**并记
-`采样报文不完整，已丢弃: 通道 xxx`，绝不发出没法按行列对读的数据。
-消费端可以再兜一层：
+唯一例外是**整列 `[]`**：那是"本周期该项没有数据"的占位，判为还没填完，交给
+`ncl_message_sample_normalise()` 换成 `null` 之后再发。外层对不上的窗口会被
+**丢弃**并记 `采样报文不完整，已丢弃: 通道 xxx`。消费端可以再兜一层：
 
 ```c
 if (!ncl_message_sample_is_complete(msg)) {
@@ -663,10 +858,9 @@ if (!ncl_message_sample_is_complete(msg)) {
 
 - **表头**：`paths` 缺失或项数与 `data` 列数不符时，拿通道 id 到模型里找同名
   `SAMPLE_CHANNEL`，按它声明的 `ids` 顺序补出表头；模型项数与列数对不上就不补。
-- **空列**：整列都是 `[]` 时换成等长的 `null`——只在其余列都是标量、换完能回到
-  统一标量形状时才做（本来就"标量列 + 批量列"混排的表救不回来）。
+- **空列**：整列都是 `[]` 时换成等长的 `null`（按列处理，不看别的列是什么形状）。
 
-补不了就绝不猜：通道查不到、项数对不上、形状统一不了，报文原样交给回调，
+补不了就绝不猜：通道查不到、项数对不上，报文原样交给回调，
 `ncl_message_sample_is_complete()` 继续如实返回 false。自己直接吃 MQTT 时（见
 6.6）也可以照样调它：
 
@@ -677,9 +871,9 @@ if (!ncl_message_sample_is_complete(msg)) {
 }
 ```
 
-注意：`ncl_message_is_valid()` 只检查外层（各列槽位数一致），内层对齐是
-`ncl_message_sample_is_complete()` 额外做的检查；因此它仍可能对一条"外层齐、
-内层不齐"的报文返回 true，判断采样报文能否消费请一律用后者。
+注意：`ncl_message_is_valid()` 只检查外层（各列槽位数一致）；
+`ncl_message_sample_is_complete()` 在它之上再多排掉"整列 `[]`"的占位列，两者都不
+管内层形状。判断采样报文能否消费请一律用后者。
 
 报文内容（也是客户端回调里拿到的字段）：
 
@@ -1162,9 +1356,10 @@ size_t got = ncl_client_sample_count(client);   /* 收到过多少条上报 */
 | 表头 | `paths` 是数组（不是拼接字符串）；要一行字符串用 `ncl_message_sample_header(msg, ";")` |
 | `interval` | 就是模型里的 `sampleInterval`（报文键名是 `interval`） |
 | 时间戳 | 报文里带 `beginTime`（窗口起点，epoch 毫秒字符串），需要严格时间对齐时用它 |
-| 完整性 | 设备端只发完整报文（表头与数据块对齐）；消费端可用 `ncl_message_sample_is_complete()` 复核 |
+| 完整性 | 设备端只发完整报文（**外层**：表头与各列槽位对齐）；消费端可用 `ncl_message_sample_is_complete()` 复核 |
 | 设备省掉表头 | 客户端会先用设备模型补回规范形状（`ncl_message_sample_normalise()`，见 4.5）；补不了才原样交给回调 |
-| 亚毫秒采样 | 值本身可以是数组（一个槽位一批数据）；读它用 `ncl_sample_item_is_nested()` / `_value_count()` / `_value_at()` |
+| 亚毫秒采样 | 值本身可以是数组（一个槽位一批数据），各列每槽点数可以不同；读它用 `ncl_sample_item_is_nested()` / `_value_count()` / `_value_at()` |
+| 按行消费 | 采样率不同的列放在一张表里读：`ncl_message_sample_point_count()` 取行数（最多那列的点数），`ncl_message_sample_value_at(msg, row, col)` 取每行每列的值（粗列取覆盖该行的第一个点） |
 
 ### 5.6 ncl_server.h —— 服务端
 
@@ -2171,7 +2366,9 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_message_sample_normalise(ncl_message *msg, ncl_node *root);` — 用设备模型把设备端"省掉/占位"的采样信息补回规范形状，好让消费端继续按行
 - `bool ncl_sample_item_is_nested(const ncl_sample_item *item);` — 该列是否含数组元素（即是否是亚毫秒批量采样）。
 - `size_t ncl_sample_item_value_count(const ncl_sample_item *item);` — 该列的总点数：标量（含 null）算 1，数组算其长度。
-- `size_t ncl_message_sample_point_count(const ncl_message *msg);` — 整个报文的总点数（各列应相同，否则报文不完整）。
+- `const ncl_json *ncl_sample_item_value_at(const ncl_sample_item *item, size_t index);` — 按"扁平下标"取第 @p index 个点：标量列等同于下标取值，数组列按槽位顺序展开。
+- `size_t ncl_message_sample_point_count(const ncl_message *msg);` — 行数（= 整个报文的点数）：**数据最多的那一列**的点数。
+- `const ncl_json *ncl_message_sample_value_at(const ncl_message *msg, size_t row, size_t column);` — 按行读某一列的值：@p row 取 [0, ncl_message_sample_point_count())，@p column 取
 - `bool ncl_message_is_valid(const ncl_message *msg);` — True when the message satisfies the rules of its kind.
 - `bool ncl_message_matches(const ncl_message *response, const ncl_message *request);` — True when @p response answers every item of @p request.
 - `bool ncl_message_has_data(const ncl_message *msg);` — Whether a query response carries a "data" member, and that member.
@@ -2328,6 +2525,7 @@ Copyright (c) 2026 huienming
 - `ncl_schema *ncl_schema_compile(const ncl_json *schema, char **error);` — Parse and prepare @p schema.
 - `ncl_schema *ncl_schema_compile_text(const char *text, size_t len, char **error);`
 - `void ncl_schema_free(ncl_schema *schema);`
+- `const ncl_json *ncl_schema_root(const ncl_schema *schema);` — The schema document the object was compiled from (borrowed).
 - `ncl_err ncl_schema_validate(const ncl_schema *schema, const ncl_json *value, ncl_strvec *errors);` — Validate @p value against @p schema, appending one message per violation to
 - `ncl_err ncl_schema_validate_text(const ncl_schema *schema, const char *text, size_t len, ncl_strvec *errors);` — Parse @p text then validate it.
 - `ncl_err ncl_json_schema_validate(const char *json_text, const char *schema_text, ncl_strvec *errors);` — Validate a JSON document given as text against a schema given as text.
@@ -2526,3 +2724,4 @@ Copyright (c) 2026 huienming
   temp/                   文件通道的临时交换目录
   <sn>/                   客户端侧文件镜像（相对路径的基准）
 ```
+

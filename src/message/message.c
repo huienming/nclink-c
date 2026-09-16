@@ -798,76 +798,6 @@ char *ncl_message_sample_header(const ncl_message *msg, const char *separator)
     return ncl_strbuf_detach(&sb);
 }
 
-bool ncl_message_sample_is_complete(const ncl_message *msg)
-{
-    size_t i;
-    size_t slots;
-
-    if (msg == NULL || msg->type != NCL_MSG_SAMPLE) {
-        return false;
-    }
-    /* 表头必须在，且与数据块列数一致（消费端按下标对应两者）。 */
-    if (ncl_strvec_len(&msg->as.sample.paths) == 0 ||
-        ncl_strvec_len(&msg->as.sample.paths) !=
-            ncl_ptrvec_len(&msg->as.sample.data)) {
-        return false;
-    }
-    for (i = 0; i < ncl_ptrvec_len(&msg->as.sample.data); i++) {
-        const ncl_sample_item *item =
-            (const ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, i);
-        if (item == NULL || item->data == NULL) {
-            return false;
-        }
-    }
-    /* 各列槽位数一致（外层对齐规则）。 */
-    if (!ncl_message_is_valid(msg)) {
-        return false;
-    }
-
-    /*
-     * 亚毫秒采样时，一个槽位的值可能是一批数据（数组）。消费端按行列对读，
-     * 因此**内层与外层都要对齐**，一条报文只允许一种统一形状：
-     *
-     *   标量形状：每个槽位、每一列都是标量/null
-     *   批量形状：每个槽位、每一列都是数组，且**所有内层长度完全相同**
-     *
-     * 形状由第一列第一个槽位决定，其余位置必须与之完全一致；任何一个槽位
-     * 或列不符合（标量混批量、或批长不一致）都判为不完整。
-     */
-    slots = ncl_json_arr_len(
-        ((const ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, 0))->data);
-    {
-        const ncl_json *reference = ncl_json_arr_get(
-            ((const ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, 0))->data,
-            0);
-        bool batch_shape =
-            reference != NULL && ncl_json_type_of(reference) == NCL_JSON_ARRAY;
-        size_t batch_len = batch_shape ? ncl_json_arr_len(reference) : 0;
-        size_t column;
-
-        for (column = 0; column < ncl_ptrvec_len(&msg->as.sample.data); column++) {
-            const ncl_sample_item *item =
-                (const ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data,
-                                                       column);
-            for (i = 0; i < slots; i++) {
-                const ncl_json *value = ncl_json_arr_get(item->data, i);
-                bool is_array =
-                    value != NULL && ncl_json_type_of(value) == NCL_JSON_ARRAY;
-
-                if (is_array != batch_shape) {
-                    return false; /* 标量与批量混在一张表里，没法对读 */
-                }
-                if (batch_shape && ncl_json_arr_len(value) != batch_len) {
-                    return false; /* 内层长度不一致 */
-                }
-            }
-        }
-    }
-    return true;
-}
-
-/* --------------------------------------------------- sample normalising -- */
-
 /**
  * 整列都是空数组：设备用 `[]` 占位表示"本周期该项没有数据"。
  * 长度为 0 的列（连槽位都没有）不算，那属于外层没对齐，另有判据管。
@@ -894,6 +824,51 @@ static bool ncl_sample_column_is_empty_batch(const ncl_sample_item *item)
     }
     return true;
 }
+
+bool ncl_message_sample_is_complete(const ncl_message *msg)
+{
+    size_t i;
+
+    if (msg == NULL || msg->type != NCL_MSG_SAMPLE) {
+        return false;
+    }
+    /* 表头必须在，且与数据块列数一致（消费端按下标对应两者）。 */
+    if (ncl_strvec_len(&msg->as.sample.paths) == 0 ||
+        ncl_strvec_len(&msg->as.sample.paths) !=
+            ncl_ptrvec_len(&msg->as.sample.data)) {
+        return false;
+    }
+    for (i = 0; i < ncl_ptrvec_len(&msg->as.sample.data); i++) {
+        const ncl_sample_item *item =
+            (const ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, i);
+        if (item == NULL || item->data == NULL) {
+            return false;
+        }
+        /* 整列 `[]`：本周期该项还没填数据（占位），交给 normalise 换成 null。 */
+        if (ncl_sample_column_is_empty_batch(item)) {
+            return false;
+        }
+    }
+    /* 各列槽位数一致（外层对齐规则）。 */
+    if (!ncl_message_is_valid(msg)) {
+        return false;
+    }
+
+    /*
+     * 内层（每个槽位装什么）不设统一形状：采样率不同的数据项本来就该放在一个
+     * 通道里，用"每槽装几个点"体现各自的采样率 —— 1 ms 槽位里功率装 1 个点、
+     * 振动装 4 个点（= 0.25 ms），列与列之间不需要一致；列内是标量、数组，
+     * 甚至每槽点数不等，都由该数据项自己决定。
+     *
+     * 消费端按列读，不要按下标跨列对读：ncl_sample_item_is_nested() /
+     * ncl_sample_item_value_count() / ncl_sample_item_value_at() 会把一列摊平，
+     * 不管它是标量、批量还是混着来。
+     */
+    return true;
+}
+
+/* --------------------------------------------------- sample normalising -- */
+
 
 /**
  * 按模型补表头：拿通道 id 找到 SAMPLE_CHANNEL，用它声明的采样项顺序填 paths。
@@ -940,9 +915,8 @@ static ncl_err ncl_sample_paths_from_model(ncl_message *msg, ncl_node *root)
 /**
  * 空数组列 → 等长 null 标量列。
  *
- * 只在这一步能把整张表变回"统一标量形状"时才动手：其余列必须都是标量。若还
- * 混着别的批量列，说明这张表本来就是"标量列 + 批量列"混排，替换救不回来，
- * 原样返回交给调用方判断。
+ * 设备用整列 `[]` 表示"本周期该项没有数据"，这里把它换成等长的 null。按列处理，
+ * 不关心别的列是什么形状：内层本来就是各列自理（见 is_complete 的说明）。
  */
 static bool ncl_sample_fill_empty_columns(ncl_message *msg)
 {
@@ -960,10 +934,6 @@ static bool ncl_sample_fill_empty_columns(ncl_message *msg)
 
         if (ncl_sample_column_is_empty_batch(item)) {
             any_empty = true;
-            continue;
-        }
-        if (ncl_sample_item_is_nested(item)) {
-            return false;
         }
     }
     if (!any_empty) {
@@ -1072,14 +1042,55 @@ const ncl_json *ncl_sample_item_value_at(const ncl_sample_item *item,
 
 size_t ncl_message_sample_point_count(const ncl_message *msg)
 {
-    const ncl_sample_item *first;
+    size_t rows = 0;
+    size_t i;
 
-    if (msg == NULL || msg->type != NCL_MSG_SAMPLE ||
-        ncl_ptrvec_len(&msg->as.sample.data) == 0) {
+    if (msg == NULL || msg->type != NCL_MSG_SAMPLE) {
         return 0;
     }
-    first = (const ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, 0);
-    return ncl_sample_item_value_count(first);
+    /*
+     * 行数 = 数据最多的那一列的点数：列的采样率可以不同（每槽点数不同），最细的
+     * 那根时间轴决定按行消费有几行；更粗的列按"覆盖该行的第一个点"补齐，见
+     * ncl_message_sample_value_at()。
+     */
+    for (i = 0; i < ncl_ptrvec_len(&msg->as.sample.data); i++) {
+        size_t points = ncl_sample_item_value_count(
+            (const ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, i));
+        if (points > rows) {
+            rows = points;
+        }
+    }
+    return rows;
+}
+
+const ncl_json *ncl_message_sample_value_at(const ncl_message *msg, size_t row,
+                                            size_t column)
+{
+    const ncl_sample_item *item;
+    size_t rows;
+    size_t points;
+
+    if (msg == NULL || msg->type != NCL_MSG_SAMPLE ||
+        column >= ncl_ptrvec_len(&msg->as.sample.data)) {
+        return NULL;
+    }
+    rows = ncl_message_sample_point_count(msg);
+    if (rows == 0 || row >= rows) {
+        return NULL;
+    }
+    item = (const ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, column);
+    points = ncl_sample_item_value_count(item);
+    if (points == 0) {
+        return NULL;
+    }
+
+    /*
+     * 按比例落到该列自己的点上：点数最多的那列逐点展开（下标就是行号），更粗的
+     * 列则落在同一段里反复取该段的第一个点。
+     *
+     *   最多列 8 点、某列 2 点：行 0~3 → 该列下标 0，行 4~7 → 该列下标 1
+     */
+    return ncl_sample_item_value_at(item, row * points / rows);
 }
 
 /* ========================================================== serialisation = */

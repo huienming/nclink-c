@@ -1,41 +1,56 @@
 # NC-Link C 实现 · 发布包说明
 
-版本 **3.0.0**（GB/T 41970-2022 协议 3.0.0）
+版本 **3.1.0**（实现 GB/T 41970-2022 协议 3.0.0）
 本包为 **零第三方依赖** 的 C11 静态库，交付内容为**头文件 + 两个平台的预编译库 +
 使用手册 + 示例程序**；不含实现源码（需要源码请见第 5 节）。
 
 ## 1. 包内清单
 
 ```
-include/nclink/*.h                     21 个公共头文件（全部对外 API）
+include/nclink/*.h                     公共头文件（全部对外 API）
 lib/windows-x64-msvc/nclink_core.lib   Windows x64 静态库（MSVC，Release）
-lib/windows-x64-msvc-tls/…             同上，但启用了 TLS（ssl://，OpenSSL 静态链接，无 DLL 依赖）
+lib/windows-x86-msvc/nclink_core.lib   Windows x86（32 位）静态库（MSVC，Release）
+lib/windows-x64-msvc-tls/…             x64 + TLS（ssl://，OpenSSL 静态链接，无 DLL 依赖）
+lib/windows-amd64-mingw/libnclink_core.a  Windows x64 静态库（mingw-w64，供 Go/cgo 链接）
 lib/linux-x86_64-gcc/libnclink_core.a  Linux x86_64 静态库（gcc，-O2）
 lib/linux-x86_64-gcc-tls/…             同上，但启用了 TLS（ssl://，链接 -lssl -lcrypto）
+examples/*.c, *.cpp, CMakeLists.txt    两个示例程序的源码（设备端 / 客户端）
+examples/bin/windows-x64-msvc/*.exe    **编好的示例可执行文件**（x64、MSVC Release）
+examples/bin/windows-x86-msvc/*.exe    同上，32 位
+examples/bin/linux-x86_64-gcc/*        Linux 版示例可执行文件（gcc 13 + glibc）
+bindings/go/                           Go 绑定源码（cgo，链接上面的静态库）
+bindings/csharp/                       C# 绑定源码（.NET 8 / .NET Framework 4.7.2 双目标）
 MANUAL.md / MANUAL.docx                使用手册（Word 版由 md 生成，内容一致）
 README.md                              工程概览与测试清单
 CHANGELOG.md                           版本变更记录
 RELEASE.md                             本文件
-LICENSE                                 MIT 许可全文
-examples/                              两个示例程序（设备端 / 客户端）及其 CMakeLists
+LICENSE                                MIT 许可全文
 SHA256SUMS.txt                         包内每个文件的 SHA-256
 ```
 
-实现源码（`src/`）与 20 个测试套件（`tests/`）不在本包内，见第 5 节；
+实现源码（`src/`）与 22 个测试套件（`tests/`）不在本包内，见第 5 节；
 手册第 3 章另有一份最小可用示例代码，可直接抄进你的工程。
 
 ## 2. 平台与 ABI
 
-| 项目 | Windows | Linux |
-|------|---------|-------|
-| 库文件 | `nclink_core.lib`（静态） | `libnclink_core.a`（静态） |
-| 编译器 | MSVC 14.44.35207（VS 2022 Build Tools） | gcc 13.4.0 (Debian bookworm) |
-| 目标 | x64 | x86_64 |
-| 编译选项 | `/W4 /utf-8 /O2`，Release，**/MD（动态 CRT）** | `-std=c11 -O2 -Wall -Wextra` |
-| 依赖 | 系统库 `ws2_32`、`iphlpapi`（源码内已带 `#pragma comment`） | `-lpthread`（glibc） |
-| 第三方 | 无（zlib 可选） | 无（zlib 可选） |
+| 项目 | Windows x64 | Windows x86（32 位） | Linux |
+|------|--------------|------------------------|-------|
+| 库文件 | `nclink_core.lib`（静态） | `nclink_core.lib`（静态） | `libnclink_core.a`（静态） |
+| 编译器 | MSVC 14.44.35207（`vcvars64`） | 同一套 MSVC（`vcvars32`） | gcc 13.4.0 (Debian bookworm) |
+| 目标 | x64 | Win32 / x86 | x86_64 |
+| 编译选项 | `/W4 /utf-8 /O2`，Release，**/MD（动态 CRT）** | 同左 | `-std=c11 -O2 -Wall -Wextra` |
+| 依赖 | 系统库 `ws2_32`、`iphlpapi`、`winmm`（源码内已带 `#pragma comment`） | 同左 | `-lpthread`（glibc） |
+| 第三方 | 无（zlib 可选） | 无（zlib 可选） | 无（zlib 可选） |
 
-**ABI 提示**：Windows 库是 `/MD` 构建。你的工程若使用 `/MT` 或与 14.4x 不兼容的
+**x86（32 位）说明**：库、示例、测试与 x64 是同一套源码，行为一致；目前**只出非 TLS
+版**——32 位 OpenSSL 静态库本机没有，要 TLS 就用 `-OpenSslRoot` 指到自编的 32 位
+OpenSSL，再跑 `-Arch x86 -Tls`。
+
+**ABI 提示**：Windows 库是 `/MD` 构建（x64 与 x86 都是），包内示例可执行文件同样是
+`/MD`，运行需要 **VC++ 2015-2022 运行库**（多数机器已有；没有就装 `vc_redist.x64.exe`
+/ `vc_redist.x86.exe`）。你的工程若使用 `/MT` 或与 14.4x 不兼容的 MSVC 版本，请用包里
+源码重新编译；Linux 库与示例请用 glibc 2.31+ 且 ABI 兼容的 gcc/clang 链接（如需 musl，
+也请自行重编）。
 MSVC 版本，请用包内源码重新编译；Linux 库请用 glibc 2.31+ 且 ABI 兼容的
 gcc/clang 链接（如需 musl，也请自行重编）。
 
@@ -43,28 +58,36 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 
 | 项 | 结果 |
 |----|------|
-| Windows 编译 | 零警告（`/W4 /utf-8`） |
-| Windows 测试 | 21/21 通过（含 TLS 套件，OpenSSL 3.0.18）；ASan（`/fsanitize=address`）21/21 |
-| Linux 编译 | 零警告（`-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes`） |
-| Linux 测试 | 21/21 通过（含 TLS 套件，同一批测试源码） |
-| 稳定性 | Windows Release 连跑 8 轮、ASan 12 轮无失败 |
-| 示例 | 设备端与客户端两个示例已实测对跑：模型交换、读写、参数校验、文件传输、事件推送 |
-| broker 互操作 | `tools/interop.sh` 对 **EMQX 5.8.9** 与 **Mosquitto 2** 各跑一遍 `broker` 套件（QoS 0/1/2、通配订阅、40 KB 报文、退订、保活、会话顶替、重连后订阅恢复），两个 broker 均通过 |
-| TLS 互操作 | 同一脚本对 Mosquitto 的 TLS 监听（18832）再跑一遍 `broker` 套件（`ssl://`），本机实测通过 |
-| TLS 构建 | Windows（MSVC + OpenSSL 3.0.18）与 Linux（gcc + OpenSSL 3.0.20）两个平台都编过并 21/21 通过 |
-| MQTT 重连回归 | 假 broker 套件覆盖断线自动重连 + 订阅恢复（含"恢复不阻塞接收线程"的时间断言）与 0x8E 停止重连，无需 broker 即可回归 |
+| Windows 编译 | x64 与 x86 均零警告（`/W4 /utf-8 /O2`，MSVC 14.44.35207） |
+| Windows 测试 | 22/22 通过：x64 Release、x86 Release、x64 TLS 三套各自 22/22 |
+| 内存检查 | ASan（`/fsanitize=address`）连跑 10 轮 22/22 |
+| 已知测试偶发 | `mqtt_client` 的**假 broker 时序**偶发失败（本机约 10%）：客户端断开后 broker 偶尔收不到那个
+DISCONNECT 包，失败在测试自己的等待断言上；`git stash` 回改动前的 HEAD 同样能复现（3/40），不是本库的问题，
+重跑即过。另外套件用固定端口（FTP 2323 等），**同一构建目录里别并发跑两份 ctest** |
+| Linux 编译 | 零警告（gcc 13.4.0，`-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes`） |
+| Linux 测试 | 22/22 通过（含 TLS 套件，OpenSSL 3.0.20） |
+| 示例实跑 | 包内三种产物（Windows x64 / Windows x86 / Linux x86_64）都与 **EMQX 5.8.9** 对跑通过：模型交换、读写、参数校验、文件传输、事件推送、两个采样通道（1 s 状态；1 ms 采样 / 100 ms 上报的功率振动，共 12 列，主轴两路传感器）。窗口节奏实测：Linux ≈118 ms 一条；Windows ≈222 ms 一条（短等待走高精度计时器，1 ms 等待实测 1.56 ms，见手册 4.5）；Linux 下给设备端发 SIGTERM 也能优雅退出（退出码 0） |
+| broker 互操作 | `tests/test_broker` 对 EMQX 5.8.9 实测 **44 项检查、0 失败**：QoS 0/1/2、通配订阅、40 KB 报文、退订、空闲保活、会话顶替、重连后订阅恢复（`tools/interop.sh` 可在 Docker 里同时跑 EMQX 与 Mosquitto） |
+| x86（32 位） | 库 / 示例 / 测试全部通过；产物 PE 头 Machine = 0x014c（i386），与 x64 同一套源码、同一套编译选项 |
+| TLS | Windows（MSVC + OpenSSL 3.0.18 静态链接）与 Linux（gcc + OpenSSL 3.0.20）都编过并 22/22 通过；**x86 暂未出 TLS 版** |
+| Go 绑定用的 mingw 库 | 本次发布**未带**（本机没有 mingw 工具链）；需要时按 `tools/stage-go-libs.sh` 里的命令行自编 |
 
 测试套件：json、common、topic、model、message、codec、thread、mqtt、mqtt_client、
-client、server、http、rest、config、ftp、file、schema、event、license、broker
-（最后一个是可选的：需要真实 broker，`tools/interop.sh` 一键起）。
+client、server、http、rest、config、ftp、file、schema、event、license、broker、
+tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认跳过）。
 
 ## 4. 在你的工程里使用
 
 ### 4.1 Windows（MSVC）
 
 ```bat
+:: x64
 cl /nologo /W4 /utf-8 /MD /Iinclude ^
    your_app.c lib\windows-x64-msvc\nclink_core.lib ws2_32.lib iphlpapi.lib
+
+:: 32 位（Win32）：换成 x86 的目录即可
+cl /nologo /W4 /utf-8 /MD /Iinclude ^
+   your_app.c lib\windows-x86-msvc\nclink_core.lib ws2_32.lib iphlpapi.lib
 ```
 
 `/utf-8` 不可省（库的日志与设备描述是 UTF-8，而且你自己的源码里往往也有中文）。
@@ -93,7 +116,21 @@ endif()
 
 ### 4.4 先跑示例（推荐）
 
-包内 `examples/` 有两个可直接编译的程序，用预编译库链接即可：
+包内已经带好**编好的示例可执行文件**，拿到就能跑（Windows 版要 VC++ 2015-2022
+运行库；Linux 版要 glibc 2.31+）：
+
+```powershell
+examples\bin\windows-x64-msvc\ncl_device_demo.exe D:\sim           # 一直运行，Ctrl+C 退出
+examples\bin\windows-x64-msvc\ncl_client_demo.exe tcp://127.0.0.1:1883 <设备SN> 8
+examples\bin\windows-x86-msvc\ncl_device_demo.exe D:\sim           # 32 位版
+```
+
+```sh
+./examples/bin/linux-x86_64-gcc/ncl_device_demo /tmp/sim
+./examples/bin/linux-x86_64-gcc/ncl_client_demo tcp://127.0.0.1:1883 <设备SN> 8
+```
+
+要自己编的话，按下面来（源码与 CMakeLists 也在包里）：
 
 ```sh
 # Linux
@@ -154,6 +191,8 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 | JSON Schema | 校验器为 draft-07 子集，不支持 `patternProperties`/`dependencies`/外部 `$ref` 等 |
 | FTP | 实现 RFC 959/2389 子集（覆盖 NC-Link 文件通道用到的命令与两种数据连接模式） |
 | POSIX 分支 | 已在 gcc 13.4 + glibc 验证；musl、FreeBSD 等未验证 |
+| x86 的 TLS | 32 位只出非 TLS 版：要用 `ssl://` 得自编 32 位 OpenSSL 静态库，再 `-Arch x86 -Tls -OpenSslRoot <dir>` |
+| Go 绑定的 mingw 库 | 包内未含 `lib/windows-amd64-mingw/`（本次机器上没有 mingw）；Windows 上跑 Go 绑定前按 `tools/stage-go-libs.sh` 自编 |
 
 ## 7. 校验
 

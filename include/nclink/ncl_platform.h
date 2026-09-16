@@ -66,7 +66,7 @@ long ncl_process_id(void);
  *
  *   - 真控制台（cmd / PowerShell / VS Code 终端 / ConPTY）：转宽字符走
  *     WriteConsoleW，跟当前代码页无关，中文在任何 CP 下都正确；
- *   - 管道（VS Code 调试控制台、`> file` 重定向）：上游按**系统 ANSI 代码页**
+ *   - 管道（VS Code 调试控制台、`> file` 重定向）：读取方按**系统 ANSI 代码页**
  *     解码，所以先转成本地 ANSI 再写。
  *
  * 两处都用 `NCL_CONSOLE_ENCODING` 环境变量兜底：置为 `utf8` 时强制按 UTF-8
