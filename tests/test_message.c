@@ -230,6 +230,107 @@ static void test_method_call(void)
                "MethodCallResponse");
 }
 
+/*
+ * 设备端省掉表头、或拿 [] 给"本周期没有数据"的项占位时，按模型补齐
+ * （ncl_message_sample_normalise）。模型用 tests/data/model_nclink.json：
+ * 通道 sample_channel2 声明的三个采样项是 /STATUS、/PART_COUNT、/CONTROLLER/WARNNING。
+ */
+static void test_sample_normalise(void)
+{
+    char path[1024];
+    char *source = NULL;
+    ncl_node *root;
+    ncl_message *m;
+    const char *payload;
+    const ncl_sample_item *item;
+
+    snprintf(path, sizeof(path), "%s/model_nclink.json", NCL_TEST_DATA_DIR);
+    if (ncl_file_read_all(path, &source, NULL) != NCL_OK) {
+        printf("    cannot read %s, skipping\n", path);
+        return;
+    }
+    root = ncl_root_node_parse(source);
+    free(source);
+    NCL_CHECK(root != NULL);
+    if (root == NULL) {
+        return;
+    }
+
+    NCL_TEST_CASE("normalise fills \"paths\" from the SAMPLE_CHANNEL model");
+    payload = "{\"id\":\"sample_channel2\",\"beginTime\":\"1\","
+              "\"data\":[{\"data\":[7]},{\"data\":[11]},"
+              "{\"data\":[\"O00010.nc\"]}]}";
+    m = ncl_message_parse("Sample/SN1/sample_channel2", payload,
+                          strlen(payload));
+    NCL_CHECK(m != NULL);
+    if (m != NULL) {
+        NCL_CHECK(!ncl_message_sample_is_complete(m));
+        NCL_CHECK_EQ_INT(ncl_message_sample_normalise(m, root), NCL_OK);
+        NCL_CHECK(ncl_message_sample_is_complete(m));
+        NCL_CHECK_EQ_INT(ncl_strvec_len(&m->as.sample.paths), 3);
+        NCL_CHECK_EQ_STR(ncl_strvec_at(&m->as.sample.paths, 0), "/STATUS");
+        NCL_CHECK_EQ_STR(ncl_strvec_at(&m->as.sample.paths, 1), "/PART_COUNT");
+        NCL_CHECK_EQ_STR(ncl_strvec_at(&m->as.sample.paths, 2),
+                         "/CONTROLLER/WARNNING");
+        ncl_message_free(m);
+    }
+
+    NCL_TEST_CASE("normalise keeps a mismatched column count untouched");
+    payload = "{\"id\":\"sample_channel2\",\"beginTime\":\"1\","
+              "\"data\":[{\"data\":[7]},{\"data\":[11]},"
+              "{\"data\":[\"O00010.nc\"]},{\"data\":[0]}]}";
+    m = ncl_message_parse("Sample/SN1/sample_channel2", payload,
+                          strlen(payload));
+    NCL_CHECK(m != NULL);
+    if (m != NULL) {
+        NCL_CHECK_EQ_INT(ncl_message_sample_normalise(m, root), NCL_ERR_NOT_FOUND);
+        NCL_CHECK_EQ_INT(ncl_strvec_len(&m->as.sample.paths), 0);
+        NCL_CHECK(!ncl_message_sample_is_complete(m));
+        ncl_message_free(m);
+    }
+
+    NCL_TEST_CASE("normalise turns an all-[] column into aligned nulls");
+    payload = "{\"id\":\"sample_channel2\",\"beginTime\":\"1\","
+              "\"paths\":[\"/STATUS\",\"/PART_COUNT\",\"/CONTROLLER/WARNNING\"],"
+              "\"data\":[{\"data\":[[]]},{\"data\":[11]},"
+              "{\"data\":[\"O00010.nc\"]}]}";
+    m = ncl_message_parse("Sample/SN1/sample_channel2", payload,
+                          strlen(payload));
+    NCL_CHECK(m != NULL);
+    if (m != NULL) {
+        NCL_CHECK(!ncl_message_sample_is_complete(m));
+        NCL_CHECK_EQ_INT(ncl_message_sample_normalise(m, root), NCL_OK);
+        NCL_CHECK(ncl_message_sample_is_complete(m));
+        item = (const ncl_sample_item *)ncl_message_item_at(m, 0);
+        NCL_CHECK(item != NULL && ncl_json_is_null(ncl_json_arr_get(item->data, 0)));
+        NCL_CHECK_EQ_INT(ncl_message_sample_point_count(m), 1);
+        ncl_message_free(m);
+    }
+
+    NCL_TEST_CASE("normalise leaves a mixed scalar/batch table alone");
+    payload = "{\"id\":\"sample_channel2\",\"beginTime\":\"1\","
+              "\"paths\":[\"/STATUS\",\"/PART_COUNT\",\"/CONTROLLER/WARNNING\"],"
+              "\"data\":[{\"data\":[[1,2]]},{\"data\":[11]},"
+              "{\"data\":[\"O00010.nc\"]}]}";
+    m = ncl_message_parse("Sample/SN1/sample_channel2", payload,
+                          strlen(payload));
+    NCL_CHECK(m != NULL);
+    if (m != NULL) {
+        NCL_CHECK_EQ_INT(ncl_message_sample_normalise(m, root), NCL_ERR_STATE);
+        NCL_CHECK(!ncl_message_sample_is_complete(m));
+        item = (const ncl_sample_item *)ncl_message_item_at(m, 0);
+        NCL_CHECK(item != NULL && ncl_json_arr_len(ncl_json_arr_get(item->data, 0)) == 2);
+        ncl_message_free(m);
+    }
+
+    NCL_TEST_CASE("normalise rejects non-sample messages");
+    m = ncl_message_new(NCL_MSG_PING);
+    NCL_CHECK_EQ_INT(ncl_message_sample_normalise(m, root), NCL_ERR_INVALID_ARG);
+    NCL_CHECK_EQ_INT(ncl_message_sample_normalise(NULL, root), NCL_ERR_INVALID_ARG);
+    ncl_message_free(m);
+    ncl_node_free(root);
+}
+
 static void test_probe_with_model(void)
 {
     char path[1024];
@@ -434,4 +535,5 @@ NCL_TEST_MAIN_BEGIN()
     test_parse_by_topic();
     test_match();
     test_index_expansion();
+    test_sample_normalise();
 NCL_TEST_MAIN_END()

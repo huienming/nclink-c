@@ -35,6 +35,7 @@
 
 static int g_events;
 static int g_samples;
+static int g_bad_samples;
 
 /** 事件回调：msg 在返回后立即释放，不能保存指针。 */
 static void on_event(ncl_client *client, const char *topic,
@@ -52,6 +53,45 @@ static void on_event(ncl_client *client, const char *topic,
 }
 
 /* ------------------------------------------------------------- 采样回调 -- */
+
+/**
+ * 把模型里声明的采集通道与采样项打出来。
+ *
+ * 采样报文的表头（paths）就是照这里声明的顺序一项项对下来的；设备没带表头
+ * 时，客户端会拿报文里的通道 id 到模型里找同名 SAMPLE_CHANNEL 来补，所以先
+ * 确认模型里到底有哪些通道、每个通道有几个采样项。
+ */
+static void log_sample_channels(const ncl_node *node)
+{
+    size_t i;
+
+    if (node == NULL) {
+        return;
+    }
+    if (ncl_node_is_sample_node(node)) {
+        size_t count = ncl_node_sample_count(node);
+
+        ncl_log_info("模型里的采集通道 %s: %u 个采样项",
+                     node->id != NULL ? node->id : "?", (unsigned)count);
+        for (i = 0; i < count; i++) {
+            ncl_sample_ref *ref = ncl_node_sample_at(node, i);
+            char *path = ref != NULL ? ncl_sample_ref_path(ref) : NULL;
+
+            ncl_log_info("    [%u] %s", (unsigned)i,
+                         path != NULL ? path : "(未解析)");
+            free(path);
+        }
+    }
+    for (i = 0; ncl_node_device_at(node, i) != NULL; i++) {
+        log_sample_channels(ncl_node_device_at(node, i));
+    }
+    for (i = 0; ncl_node_component_at(node, i) != NULL; i++) {
+        log_sample_channels(ncl_node_component_at(node, i));
+    }
+    for (i = 0; ncl_node_config_at(node, i) != NULL; i++) {
+        log_sample_channels(ncl_node_config_at(node, i));
+    }
+}
 
 /**
  * 采样回调：设备按 uploadInterval 聚合后上报一个 Sample 报文。
@@ -72,7 +112,34 @@ static void on_sample(ncl_client *client, const char *topic,
     (void)user;
     /* 设备端保证只发完整报文，这里再兜一层：表头与数据块对不上就忽略。 */
     if (!ncl_message_sample_is_complete(msg)) {
+        ncl_node *root = ncl_client_root_node(client);
+        ncl_node *channel = (root != NULL && msg->as.sample.id != NULL)
+                                ? ncl_node_find_by_id(root, msg->as.sample.id)
+                                : NULL;
+
+        g_bad_samples++;
         ncl_log_warn("采样报文不完整，已忽略: %s", topic);
+        /* 头几条把原因说清楚：补表头要求"模型里有同名 SAMPLE_CHANNEL，且它的
+         * 采样项数 == 报文 data 列数"，两条缺一条就补不出来。 */
+        if (g_bad_samples <= 3) {
+            ncl_log_warn("    通道 id=%s；模型里%s；模型采样项=%u，报文 data 列数=%u",
+                         msg->as.sample.id != NULL ? msg->as.sample.id
+                                                   : "(报文没带 id)",
+                         channel != NULL ? "有同名 SAMPLE_CHANNEL"
+                                         : "没有同名 SAMPLE_CHANNEL",
+                         (unsigned)(channel != NULL
+                                        ? ncl_node_sample_count(channel)
+                                        : 0),
+                         (unsigned)items);
+        }
+        if (g_bad_samples == 1) {
+            char *raw = ncl_message_write_string(msg);
+
+            if (raw != NULL) {
+                ncl_log_warn("    报文前 300 字符: %.300s", raw);
+                free(raw);
+            }
+        }
         return;
     }
     g_samples++;
@@ -199,6 +266,7 @@ int main(int argc, char **argv)
                              : "(空)",
                          id != NULL ? id : "?");
             free(id);
+            log_sample_channels(root);
         }
     } else {
         ncl_log_warn("probe 失败，继续尝试直接读值");

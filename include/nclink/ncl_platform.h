@@ -58,6 +58,22 @@ bool ncl_random_bytes(void *buf, size_t len);
 /** Process id, used for diagnostics. */
 long ncl_process_id(void);
 
+/**
+ * 把一段 UTF-8 文本写到 stderr（日志的控制台镜像走这里）。
+ *
+ * 库里所有文案都是 UTF-8。Windows 上"控制台"有两种形态，解码规则不一样，
+ * 所以这里分开处理，中文才不会变成乱码：
+ *
+ *   - 真控制台（cmd / PowerShell / VS Code 终端 / ConPTY）：转宽字符走
+ *     WriteConsoleW，跟当前代码页无关，中文在任何 CP 下都正确；
+ *   - 管道（VS Code 调试控制台、`> file` 重定向）：上游按**系统 ANSI 代码页**
+ *     解码，所以先转成本地 ANSI 再写。
+ *
+ * 两处都用 `NCL_CONSOLE_ENCODING` 环境变量兜底：置为 `utf8` 时强制按 UTF-8
+ * 原样写（默认 `auto`）。POSIX 上就是 `fputs(text, stderr)`。
+ */
+void ncl_console_write(const char *text);
+
 /* --------------------------------------------------------------- mutexes -- */
 
 /** Recursive-safe mutual exclusion primitive used across the library. */

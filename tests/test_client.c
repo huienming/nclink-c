@@ -28,6 +28,9 @@ typedef struct {
     int  samples;
     char channel[64];
     char path[128];
+    char path_last[128];
+    int  path_count;
+    int  complete;
     int  interval;
     int  upload_interval;
     int  values;
@@ -52,6 +55,13 @@ static void on_sample(ncl_client *client, const char *topic,
              ncl_strvec_len(&sample->as.sample.paths) > 0
                  ? ncl_strvec_at(&sample->as.sample.paths, 0)
                  : "");
+    snprintf(seen->path_last, sizeof(seen->path_last), "%s",
+             ncl_strvec_len(&sample->as.sample.paths) > 0
+                 ? ncl_strvec_at(&sample->as.sample.paths,
+                                 ncl_strvec_len(&sample->as.sample.paths) - 1)
+                 : "");
+    seen->path_count = (int)ncl_strvec_len(&sample->as.sample.paths);
+    seen->complete = ncl_message_sample_is_complete(sample) ? 1 : 0;
     item = (const ncl_sample_item *)ncl_message_item_at(sample, 0);
     if (item != NULL) {
         long long first = -1;
@@ -67,14 +77,25 @@ static void on_sample(ncl_client *client, const char *topic,
 
 static char g_model_json[1024];
 
-/** Load a small valid device model for the probe response. */
+/**
+ * Load a small valid device model for the probe response.
+ *
+ * Besides one data item it carries a sample channel ("ch1") declaring two
+ * sample items: that is what the client uses to top up a Sample message which
+ * arrived without a "paths" header. The two data items resolve to the paths
+ * "/STATUS" and "/PART_COUNT" (a data item directly under a device takes its
+ * path from its type).
+ */
 static void load_model(void)
 {
-    /* A device with one data item, kept minimal but structurally valid. */
     snprintf(g_model_json, sizeof(g_model_json),
              "{\"name\":\"nclink\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\","
-             "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\",\"configs\":[],"
-             "\"dataItems\":[{\"id\":\"030001\",\"type\":\"STATUS\"}],"
+             "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\",\"configs\":["
+             "{\"id\":\"ch1\",\"type\":\"SAMPLE_CHANNEL\",\"sampleInterval\":1000,"
+             "\"uploadInterval\":5000,\"ids\":[{\"id\":\"/STATUS\"},"
+             "{\"id\":\"/PART_COUNT\"}]}],"
+             "\"dataItems\":[{\"id\":\"030001\",\"type\":\"STATUS\"},"
+             "{\"id\":\"030002\",\"type\":\"PART_COUNT\"}],"
              "\"version\":\"2.0\"}],\"uniqueID\":\"test\"}");
 }
 
@@ -424,6 +445,54 @@ static void test_client_full_flow(void)
         ncl_sleep_millis(200);
         NCL_CHECK_EQ_INT(seen.samples, 1);
         NCL_CHECK_EQ_INT(ncl_client_sample_count(client), 1);
+    }
+
+    NCL_TEST_CASE("a Sample without \"paths\" is topped up from the device model");
+    {
+        /* 设备端只发了数据块：客户端先按模型里的 ch1（声明了 /STATUS 与
+         * /PART_COUNT 两项）把表头补出来，再交给回调。 */
+        const char *payload =
+            "{\"@id\":\"s3\",\"id\":\"ch1\",\"beginTime\":\"1\","
+            "\"data\":[{\"data\":[0,0]},{\"data\":[129,139]}]}";
+        int base = seen.samples;
+        int i;
+
+        ncl_client_set_sample_handler(client, on_sample, &seen);
+        NCL_CHECK_EQ_INT(
+            ncl_fake_server_publish(server, "Sample/" TEST_SN "/ch1", payload, 0),
+            NCL_OK);
+        for (i = 0; i < 200 && seen.samples == base; i++) {
+            ncl_sleep_millis(10);
+        }
+        NCL_CHECK_EQ_INT(seen.samples, base + 1);
+        NCL_CHECK_EQ_INT(seen.path_count, 2);
+        NCL_CHECK_EQ_STR(seen.path, "/STATUS");
+        NCL_CHECK_EQ_STR(seen.path_last, "/PART_COUNT");
+        NCL_CHECK_EQ_INT(seen.complete, 1);
+        ncl_client_set_sample_handler(client, NULL, NULL);
+    }
+
+    NCL_TEST_CASE("a Sample the model cannot map is delivered untouched");
+    {
+        /* 三列数据、模型只声明了两项：宁可不补，也不猜对应关系，报文原样交给
+         * 回调，由回调自己用 ncl_message_sample_is_complete() 判掉。 */
+        const char *payload =
+            "{\"@id\":\"s4\",\"id\":\"ch1\",\"beginTime\":\"1\","
+            "\"data\":[{\"data\":[0]},{\"data\":[1]},{\"data\":[2]}]}";
+        int base = seen.samples;
+        int i;
+
+        ncl_client_set_sample_handler(client, on_sample, &seen);
+        NCL_CHECK_EQ_INT(
+            ncl_fake_server_publish(server, "Sample/" TEST_SN "/ch1", payload, 0),
+            NCL_OK);
+        for (i = 0; i < 200 && seen.samples == base; i++) {
+            ncl_sleep_millis(10);
+        }
+        NCL_CHECK_EQ_INT(seen.samples, base + 1);
+        NCL_CHECK_EQ_INT(seen.path_count, 0);
+        NCL_CHECK_EQ_INT(seen.complete, 0);
+        ncl_client_set_sample_handler(client, NULL, NULL);
     }
 
     NCL_TEST_CASE("unsubscribing from the sample topic");

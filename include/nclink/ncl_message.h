@@ -323,6 +323,28 @@ char *ncl_message_sample_header(const ncl_message *msg, const char *separator);
 bool ncl_message_sample_is_complete(const ncl_message *msg);
 
 /**
+ * 用设备模型把设备端"省掉/占位"的采样信息补回规范形状，好让消费端继续按行
+ * 列对读。做两件事，且只在能确定映射时动手：
+ *
+ *   1. 表头：`paths` 缺失或条数与 data 列数不符时，拿 `msg->as.sample.id`
+ *      （即 "Sample/<sn>/<通道id>" 里的通道 id）到模型里找同名 SAMPLE_CHANNEL，
+ *      按它声明的采样项顺序补出表头。模型的项数必须与 data 列数一致，否则
+ *      无从对应，报文原样返回。
+ *   2. 空列：整列都是空数组（设备用 `[]` 表示"本周期该项没有数据"）时，把该列
+ *      换成等长的 null 标量 —— 只在其余列都是标量、换完能回到统一标量形状时
+ *      才做；亚毫秒批量列里混一个空列是补不了的，保持原样。
+ *
+ * 补不了就绝不猜：通道查不到、模型项数对不上、形状统一不了，一律保持原样，
+ * 让 ncl_message_sample_is_complete() 继续如实报"不完整"。
+ *
+ * 返回 NCL_OK 表示补完后 ncl_message_sample_is_complete() 为真；
+ * NCL_ERR_INVALID_ARG 表示 @p msg 不是 Sample 报文；NCL_ERR_NOT_FOUND 表示
+ * 模型里没有能对上号、项数一致的采集通道；NCL_ERR_STATE 表示映射补上了、但
+ * 报文仍不满足完整性（例如形状没法统一）。
+ */
+ncl_err ncl_message_sample_normalise(ncl_message *msg, ncl_node *root);
+
+/**
  * 亚毫秒采样（值本身是数组）时，一列的元素可能是标量，也可能是"一个采样槽位内
  * 的一批值"。这几个助手让消费端不必自己判断两层结构：
  *

@@ -35,3 +35,5 @@ __pycache__/
 
 # Go 绑定链接的静态库（由 tools/stage-go-libs.sh 暂存，不入库）
 /bindings/go/lib/
+# 示例客户端（ncl_client_demo）默认 SN 是 HNC_VDEV_00000，它会在当前目录下建同名目录
+/HNC_VDEV_*/

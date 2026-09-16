@@ -216,6 +216,14 @@ void ncl_client_on_message(ncl_client *client, const char *topic,
     /* Samples are not responses either: "Sample/<sn>/<通道id>". */
     if (topic != NULL && strncmp(topic, NCL_TOPIC_SAMPLE_PREFIX,
                                 strlen(NCL_TOPIC_SAMPLE_PREFIX)) == 0) {
+        /* 设备端可能省掉 "paths"、或用 [] 给本周期没有数据的项占位：先按设备
+         * 模型把报文补回规范形状再交给回调；补不了就原样交过去，由回调自己用
+         * ncl_message_sample_is_complete() 判断。 */
+        if (!ncl_message_sample_is_complete(message) &&
+            ncl_message_sample_normalise(message,
+                                         ncl_client_root_node(client)) == NCL_OK) {
+            ncl_log_debug("采样报文已按设备模型补齐表头/空列: %s", topic);
+        }
         if (client->sample_handler != NULL) {
             ncl_mutex_lock(client->mutex);
             client->samples++;

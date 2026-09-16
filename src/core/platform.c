@@ -373,3 +373,101 @@ long ncl_process_id(void)
     return (long)getpid();
 #endif
 }
+
+/* --------------------------------------------------------------- console -- */
+
+#if defined(NCL_OS_WINDOWS)
+
+static bool ncl_console_is_terminal(HANDLE handle)
+{
+    DWORD mode = 0;
+
+    return handle != NULL && handle != INVALID_HANDLE_VALUE &&
+           GetConsoleMode(handle, &mode) != 0;
+}
+
+/** UTF-8 -> UTF-16；返回的缓冲调用方 free，*out_len 含结尾 NUL。 */
+static wchar_t *ncl_utf8_to_wide(const char *text, int *out_len)
+{
+    int len = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
+    wchar_t *wide;
+
+    if (len <= 1) { /* 空串或转换失败 */
+        return NULL;
+    }
+    wide = (wchar_t *)malloc((size_t)len * sizeof(wchar_t));
+    if (wide == NULL) {
+        return NULL;
+    }
+    if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, len) <= 0) {
+        free(wide);
+        return NULL;
+    }
+    *out_len = len;
+    return wide;
+}
+
+/** UTF-8 -> 本地 ANSI 代码页（调试器/重定向按它解码）。 */
+static bool ncl_wide_to_ansi(const wchar_t *wide, int wide_len)
+{
+    int len = WideCharToMultiByte(CP_ACP, 0, wide, wide_len, NULL, 0, NULL, NULL);
+    char *ansi;
+
+    if (len <= 0) {
+        return false;
+    }
+    ansi = (char *)malloc((size_t)len);
+    if (ansi == NULL) {
+        return false;
+    }
+    if (WideCharToMultiByte(CP_ACP, 0, wide, wide_len, ansi, len, NULL, NULL) <= 0) {
+        free(ansi);
+        return false;
+    }
+    fwrite(ansi, 1, (size_t)len, stderr);
+    fflush(stderr);
+    free(ansi);
+    return true;
+}
+
+#endif /* NCL_OS_WINDOWS */
+
+void ncl_console_write(const char *text)
+{
+    if (text == NULL) {
+        return;
+    }
+#if defined(NCL_OS_WINDOWS)
+    {
+        HANDLE handle = GetStdHandle(STD_ERROR_HANDLE);
+        const char *mode = getenv("NCL_CONSOLE_ENCODING");
+        bool force_utf8 = mode != NULL && ncl_strcasecmp(mode, "utf8") == 0;
+
+        if (!force_utf8) {
+            int wide_len = 0;
+            wchar_t *wide = ncl_utf8_to_wide(text, &wide_len);
+
+            if (wide != NULL) {
+                if (ncl_console_is_terminal(handle)) {
+                    DWORD written = 0;
+
+                    /* 真控制台：宽字符直写，任何代码页下中文都对 */
+                    WriteConsoleW(handle, wide, (DWORD)(wide_len - 1), &written,
+                                  NULL);
+                    free(wide);
+                    return;
+                }
+                if (ncl_wide_to_ansi(wide, wide_len - 1)) {
+                    free(wide);
+                    return;
+                }
+                free(wide);
+            }
+        }
+        fputs(text, stderr);
+        fflush(stderr);
+    }
+#else
+    fputs(text, stderr);
+#endif
+}

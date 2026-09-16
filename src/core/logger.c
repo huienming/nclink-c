@@ -184,8 +184,7 @@ void ncl_log_write(ncl_log_level level, const char *fmt, ...)
         ncl_log_maybe_rotate();
     }
     if (g_log_console) {
-        fputs(line, stderr);
-        fflush(stderr);
+        ncl_console_write(line);
     }
         ncl_mutex_unlock(mtx);
     }

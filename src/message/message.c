@@ -866,6 +866,150 @@ bool ncl_message_sample_is_complete(const ncl_message *msg)
     return true;
 }
 
+/* --------------------------------------------------- sample normalising -- */
+
+/**
+ * 整列都是空数组：设备用 `[]` 占位表示"本周期该项没有数据"。
+ * 长度为 0 的列（连槽位都没有）不算，那属于外层没对齐，另有判据管。
+ */
+static bool ncl_sample_column_is_empty_batch(const ncl_sample_item *item)
+{
+    size_t slots;
+    size_t i;
+
+    if (item == NULL || item->data == NULL) {
+        return false;
+    }
+    slots = ncl_json_arr_len(item->data);
+    if (slots == 0) {
+        return false;
+    }
+    for (i = 0; i < slots; i++) {
+        const ncl_json *value = ncl_json_arr_get(item->data, i);
+
+        if (value == NULL || ncl_json_type_of(value) != NCL_JSON_ARRAY ||
+            ncl_json_arr_len(value) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * 按模型补表头：拿通道 id 找到 SAMPLE_CHANNEL，用它声明的采样项顺序填 paths。
+ * 模型项数与数据列数不一致就放弃（宁可保持"不完整"，也不猜错对应关系）。
+ */
+static ncl_err ncl_sample_paths_from_model(ncl_message *msg, ncl_node *root)
+{
+    ncl_node *channel;
+    size_t count;
+    size_t i;
+
+    if (root == NULL || msg->as.sample.id == NULL) {
+        return NCL_ERR_NOT_FOUND;
+    }
+    channel = ncl_node_find_by_id(root, msg->as.sample.id);
+    if (channel == NULL || !ncl_node_is_sample_node(channel)) {
+        return NCL_ERR_NOT_FOUND;
+    }
+    count = ncl_node_sample_count(channel);
+    if (count == 0 || count != ncl_ptrvec_len(&msg->as.sample.data)) {
+        return NCL_ERR_NOT_FOUND;
+    }
+
+    ncl_strvec_clear(&msg->as.sample.paths);
+    for (i = 0; i < count; i++) {
+        ncl_sample_ref *ref = ncl_node_sample_at(channel, i);
+        char *path = ref != NULL ? ncl_sample_ref_path(ref) : NULL;
+        ncl_err err;
+
+        if (path == NULL) {
+            ncl_strvec_clear(&msg->as.sample.paths);
+            return NCL_ERR_NOT_FOUND;
+        }
+        err = ncl_strvec_push(&msg->as.sample.paths, path);
+        free(path);
+        if (err != NCL_OK) {
+            ncl_strvec_clear(&msg->as.sample.paths);
+            return err;
+        }
+    }
+    return NCL_OK;
+}
+
+/**
+ * 空数组列 → 等长 null 标量列。
+ *
+ * 只在这一步能把整张表变回"统一标量形状"时才动手：其余列必须都是标量。若还
+ * 混着别的批量列，说明这张表本来就是"标量列 + 批量列"混排，替换救不回来，
+ * 原样返回交给调用方判断。
+ */
+static bool ncl_sample_fill_empty_columns(ncl_message *msg)
+{
+    size_t columns = ncl_ptrvec_len(&msg->as.sample.data);
+    size_t i;
+    size_t slot;
+    bool any_empty = false;
+
+    if (columns == 0) {
+        return false;
+    }
+    for (i = 0; i < columns; i++) {
+        const ncl_sample_item *item =
+            (const ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, i);
+
+        if (ncl_sample_column_is_empty_batch(item)) {
+            any_empty = true;
+            continue;
+        }
+        if (ncl_sample_item_is_nested(item)) {
+            return false;
+        }
+    }
+    if (!any_empty) {
+        return false;
+    }
+
+    for (i = 0; i < columns; i++) {
+        ncl_sample_item *item =
+            (ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, i);
+        size_t slots;
+
+        if (!ncl_sample_column_is_empty_batch(item)) {
+            continue;
+        }
+        slots = ncl_json_arr_len(item->data);
+        for (slot = 0; slot < slots; slot++) {
+            ncl_json_free(ncl_json_arr_take(item->data, 0));
+        }
+        for (slot = 0; slot < slots; slot++) {
+            if (ncl_json_arr_push(item->data, ncl_json_new_null()) != NCL_OK) {
+                return false; /* 内存不足：该列短了，外层对齐判据会拦住它 */
+            }
+        }
+    }
+    return true;
+}
+
+ncl_err ncl_message_sample_normalise(ncl_message *msg, ncl_node *root)
+{
+    if (msg == NULL || msg->type != NCL_MSG_SAMPLE) {
+        return NCL_ERR_INVALID_ARG;
+    }
+
+    if (ncl_strvec_len(&msg->as.sample.paths) !=
+        ncl_ptrvec_len(&msg->as.sample.data)) {
+        ncl_err err = ncl_sample_paths_from_model(msg, root);
+
+        if (err != NCL_OK) {
+            return err;
+        }
+    }
+    ncl_sample_fill_empty_columns(msg);
+
+    return ncl_message_sample_is_complete(msg) ? NCL_OK : NCL_ERR_STATE;
+}
+
 bool ncl_sample_item_is_nested(const ncl_sample_item *item)
 {
     size_t i;

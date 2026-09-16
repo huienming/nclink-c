@@ -371,27 +371,76 @@ int main(void) {
 ### 3.3 示例实测输出
 
 设备端（`ncl_device_demo.exe . 12`）与客户端（`ncl_client_demo.exe
-tcp://localhost:1883 V200583BC87 4`）对跑，客户端侧输出：
+tcp://localhost:1883 <设备SN> 4`）对跑，客户端侧输出（`<设备SN>` 是设备端首次
+启动时生成的 9 位 SN，见 3.4）：
 
 ```
-设备模型已装载: /NC_LINK_ROOT，/STATUS 的节点 id = 030001
-GET /STATUS = 0
+设备模型已装载: /NC_LINK_ROOT，/STATUS 的节点 id = 010302
+模型里的采集通道 sample_channel0: 4 个采样项
+    [0] /STATUS
+    [1] /PART_COUNT
+    [2] /CONTROLLER/WARNING
+    [3] /CONTROLLER/PROGRAM
+GET /STATUS = 1
 SET /STATUS = 42 成功
 check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
-文件回传路径: D:\...\build\V200583BC87\demo.txt
+文件回传路径: D:\...\build\368207229\demo.txt
   远端文件 demo.txt (14 字节)
-收到采样 [Sample/V203003EA15/ch1] 通道=ch1 采样周期=1000ms 上报周期=2000ms 采样项=2
-    表头 paths(2 项) = ["/STATUS","/PART_COUNT"]
-    原始报文: {"paths":["/STATUS","/PART_COUNT"],"id":"ch1","beginTime":"1789450135470",
-              "data":[{"data":[0,0]},{"data":[129,139]}],"interval":1000,"uploadInterval":2000}
-    /STATUS          编码=raw 本轮 2 个值: [0, 0]
-    /PART_COUNT      编码=raw 本轮 2 个值: [129, 139]
-收到事件 [Event/V203003EA15] id=030002 key=PART_COUNT value=120
+收到采样 [Sample/368207229/sample_channel0] 通道=sample_channel0 采样周期=10ms 上报周期=2000ms 采样项=4
+    表头 paths(4 项) = ["/STATUS","/PART_COUNT","/CONTROLLER/WARNING","/CONTROLLER/PROGRAM"]
+    原始报文: {"paths":["/STATUS","/PART_COUNT","/CONTROLLER/WARNING","/CONTROLLER/PROGRAM"],
+              "id":"sample_channel0","beginTime":"1789523128784",
+              "data":[{"data":[1,1,1,...]},{"data":[0,0,1,1,...]},...
+              ],"interval":10,"uploadInterval":2000}
+    /STATUS            编码=raw 本轮 200 个值: [1, 1, 1, 1, ...]
+    /PART_COUNT        编码=raw 本轮 200 个值: [0, 0, 0, 0, ...]
+    /CONTROLLER/WARNING 编码=raw 本轮 200 个值: [0, 0, 0, 0, ...]
+    /CONTROLLER/PROGRAM 编码=raw 本轮 200 个值: [1001, 1001, ...]
+收到事件 [Event/368207229] id=010307 key=PART_COUNT value=10
 ...
-共收到 10 条事件、5 条采样上报
+共收到 4 条事件、2 条采样上报
 ```
 
 这六步分别验证了：模型交换、读、写、参数校验、采样上报、文件通道、事件推送。
+默认模型是 10 ms 采样 / 2 s 上报，所以一条采样报文里每列 200 个值（上面按
+`...` 省略）；嫌长就改 `conf/model/nclink.json` 里的 `sampleInterval`。
+
+### 3.4 设备端示例的首次启动（自举）
+
+设备端示例可以指着**一个还不存在的空目录**启动：目录会建好，根目录里缺的东西
+按"出厂默认值"补齐，已经存在的一律不动。
+
+```powershell
+build\examples\ncl_device_demo.exe D:\sim4 60   # 第一次：准备 D:\sim4 并运行 60 秒
+build\examples\ncl_device_demo.exe D:\sim4 60   # 第二次：沿用上一次的 SN 与配置
+```
+
+首次启动补上这三样，它们也是设备身份与配置的来源：
+
+| 文件 | 首次启动写什么 |
+|------|----------------|
+| `bin/sn.txt` | 随机生成的 **9 位 SN**（9 个十进制数字）。库里的 `ncl_sn_read()` 默认是 `V2` + 9 位十六进制（见 4.1），示例按现场习惯先用纯数字生成好落盘，再让它去读 |
+| `conf/model/nclink.json` | 默认设备模型：一台数控机床（X/Y/Z/C 四轴 + 数控系统），带采样通道 `sample_channel0`（10 ms 采样 / 2 s 上报） |
+| `conf/mqtt.cfg` | 本机 broker：`url=tcp://127.0.0.1:1883`，`username=`/`password=` 留空 = 匿名连接（空值不会写进 MQTT 连接报文） |
+
+之后以文件为准，示例不再覆盖：换模型改 `conf/model/nclink.json`（或走 REST 的
+`/api/setModel`），换 broker 改 `conf/mqtt.cfg`（或 `/api/setMqttUrl`），下次启动
+生效；把根目录删掉重跑，等于换一台新设备。
+
+`sample_channel0` 的四个采样项是 `010302 / 010307 / 01035412 / 01035409`。设备端
+按 id 找到节点、取节点路径当表头，再按路径找工具取值，所以示例的 `kBindings`
+里注册的是这四条路径：
+
+| 采样项 id | 路径（表头里的名字） | 示例工具 |
+|-----------|----------------------|----------|
+| `010302` | `/STATUS` | `plc/getValue`（可写：`plc/setValue`） |
+| `010307` | `/PART_COUNT` | `plc/getCount` |
+| `01035412` | `/CONTROLLER/WARNING` | `plc/getWarning` |
+| `01035409` | `/CONTROLLER/PROGRAM` | `plc/getProgram` |
+
+注意路径的组成：挂在设备（`MACHINE`）下的数据项是 `/<TYPE>`，挂在组件
+（`CONTROLLER`）下的数据项才带组件名。路径对不上（比如把报警注册成 `/WARNING`）
+时采样照样发，但那一列只能是 `null`。
 
 ---
 
@@ -608,6 +657,26 @@ if (!ncl_message_sample_is_complete(msg)) {
 （某一列某次取值失败时，该值是 `null`：列还在、表头对得上，属于"完整但含空值"，
 不是残缺报文。）
 
+设备端（尤其是别家实现）也可能**省掉表头** `paths`，或用 `[]` 给"本周期这一项
+没有数据"占位。这类报文客户端会先用设备模型兜一次：**在把报文交给采样回调之前**
+自动调用 `ncl_message_sample_normalise()`，能补就补，补不了原样交过去。
+
+- **表头**：`paths` 缺失或项数与 `data` 列数不符时，拿通道 id 到模型里找同名
+  `SAMPLE_CHANNEL`，按它声明的 `ids` 顺序补出表头；模型项数与列数对不上就不补。
+- **空列**：整列都是 `[]` 时换成等长的 `null`——只在其余列都是标量、换完能回到
+  统一标量形状时才做（本来就"标量列 + 批量列"混排的表救不回来）。
+
+补不了就绝不猜：通道查不到、项数对不上、形状统一不了，报文原样交给回调，
+`ncl_message_sample_is_complete()` 继续如实返回 false。自己直接吃 MQTT 时（见
+6.6）也可以照样调它：
+
+```c
+ncl_message_sample_normalise(msg, ncl_client_root_node(client));
+if (!ncl_message_sample_is_complete(msg)) {
+    return;                            /* 还是补不出来，按残缺处理 */
+}
+```
+
 注意：`ncl_message_is_valid()` 只检查外层（各列槽位数一致），内层对齐是
 `ncl_message_sample_is_complete()` 额外做的检查；因此它仍可能对一条"外层齐、
 内层不齐"的报文返回 true，判断采样报文能否消费请一律用后者。
@@ -758,6 +827,12 @@ ncl_log_info("采样任务已启动: %s", id);   /* 打印中文没问题（UTF-
 ncl_log_error("连接失败: %s", reason);
 ncl_log_shutdown();
 ```
+
+控制台镜像按"真控制台"还是"管道"分别解码（Windows 上）：真控制台（cmd /
+PowerShell / VS Code 终端）转宽字符走 `WriteConsoleW`，跟当前代码页无关；管道
+（VS Code 调试控制台、`> file` 重定向）先转成本地 ANSI 代码页再写。两种都不对
+时可以用环境变量兜底：`NCL_CONSOLE_ENCODING=utf8` 强制按 UTF-8 原样写
+（默认 `auto`）。日志文件始终是 UTF-8。
 
 #### ncl_env.h —— 运行环境、路径、SN、mqtt.cfg
 
@@ -1088,6 +1163,7 @@ size_t got = ncl_client_sample_count(client);   /* 收到过多少条上报 */
 | `interval` | 就是模型里的 `sampleInterval`（报文键名是 `interval`） |
 | 时间戳 | 报文里带 `beginTime`（窗口起点，epoch 毫秒字符串），需要严格时间对齐时用它 |
 | 完整性 | 设备端只发完整报文（表头与数据块对齐）；消费端可用 `ncl_message_sample_is_complete()` 复核 |
+| 设备省掉表头 | 客户端会先用设备模型补回规范形状（`ncl_message_sample_normalise()`，见 4.5）；补不了才原样交给回调 |
 | 亚毫秒采样 | 值本身可以是数组（一个槽位一批数据）；读它用 `ncl_sample_item_is_nested()` / `_value_count()` / `_value_at()` |
 
 ### 5.6 ncl_server.h —— 服务端
@@ -1637,10 +1713,12 @@ curl -X POST http://<设备IP>:9008/api/nclinkServer/addSample \
 | 现象 | 原因与处理 |
 |------|-----------|
 | MQTT 连不上，`ncl_mqtt_client_last_error()` 提示等待 CONNACK 超时 | broker 地址/端口/账号不对；`ssl://` 未实现（返回 `NCL_ERR_NOT_SUPPORTED`）；防火墙 |
+| 设备端示例刚启动就退出，日志里有「MQTT 连接失败」 | 它的默认 broker 是本机 `tcp://127.0.0.1:1883`（见 3.4）：先把 broker 起来，或改 `conf/mqtt.cfg` 指向你的 broker |
 | 客户端请求全部超时 | 设备端是否 `ncl_server_subscribe()`；SN 是否一致（主题里带 SN）；设备端工具是否已注册（未注册应答 `NG 未找到`） |
 | 设备端收不到请求 | 收包回调里是否调用了 `ncl_server_on_message()`；不要自己在收包线程上同步发布应答（会自我死锁，库内部已转线程池） |
 | `SET` 返回失败 | 工具方法返回 NCL_OK 但 `*result` 为 NULL 时，应答 code=NG |
 | 客户端 `setValue` 返回错误 | 说明设备应答里有 `code=NG` 的项（写失败被拒绝），报文 `reason` 里有原因 |
+| 采样报文某一列全是 `null` | 该采样项的路径在设备端没有绑定工具（见 3.4 的路径表）：`kBindings` 里的路径要和模型里数据项的路径一致 |
 | 文件上传报 `Error` | 检查三件事：① 本地文件是否放在 `<cwd>/<sn>/<相对路径>`；② 设备端是否起了 FTP（`ncl_server_start_ftp`，端口见 `bin/ftp.txt`）且可达；③ 客户端本机 2323 端口是否被占用 |
 | FTP 主动模式连不上 | 默认走主动模式：服务端要能反向连到客户端的监听端口。跨 NAT 时改用被动：`ncl_ftp_client_set_passive(c, true)` |
 | `ncl_sn_read()` 每次启动都变 | 根目录是否可写、`bin/sn.txt` 是否被 `/api/cfg/init` 覆盖过（该接口无条件重写，见 4.1） |
@@ -2090,6 +2168,7 @@ Copyright (c) 2026 huienming
 - `void *ncl_message_item_at(const ncl_message *msg, size_t index);` — Item accessors; the concrete type depends on the message kind.
 - `char *ncl_message_sample_header(const ncl_message *msg, const char *separator);` — "表头" of a Sample message - the list of data items this report collected.
 - `bool ncl_message_sample_is_complete(const ncl_message *msg);` — True when a Sample message is ready to hand to a consumer: it carries a
+- `ncl_err ncl_message_sample_normalise(ncl_message *msg, ncl_node *root);` — 用设备模型把设备端"省掉/占位"的采样信息补回规范形状，好让消费端继续按行
 - `bool ncl_sample_item_is_nested(const ncl_sample_item *item);` — 该列是否含数组元素（即是否是亚毫秒批量采样）。
 - `size_t ncl_sample_item_value_count(const ncl_sample_item *item);` — 该列的总点数：标量（含 null）算 1，数组算其长度。
 - `size_t ncl_message_sample_point_count(const ncl_message *msg);` — 整个报文的总点数（各列应相同，否则报文不完整）。
@@ -2218,6 +2297,7 @@ Copyright (c) 2026 huienming
 - `int64_t ncl_time_monotonic_millis(void);` — Monotonic milliseconds, suitable for measuring intervals.
 - `void ncl_sleep_millis(unsigned ms);` — Sleep for the given number of milliseconds.
 - `bool ncl_random_bytes(void *buf, size_t len);` — Fill @p buf with @p len cryptographically-seeded random bytes.
+- `void ncl_console_write(const char *text);` — 把一段 UTF-8 文本写到 stderr（日志的控制台镜像走这里）。
 - `ncl_mutex *ncl_mutex_create(void);`
 - `void ncl_mutex_destroy(ncl_mutex *m);`
 - `void ncl_mutex_lock(ncl_mutex *m);`
@@ -2301,6 +2381,8 @@ Copyright (c) 2026 huienming
 - `void ncl_socket_system_shutdown(void);`
 - `void ncl_socket_system_release(void);` — Ask for the networking stack to be released once every socket is closed.
 - `ncl_socket *ncl_socket_connect(const char *host, unsigned port, unsigned timeout_ms, char *err, size_t err_len);` — Connect to @p host:@p port.
+- `bool ncl_socket_tls_available(void);` — True when this build can speak TLS.
+- `ncl_socket *ncl_socket_connect_tls(const char *host, unsigned port, unsigned timeout_ms, const ncl_socket_tls_options *options, char *err, size_t err_len);` — Connect to @p host:@p port like ncl_socket_connect() and then run the TLS
 - `ncl_socket *ncl_socket_listen(unsigned port, char *err, size_t err_len);` — Create a listening socket bound to @p port (0 picks an ephemeral port).
 - `ncl_socket *ncl_socket_accept(ncl_socket *listener, unsigned timeout_ms);` — Accept one connection; returns NULL on timeout or error.
 - `unsigned ncl_socket_local_port(const ncl_socket *s);` — Local port of a bound socket, or 0 when unknown.
@@ -2432,10 +2514,10 @@ Copyright (c) 2026 huienming
 
 ```
 <root>/
-  bin/sn.txt              设备序列号
+  bin/sn.txt              设备序列号（设备端示例首次启动生成 9 位数字，见 3.4）
   bin/ftp.txt             FTP 端口与账号（设备端 FTP 端点用）
-  conf/mqtt.cfg           url/username/password
-  conf/model/nclink.json  数据模型
+  conf/mqtt.cfg           url/username/password（示例首次启动写本机 1883、匿名）
+  conf/model/nclink.json  数据模型（示例首次启动写默认机床模型）
   conf/driver/*.json      驱动配置
   conf/ipConf.json        网络配置
   conf/server.json        服务器列表
@@ -2444,3 +2526,4 @@ Copyright (c) 2026 huienming
   temp/                   文件通道的临时交换目录
   <sn>/                   客户端侧文件镜像（相对路径的基准）
 ```
+
