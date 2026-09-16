@@ -1218,6 +1218,31 @@ ncl_err ncl_mqtt_client_connect(ncl_mqtt_client *client)
     return NCL_OK;
 }
 
+/**
+ * 断开前把套接字里**已经到达**的字节读掉，再关连接。
+ *
+ * 为什么必须这么做：Windows 上如果关闭时套接字还有没读走的接收数据，close 走的是
+ * RST 而不是 FIN；对端收到 RST 时会把自己**还没读**的数据一并丢掉 —— 刚发过去的
+ * DISCONNECT 就可能在 broker 那边消失（broker 只看到"连接被重置"，看不到干净断开）。
+ * 收干净在途字节再关，FIN 收尾，对端就能正常读到 DISCONNECT。
+ *
+ * 代价很小：最多读 8 KB、每个 recv 只等 1 ms；正常情况第一次 recv 就超时返回。
+ */
+static void ncl_mqtt_client_drain(ncl_socket *sock)
+{
+    unsigned char scratch[512];
+    size_t total = 0;
+
+    while (sock != NULL && total < 8192) {
+        int n = ncl_socket_recv(sock, scratch, sizeof(scratch), 1);
+
+        if (n <= 0) {
+            break;   /* 超时 / EOF / 错误：没有更多在途数据了 */
+        }
+        total += (size_t)n;
+    }
+}
+
 ncl_err ncl_mqtt_client_disconnect(ncl_mqtt_client *client)
 {
     ncl_buffer packet;
@@ -1243,6 +1268,9 @@ ncl_err ncl_mqtt_client_disconnect(ncl_mqtt_client *client)
     {
         ncl_socket *dead = ncl_mqtt_client_detach_socket(client);
         if (dead != NULL) {
+            /* 先收干净在途字节再 shutdown：否则可能以 RST 收场，对端读不到上面
+             * 那个 DISCONNECT（见 ncl_mqtt_client_drain 的说明）。 */
+            ncl_mqtt_client_drain(dead);
             ncl_socket_shutdown(dead);
         }
         if (client->reader != NULL) {

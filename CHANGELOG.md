@@ -45,6 +45,17 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 - 日志同时写 `<root>/log/out.txt`（UTF-8，10 MB 轮转）与控制台（stderr，真控制台
   走 `WriteConsoleW`，中文在任何代码页下都对）。
 
+### 修复
+
+- **`ncl_mqtt_client_disconnect()` 断开前先把套接字里在途的字节读干净**。
+  之前是"发完 DISCONNECT 直接 shutdown(SD_BOTH) + closesocket"：Windows 上若关闭时
+  还有没读走的接收数据（例如刚到的 SUBACK），close 会走 **RST** 而不是 FIN，对端收到
+  RST 时会把它**还没读**的数据一起丢掉 —— 刚发过去的 DISCONNECT 就这样消失，broker
+  只看到"连接被重置"（表现为测试里 `disconnect_count` 一直是 0，约 10~25% 偶发；
+  真机上就是 broker 日志里的"客户端非正常断开"）。现在断开路径先把在途字节读掉
+  （最多 8 KB、每次 recv 1 ms），再 FIN 收尾，broker 能正常读到干净的 DISCONNECT。
+  实测：`mqtt_client` 套件由 40 次里 10 次失败 → **40/40 通过**，全套 22/22 连跑 5 轮通过。
+
 ### 平台与定时精度
 
 - **短等待不再被 Windows 的时钟粒度拖住**（默认 ~15.6 ms）。`ncl_cond_wait_timeout()`

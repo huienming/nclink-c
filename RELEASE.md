@@ -61,9 +61,8 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | Windows 编译 | x64 与 x86 均零警告（`/W4 /utf-8 /O2`，MSVC 14.44.35207） |
 | Windows 测试 | 22/22 通过：x64 Release、x86 Release、x64 TLS 三套各自 22/22 |
 | 内存检查 | ASan（`/fsanitize=address`）连跑 10 轮 22/22 |
-| 已知测试偶发 | `mqtt_client` 的**假 broker 时序**偶发失败（本机约 10%）：客户端断开后 broker 偶尔收不到那个
-DISCONNECT 包，失败在测试自己的等待断言上；`git stash` 回改动前的 HEAD 同样能复现（3/40），不是本库的问题，
-重跑即过。另外套件用固定端口（FTP 2323 等），**同一构建目录里别并发跑两份 ctest** |
+| 断开握手 | 客户端断开前先收干净在途字节再 FIN（避免 RST 吞掉 DISCONNECT），`mqtt_client` 套件由 40 次里 10 次失败 → 40/40 通过 |
+| 测试并发提示 | 套件之间用固定端口（FTP 2323/3131 等）与相对路径，**同一构建目录里别并发跑两份 ctest**，否则互相抢端口/文件 |
 | Linux 编译 | 零警告（gcc 13.4.0，`-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes`） |
 | Linux 测试 | 22/22 通过（含 TLS 套件，OpenSSL 3.0.20） |
 | 示例实跑 | 包内三种产物（Windows x64 / Windows x86 / Linux x86_64）都与 **EMQX 5.8.9** 对跑通过：模型交换、读写、参数校验、文件传输、事件推送、两个采样通道（1 s 状态；1 ms 采样 / 100 ms 上报的功率振动，共 12 列，主轴两路传感器）。窗口节奏实测：Linux ≈118 ms 一条；Windows ≈222 ms 一条（短等待走高精度计时器，1 ms 等待实测 1.56 ms，见手册 4.5）；Linux 下给设备端发 SIGTERM 也能优雅退出（退出码 0） |
