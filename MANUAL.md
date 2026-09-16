@@ -370,9 +370,9 @@ int main(void) {
 
 ### 3.3 示例实测输出
 
-设备端（`ncl_device_demo.exe . 12`）与客户端（`ncl_client_demo.exe
-tcp://localhost:1883 <设备SN> 4`）对跑，客户端侧输出（`<设备SN>` 是设备端首次
-启动时生成的 9 位 SN，见 3.4）：
+设备端（`ncl_device_demo.exe <安装根目录> 16`）与客户端（`ncl_client_demo.exe
+tcp://127.0.0.1:1883 344289212 8`）对跑，客户端侧输出。`344289212` 是设备端首次
+启动时生成的 9 位 SN（见 3.4），broker 是本机 EMQX 5.8.9（匿名 1883）：
 
 ```
 设备模型已装载: /NC_LINK_ROOT，/STATUS 的节点 id = 010302
@@ -384,21 +384,21 @@ tcp://localhost:1883 <设备SN> 4`）对跑，客户端侧输出（`<设备SN>` 
 GET /STATUS = 1
 SET /STATUS = 42 成功
 check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
-文件回传路径: D:\...\build\368207229\demo.txt
+文件回传路径: D:\...\344289212\demo.txt
   远端文件 demo.txt (14 字节)
-收到采样 [Sample/368207229/sample_channel0] 通道=sample_channel0 采样周期=10ms 上报周期=2000ms 采样项=4
+收到采样 [Sample/344289212/sample_channel0] 通道=sample_channel0 采样周期=10ms 上报周期=2000ms 采样项=4
     表头 paths(4 项) = ["/STATUS","/PART_COUNT","/CONTROLLER/WARNING","/CONTROLLER/PROGRAM"]
     原始报文: {"paths":["/STATUS","/PART_COUNT","/CONTROLLER/WARNING","/CONTROLLER/PROGRAM"],
-              "id":"sample_channel0","beginTime":"1789523128784",
-              "data":[{"data":[1,1,1,...]},{"data":[0,0,1,1,...]},...
-              ],"interval":10,"uploadInterval":2000}
-    /STATUS            编码=raw 本轮 200 个值: [1, 1, 1, 1, ...]
-    /PART_COUNT        编码=raw 本轮 200 个值: [0, 0, 0, 0, ...]
+              "id":"sample_channel0","beginTime":"1789524623425",
+              "data":[{"data":[42,42,42,...]},{"data":[61,61,62,...]},...],
+              "interval":10,"uploadInterval":2000}
+    /STATUS             编码=raw 本轮 200 个值: [42, 42, 42, 42, ...]
+    /PART_COUNT         编码=raw 本轮 200 个值: [61, 61, 61, 61, ...]
     /CONTROLLER/WARNING 编码=raw 本轮 200 个值: [0, 0, 0, 0, ...]
-    /CONTROLLER/PROGRAM 编码=raw 本轮 200 个值: [1001, 1001, ...]
-收到事件 [Event/368207229] id=010307 key=PART_COUNT value=10
+    /CONTROLLER/PROGRAM 编码=raw 本轮 200 个值: [1004, 1004, 1004, ...]
+收到事件 [Event/344289212] id=010307 key=PART_COUNT value=30
 ...
-共收到 4 条事件、2 条采样上报
+共收到 8 条事件、3 条采样上报
 ```
 
 这六步分别验证了：模型交换、读、写、参数校验、采样上报、文件通道、事件推送。
@@ -2526,4 +2526,3 @@ Copyright (c) 2026 huienming
   temp/                   文件通道的临时交换目录
   <sn>/                   客户端侧文件镜像（相对路径的基准）
 ```
-
