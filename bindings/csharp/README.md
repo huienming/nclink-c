@@ -15,9 +15,6 @@ Newtonsoft.Json，.NET 8 上也不需要 System.Text.Json。
 
 ```
 bindings/csharp/
-  native/nclink_shim.c        原生垫片：把 C API 摊平成"句柄 + JSON 文本"的 C ABI
-  native/build-native.ps1     Windows：编出 nclink_shim.dll（链接 build/nclink_core.lib）
-  native/build-native.sh      Linux/macOS：编出 libnclink_shim.so
   src/Nclink.Core/            托管封装（多目标：netstandard2.0 / net472 / net8.0）
   samples/Nclink.Demo.Cli/    控制台示例（net472 + net8.0 两个产物）
 ```
@@ -25,7 +22,8 @@ bindings/csharp/
 ## 为什么要垫片
 
 C 库是静态库、没有导出宏，而且托管侧不该依赖 C 结构体的内存布局（库里改个字段就会
-静默错位）。所以中间加一层 `nclink_shim`：
+静默错位）。所以中间加一层 `nclink_shim`（源码在 `bindings/native/`，**C#/Java/Python
+三份绑定共用同一份**）：
 
 - 只暴露三样东西：不透明句柄（`void*`）、标量、UTF-8 文本；
 - 报文/模型/JSON 都用**库自己的**编解码器，托管侧不做 JSON 解析（`NclJson` 只是
@@ -39,8 +37,8 @@ C 库是静态库、没有导出宏，而且托管侧不该依赖 C 结构体的
 # 1) 先编核心静态库（仓库根）
 .\build.ps1
 
-# 2) 编原生垫片 → bindings/csharp/native/bin/nclink_shim.dll
-powershell -ExecutionPolicy Bypass -File .\bindings\csharp\native\build-native.ps1
+# 2) 编原生垫片 → bindings/native/bin/nclink_shim.dll
+powershell -ExecutionPolicy Bypass -File .\bindings\native\build-shim.ps1
 
 # 3) 编托管封装与示例（需要 .NET SDK）
 dotnet build .\bindings\csharp\samples\Nclink.Demo.Cli\Nclink.Demo.Cli.csproj -c Release
@@ -50,13 +48,13 @@ Linux：
 
 ```sh
 ./build-linux.sh build-linux               # 出 build-linux/libnclink_core.a
-sh bindings/csharp/native/build-native.sh  # 出 bindings/csharp/native/bin/libnclink_shim.so
+sh bindings/native/build-shim.sh           # 出 bindings/native/bin/libnclink_shim.so
 dotnet build bindings/csharp/src/Nclink.Core/Nclink.Core.csproj -c Release
 ```
 
 `nclink_shim.dll` / `libnclink_shim.so` 必须和你的程序在同一个目录（或者在 `PATH` /
-`LD_LIBRARY_PATH` 上）；两个工程的 csproj 已经把它作为 `None ... CopyToOutputDirectory`
-拷进输出目录了。
+`LD_LIBRARY_PATH` 上）；两个工程的 csproj 已经把 `bindings/native/bin/` 下的那个作为
+`None ... CopyToOutputDirectory` 拷进输出目录了。
 
 ## 用法
 

@@ -129,6 +129,35 @@ static void test_file_layer(void)
         free(second);
     }
 
+    NCL_TEST_CASE("a generated serial is hexadecimal, never a bare number");
+    {
+        int round;
+
+        /* Enough rounds that an "all decimal digits" serial would show up
+         * (~1 % per round) if the generator still produced one. */
+        for (round = 0; round < 2000; round++) {
+            char *fresh = ncl_sn_generate();
+            bool has_letter = false;
+            int i;
+
+            NCL_CHECK(fresh != NULL);
+            if (fresh == NULL) {
+                break;
+            }
+            NCL_CHECK(strncmp(fresh, "V2", 2) == 0);
+            NCL_CHECK(strlen(fresh) == 11);     /* "V2" + nine digits */
+            for (i = 2; fresh[i] != '\0'; i++) {
+                NCL_CHECK((fresh[i] >= '0' && fresh[i] <= '9') ||
+                          (fresh[i] >= 'A' && fresh[i] <= 'F'));
+                if (fresh[i] > '9') {
+                    has_letter = true;
+                }
+            }
+            NCL_CHECK(has_letter);
+            free(fresh);
+        }
+    }
+
     NCL_TEST_CASE("getSn reads the very same value back");
     read_back = ncl_config_get_sn();
     NCL_CHECK(read_back != NULL);

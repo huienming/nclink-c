@@ -22,26 +22,35 @@
 
 char *ncl_sn_generate(void)
 {
-    unsigned char raw[16];
-    char out[16];
-    int i;
+    static const char kHex[] = "0123456789ABCDEF";
+    unsigned char raw[9];
+    char out[12];
+    bool has_letter = false;
+    size_t i;
 
     if (!ncl_random_bytes(raw, sizeof(raw))) {
         return NULL;
     }
-    /* "V2" followed by nine upper case hex digits. */
-    for (i = 0; i < 5; i++) {
-        snprintf(out + (i * 2), 3, "%02X", (unsigned)raw[i]);
-    }
-    {
-        unsigned long long num = strtoull(out, NULL, 16);
-        char *result = NULL;
-        num %= 1000000000ULL;
-        if (ncl_asprintf(&result, "V2%09llX", num) != NCL_OK) {
-            return NULL;
+    /* "V2" followed by nine upper case hex digits, one random nibble per
+     * digit: the serial *is* hexadecimal text, not a number printed in hex. */
+    out[0] = 'V';
+    out[1] = '2';
+    for (i = 0; i < sizeof(raw); i++) {
+        char digit = kHex[raw[i] & 0x0F];
+        out[2 + i] = digit;
+        if (digit > '9') {
+            has_letter = true;
         }
-        return result;
     }
+    /* Nine random hex digits are all decimal digits about 1 % of the time.
+     * Force a letter in that case, so a fresh SN never reads as a plain
+     * number (nor does the run-time <cwd>/<sn> directory it creates). */
+    if (!has_letter) {
+        out[2 + sizeof(raw) - 1] = kHex[10 + ((raw[0] >> 4) % 6)];
+    }
+    out[2 + sizeof(raw)] = '\0';
+
+    return ncl_strdup(out);
 }
 
 static char *g_root = NULL;

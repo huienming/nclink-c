@@ -193,7 +193,7 @@ def layout_table():
     out = ["## 附录 D · 安装根目录布局", ""]
     out.append("```")
     out.append("<root>/")
-    out.append("  bin/sn.txt              设备序列号（设备端示例首次启动生成 9 位数字，见 3.4）")
+    out.append('  bin/sn.txt              设备序列号（首次启动生成 "V2" + 9 位十六进制，见 3.4）')
     out.append("  bin/ftp.txt             FTP 端口与账号（设备端 FTP 端点用）")
     out.append("  conf/mqtt.cfg           url/username/password（示例首次启动写本机 1883、匿名）")
     out.append("  conf/model/nclink.json  数据模型（示例首次启动写默认机床模型）")

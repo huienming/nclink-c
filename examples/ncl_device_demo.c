@@ -6,7 +6,7 @@
  *
  * 演示一台数控机床接入 NC-Link 的完整流程：
  *   1. 指定安装根目录（不存在就建好）、初始化日志
- *   2. 首次启动自举：bin/sn.txt 没有就随机生成一个 9 位 SN 存下来；
+ *   2. 首次启动自举：bin/sn.txt 没有就生成一个 SN（"V2" + 9 位十六进制）；
  *      conf/model/nclink.json 没有就写入默认模型；conf/mqtt.cfg 没有就写入
  *      本机 broker（tcp://127.0.0.1:1883、匿名登录）
  *   3. 按 conf/mqtt.cfg 连接 broker（设备端用 SN 做 clientId）
@@ -575,37 +575,18 @@ static void on_mqtt_message(void *user, const ncl_mqtt_publish *publish)
 /** 本机 broker：默认值，也写进首次启动生成的 conf/mqtt.cfg。 */
 #define DEMO_BROKER_URL "tcp://127.0.0.1:1883"
 
-/** 随机生成一个 9 位 SN：9 个十进制数字。 */
-static char *demo_generate_sn(void)
-{
-    unsigned char raw[9];
-    char *sn = (char *)malloc(sizeof(raw) + 1);
-    size_t i;
-
-    if (sn == NULL || !ncl_random_bytes(raw, sizeof(raw))) {
-        free(sn);
-        return NULL;
-    }
-    for (i = 0; i < sizeof(raw); i++) {
-        sn[i] = (char)('0' + (raw[i] % 10));
-    }
-    sn[sizeof(raw)] = '\0';
-    return sn;
-}
-
 /**
  * 首次启动自举：安装根目录里缺什么补什么，已经存在的文件一律不动。
  *
- *   bin/sn.txt              设备 SN：随机生成的 9 位数字，之后一直沿用
+ *   bin/sn.txt              设备 SN：由 ncl_sn_read() 生成（"V2" + 9 位十六进制）
  *   conf/model/nclink.json  设备模型：默认模型（kDefaultModelJson）
  *   conf/mqtt.cfg           本机 broker：tcp://127.0.0.1:1883，匿名登录
  *
  * 这三个文件就是设备身份与配置的唯一出处，所以"删掉根目录重跑"和"换一台设备"
  * 是一回事。
  *
- * 为什么这里自己写而不是全交给库：ncl_sn_read() 生成的是 "V2 + 9 位十六进制"，
- * 现场 SN 习惯用 9 位数字，所以先把 SN 生成好落盘，再让 ncl_sn_read() 去读
- * （它只在文件不存在时才自己生成）。
+ * SN 不在这里生成：ncl_sn_read() 在 bin/sn.txt 缺失时自己生成并落盘（见 4.1），
+ * 示例跟着库走，不另造一种格式。
  */
 static ncl_err demo_bootstrap(void)
 {
@@ -615,24 +596,7 @@ static ncl_err demo_bootstrap(void)
     ncl_mkdir_p(ncl_env_run_path());
     ncl_mkdir_p(ncl_env_conf_path());
 
-    /* 1) SN */
-    if (!ncl_path_exists(ncl_env_sn_file())) {
-        char *fresh = demo_generate_sn();
-
-        if (fresh == NULL) {
-            return NCL_ERR_NOMEM;
-        }
-        rc = ncl_file_write_all(ncl_env_sn_file(), fresh, strlen(fresh));
-        if (rc == NCL_OK) {
-            ncl_log_info("首次启动：生成 SN %s（%s）", fresh, ncl_env_sn_file());
-        }
-        free(fresh);
-        if (rc != NCL_OK) {
-            return rc;
-        }
-    }
-
-    /* 2) 模型：conf/model/ 目录得自己建（ncl_file_write_all 不建父目录）。 */
+    /* 1) 模型：conf/model/ 目录得自己建（ncl_file_write_all 不建父目录）。 */
     if (!ncl_path_exists(ncl_env_model_file())) {
         if (ncl_asprintf(&dir, "%s%cmodel", ncl_env_conf_path(), NCL_PATH_SEP) ==
             NCL_OK) {
@@ -647,7 +611,7 @@ static ncl_err demo_bootstrap(void)
         ncl_log_info("首次启动：写入默认模型（%s）", ncl_env_model_file());
     }
 
-    /* 3) mqtt.cfg：本机 broker、匿名登录（用户名/密码留空）。 */
+    /* 2) mqtt.cfg：本机 broker、匿名登录（用户名/密码留空）。 */
     if (!ncl_path_exists(ncl_env_mqtt_cfg_file())) {
         static const char kDefaultCfg[] =
             "url=" DEMO_BROKER_URL "\r\nusername=\r\npassword=\r\n";
@@ -875,7 +839,7 @@ int main(int argc, char **argv)
     demo_install_signal_handlers();   /* 早装：自举期间 Ctrl+C 也走同一条清理路径 */
     ncl_log_info("NC-Link 设备端启动，根目录 %s", ncl_env_root());
 
-    /* 2. 首次启动自举：SN、模型、mqtt.cfg 缺什么补什么。
+    /* 2. 首次启动自举：模型、mqtt.cfg 缺什么补什么（SN 在下一步按需生成）。
      *
      *    注意这里不要用 ncl_config_init(NULL, &sn)：那是 REST 的 /api/cfg/init，
      *    它会**无条件覆盖** bin/sn.txt，每调一次设备身份就变一次。 */
@@ -885,7 +849,10 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    /* 3. 设备身份：bin/sn.txt（首次启动已生成，之后一直沿用）。 */
+    /* 3. 设备身份：bin/sn.txt（缺失时由 ncl_sn_read() 生成并落盘，之后一直沿用）。 */
+    if (!ncl_path_exists(ncl_env_sn_file())) {
+        ncl_log_info("首次启动：生成 SN（%s）", ncl_env_sn_file());
+    }
     sn = ncl_sn_read();
     if (sn == NULL) {
         ncl_log_error("无法取得设备 SN: %s", ncl_env_sn_file());

@@ -107,6 +107,10 @@ if ($WithSource) {
 Copy-Tree "bindings/go" "bindings/go" @("*.go", "*.mod", "*.md")
 # obj/ 与 bin/ 是编译产物（.gitignore 里也排除了），不进包
 Copy-Tree "bindings/csharp" "bindings/csharp" @("*.cs", "*.csproj", "*.md", "*.c", "*.h") "\\obj\\|\\bin\\"
+# 三种托管绑定共用的原生垫片（C 源码 + 头文件 + 构建脚本）
+Copy-Tree "bindings/native" "bindings/native" @("*.c", "*.h", "*.ps1", "*.sh", "*.md") "\\bin\\"
+Copy-Tree "bindings/java" "bindings/java" @("*.java", "*.c", "*.h", "*.md", "*.ps1", "*.sh") "\\bin\\|\\build\\"
+Copy-Tree "bindings/python" "bindings/python" @("*.py", "*.md", "*.ps1", "*.sh") "\\bin\\|__pycache__\\"
 
 # libraries
 New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x64-msvc") -Force | Out-Null

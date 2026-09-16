@@ -24,8 +24,8 @@
 
   <ItemGroup>
     <!-- 原生垫片跟着输出目录走，消费者不用自己找 DLL（哪个存在拷哪个） -->
-    <None Include="..\..\native\bin\nclink_shim.dll" Link="nclink_shim.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\native\bin\nclink_shim.dll')" />
-    <None Include="..\..\native\bin\libnclink_shim.so" Link="libnclink_shim.so" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\native\bin\libnclink_shim.so')" />
+    <None Include="..\..\..\native\bin\nclink_shim.dll" Link="nclink_shim.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\..\native\bin\nclink_shim.dll')" />
+    <None Include="..\..\..\native\bin\libnclink_shim.so" Link="libnclink_shim.so" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\..\native\bin\libnclink_shim.so')" />
   </ItemGroup>
 
 </Project>

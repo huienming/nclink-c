@@ -26,6 +26,10 @@ cd "$ROOT"
 
 CFLAGS="-std=c11 -O2 -Wall -Wextra -Wshadow -Wstrict-prototypes"
 CFLAGS="$CFLAGS -Wmissing-prototypes -Iinclude -Isrc"
+# -fPIC：静态库也要能链进共享库 —— C# / Java / Python 绑定的原生垫片就是 .so，
+# 非 PIC 的 .a 在 x86_64 上会以 "relocation R_X86_64_32 ... recompile with -fPIC"
+# 直接链接失败。可执行文件用 PIC 库没有任何问题。
+CFLAGS="$CFLAGS -fPIC"
 # -std=c11 会隐藏 POSIX 接口（strdup/getaddrinfo/localtime_r/pthread 等），
 # 必须显式打开；CMake 工程里同样设置了这一项。
 CFLAGS="$CFLAGS -D_POSIX_C_SOURCE=200809L"

@@ -11,7 +11,7 @@ namespace Nclink
     /// 原生垫片（nclink_shim）的 P/Invoke 声明。
     ///
     /// 库里没有导出符号（静态库），而且托管侧不该碰 C 结构体布局，所以所有调用都经
-    /// 过 bindings/csharp/native/nclink_shim.c —— 它只暴露不透明句柄、标量和 UTF-8
+    /// 过 bindings/native/nclink_shim.c —— 它只暴露不透明句柄、标量和 UTF-8
     /// 文本。字符串统一按 UTF-8 手工编解码（不用 PtrToStringAnsi：那在 Windows 上走
     /// 的是 ANSI 代码页，中文会乱）。
     /// </summary>

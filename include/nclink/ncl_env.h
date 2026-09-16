@@ -69,8 +69,10 @@ void    ncl_mqtt_config_free(ncl_mqtt_config *cfg);
 char *ncl_sn_read(void);
 
 /**
- * Generate a serial number: "V2" followed by nine upper-case hexadecimal
- * digits derived from random bytes.
+ * Generate a serial number: "V2" followed by nine upper-case hex digits.
+ * The digits are drawn one nibble at a time from random bytes, and at least
+ * one of them is a letter (A-F), so a generated serial never reads as a plain
+ * decimal number.
  * Returns a heap string or NULL.
  */
 char *ncl_sn_generate(void);

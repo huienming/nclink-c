@@ -37,12 +37,15 @@ __pycache__/
 /bindings/go/lib/
 # 示例客户端（ncl_client_demo）默认 SN 是 HNC_VDEV_00000，它会在当前目录下建同名目录
 /HNC_VDEV_*/
-# 设备端示例生成的 9 位数字 SN：客户端示例会在当前目录按 SN 建同名目录
-/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
+# 设备端 SN 是 "V2" + 9 位十六进制，上面的 /V*/ 已经覆盖它建的运行期目录
 
 # C# 绑定的构建产物（源码在 bindings/csharp，产物不入库）
 /bindings/csharp/**/bin/
 /bindings/csharp/**/obj/
+# 共用原生垫片 / Java 绑定的构建产物
+/bindings/native/bin/
+/bindings/java/build/
+/bindings/java/native/bin/
 *.dll
 *.exp
 *.so

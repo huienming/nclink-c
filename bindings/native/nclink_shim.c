@@ -2,7 +2,7 @@
 /* Copyright (c) 2026 huienming */
 
 /*
- * C# 绑定的原生垫片（flat C ABI）。
+ * 语言绑定共用的原生垫片（flat C ABI）：C#、Java、Python 都通过它调库。
  *
  * 为什么不直接 P/Invoke 库本身：
  *   1. 库里没有导出宏（静态库，没有 __declspec(dllexport)），Windows 上没法直接
@@ -16,6 +16,8 @@
  *   - 返回 char* 的，缓冲区是 malloc 出来的，调用方用 nclshim_free() 释放；
  *   - 返回 const char* / const void* 的，都是**借用**指针，句柄一释放就失效；
  *   - 回调里拿到的 message 句柄只在回调期间有效，要留就自己复制成 JSON 文本。
+ *
+ * 声明见同目录的 nclink_shim.h（两份文件保持一致）。
  */
 
 #include <stdlib.h>
@@ -29,11 +31,7 @@
 #include "nclink/ncl_message.h"
 #include "nclink/ncl_model.h"
 
-#if defined(_WIN32)
-#define NCLSHIM_API __declspec(dllexport)
-#else
-#define NCLSHIM_API __attribute__((visibility("default")))
-#endif
+#include "nclink_shim.h"
 
 /* ----------------------------------------------------------------- misc -- */
 
@@ -356,6 +354,30 @@ NCLSHIM_API const void *nclshim_node_at(const void *node, int kind, int index)
 
 /* ------------------------------------------------------- message / sample -- */
 
+/**
+ * 解析一条报文：topic 决定形态（Query/Request/...、Sample/<sn>/<通道>、
+ * Event/<sn> ...），payload 是原始 MQTT 报文（不必 NUL 结尾，用长度）。失败返回
+ * NULL。返回的报文**归调用方所有**，用 nclshim_message_free() 释放。
+ *
+ * 用途：托管侧自己拿到的 MQTT 报文（离线回放、日志、文件里存下来的样本）也能按
+ * 库的规则解码，不必再手写一遍 JSON。
+ */
+NCLSHIM_API const void *nclshim_message_parse(const char *topic,
+                                              const void *payload,
+                                              int payload_len)
+{
+    return topic != NULL && payload != NULL && payload_len >= 0
+               ? ncl_message_parse(topic, (const char *)payload,
+                                   (size_t)payload_len)
+               : NULL;
+}
+
+/** 释放 nclshim_message_parse() 返回的报文（借用的句柄不要传进来）。 */
+NCLSHIM_API void nclshim_message_free(const void *msg)
+{
+    ncl_message_free((ncl_message *)msg);
+}
+
 /** 整条报文的 JSON 文本（malloc，调用方释放）。 */
 NCLSHIM_API char *nclshim_message_write(const void *msg)
 {
@@ -580,6 +602,32 @@ NCLSHIM_API int nclshim_client_get_value(const void *client, const char *path,
         return (int)rc;
     }
     *out_json = value;
+    return NCL_OK;
+}
+
+/**
+ * 把设备模型交给客户端（路径 ↔ id 互查、采样报文按模型补齐缺的 paths 都靠它）。
+ *
+ * 所有权：这里**先克隆一份**再交给客户端（客户端自己释放），所以调用方手里那份
+ * 模型还是自己的，照常 nclshim_model_free —— 不用为"谁 free"扯皮。root 传 NULL
+ * 就是清掉客户端当前装载的模型。
+ */
+NCLSHIM_API int nclshim_client_set_root_node(const void *client, const void *root)
+{
+    ncl_node *copy;
+
+    if (client == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (root == NULL) {
+        ncl_client_set_root_node((ncl_client *)client, NULL);
+        return NCL_OK;
+    }
+    copy = ncl_node_clone((const ncl_node *)root, false);
+    if (copy == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    ncl_client_set_root_node((ncl_client *)client, copy);
     return NCL_OK;
 }
 

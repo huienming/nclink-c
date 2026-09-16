@@ -181,6 +181,49 @@ MSVC 的 `nclink_core.lib` 链不上；装 mingw 后用
 `CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw` 编一份即可。
 TLS 用 `-tags nclink_tls`。
 
+### 2.4.3 Java 绑定（JNI）
+
+`bindings/java/` 是 JNI 绑定，**零第三方依赖**（不用 Maven / Gradle），字节码是
+Java 8：
+
+```java
+Nclink.logInit();
+Nclink.init("tcp://127.0.0.1:1883");
+try (DeviceClient device = Nclink.getDevice("V2023A7B762")) {
+    try (Model model = device.probe()) { /* 遍历模型树 */ }
+    try (Json value = device.getValue("/STATUS")) { /* 读值 */ }
+    device.setValue("/STATUS", "42");
+    device.subscribeSamples(2, (topic, sample) -> show(sample));  // 快照，出了回调也能用
+}
+Nclink.shutdown();
+```
+
+构建：`.\bindings\java\build.ps1`（native + javac + 自检）/ Linux
+`./bindings/java/build.sh`（需要 `JAVA_HOME` 找 `jni.h`）。
+
+### 2.4.4 Python 绑定（ctypes）
+
+`bindings/python/` 是 ctypes 绑定，只用标准库：
+
+```python
+import nclink
+
+nclink.init("tcp://127.0.0.1:1883")
+with nclink.get_device("V2023A7B762") as device:
+    with device.probe() as model: ...                     # 拉模型（顺带装进客户端）
+    with device.get_value("/STATUS") as value: ...         # 读值
+    device.subscribe_samples(2, lambda topic, sample: print(sample.rows))
+nclink.shutdown()
+```
+
+构建：`bindings\native\build-shim.ps1`（原生垫片）→
+`python -m unittest discover -s bindings/python/tests`（自检，19 项，不需要 broker）。
+
+**三种托管绑定共用同一份原生垫片** `bindings/native/nclink_shim.c`：它把 C API
+摊平成"不透明句柄 + 标量 + UTF-8 文本"，托管侧不依赖 C 结构体的内存布局。C# 走
+P/Invoke、Java 走 JNI（`nclink_jni` 把垫片一起编进去）、Python 走 ctypes；C# 绑定
+见 `bindings/csharp/README.md`。
+
 ### 2.4 CMake 选项
 
 | 选项 | 默认 | 作用 |
@@ -381,7 +424,8 @@ int main(void) {
 设备端（`ncl_device_demo.exe <安装根目录> 20`）与客户端（`ncl_client_demo.exe
 tcp://127.0.0.1:1883 166587125 12`）对跑，客户端侧输出（下面是客户端那 12 s 窗口里
 的内容，头两条与结尾；SN 每次首启都会换一个，这里只是当次跑出来的那个）。
-`166587125` 是设备端首次启动时生成的 9 位 SN（见 3.4），broker 是本机
+`166587125` 是那次实测里设备端首次启动生成的 SN（当时示例自己发 9 位纯数字；现在
+默认由 `ncl_sn_read()` 生成 `V2` + 9 位十六进制，见 3.4 / 4.1），broker 是本机
 MQTT 5.0 broker（mochi-mqtt v2.7.9，匿名 1883；更早几次实测用的是 EMQX 5.8.9，
 行为一致）：
 
@@ -468,11 +512,12 @@ build\examples\ncl_device_demo.exe D:\sim4 60     # 也可以给秒数：跑 60 
 秒数省略（或写 0）就一直运行到 Ctrl+C —— 现场就是这么跑的；给正数则跑完自动退出，
 步骤 1~8 完全一样，只是主循环多了一个"跑满就走"的出口。
 
-首次启动补上这三样，它们也是设备身份与配置的来源：
+首次启动补上这三样（`bin/sn.txt` 由 `ncl_sn_read()` 生成，另两个文件由示例写入），
+它们也是设备身份与配置的来源：
 
 | 文件 | 首次启动写什么 |
 |------|----------------|
-| `bin/sn.txt` | 随机生成的 **9 位 SN**（9 个十进制数字）。库里的 `ncl_sn_read()` 默认是 `V2` + 9 位十六进制（见 4.1），示例按现场习惯先用纯数字生成好落盘，再让它去读 |
+| `bin/sn.txt` | 设备 SN：`V2` + 9 位**十六进制**（大写，且保证含 A~F 字母，不会是一串纯数字），由 `ncl_sn_read()` 在文件缺失时生成并落盘（见 4.1）。示例不自己造 SN，跟着库走 |
 | `conf/model/nclink.json` | 默认设备模型：一台数控机床（X/Y/Z/C 四轴 + 主轴 S + 数控系统），带两个采样通道：`sample_channel0`（机床运行状态，1 s 采样 / 1 s 上报，八项）、`EdgeSersors`（5 轴的功率与振动，主轴挂两路，共十二项；数据项带 number，路径形如 `/AXIS@S/POWER@1`） |
 | `conf/mqtt.cfg` | 本机 broker：`url=tcp://127.0.0.1:1883`，`username=`/`password=` 留空 = 匿名连接（空值不会写进 MQTT 连接报文） |
 
@@ -567,7 +612,7 @@ SN 是设备身份，也是所有主题的地址。两种来源必须分清：
 
 | 接口 | 行为 | 用途 |
 |------|------|------|
-| `ncl_sn_read()` | `bin/sn.txt` 存在即沿用，不存在才生成 `V2` + 9 位十六进制 | **设备启动时用这个** |
+| `ncl_sn_read()` | `bin/sn.txt` 存在即沿用，不存在才生成 `V2` + 9 位十六进制（大写，保证含 A~F 字母，不会是纯数字） | **设备启动时用这个** |
 | `ncl_config_init(sn, …)` | **无条件覆盖** `bin/sn.txt`；`sn` 为 NULL 时写入 32 位 hex | 对应 REST `/api/cfg/init`，出厂初始化用 |
 
  主题由 `ncl_topic_*` 构造，常用如下（完整列表见附录 C）：
@@ -2086,7 +2131,7 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_mqtt_config_read(ncl_mqtt_config *out);` — Read <conf>/mqtt.cfg.
 - `void ncl_mqtt_config_free(ncl_mqtt_config *cfg);`
 - `char *ncl_sn_read(void);` — Read <root>/bin/sn.txt, generating and persisting a serial number with
-- `char *ncl_sn_generate(void);` — Generate a serial number: "V2" followed by nine upper-case hexadecimal
+- `char *ncl_sn_generate(void);` — Generate a serial number: "V2" followed by nine upper-case hex digits.
 - `bool ncl_path_exists(const char *path);` — True when a file or directory exists.
 - `ncl_err ncl_mkdir_p(const char *path);` — Create @p path and any missing parents.
 - `ncl_err ncl_file_read_all(const char *path, char **out, size_t *out_len);` — Read a whole file into memory (NUL terminated).
@@ -2712,7 +2757,7 @@ Copyright (c) 2026 huienming
 
 ```
 <root>/
-  bin/sn.txt              设备序列号（设备端示例首次启动生成 9 位数字，见 3.4）
+  bin/sn.txt              设备序列号（首次启动生成 "V2" + 9 位十六进制，见 3.4）
   bin/ftp.txt             FTP 端口与账号（设备端 FTP 端点用）
   conf/mqtt.cfg           url/username/password（示例首次启动写本机 1883、匿名）
   conf/model/nclink.json  数据模型（示例首次启动写默认机床模型）

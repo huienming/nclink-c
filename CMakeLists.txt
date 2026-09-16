@@ -51,6 +51,12 @@ file(GLOB_RECURSE NCLINK_CORE_SOURCES CONFIGURE_DEPENDS
 add_library(nclink_core STATIC ${NCLINK_CORE_SOURCES})
 add_library(nclink::core ALIAS nclink_core)
 
+# 位置无关代码：静态库除了链可执行文件，还要能链进***共享库***（C# / Java /
+# Python 绑定的原生垫片就是 .so / .dylib）。MSVC 的静态库本来就与 /MD 运行库
+# 共存，这一项对它没有影响；GCC/Clang 上不加则共享库链接会直接报
+# "relocation R_X86_64_32 ... recompile with -fPIC"。
+set_target_properties(nclink_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 target_include_directories(nclink_core
         PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")

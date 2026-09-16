@@ -20,6 +20,9 @@ examples/bin/windows-x86-msvc/*.exe    同上，32 位
 examples/bin/linux-x86_64-gcc/*        Linux 版示例可执行文件（gcc 13 + glibc）
 bindings/go/                           Go 绑定源码（cgo，链接上面的静态库）
 bindings/csharp/                       C# 绑定源码（.NET 8 / .NET Framework 4.7.2 双目标）
+bindings/java/                         Java 绑定源码（JNI，Java 8 字节码，无第三方依赖）
+bindings/python/                       Python 绑定源码（ctypes，只用标准库）
+bindings/native/                       三种托管绑定共用的原生垫片（C#/Java/Python）
 MANUAL.md / MANUAL.docx                使用手册（Word 版由 md 生成，内容一致）
 README.md                              工程概览与测试清单
 CHANGELOG.md                           版本变更记录

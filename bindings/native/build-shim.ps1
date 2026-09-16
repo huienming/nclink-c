@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 huienming
 #
-# Build the C# native shim (nclink_shim.dll on Windows, libnclink_shim.so on Linux).
+# Build the shared native shim (nclink_shim.dll on Windows, libnclink_shim.so on
+# Linux) used by the C#, Java and Python bindings.
 #
-#   .\build-native.ps1                  # links build/nclink_core.lib from the repo root
-#   .\build-native.ps1 -CoreLib <path>  # links another static core library
+#   .\build-shim.ps1                    # -> bindings/native/bin/nclink_shim.dll
+#   .\build-shim.ps1 -OutDir <dir>      # e.g. next to your program
+#   .\build-shim.ps1 -CoreLib <path>    # links another static core library
+#   .\build-shim.ps1 -Arch x86          # 32-bit (vcvars32)
 #
 # Run the repo root build.ps1 first so nclink_core.lib exists; this script only
 # turns the shim into a shared library. Keep this file ASCII-only: Windows
@@ -13,12 +16,14 @@
 [CmdletBinding()]
 param(
     [string]$CoreLib = "",
-    [string]$OutDir = ""
+    [string]$OutDir = "",
+    [ValidateSet("x64", "x86")]
+    [string]$Arch = "x64"
 )
 
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
-$root = (Resolve-Path (Join-Path $here "..\..\..")).Path
+$root = (Resolve-Path (Join-Path $here "..\..")).Path
 $out = if ($OutDir -ne "") { $OutDir } else { Join-Path $here "bin" }
 $lib = if ($CoreLib -ne "") { $CoreLib } else { Join-Path $root "build\nclink_core.lib" }
 
@@ -27,9 +32,10 @@ if (-not (Test-Path -LiteralPath $lib)) {
 }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
-$vcvars = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+$vcvars = Join-Path ${env:ProgramFiles(x86)} ("Microsoft Visual Studio\2022\BuildTools" +
+    "\VC\Auxiliary\Build\vcvars{0}.bat" -f $(if ($Arch -eq "x86") { "32" } else { "64" }))
 if (-not (Test-Path -LiteralPath $vcvars)) {
-    throw "vcvars64.bat not found (Visual Studio 2022 Build Tools required)"
+    throw "vcvars not found for arch $Arch (Visual Studio 2022 Build Tools required)"
 }
 
 $source = Join-Path $here "nclink_shim.c"

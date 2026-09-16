@@ -165,6 +165,23 @@ docker run --rm -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh buil
 | `NCLINK_WITH_ZLIB` | `OFF` | 启用 zlib 压缩编解码（CompressEncoder/Decoder） |
 | `NCLINK_WITH_MQTT` | `ON` | 构建 MQTT 传输层（关掉后只剩纯协议层，便于嵌入式裁剪） |
 
+## 语言绑定
+
+C++ 封装在 `include/nclink/ncl.hpp`（header-only，RAII + 异常）；四个语言绑定都在
+`bindings/`，其中 C# / Java / Python 三种托管绑定**共用同一份原生垫片**
+`bindings/native/nclink_shim.c`——它把 C API 摊平成"不透明句柄 + 标量 + UTF-8 文本"，
+托管侧不依赖 C 结构体的内存布局：
+
+| 绑定 | 目录 | 构建与自检 |
+|------|------|------------|
+| Go（cgo） | `bindings/go/` | `sh tools/stage-go-libs.sh` 后 `cd bindings/go && go test ./...` |
+| C#（P/Invoke，net472 + net8.0） | `bindings/csharp/` | `.\bindings\native\build-shim.ps1` 后 `dotnet build bindings/csharp/samples/Nclink.Demo.Cli -c Release` |
+| Java（JNI，Java 8 字节码） | `bindings/java/` | `.\bindings\java\build.ps1`（native + javac + 自检） |
+| Python（ctypes，只用标准库） | `bindings/python/` | `python -m unittest discover -s bindings/python/tests`（19 项） |
+
+每个目录的 `README.md` 里都有用法、内存/线程规则与示例输出，Java / Python 还给了
+对着设备端示例跑的端到端命令。
+
 ## 快速上手
 
 ```c
