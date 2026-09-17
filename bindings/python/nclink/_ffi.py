@@ -150,6 +150,7 @@ _PROTOTYPES = [
     ("nclshim_strdup", ctypes.c_void_p, ctypes.c_char_p),
     ("nclshim_env_set_root", None, ctypes.c_char_p),
     ("nclshim_env_root", ctypes.c_char_p),
+    ("nclshim_device_model", ctypes.c_char_p),
     ("nclshim_log_init", ctypes.c_int, ctypes.c_char_p),
     ("nclshim_log_shutdown", None),
     ("nclshim_log_set_level", None, ctypes.c_int),
