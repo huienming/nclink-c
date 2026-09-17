@@ -180,6 +180,15 @@ namespace Nclink
 
         /* -------------------------------------------------- message / sample -- */
 
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_message_parse")]
+        internal static extern IntPtr MessageParse(byte[] topic, byte[] payload, int payloadLen);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_message_free")]
+        internal static extern void MessageFree(IntPtr msg);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_message_type")]
+        internal static extern int MessageType(IntPtr msg);
+
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_message_write")]
         internal static extern IntPtr MessageWrite(IntPtr msg);
 
@@ -307,6 +316,106 @@ namespace Nclink
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_remove_sample")]
         internal static extern int ClientRemoveSample(IntPtr client, byte[] id, uint timeoutMs);
+
+        /* ------------------------------------------------------------ server -- */
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_create")]
+        internal static extern IntPtr ServerCreate(byte[] sn, byte[] modelJson, byte[] broker, byte[] username, byte[] password, IntPtr publishHost);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_free")]
+        internal static extern void ServerFree(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_sn")]
+        internal static extern IntPtr ServerSn(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_model")]
+        internal static extern IntPtr ServerModel(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_model_json")]
+        internal static extern IntPtr ServerModelJson(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_openapi_json")]
+        internal static extern IntPtr ServerOpenapiJson(IntPtr handle, byte[] baseUrl);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_binding_count")]
+        internal static extern int ServerBindingCount(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_operation_count")]
+        internal static extern int ServerOperationCount(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_sample_count")]
+        internal static extern int ServerSampleCount(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_sample_upload_count")]
+        internal static extern int ServerSampleUploadCount(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_event_count")]
+        internal static extern int ServerEventCount(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_subscribe")]
+        internal static extern int ServerSubscribe(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_register_tool")]
+        internal static extern int ServerRegisterTool(IntPtr handle, byte[] tool, byte[] methodsJson, byte[] bindingsJson, IntPtr host);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_register_builtin_tool")]
+        internal static extern int ServerRegisterBuiltinTool(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_register_file_tool")]
+        internal static extern int ServerRegisterFileTool(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_start_ftp")]
+        internal static extern int ServerStartFtp(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_dispatch")]
+        internal static extern int ServerDispatch(IntPtr handle, byte[] topic, byte[] payload, int payloadLen, out IntPtr responseJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_invoke_method_call")]
+        internal static extern int ServerInvokeMethodCall(IntPtr handle, byte[] method, byte[] paramsJson, out IntPtr responseJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_check_method_call")]
+        internal static extern int ServerCheckMethodCall(IntPtr handle, byte[] method, byte[] paramsJson, out IntPtr responseJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_init_samples")]
+        internal static extern int ServerInitSamples(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_add_sample")]
+        internal static extern int ServerAddSample(IntPtr handle, byte[] configJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_remove_sample")]
+        internal static extern int ServerRemoveSample(IntPtr handle, byte[] id);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_stop_all_samples")]
+        internal static extern void ServerStopAllSamples(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_push_event")]
+        internal static extern int ServerPushEvent(IntPtr handle, byte[] eventId, byte[] eventJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_push_event_ex")]
+        internal static extern int ServerPushEventEx(IntPtr handle, byte[] eventId, byte[] eventJson, long timeMs, byte[] messageId);
+
+        /* -------------------------------------------------------------- http -- */
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_http_start")]
+        internal static extern IntPtr HttpStart(uint port, IntPtr server, int withConfig);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_http_free")]
+        internal static extern void HttpFree(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_http_port")]
+        internal static extern int HttpPort(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_http_request_count")]
+        internal static extern int HttpRequestCount(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_http_set_cors")]
+        internal static extern void HttpSetCors(IntPtr handle, int enabled);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_http_route")]
+        internal static extern int HttpRoute(IntPtr handle, byte[] method, byte[] path, IntPtr host);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_strdup")]
+        internal static extern IntPtr Strdup(byte[] text);
 
         /* ----------------------------------------------------------- helpers -- */
 

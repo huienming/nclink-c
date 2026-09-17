@@ -398,6 +398,26 @@ NCLSHIM_API int nclshim_server_push_event_ex(const void *handle, const char *eve
  */
 NCLSHIM_API char *nclshim_strdup(const char *text);
 
+/**
+ * 起一个 HTTP 端点：port=0 用随机端口（端口用 nclshim_http_port 查）。
+ * server 非空时挂 REST（OpenAPI + swagger-ui + 工具端点）；with_config 非 0 再
+ * 挂配置端点（SN/模型/驱动/mqtt.cfg/服务器列表）。失败返回 NULL。
+ */
+NCLSHIM_API const void *nclshim_http_start(unsigned port, const void *server,
+                                           int with_config);
+
+NCLSHIM_API void nclshim_http_free(const void *handle);
+
+NCLSHIM_API int nclshim_http_port(const void *handle);
+
+NCLSHIM_API int nclshim_http_request_count(const void *handle);
+
+NCLSHIM_API void nclshim_http_set_cors(const void *handle, int enabled);
+
+/** 挂一条自己的路由：method 支持 "*"（见 ncl_http_server_route 的匹配规则）。 */
+NCLSHIM_API int nclshim_http_route(const void *handle, const char *method,
+                                   const char *path, void *host);
+
 
 #ifdef __cplusplus
 }

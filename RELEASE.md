@@ -19,9 +19,9 @@ examples/bin/windows-x64-msvc/*.exe    **编好的示例可执行文件**（x64�
 examples/bin/windows-x86-msvc/*.exe    同上，32 位
 examples/bin/linux-x86_64-gcc/*        Linux 版示例可执行文件（gcc 13 + glibc）
 bindings/go/                           Go 绑定源码（cgo，链接上面的静态库）
-bindings/csharp/                       C# 绑定源码（.NET 8 / .NET Framework 4.7.2 双目标）
-bindings/java/                         Java 绑定源码（JNI，Java 8 字节码，无第三方依赖）
-bindings/python/                       Python 绑定源码（ctypes，只用标准库）
+bindings/csharp/                       C# 绑定源码（客户端 + 设备端 + HTTP/REST；netstandard2.0 / .NET 8 / .NET Framework 4.7.2 三目标，含设备端示例与自检）
+bindings/java/                         Java 绑定源码（JNI，Java 8 字节码，无第三方依赖；客户端 + 设备端 + HTTP/REST）
+bindings/python/                       Python 绑定源码（ctypes，只用标准库；客户端 + 设备端 + HTTP/REST）
 bindings/native/                       三种托管绑定共用的原生垫片（C#/Java/Python）
 MANUAL.md / MANUAL.docx                使用手册（Word 版由 md 生成，内容一致）
 README.md                              工程概览与测试清单
@@ -72,6 +72,8 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | broker 互操作 | `tests/test_broker` 对 EMQX 5.8.9 实测 **44 项检查、0 失败**：QoS 0/1/2、通配订阅、40 KB 报文、退订、空闲保活、会话顶替、重连后订阅恢复（`tools/interop.sh` 可在 Docker 里同时跑 EMQX 与 Mosquitto） |
 | x86（32 位） | 库 / 示例 / 测试全部通过；产物 PE 头 Machine = 0x014c（i386），与 x64 同一套源码、同一套编译选项 |
 | TLS | Windows（MSVC + OpenSSL 3.0.18 静态链接）与 Linux（gcc + OpenSSL 3.0.20）都编过并 22/22 通过；**x86 暂未出 TLS 版** |
+| 托管绑定自检 | C# 98 项（`bindings/csharp/tests/Nclink.SelfTest`，net472 与 net8.0 各跑一遍）、Java 99 项、Python 36 项，全部 0 失败；覆盖客户端、设备端（工具注册 / 采样通道 / 事件 / 离线 dispatch / 自研传输）与 HTTP/REST 端点（OpenAPI、swagger-ui、工具端点、配置端点、自定义路由），都不需要 broker |
+| HTTP/REST 端点实跑 | C# 设备端示例（离线 + REST）与 Java / Python 设备端示例都挂上了端点：`GET /api/schema`、`GET /swagger-ui`、`POST /api/<工具>/<方法>`、`GET /api/cfg/*` 与自定义路由实测通过 |
 | Go 绑定用的 mingw 库 | 本次发布**未带**（本机没有 mingw 工具链）；需要时按 `tools/stage-go-libs.sh` 里的命令行自编 |
 
 测试套件：json、common、topic、model、message、codec、thread、mqtt、mqtt_client、

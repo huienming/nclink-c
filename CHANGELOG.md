@@ -47,6 +47,11 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 修复
 
+- **垫片 `nclshim_server_create()` 的"模型默认走内置模型"没实现**：文件头的注释一直
+  这么写，但代码把 `model_json == NULL` 直接当"空模型"传给 `ncl_server_create()`，
+  于是"不传模型"的设备端没有模型——采样通道、按路径应答都无从谈起（Java / Python
+  绑定绕过了它：它们自己先把内置模型序列化出来再传）。现在垫片真的会把内置模型
+  （`ncl_root_node_parse(NULL)`）序列化后传进去，C# / Java / Python 的行为一致。
 - **`ncl_mqtt_client_disconnect()` 断开前先把套接字里在途的字节读干净**。
   之前是"发完 DISCONNECT 直接 shutdown(SD_BOTH) + closesocket"：Windows 上若关闭时
   还有没读走的接收数据（例如刚到的 SUBACK），close 会走 **RST** 而不是 FIN，对端收到
@@ -73,6 +78,30 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 构建与发布
 
+- **HTTP / REST 端点进了三份托管绑定**（`ncl_rest_attach` 早就在库里）：
+  `start_http(port, with_config)` + 自定义路由（`method` 支持 `"*"`、`/api/` 开头是
+  前缀匹配）+ `request_count` / `set_cors`；C# 是 `NclServer.StartHttp()` /
+  `NclHttpEndpoint.Route()`，Java 是 `Server.startHttp()` / `HttpEndpoint.route()`，
+  Python 是 `Server.start_http()` / `HttpEndpoint.route()`。端点内容全在库里：
+  `GET /api/schema`（OpenAPI 3.0）、`GET /swagger-ui`、`POST /api/<工具>/<方法>`
+  （等价于 methodCall，走 Result 信封），配置端点（SN / 模型 / 驱动 / mqtt.cfg /
+  服务器列表）。
+- **C# 绑定补齐设备端**：`NclServer`（工具注册 / 路径绑定 / 采样通道 / 事件推送 /
+  离线 dispatch / 自研传输）+ `NclHttpEndpoint` + `Nclink.Parse()` / `NclMessage`
+  （报文解码，`AsSample()` / `AsEvent()` 拿快照），`NclOperation` / `NclToolBinding` /
+  `NclToolHandler` 与 Java / Python 一套语义；新增设备端示例
+  `samples/Nclink.Demo.Device`（`broker` 写 `-` 就是离线：出站报文走自研传输打到
+  控制台，REST 端点照常可用）与一键构建 `bindings/csharp/build.ps1`。
+- **C# 自检工程** `tests/Nclink.SelfTest`（98 项，不需要 broker）：JSON / 模型 /
+  报文解析 / 设备端（离线 dispatch、工具注册、采样通道、事件、自研传输、关闭语义）/
+  HTTP（REST、配置端点、swagger-ui、自定义路由、错误路径、幂等关闭）；net472 与
+  net8.0 两个目标都跑通。Java 自检补上 HTTP 用例（75 → 99 项），Python 32 → 36 项。
+- **借用视图的 `Dispose` 改成空操作**（C#）：`NclJson` 的下标/成员视图、设备端的
+  `NclServer.Model` 这类借用对象以前 `Dispose` 会把句柄置空、之后再用就抛
+  `ObjectDisposedException`；现在与 Java / Python 一致——借用的东西不归你管，
+  `Dispose` 什么都不做。
+- Python 设备端示例的收尾计数：关闭后再读 `sample_upload_count` / `event_count` 会抛
+  `ClosedException`，现在先读计数再关。
 - `build.ps1 -Arch x86 -BuildDir build-x86`：新增 **32 位（Win32/x86）** 构建
   （库、示例、测试都是 x86，同一个 Ninja 工程换 `vcvars32` 即可）。
 - 发布包新增 `lib/windows-x86-msvc/`、`examples/bin/{windows-x64-msvc,windows-x86-msvc,

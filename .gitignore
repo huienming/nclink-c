@@ -49,3 +49,6 @@ __pycache__/
 *.dll
 *.exp
 *.so
+
+# Bindings: runtime logs/samples the self-tests and demos create next to the code
+/bindings/*/log/

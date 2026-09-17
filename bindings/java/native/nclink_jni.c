@@ -1503,3 +1503,169 @@ JNIEXPORT jint JNICALL Java_com_nclink_Native_serverPushEvent(
     free(raw_message);
     return (jint)rc;
 }
+
+/* ============================================================== http/rest == */
+
+/** 一次自定义路由调用：Java 侧返回 String[]{status, content_type, body}。 */
+static int jni_route_callback(void *user, const char *method, const char *path,
+                              const char *query, const char *body, int *out_status,
+                              char **out_content_type, char **out_body)
+{
+    jni_host *host = (jni_host *)user;
+    JNIEnv *env = NULL;
+    jboolean attached = JNI_FALSE;
+    jclass cls;
+    jmethodID mid;
+    jstring jmethod;
+    jstring jpath;
+    jstring jquery;
+    jstring jbody;
+    jobjectArray result;
+
+    if (host == NULL || g_vm == NULL) {
+        return -1;
+    }
+    if ((*g_vm)->GetEnv(g_vm, (void **)&env, JNI_VERSION_1_8) != JNI_OK) {
+        if ((*g_vm)->AttachCurrentThread(g_vm, (void **)&env, NULL) != JNI_OK) {
+            return -1;
+        }
+        attached = JNI_TRUE;
+    }
+    if ((*env)->PushLocalFrame(env, 24) != 0) {
+        if (attached) {
+            (*g_vm)->DetachCurrentThread(g_vm);
+        }
+        return -1;
+    }
+    cls = (*env)->GetObjectClass(env, host->target);
+    mid = cls != NULL
+              ? (*env)->GetMethodID(env, cls, "onRouteNative",
+                                    "(Ljava/lang/String;Ljava/lang/String;"
+                                    "Ljava/lang/String;Ljava/lang/String;)[Ljava/lang/String;")
+              : NULL;
+    if (mid == NULL) {
+        if (cls != NULL) {
+            (*env)->ExceptionClear(env);
+        }
+        (*env)->PopLocalFrame(env, NULL);
+        if (attached) {
+            (*g_vm)->DetachCurrentThread(g_vm);
+        }
+        return -1;
+    }
+    jmethod = to_jstring(env, method);
+    jpath = to_jstring(env, path);
+    jquery = to_jstring(env, query);
+    jbody = to_jstring(env, body);
+    result = (jobjectArray)(*env)->CallObjectMethod(env, host->target, mid, jmethod,
+                                                    jpath, jquery, jbody);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        result = NULL;
+    }
+    if (result != NULL && (*env)->GetArrayLength(env, result) >= 3) {
+        jstring status = (jstring)(*env)->GetObjectArrayElement(env, result, 0);
+        jstring type = (jstring)(*env)->GetObjectArrayElement(env, result, 1);
+        jstring data = (jstring)(*env)->GetObjectArrayElement(env, result, 2);
+        const char *chars;
+
+        if (status != NULL) {
+            chars = (*env)->GetStringUTFChars(env, status, NULL);
+            if (chars != NULL) {
+                *out_status = atoi(chars);
+                (*env)->ReleaseStringUTFChars(env, status, chars);
+            }
+        }
+        if (type != NULL) {
+            chars = (*env)->GetStringUTFChars(env, type, NULL);
+            if (chars != NULL) {
+                *out_content_type = nclshim_strdup(chars);
+                (*env)->ReleaseStringUTFChars(env, type, chars);
+            }
+        }
+        if (data != NULL) {
+            chars = (*env)->GetStringUTFChars(env, data, NULL);
+            if (chars != NULL) {
+                *out_body = nclshim_strdup(chars);
+                (*env)->ReleaseStringUTFChars(env, data, chars);
+            }
+        }
+    }
+    (*env)->PopLocalFrame(env, NULL);
+    if (attached) {
+        (*g_vm)->DetachCurrentThread(g_vm);
+    }
+    return 0;
+}
+
+JNIEXPORT jlong JNICALL Java_com_nclink_Native_httpStart(JNIEnv *env, jclass cls,
+                                                        jlong server, jint port,
+                                                        jboolean with_config)
+{
+    (void)env;
+    (void)cls;
+    return PTR(nclshim_http_start((unsigned)port, HANDLE(server),
+                                  with_config != JNI_FALSE ? 1 : 0));
+}
+
+JNIEXPORT void JNICALL Java_com_nclink_Native_httpFree(JNIEnv *env, jclass cls,
+                                                       jlong http)
+{
+    (void)env;
+    (void)cls;
+    nclshim_http_free(HANDLE(http));
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_httpPort(JNIEnv *env, jclass cls,
+                                                       jlong http)
+{
+    (void)env;
+    (void)cls;
+    return (jint)nclshim_http_port(HANDLE(http));
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_httpRequestCount(JNIEnv *env, jclass cls,
+                                                               jlong http)
+{
+    (void)env;
+    (void)cls;
+    return (jint)nclshim_http_request_count(HANDLE(http));
+}
+
+JNIEXPORT void JNICALL Java_com_nclink_Native_httpSetCors(JNIEnv *env, jclass cls,
+                                                          jlong http, jboolean enabled)
+{
+    (void)env;
+    (void)cls;
+    nclshim_http_set_cors(HANDLE(http), enabled != JNI_FALSE ? 1 : 0);
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_httpRoute(JNIEnv *env, jclass cls,
+                                                        jlong http, jstring method,
+                                                        jstring path, jobject target,
+                                                        jlongArray out_host)
+{
+    char *raw_method = from_jstring(env, method);
+    char *raw_path = from_jstring(env, path);
+    jni_host *host = make_host(env, target, (void *)jni_route_callback);
+    int rc;
+
+    (void)cls;
+    set_long(env, out_host, 0, 0);
+    if (host == NULL) {
+        free(raw_method);
+        free(raw_path);
+        return -2;
+    }
+    rc = nclshim_http_route(HANDLE(http), raw_method, raw_path, host);
+    free(raw_method);
+    free(raw_path);
+    if (rc != 0) {
+        (*env)->DeleteGlobalRef(env, host->target);
+        free(host);
+        return (jint)rc;
+    }
+    set_long(env, out_host, 0, PTR(host));
+    return 0;
+}

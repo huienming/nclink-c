@@ -175,13 +175,14 @@ C++ 封装在 `include/nclink/ncl.hpp`（header-only，RAII + 异常）；四个
 | 绑定 | 目录 | 覆盖 | 构建与自检 |
 |------|------|------|------------|
 | Go（cgo） | `bindings/go/` | 客户端 | `sh tools/stage-go-libs.sh` 后 `cd bindings/go && go test ./...` |
-| C#（P/Invoke，net472 + net8.0） | `bindings/csharp/` | 客户端 | `.\bindings\native\build-shim.ps1` 后 `dotnet build bindings/csharp/samples/Nclink.Demo.Cli -c Release` |
-| Java（JNI，Java 8 字节码） | `bindings/java/` | 客户端 + **设备端** | `.\bindings\java\build.ps1`（native + javac + 自检） |
-| Python（ctypes，只用标准库） | `bindings/python/` | 客户端 + **设备端** | `python -m unittest discover -s bindings/python/tests`（32 项） |
+| C#（P/Invoke，net472 + net8.0） | `bindings/csharp/` | 客户端 + **设备端**（含 HTTP/REST） | `.\bindings\csharp\build.ps1`（垫片 + 三个工程 + 自检 98 项） |
+| Java（JNI，Java 8 字节码） | `bindings/java/` | 客户端 + **设备端**（含 HTTP/REST） | `.\bindings\java\build.ps1`（native + javac + 自检 99 项） |
+| Python（ctypes，只用标准库） | `bindings/python/` | 客户端 + **设备端**（含 HTTP/REST） | `python -m unittest discover -s bindings/python/tests`（36 项） |
 
-每个目录的 `README.md` 里都有用法、内存/线程规则与示例输出。Java / Python 两个绑定
-**两边都包**：既能当客户端（`DeviceClient`），也能当设备端（`Server`：注册工具方法、
-路径绑定、采样通道、事件推送），示例里有"Python 当机床、C 客户端来读"这种跨语言跑法。
+每个目录的 `README.md` 里都有用法、内存/线程规则与示例输出。C# / Java / Python 三个
+托管绑定**两边都包**：既能当客户端（`DeviceClient`/`NclDeviceClient`），也能当设备端
+（`Server`：注册工具方法、路径绑定、采样通道、事件推送、HTTP/REST 端点），示例里有
+"Python 当机床、C 客户端来读"这种跨语言跑法。
 
 ## 快速上手
 

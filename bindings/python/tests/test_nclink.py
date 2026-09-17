@@ -11,9 +11,12 @@
 examples/client_demo.py）。
 """
 
+import json
 import os
 import sys
 import unittest
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -353,6 +356,96 @@ class ServerTest(unittest.TestCase):
         device.close()
         with self.assertRaises(nclink.NclinkError):
             device.model
+
+
+class HttpTest(unittest.TestCase):
+    """HTTP / REST 端点（离线也能测：本机回环，不需要 broker）。"""
+
+    def _http(self, endpoint, method, path, body=None, content_type="application/json"):
+        request = urllib.request.Request(endpoint.url + path,
+                                         data=None if body is None else body.encode("utf-8"),
+                                         method=method)
+        if body is not None:
+            request.add_header("Content-Type", content_type)
+        try:
+            with urllib.request.urlopen(request, timeout=5) as reply:
+                return reply.status, reply.read().decode("utf-8")
+        except urllib.error.HTTPError as error:
+            return error.code, error.read().decode("utf-8")
+
+    def test_openapi_tool_and_config_endpoints(self):
+        device = nclink.Server(sn="V2TEST00001")
+        self.addCleanup(device.close)
+        device.register_tool("plc", methods={"getCount": None},
+                             handlers={"getCount": lambda params: 42})
+        endpoint = device.start_http(0, with_config=True)
+        self.addCleanup(endpoint.close)
+        self.assertGreater(endpoint.port, 0)
+
+        # GET /api/schema：OpenAPI 3.0 文档
+        status, body = self._http(endpoint, "GET", "/api/schema")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["openapi"], "3.0.0")
+        self.assertIn("/plc/getCount", body)
+
+        # POST /api/<工具>/<方法>：等价于 methodCall（应答走 Result 信封）
+        status, body = self._http(endpoint, "POST", "/api/plc/getCount", "{}")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"status": True, "data": 42})
+
+        # 配置端点：GET /api/cfg/getModel（没装模型文件时是 NG，但端点必须在）
+        status, body = self._http(endpoint, "GET", "/api/cfg/getModel")
+        self.assertEqual(status, 200)
+        self.assertIn("status", json.loads(body))
+
+    def test_custom_routes(self):
+        device = nclink.Server(sn="V2TEST00001")
+        self.addCleanup(device.close)
+        endpoint = device.start_http(0, with_config=False)
+        self.addCleanup(endpoint.close)
+
+        endpoint.route("GET", "/hello",
+                       lambda method, path, query, body: {"path": path, "query": query})
+        endpoint.route("POST", "/echo",
+                       lambda method, path, query, body: (201, "text/plain; charset=utf-8",
+                                                          "echo:" + body))
+        endpoint.route("GET", "/none", lambda method, path, query, body: None)
+
+        status, body = self._http(endpoint, "GET", "/hello?x=1")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"path": "/hello", "query": "x=1"})
+
+        status, body = self._http(endpoint, "POST", "/echo", "hi", "text/plain")
+        self.assertEqual((status, body), (201, "echo:hi"))
+
+        status, body = self._http(endpoint, "GET", "/none")
+        self.assertEqual((status, body), (200, ""))
+
+        self.assertGreaterEqual(endpoint.request_count, 3)
+
+    def test_route_handler_error_is_500(self):
+        device = nclink.Server(sn="V2TEST00001")
+        self.addCleanup(device.close)
+        endpoint = device.start_http(0, with_config=False)
+        self.addCleanup(endpoint.close)
+
+        def boom(method, path, query, body):
+            raise ValueError("炸了")
+
+        endpoint.route("GET", "/boom", boom)
+        status, body = self._http(endpoint, "GET", "/boom")
+        self.assertEqual(status, 500)
+        self.assertIn("炸了", body)
+        self.assertIsInstance(device.last_callback_error, ValueError)
+
+    def test_close_is_idempotent(self):
+        device = nclink.Server(sn="V2TEST00001")
+        endpoint = device.start_http(0, with_config=False)
+        endpoint.close()
+        endpoint.close()
+        with self.assertRaises(nclink.NclinkError):
+            endpoint.route("GET", "/x", lambda *args: None)
+        device.close()          # 再关服务器也不该炸
 
 
 if __name__ == "__main__":

@@ -290,6 +290,14 @@ _PROTOTYPES = [
      ctypes.c_char_p),
     ("nclshim_server_push_event_ex", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
      ctypes.c_char_p, ctypes.c_longlong, ctypes.c_char_p),
+    # HTTP / REST
+    ("nclshim_http_start", ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_int),
+    ("nclshim_http_free", None, ctypes.c_void_p),
+    ("nclshim_http_port", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_http_request_count", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_http_set_cors", None, ctypes.c_void_p, ctypes.c_int),
+    ("nclshim_http_route", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
+     ctypes.c_char_p, ctypes.c_void_p),
 ]
 
 
@@ -316,6 +324,14 @@ TOOL_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
 # 自研传输的发布回调：int (*)(user, topic, payload, len)
 PUBLISH_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
                                     ctypes.c_void_p, ctypes.c_int)
+
+# 自定义 HTTP 路由：int (*)(user, method, path, query, body,
+#                           int *out_status, char **out_type, char **out_body)
+ROUTE_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
+                                  ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+                                  ctypes.POINTER(ctypes.c_int),
+                                  ctypes.POINTER(ctypes.c_void_p),
+                                  ctypes.POINTER(ctypes.c_void_p))
 
 
 def strdup(text):

@@ -4,13 +4,17 @@
 
 """Python 设备端示例：这个 Python 进程就是一台机床。
 
-    python examples/device_demo.py [broker] [设备SN] [秒数]
-    # 默认：tcp://127.0.0.1:1883、V2PY0000001、一直运行到 Ctrl+C
+    python examples/device_demo.py [broker] [设备SN] [秒数] [HTTP端口]
+    # 默认：tcp://127.0.0.1:1883、V2PY0000001、一直运行到 Ctrl+C、HTTP 9008
+    # 秒数写 0 = 一直跑；HTTP 端口写 0 = 用系统分配的随机端口
 
 它注册工具方法、绑定模型里的路径、启动采样通道、每秒推一条事件；然后用仓库里
 **任何一个客户端**都能读它，例如 C 的示例：
 
     build\\examples\\ncl_client_demo.exe tcp://127.0.0.1:1883 V2PY0000001 8
+
+还起一个 REST 端点（OpenAPI 文档 + Swagger UI + 工具端点 + 配置端点），浏览器
+打开 http://localhost:9008/swagger-ui 就能直接调它的工具方法。
 
 模型（含采样通道）直接写在下面的 MODEL 里：换模型就是换这段 JSON。
 """
@@ -79,6 +83,7 @@ def main(argv):
     broker = argv[1] if len(argv) > 1 else "tcp://127.0.0.1:1883"
     sn = argv[2] if len(argv) > 2 else "V2PY0000001"
     seconds = int(argv[3]) if len(argv) > 3 else 0
+    http_port = int(argv[4]) if len(argv) > 4 else 9008
 
     machine = Machine()
     stop = {"flag": False}
@@ -92,6 +97,8 @@ def main(argv):
 
     nclink.log_init()
     device = nclink.Server(sn=sn, model=json.dumps(MODEL, ensure_ascii=False), broker=broker)
+    uploads = 0
+    events = 0
     try:
         device.register_tool(
             "plc",
@@ -106,6 +113,14 @@ def main(argv):
         device.register_builtin_tool()          # addSample / removeSample
         device.subscribe()                      # 订阅 6 个请求主题
         device.init_samples()                   # 启动模型里声明的采样通道
+
+        # REST 端点：库自带 OpenAPI + swagger-ui + 工具端点 + 配置端点
+        http = device.start_http(http_port, with_config=True)
+        # 自己加一条路由（处理函数拿 method/path/query/body，返回 JSON/文本/元组）
+        http.route("GET", "/api/hello",
+                   lambda method, path, query, body: {"sn": sn, "parts": machine.part_count})
+        print("HTTP: %s/api/schema（Swagger UI: %s/swagger-ui）" % (http.url, http.url))
+
         print("设备端已就绪：SN=%s broker=%s，工具 %d 个操作，采样通道 %d 个"
               % (sn, broker, device.operation_count, device.sample_count))
         print("（用仓库里的任意客户端读它，例如 build\\examples\\ncl_client_demo.exe）")
@@ -124,10 +139,11 @@ def main(argv):
                       % (device.sample_upload_count, device.event_count,
                          machine.part_count))
     finally:
-        device.close()
+        uploads = device.sample_upload_count    # 计数要在关掉之前读
+        events = device.event_count
+        device.close()                          # 端点也一起收（device.close 里先收 HTTP）
         nclink.log_shutdown()
-    print("设备端已退出：采样上报 %d 次，事件 %d 条"
-          % (device.sample_upload_count, device.event_count))
+    print("设备端已退出：采样上报 %d 次，事件 %d 条" % (uploads, events))
     return 0
 
 

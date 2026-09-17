@@ -3,7 +3,12 @@
 
 package com.nclink;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -45,6 +50,7 @@ public final class SelfTest {
         messages();
         connection();
         server();
+        http();
 
         System.out.println();
         System.out.println(checks + " 项检查，" + failures + " 失败");
@@ -404,6 +410,159 @@ public final class SelfTest {
             device.stopAllSamples();
             device.close();
         }
+    }
+
+    /* ------------------------------------------------------------ http -- */
+
+    /** 一次 HTTP 往返的结果。 */
+    private static final class Reply {
+        int status;
+        String body;
+    }
+
+    /**
+     * HTTP / REST 端点：全部走本机回环，不需要 broker。
+     */
+    private static void http() {
+        try (Server device = new Server("V2TEST00005")) {
+            device.registerTool("plc", new String[] {"getCount"}, null,
+                    (method, params) -> Integer.valueOf(42));
+
+            HttpEndpoint endpoint = device.startHttp(0, true);
+            check("HTTP 端点端口（0 = 随机）", endpoint.port() > 0);
+            check("HTTP 端点 URL",
+                    ("http://localhost:" + endpoint.port()).equals(endpoint.url()));
+
+            Reply schema = fetch(endpoint, "GET", "/api/schema", null);
+            check("GET /api/schema 是 200", schema.status == 200);
+            check("OpenAPI 3.0 文档", schema.body.contains("3.0.0"));
+            check("OpenAPI 里有工具方法", schema.body.contains("/plc/getCount"));
+
+            Reply call = fetch(endpoint, "POST", "/api/plc/getCount", "{}");
+            check("POST /api/<工具>/<方法> 是 200", call.status == 200);
+            check("REST 调用等价于 methodCall（走 Result 信封）",
+                    call.body.contains("\"status\":true") && call.body.contains("42"));
+
+            // 配置端点：没装模型文件时是 NG，但端点必须在
+            Reply config = fetch(endpoint, "GET", "/api/cfg/getModel", null);
+            check("配置端点必须在（200）", config.status == 200);
+            check("配置端点有 status 字段", config.body.contains("status"));
+
+            Reply ui = fetch(endpoint, "GET", "/swagger-ui", null);
+            check("GET /swagger-ui 是 200", ui.status == 200);
+            check("请求计数（已发 4 条，计数 " + endpoint.requestCount() + "）",
+                    endpoint.requestCount() >= 4);
+
+            endpoint.route("GET", "/hello",
+                    (method, path, query, body) -> HttpEndpoint.Reply.json(
+                            "{\"path\":\"" + path + "\",\"query\":\"" + query + "\"}"));
+            endpoint.route("POST", "/echo",
+                    (method, path, query, body) -> HttpEndpoint.Reply.of(201,
+                            "text/plain; charset=utf-8", "echo:" + body));
+            endpoint.route("GET", "/none", (method, path, query, body) -> null);
+            endpoint.route("GET", "/give-up", (method, path, query, body) ->
+                    HttpEndpoint.Reply.status(204));
+            endpoint.route("GET", "/boom", (method, path, query, body) -> {
+                throw new IllegalStateException("炸了");
+            });
+
+            Reply hello = fetch(endpoint, "GET", "/hello?x=1", null);
+            check("自定义 GET 路由是 200", hello.status == 200);
+            check("自定义路由能拿到 query",
+                    hello.body.contains("x=1") && hello.body.contains("/hello"));
+
+            Reply echo = fetch(endpoint, "POST", "/echo", "hi");
+            check("自定义路由能给状态码与报文", echo.status == 201 && "echo:hi".equals(echo.body));
+
+            Reply none = fetch(endpoint, "GET", "/none", null);
+            check("处理函数返回 null -> 404", none.status == 404);
+
+            Reply giveUp = fetch(endpoint, "GET", "/give-up", null);
+            check("只回状态码的路由", giveUp.status == 204);
+
+            Reply boom = fetch(endpoint, "GET", "/boom", null);
+            check("处理函数抛异常 -> 500", boom.status == 500);
+            check("异常文本进报文", boom.body != null && boom.body.contains("炸了"));
+            check("异常记在 lastCallbackError",
+                    device.lastCallbackError() instanceof IllegalStateException);
+
+            Reply missing = fetch(endpoint, "GET", "/no-such-path", null);
+            check("没挂过的路径是 404", missing.status == 404);
+
+            endpoint.setCors(false);
+            endpoint.setCors(true);
+            check("setCors 可切换", true);
+
+            endpoint.close();
+            endpoint.close();
+            check("HTTP 端点 close 幂等", true);
+            try {
+                endpoint.route("GET", "/after-close", (method, path, query, body) -> null);
+                check("关了之后挂路由要抛异常", false);
+            } catch (NclinkException expected) {
+                check("关了之后挂路由要抛异常（" + expected.name() + "）", true);
+            }
+        } catch (NclinkException error) {
+            check("HTTP 端点用例（" + error.getMessage() + "）", false);
+        }
+
+        // server.close() 也会收掉没关的 HTTP 端点
+        Server device = new Server("V2TEST00006");
+        HttpEndpoint endpoint = device.startHttp(0, false);
+        device.close();
+        endpoint.close();                       // 再关一次也不该炸
+        check("server.close 收掉 HTTP 端点，端点再关也不炸", true);
+    }
+
+    /** 打一次本机 HTTP；4xx/5xx 也当正常返回（读它的报文）。 */
+    private static Reply fetch(HttpEndpoint endpoint, String method, String path,
+                               String body) {
+        Reply reply = new Reply();
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(endpoint.url() + path)
+                    .openConnection();
+            connection.setRequestMethod(method);
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(5000);
+            if (body != null) {
+                byte[] data = body.getBytes(StandardCharsets.UTF_8);
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json");
+                connection.setFixedLengthStreamingMode(data.length);
+                OutputStream out = connection.getOutputStream();
+                try {
+                    out.write(data);
+                } finally {
+                    out.close();
+                }
+            }
+            reply.status = connection.getResponseCode();
+            InputStream stream = reply.status >= 400 ? connection.getErrorStream()
+                                                     : connection.getInputStream();
+            reply.body = stream != null ? read(stream) : "";
+            return reply;
+        } catch (Exception error) {
+            check("HTTP 请求失败（" + method + " " + path + "）：" + error, false);
+            reply.status = 0;
+            reply.body = "";
+            return reply;
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private static String read(InputStream stream) throws java.io.IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[4096];
+        int read;
+        while ((read = stream.read(chunk)) > 0) {
+            buffer.write(chunk, 0, read);
+        }
+        stream.close();
+        return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
     }
 
     // ------------------------------------------------------------ 工具 -- //

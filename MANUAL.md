@@ -207,6 +207,12 @@ Nclink.shutdown();
 `dispatch()` / `invokeMethodCall()` 离线驱动。示例见
 `bindings/java/demo/com/nclink/demo/DeviceDemo.java`。
 
+HTTP / REST 端点：`device.startHttp(9008, true)`（`0` = 随机端口）挂上库自带的
+`GET /api/schema`（OpenAPI 3.0）、`GET /swagger-ui`、`POST /api/<工具>/<方法>`
+（等价于 `methodCall`）与配置端点（SN / 模型 / 驱动 / mqtt.cfg / 服务器列表）；
+`http.route(method, path, handler)` 还能挂自己的路由（返回 `HttpEndpoint.Reply`）。
+关端点要在关 `device` 之前——`device.close()` 已经先收 HTTP 再停服务。
+
 ### 2.4.4 Python 绑定（ctypes）
 
 `bindings/python/` 是 ctypes 绑定，只用标准库：
@@ -228,6 +234,42 @@ nclink.shutdown()
 设备端同样包了：`nclink.Server(sn=..., model=..., broker=...)` + `register_tool()` +
 `subscribe()` + `init_samples()` + `push_event()`；示例
 `bindings/python/examples/device_demo.py`（可以拿仓库里任意客户端去读它）。
+
+HTTP / REST 端点用 `device.start_http(port, with_config=True)`：库自带
+`GET /api/schema`（OpenAPI 3.0）、`GET /swagger-ui`、`POST /api/<工具>/<方法>` 与
+配置端点；`http.route("GET", "/api/hello", handler)` 挂自己的路由（处理函数返回
+`None` / `str` / 可 JSON 对象 / `(status, content_type, body)`）。
+
+### 2.4.5 C# 绑定（P/Invoke）
+
+`bindings/csharp/` 是 P/Invoke 绑定，**同一份代码三个目标**：`netstandard2.0`
+（.NET Framework 4.6.1+ / .NET Core 2.0+ / .NET 5+）与 `net472` / `net8.0`；零第三方
+依赖（JSON 走库自己的解析器，不用 Newtonsoft.Json 也不用 System.Text.Json）。
+
+```csharp
+Nclink.LogInit();
+Nclink.Init("tcp://127.0.0.1:1883");
+using (NclDeviceClient device = Nclink.GetDevice("V2023A7B762"))
+{
+    using (NclModel model = device.Probe()) { /* 遍历模型树 */ }
+    long status = device.GetLong("/STATUS");
+    device.SetValue("/STATUS", "42");
+    device.SampleReceived += (s, e) => Console.WriteLine(e.Sample);
+    device.SubscribeSamples();
+}
+Nclink.Shutdown();
+```
+
+构建：`powershell -ExecutionPolicy Bypass -File .\bindings\csharp\build.ps1`
+（垫片 + 三个工程 + 自检 98 项）/ Linux 用
+`dotnet run --project bindings/csharp/tests/Nclink.SelfTest -c Release`。
+
+客户端 + 设备端都包：`NclServer`（`RegisterTool` / `NclToolBinding` / `Subscribe` /
+`InitSamples` / `PushEvent` / 离线 `Dispatch` / 自研传输 `NclPublishSink`）、
+`NclHttpEndpoint`（`StartHttp` + `Route`，与 Java / Python 同一套 REST 端点）、
+`Nclink.Parse(topic, payload)` → `NclMessage`（`AsSample()` / `AsEvent()` 拿快照）。
+示例：`Nclink.Demo.Cli`（客户端）与 `Nclink.Demo.Device`（设备端，`broker` 传 `-`
+即离线，出站报文走自研传输打到控制台）。
 
 **三种托管绑定共用同一份原生垫片** `bindings/native/nclink_shim.c`：它把 C API
 摊平成"不透明句柄 + 标量 + UTF-8 文本"，托管侧不依赖 C 结构体的内存布局。C# 走
@@ -1253,7 +1295,7 @@ char *map = ncl_net_ip_map_json();   /* {"eth0":"192.168.1.5"}，需 free */
 ```c
 ncl_mqtt_client_options opt;
 ncl_mqtt_client_options_default(&opt);
-opt.url = "tcp://broker:1883";       /* ssl:// 未实现，返回 NCL_ERR_NOT_SUPPORTED */
+opt.url = "tcp://broker:1883";       /* ssl:// 需要带 NCLINK_WITH_TLS=ON 编的库 */
 opt.client_id = sn;
 opt.username = user;  opt.password = pass;
 opt.keep_alive_seconds = 60;
@@ -1962,7 +2004,7 @@ curl -X POST http://<设备IP>:9008/api/nclinkServer/addSample \
 
 | 现象 | 原因与处理 |
 |------|-----------|
-| MQTT 连不上，`ncl_mqtt_client_last_error()` 提示等待 CONNACK 超时 | broker 地址/端口/账号不对；`ssl://` 未实现（返回 `NCL_ERR_NOT_SUPPORTED`）；防火墙 |
+| MQTT 连不上，`ncl_mqtt_client_last_error()` 提示等待 CONNACK 超时 | broker 地址/端口/账号不对；用 `ssl://` 但库没带 `NCLINK_WITH_TLS=ON` 编（返回 `NCL_ERR_NOT_SUPPORTED`）；防火墙 |
 | 设备端示例刚启动就退出，日志里有「MQTT 连接失败」 | 它的默认 broker 是本机 `tcp://127.0.0.1:1883`（见 3.4）：先把 broker 起来，或改 `conf/mqtt.cfg` 指向你的 broker |
 | 客户端请求全部超时 | 设备端是否 `ncl_server_subscribe()`；SN 是否一致（主题里带 SN）；设备端工具是否已注册（未注册应答 `NG 未找到`） |
 | 设备端收不到请求 | 收包回调里是否调用了 `ncl_server_on_message()`；不要自己在收包线程上同步发布应答（会自我死锁，库内部已转线程池） |

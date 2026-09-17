@@ -18,16 +18,38 @@ namespace Nclink
     }
 
     /// <summary>
-    /// 设备模型（一棵树）。probe 拿到的、或自己解析出来的都归它管，Dispose 释放整棵树。
+    /// 设备模型（一棵树）。probe 拿到的、或自己解析出来的都归它管，Dispose 释放整棵树；
+    /// 设备端（<see cref="NclServer.Model"/>）那份是**借用**的，别 Dispose。
     /// </summary>
     public sealed class NclModel : IDisposable
     {
         private IntPtr _root;
+        private readonly bool _owns;
+        private readonly object _host;
 
-        internal NclModel(IntPtr root)
+        private NclModel(IntPtr root, bool owns, object host)
         {
             _root = root;
+            _owns = owns;
+            _host = host;
         }
+
+        internal NclModel(IntPtr root)
+            : this(root, true, null)
+        {
+        }
+
+        /// <summary>
+        /// 借用包装：句柄由宿主（如设备端）持有，只要宿主活着就一直有效；Dispose 只是
+        /// 断开引用、不释放树。
+        /// </summary>
+        internal static NclModel Borrowed(IntPtr root, object host)
+        {
+            return root == IntPtr.Zero ? null : new NclModel(root, false, host);
+        }
+
+        /// <summary>宿主对象（借用视图持有它，宿主先被回收也不会留下悬空句柄）。</summary>
+        internal object Host { get { return _host; } }
 
         /// <summary>解析模型文档；传 null/空串得到库内置的默认模型。</summary>
         public static NclModel Parse(string json)
@@ -74,9 +96,13 @@ namespace Nclink
             return _root == IntPtr.Zero ? "(disposed)" : ToJson();
         }
 
-        /// <summary>释放整棵树。</summary>
+        /// <summary>释放整棵树（**借用**视图是空操作：宿主还活着它就还活着）。</summary>
         public void Dispose()
         {
+            if (!_owns)
+            {
+                return;
+            }
             if (_root != IntPtr.Zero)
             {
                 Native.ModelFree(_root);

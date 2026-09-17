@@ -28,13 +28,13 @@ import json as _json_stdlib
 import weakref
 from enum import IntEnum
 
-from ._ffi import (NclinkError, PUBLISH_CALLBACK, TOOL_CALLBACK, decode, encode,
-                   lib, strdup, take_text)
+from ._ffi import (NclinkError, PUBLISH_CALLBACK, ROUTE_CALLBACK, TOOL_CALLBACK,
+                   decode, encode, lib, strdup, take_text)
 from ._json import Json
 from ._message import Message
 from ._model import Model
 
-__all__ = ["Server", "Operation"]
+__all__ = ["Server", "Operation", "HttpEndpoint"]
 
 # ncl_err 里绑定用得到的几个（其余按名字见 nclink.NclinkError.name）
 ERR = -1                 # 通用失败
@@ -101,6 +101,7 @@ class Server:
         self._handle = None
         self._tools = []
         self._handlers = {}
+        self._http = []
         self._publish_callback = None
         self._publish_host = None
         self.last_callback_error = None
@@ -361,6 +362,30 @@ class Server:
     def stop_all_samples(self):
         lib.nclshim_server_stop_all_samples(self._require_open())
 
+    # ------------------------------------------------------------ HTTP -- #
+
+    def start_http(self, port=9008, with_config=True):
+        """起 HTTP 端点，返回 `HttpEndpoint`（用完 close；`server.close()` 也会收）。
+
+        端点内容（全在库里）：
+
+        * REST：`GET /api/schema`（OpenAPI 3.0 文档）、`GET /swagger-ui`、
+          `POST /api/<工具>/<方法>`（等价于 methodCall）；
+        * `with_config=True` 再挂配置端点：`GET /api/cfg/getSn`、`POST /api/cfg/init`、
+          `GET|POST /api/cfg/getModel|setModel`、`getDriver|setDriver`、
+          `GET /api/getMqttUrl` + `POST /api/setMqttUrl`、
+          `GET|POST /api/method/getServerList|setServer`。
+
+        `port=0` 用系统分配的随机端口（端口从 `HttpEndpoint.port` 读）。
+        """
+        handle = lib.nclshim_http_start(int(port), self._require_open(),
+                                        1 if with_config else 0)
+        if not handle:
+            raise NclinkError(-5, "start_http", "HTTP 端口 %s 起不来（被占用？）" % port)
+        endpoint = HttpEndpoint(self, handle, lib.nclshim_http_port(handle))
+        self._http.append(endpoint)
+        return endpoint
+
     # ------------------------------------------------------------ 事件 -- #
 
     def push_event(self, event_id, event, time_ms=None, message_id=None):
@@ -382,6 +407,9 @@ class Server:
         """停采样、停 FTP、断开 MQTT、释放工具回调（可重复调用）。"""
         if self._handle is None:
             return
+        for endpoint in self._http:          # 先收 HTTP：它的路由回调还挂在服务器上
+            endpoint.close()
+        self._http = []
         lib.nclshim_server_free(self._handle)
         self._handle = None
         self._tools = []
@@ -426,3 +454,121 @@ def _response_topic(request_topic):
     if request_topic is None:
         return None
     return request_topic.replace("/Request/", "/Response/", 1)
+
+class HttpEndpoint:
+    """设备端的 HTTP / REST 端点（OpenAPI 文档 + Swagger UI + 工具端点 [+ 配置端点]）。
+
+    由 `Server.start_http()` 创建，**关的时候要在 server.close() 之前**（它的路由回调
+    还挂在服务器上）。想自己加 REST 端点就 `route()`。
+    """
+
+    def __init__(self, server, handle, port):
+        self._server = server
+        self._handle = handle
+        self._port = int(port)
+        self._routes = []          # ctypes 回调与它的 host 槽，close() 前不能被 GC
+
+    @property
+    def port(self):
+        """实际绑定的端口（`start_http(0)` 时是系统给的随机端口）。"""
+        return self._port
+
+    @property
+    def url(self):
+        return "http://localhost:%d" % self._port
+
+    @property
+    def request_count(self):
+        """已处理的请求数（诊断用）。"""
+        if self._handle is None:
+            return 0
+        return int(lib.nclshim_http_request_count(self._handle))
+
+    def set_cors(self, enabled=True):
+        """Access-Control-Allow-Origin: *（默认开）。"""
+        lib.nclshim_http_set_cors(self._require_open(), 1 if enabled else 0)
+
+    def route(self, method, path, handler):
+        """挂一条自己的路由。
+
+        `method` 支持 `"*"`；`path` 以 `/api/` 开头时是前缀匹配（见
+        `ncl_http_server_route` 的规则）。`handler(method, path, query, body)` 返回：
+
+        * `None`：200，空报文；
+        * `str`：200，text/plain（UTF-8）；
+        * `dict` / `list` / 其它可 JSON 对象：200，application/json；
+        * `(status, content_type, body)`：完全自己决定（body 为 None 只改状态码）。
+        """
+
+        def dispatch(user, method, path, query, body, out_status, out_content_type,
+                     out_body):
+            try:
+                result = handler(decode(method), decode(path), decode(query),
+                                 decode(body))
+            except Exception as exc:                 # 不能穿回 C
+                self._server.last_callback_error = exc
+                out_status[0] = 500
+                out_content_type[0] = strdup("text/plain; charset=utf-8")
+                out_body[0] = strdup("handler failed: %s" % exc)
+                return -1
+            status, content_type, text = _normalise_reply(result)
+            out_status[0] = status
+            if content_type:
+                out_content_type[0] = strdup(content_type)
+            if text is not None:
+                out_body[0] = strdup(text)
+            return 0
+
+        callback = ROUTE_CALLBACK(dispatch)
+        slots = (ctypes.c_void_p * 2)()
+        slots[0] = ctypes.cast(callback, ctypes.c_void_p)
+        slots[1] = None
+        host = ctypes.cast(slots, ctypes.c_void_p)
+        rc = lib.nclshim_http_route(self._require_open(), encode(method),
+                                    encode(path), host)
+        if rc != 0:
+            raise NclinkError(rc, "route", path)
+        self._routes.append((callback, slots))
+
+    def close(self):
+        """停掉 HTTP 监听（可重复调用）。"""
+        if self._handle is None:
+            return
+        lib.nclshim_http_free(self._handle)
+        self._handle = None
+        self._routes = []
+
+    def _require_open(self):
+        if self._handle is None:
+            raise NclinkError(-13, "HttpEndpoint", "HTTP 端点已关闭")
+        return self._handle
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def __str__(self):
+        return "HttpEndpoint(%s%s)" % (self.url, "" if self._handle else " closed")
+
+    __repr__ = __str__
+
+
+def _normalise_reply(result):
+    """处理函数的返回值 -> (status, content_type, body_text)。"""
+    if result is None:
+        return 200, None, None
+    if isinstance(result, tuple):
+        status = int(result[0])
+        content_type = result[1] if len(result) > 1 else "text/plain; charset=utf-8"
+        body = result[2] if len(result) > 2 else None
+        if body is None:
+            return status, content_type, None
+        return status, content_type, body if isinstance(body, str) else _json_stdlib.dumps(
+            body, ensure_ascii=False)
+    if isinstance(result, str):
+        return 200, "text/plain; charset=utf-8", result
+    return 200, "application/json; charset=utf-8", _json_stdlib.dumps(
+        result, ensure_ascii=False)

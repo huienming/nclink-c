@@ -32,7 +32,7 @@ C 库是静态库、没有导出符号，而且 Java 侧不该依赖 C 结构体
 # 1) 先编核心静态库（仓库根）
 .\build.ps1
 
-# 2) Java 绑定：native + javac + 自检（42 项，不需要 broker）
+# 2) Java 绑定：native + javac + 自检（99 项，不需要 broker）
 powershell -ExecutionPolicy Bypass -File .\bindings\java\build.ps1
 ```
 
@@ -172,6 +172,28 @@ try (Server device = new Server("V2JAVA00001", modelJson, "tcp://127.0.0.1:1883"
   一个采样通道 + 每秒一条事件；仓库里任意客户端都能读它，例如
   `build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2JAVA00001 8`）。
 
+### HTTP / REST 端点
+
+端点的内容全在库里：`GET /api/schema`（OpenAPI 3.0 文档）、`GET /swagger-ui`
+（浏览器里直接调工具方法）、`POST /api/<工具>/<方法>`（等价于 `methodCall`），
+配置端点（SN / 模型 / 驱动 / mqtt.cfg / 服务器列表）由 `withConfig=true` 挂上。
+
+```java
+HttpEndpoint http = device.startHttp(9008, true);          // 0 = 随机端口
+http.route("GET", "/api/hello", (method, path, query, body) ->
+        HttpEndpoint.Reply.json("{\"query\":\"" + query + "\"}"));
+System.out.println(http.url() + "/swagger-ui");
+System.out.println(http.requestCount());
+http.close();                    // 幂等；device.close() 也会替你收
+```
+
+- `Reply.text/json/of(status, type, body)/status(code)`；处理函数返回 `null` = 404。
+- `method` 支持 `"*"`；`path` 以 `/api/` 开头时是前缀匹配，否则要求完全相等。
+- **关端点要在关服务器之前**（路由回调还挂在服务器上），`device.close()` 已经按这个
+  顺序做了。
+- 设备端示例会把它挂起来：`DeviceDemo ... [HTTP端口]`，然后
+  `curl -X POST http://127.0.0.1:9008/api/plc/getCount -d '{}'` 就能调工具方法。
+
 ## 内存与线程
 
 | 对象 | 谁释放 |
@@ -182,6 +204,8 @@ try (Server device = new Server("V2JAVA00001", modelJson, "tcp://127.0.0.1:1883"
 | `Node`、`Json` 的下标/成员视图 | **借用**：持有宿主引用，不用关 |
 | `Sample` / `SampleColumn` / `Event` / `Message` | 纯 Java 快照，没有句柄 |
 | `Server` | **自有**：`close()`（停采样/FTP、断开 MQTT、放掉所有回调） |
+| `HttpEndpoint` | **自有**：`close()`（幂等；`server.close()` 也会收） |
+| `Server.model()` | **借用**：服务器活着就有效，不用关 |
 
 Java 没有可靠的析构钩子，所以**自有的对象必须显式 close**（忘了就漏到进程结束，不会
 崩）。采样/事件回调在客户端自己的**读取线程**上触发：JNI 会把该线程挂到 JVM 上、
@@ -215,10 +239,8 @@ received 35 samples, 6 events
 
 ## 还没做的
 
-- **设备端（Server）**：`ncl_server_*`、工具方法注册、采样任务、事件推送还没包；
-  垫片里加一组 `nclshim_server_*`（工具回调同样是"JSON 文本进、JSON 文本出"）即可，
-  再给个 `com.nclink.Server`。
-- 文件通道（`/nclinkClient/*` 上传下载）与 REST/HTTP 接口。
+- 文件通道（`/nclinkClient/*` 上传下载）：`registerFileTool` + `startFtp` 已经能挂，
+  但"客户端侧的上传/下载"还没有托管包装。
 - TLS（`ssl://`）：库带 `NCLINK_WITH_TLS=ON` 编即可，绑定不用改。
 - Maven / Gradle 坐标与 jar 打包：现在是"源码 + 一个原生库"直接用；要发包得把
   `nclink_jni.dll` / `libnclink_jni.so` 按平台打进 jar 或另发。

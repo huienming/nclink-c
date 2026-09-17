@@ -4,6 +4,7 @@
 package com.nclink.demo;
 
 import com.nclink.Json;
+import com.nclink.HttpEndpoint;
 import com.nclink.Nclink;
 import com.nclink.Operation;
 import com.nclink.Server;
@@ -14,7 +15,7 @@ import com.nclink.Server;
  * <pre>
  *   java -Dfile.encoding=UTF-8 -Djava.library.path=bindings/java/native/bin \
  *        -cp bindings/java/build/classes \
- *        com.nclink.demo.DeviceDemo [broker] [设备SN] [秒数]
+ *        com.nclink.demo.DeviceDemo [broker] [设备SN] [秒数] [HTTP端口]
  * </pre>
  *
  * 它注册工具方法、绑定模型里的路径、启动采样通道、每秒推一条事件；然后用仓库里
@@ -23,6 +24,9 @@ import com.nclink.Server;
  * <pre>
  *   build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2JAVA00001 8
  * </pre>
+ *
+ * 还起一个 REST 端点（OpenAPI 文档 + Swagger UI + 工具端点 + 配置端点），浏览器
+ * 打开 http://localhost:9008/swagger-ui 就能直接调它的工具方法。
  */
 public final class DeviceDemo {
     private DeviceDemo() {
@@ -72,6 +76,7 @@ public final class DeviceDemo {
         String broker = args.length > 0 ? args[0] : "tcp://127.0.0.1:1883";
         String sn = args.length > 1 ? args[1] : "V2JAVA00001";
         int seconds = args.length > 2 ? Integer.parseInt(args[2]) : 0;
+        int httpPort = args.length > 3 ? Integer.parseInt(args[3]) : 9008;
 
         Nclink.logInit();
         Machine machine = new Machine();
@@ -89,6 +94,16 @@ public final class DeviceDemo {
             device.registerBuiltinTool();       // addSample / removeSample
             device.subscribe();                 // 订阅 6 个请求主题
             device.initSamples();               // 启动模型里声明的采样通道
+
+            // REST 端点：库自带 OpenAPI 文档 + swagger-ui + 工具端点 + 配置端点；
+            // 自己还能挂路由（device.close() 会把它一起收掉）
+            HttpEndpoint http = device.startHttp(httpPort, true);
+            http.route("GET", "/api/hello", (method, path, query, body) ->
+                    HttpEndpoint.Reply.json("{\"sn\":\"" + sn + "\",\"parts\":"
+                            + machine.partCount + "}"));
+            System.out.println("HTTP: " + http.url() + "/api/schema（Swagger UI: "
+                    + http.url() + "/swagger-ui）");
+
             System.out.println("设备端已就绪：SN=" + sn + " broker=" + broker
                     + "，工具 " + device.operationCount() + " 个操作，采样通道 "
                     + device.sampleCount() + " 个");

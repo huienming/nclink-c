@@ -169,6 +169,29 @@ device.close()
   （它注册 4 个方法 + 一个采样通道 + 每秒一条事件，仓库里任意客户端都能读它，例如
   `build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2PY0000001 8`）。
 
+### HTTP / REST 端点
+
+端点的内容全在库里：`GET /api/schema`（OpenAPI 3.0 文档）、`GET /swagger-ui`
+（浏览器里直接调工具方法）、`POST /api/<工具>/<方法>`（等价于 `methodCall`），
+`with_config=True` 再挂配置端点（SN / 模型 / 驱动 / mqtt.cfg / 服务器列表）。
+
+```python
+http = device.start_http(9008, with_config=True)     # 0 = 随机端口
+# 处理函数返回 None = 200 空报文；str = text/plain；dict/list = JSON；
+# (status, content_type, body) = 完全自己决定
+http.route("GET", "/api/hello",
+           lambda method, path, query, body: {"query": query})
+print(http.url, http.request_count)
+http.set_cors(False)                                 # 默认 Access-Control-Allow-Origin: *
+http.close()                                         # 幂等；device.close() 也会替你收
+```
+
+- `method` 支持 `"*"`；`path` 以 `/api/` 开头时是前缀匹配，否则要求完全相等。
+- **关端点要在关 `device` 之前**（路由回调还挂在服务器上），`device.close()` 已经按
+  这个顺序做了。
+- 设备端示例会把它挂起来：`python examples/device_demo.py ... 30 9008`，然后
+  `curl -X POST http://127.0.0.1:9008/api/plc/getCount -d '{}'` 就能调工具方法。
+
 ## 内存与所有权
 
 | 对象 | 谁释放 |
@@ -179,6 +202,8 @@ device.close()
 | `Node`、`Json` 的下标/成员视图 | **借用**：持有宿主引用，不用关 |
 | `Sample` / `Event` / `Message` | 纯 Python 快照，没有句柄 |
 | `Server` | **自有**：`close()`（停采样/FTP、断开 MQTT、放掉所有回调） |
+| `HttpEndpoint` | **自有**：`close()`（幂等；`server.close()` 也会收） |
+| `server.model` | **借用**：服务器活着就有效，不用关 |
 
 采样/事件回调在客户端自己的**读取线程**上触发，回调里别做耗时操作；回调里抛出的异常
 不会穿到原生层，会记在 `device.last_callback_error` 上。`init` / `shutdown` /
@@ -207,10 +232,8 @@ received 32 samples, 6 events
 
 ## 还没做的
 
-- **设备端（Server）**：`ncl_server_*`、工具方法注册、采样任务、事件推送还没包；
-  垫片里加一组 `nclshim_server_*`（工具回调同样是"JSON 文本进、JSON 文本出"）即可，
-  再给个 `nclink.Server`。
-- 文件通道（`/nclinkClient/*` 上传下载）与 REST/HTTP 接口。
+- 文件通道（`/nclinkClient/*` 上传下载）：`register_file_tool` + `start_ftp` 已经能挂，
+  但"客户端侧的上传/下载"还没有托管包装。
 - TLS（`ssl://`）：库带 `NCLINK_WITH_TLS=ON` 编即可，绑定不用改。
 - 打包成 wheel / PyPI：现在按"C 库 + 绑定源码"一起用；要做 wheel 得把
   `nclink_shim.dll` 打进包（`package_data`）并带上平台标签。

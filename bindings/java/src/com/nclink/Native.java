@@ -353,4 +353,21 @@ final class Native {
 
     static native int serverPushEvent(long server, String eventId, String eventJson,
                                       long timeMs, String messageId);
+
+    // ------------------------------------------------------------- http -- //
+
+    /** 起 HTTP：返回句柄（0 = 失败）。 */
+    static native long httpStart(long server, int port, boolean withConfig);
+
+    static native void httpFree(long http);
+
+    static native int httpPort(long http);
+
+    static native int httpRequestCount(long http);
+
+    static native void httpSetCors(long http, boolean enabled);
+
+    /** 挂自定义路由：返回 rc，host 从出参取（HttpEndpoint close 时 hostFree）。 */
+    static native int httpRoute(long http, String method, String path,
+                                HttpEndpoint target, long[] outHost);
 }

@@ -203,14 +203,21 @@ namespace Nclink
             return _handle == IntPtr.Zero ? "(disposed)" : Encode();
         }
 
-        /// <summary>释放自有的值；借用的视图只是断开引用。</summary>
+        /// <summary>
+        /// 释放自有的值；**借用的视图是空操作**（宿主还活着它就还活着，和 Java / Python
+        /// 绑定一致）。
+        /// </summary>
         public void Dispose()
         {
-            if (_owns && _handle != IntPtr.Zero)
+            if (!_owns)
+            {
+                return;
+            }
+            if (_handle != IntPtr.Zero)
             {
                 Native.JsonFree(_handle);
+                _handle = IntPtr.Zero;
             }
-            _handle = IntPtr.Zero;
         }
 
         internal IntPtr Handle

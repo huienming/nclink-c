@@ -50,6 +50,9 @@ public final class Server implements AutoCloseable {
     private long publishHost;
     private PublishSink publishSink;
     private final List<Long> toolHosts = new ArrayList<Long>();
+    private final List<HttpEndpoint> httpEndpoints = new ArrayList<HttpEndpoint>();
+    private final Map<String, HttpEndpoint.RouteHandler> routeHandlers =
+            new LinkedHashMap<String, HttpEndpoint.RouteHandler>();
     private final Map<String, ToolHandler> handlers = new LinkedHashMap<String, ToolHandler>();
     private volatile Throwable lastCallbackError;
 
@@ -308,6 +311,79 @@ public final class Server implements AutoCloseable {
         Native.serverStopAllSamples(requireOpen());
     }
 
+    // ------------------------------------------------------------ HTTP -- //
+
+    /**
+     * 起 HTTP 端点，返回 {@link HttpEndpoint}（用完 close；{@code server.close()}
+     * 也会收）。
+     *
+     * <p>端点内容（全在库里）：
+     *
+     * <ul>
+     *   <li>REST：{@code GET /api/schema}（OpenAPI 3.0 文档）、{@code GET /swagger-ui}、
+     *       {@code POST /api/<工具>/<方法>}（等价于 methodCall）；
+     *   <li>{@code withConfig=true} 再挂配置端点：{@code GET /api/cfg/getSn}、
+     *       {@code POST /api/cfg/init}、{@code getModel|setModel}、{@code getDriver|setDriver}、
+     *       {@code GET /api/getMqttUrl} + {@code POST /api/setMqttUrl}、
+     *       {@code getServerList|setServer}。
+     * </ul>
+     *
+     * @param port 0 表示用系统分配的随机端口（从 {@link HttpEndpoint#port()} 读）
+     */
+    public HttpEndpoint startHttp(int port, boolean withConfig) {
+        long created = Native.httpStart(requireOpen(), port, withConfig);
+        if (created == 0) {
+            throw new NclinkException(-5, "startHttp", "HTTP 端口 " + port + " 起不来（被占用？）");
+        }
+        HttpEndpoint endpoint = new HttpEndpoint(this, created,
+                                                Native.httpPort(created));
+        httpEndpoints.add(endpoint);
+        return endpoint;
+    }
+
+    public HttpEndpoint startHttp(int port) {
+        return startHttp(port, true);
+    }
+
+    public HttpEndpoint startHttp() {
+        return startHttp(9008, true);
+    }
+
+    /** 自定义路由的处理函数表：`{method + " " + path: 处理函数}`。 */
+    public Map<String, HttpEndpoint.RouteHandler> routeHandlers() {
+        return routeHandlers;
+    }
+
+    /* 由 HttpEndpoint 的回调桥转过来：返回 String[]{status, content_type, body}。 */
+    String[] dispatchRoute(String method, String path, String query, String body) {
+        HttpEndpoint.RouteHandler handler = routeHandlers.get(method + " " + path);
+        if (handler == null) {
+            for (Map.Entry<String, HttpEndpoint.RouteHandler> entry
+                    : routeHandlers.entrySet()) {
+                String key = entry.getKey();
+                int space = key.indexOf(' ');
+                if (space > 0 && "*".equals(key.substring(0, space))
+                        && path != null && path.startsWith(key.substring(space + 1))) {
+                    handler = entry.getValue();
+                    break;
+                }
+            }
+        }
+        try {
+            HttpEndpoint.Reply reply = handler == null ? null
+                    : handler.handle(method, path, query, body);
+            if (reply == null) {
+                return new String[] {"404", null, null};
+            }
+            return new String[] {String.valueOf(reply.status), reply.contentType,
+                                 reply.body};
+        } catch (Throwable error) {
+            lastCallbackError = error;
+            return new String[] {"500", "text/plain; charset=utf-8",
+                                 "handler failed: " + error};
+        }
+    }
+
     // ------------------------------------------------------------ 事件 -- //
 
     /** 推一条事件到 Event/&lt;sn&gt;；`eventJson` 形如 {"key":...,"value":...}。 */
@@ -332,6 +408,11 @@ public final class Server implements AutoCloseable {
         if (handle == 0) {
             return;
         }
+        for (HttpEndpoint endpoint : httpEndpoints) {   // 先收 HTTP：路由回调还挂在服务器上
+            endpoint.close();
+        }
+        httpEndpoints.clear();
+        routeHandlers.clear();
         Native.serverFree(handle);          // 先停服务：之后不会再回调进来
         handle = 0;
         for (Long host : toolHosts) {

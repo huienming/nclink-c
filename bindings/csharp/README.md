@@ -1,6 +1,7 @@
 # NC-Link C# 绑定
 
-`nclink-core-c` 的 .NET 封装：**同一份代码同时支持 .NET Framework 与 .NET（Core）**。
+`nclink-core-c` 的 .NET 封装：**客户端 + 设备端（Server）+ HTTP/REST 端点**，
+同一份代码同时支持 .NET Framework 与 .NET（Core）。
 
 | 目标框架 | 说明 |
 |----------|------|
@@ -16,7 +17,10 @@ Newtonsoft.Json，.NET 8 上也不需要 System.Text.Json。
 ```
 bindings/csharp/
   src/Nclink.Core/            托管封装（多目标：netstandard2.0 / net472 / net8.0）
-  samples/Nclink.Demo.Cli/    控制台示例（net472 + net8.0 两个产物）
+  samples/Nclink.Demo.Cli/    客户端示例（net472 + net8.0 两个产物）
+  samples/Nclink.Demo.Device/ 设备端示例（"这个进程就是一台机床"）
+  tests/Nclink.SelfTest/      自检（不需要 broker）：98 项检查
+  build.ps1                   一键构建：垫片 + 三个工程 + 自检
 ```
 
 ## 为什么要垫片
@@ -34,14 +38,9 @@ C 库是静态库、没有导出宏，而且托管侧不该依赖 C 结构体的
 ## 构建
 
 ```powershell
-# 1) 先编核心静态库（仓库根）
-.\build.ps1
-
-# 2) 编原生垫片 → bindings/native/bin/nclink_shim.dll
-powershell -ExecutionPolicy Bypass -File .\bindings\native\build-shim.ps1
-
-# 3) 编托管封装与示例（需要 .NET SDK）
-dotnet build .\bindings\csharp\samples\Nclink.Demo.Cli\Nclink.Demo.Cli.csproj -c Release
+# 一条命令全做完（先编核心静态库 .\build.ps1，再跑这个；需要 .NET SDK 8+）
+powershell -ExecutionPolicy Bypass -File .\bindings\csharp\build.ps1
+# 等价于：垫片 + 三个工程 + 自检；-SkipNative 只编托管、-NoTest 不跑自检
 ```
 
 Linux：
@@ -50,13 +49,19 @@ Linux：
 ./build-linux.sh build-linux               # 出 build-linux/libnclink_core.a
 sh bindings/native/build-shim.sh           # 出 bindings/native/bin/libnclink_shim.so
 dotnet build bindings/csharp/src/Nclink.Core/Nclink.Core.csproj -c Release
+dotnet run --project bindings/csharp/tests/Nclink.SelfTest -c Release    # 自检
 ```
 
 `nclink_shim.dll` / `libnclink_shim.so` 必须和你的程序在同一个目录（或者在 `PATH` /
-`LD_LIBRARY_PATH` 上）；两个工程的 csproj 已经把 `bindings/native/bin/` 下的那个作为
+`LD_LIBRARY_PATH` 上）；几个工程的 csproj 已经把 `bindings/native/bin/` 下的那个作为
 `None ... CopyToOutputDirectory` 拷进输出目录了。
 
 ## 用法
+
+先看客户端（`NclDeviceClient`，进程级连接一次、按 SN 拿设备），再看设备端
+（`NclServer` + `NclHttpEndpoint`，"这个进程就是一台机床"）。
+
+### 客户端
 
 ```csharp
 using Nclink;
@@ -87,6 +92,100 @@ using (NclDeviceClient device = Nclink.GetDevice("V2023A7B762"))
 }                                                    // Dispose = 退订 + 清回调桥
 
 Nclink.Shutdown();
+```
+
+### 设备端（这个进程就是一台机床）
+
+设备端**不需要** `Nclink.Init`：`NclServer` 自己建 MQTT 连接（clientId = SN、自动
+重连），也可以完全不接 broker 离线用。
+
+```csharp
+using Nclink;
+
+// broker 传 null = 不接 MQTT：离线用 Dispatch/InvokeMethodCall，或者给最后一个参数
+// 一个"自研传输"回调，把每条出站报文（事件/采样）自己送走。
+using (NclServer device = new NclServer("V2CS0000001", modelJson, "tcp://127.0.0.1:1883"))
+{
+    // 方法表 + 路径绑定 + 处理函数；处理函数收 (方法名, 参数) 返回要应答的值
+    device.RegisterTool(
+        "plc",
+        new Dictionary<string, string> { { "getStatus", null },
+                                         { "setCount", "{\"type\":\"object\",\"properties\":"
+                                                     + "{\"value\":{\"type\":\"integer\"}}}" } },
+        new NclToolBinding[]
+        {
+            new NclToolBinding("/STATUS", NclOperation.GetValue, "getStatus"),
+            new NclToolBinding("/PART_COUNT", NclOperation.SetValue, "setCount")
+        },
+        delegate(string method, NclJson parameters)
+        {
+            return method == "getStatus" ? (object)1L
+                 : parameters.Get("value").AsLong();
+        });
+
+    device.RegisterBuiltinTool();      // 内置工具：addSample / removeSample
+    device.Subscribe();                // 订阅 6 个请求主题（要接 MQTT 才能收）
+    device.InitSamples();              // 启动模型里声明的采样通道
+    device.PushEvent("010307", "{\"key\":\"PART_COUNT\",\"value\":7}");
+
+    Console.WriteLine(device.Model.Root.Id);        // 借用视图，不用 Dispose
+    Console.WriteLine(device.OpenapiJson("http://localhost:9008/api"));
+}                                                    // Dispose = 先收 HTTP，再停服务
+```
+
+- 处理函数的返回值：`NclJson`（原样）、`string`（**按 JSON 文本**处理）、数字 /
+  `bool`（序列化成 JSON 字面量）、`null` = 成功但没有值（路径取值按 NG 应答，与
+  C API 一致）。抛异常 → 该次调用按错误应答、异常文本进 reason，异常记在
+  `device.LastCallbackError` 上，不穿回原生层。
+- 不接 broker 时用 `device.Dispatch(topic, payload)` / `device.InvokeMethodCall(...)`
+  / `device.CheckMethodCall(...)` 离线驱动（返回应答报文的 `NclJson`）。
+- 设备端示例：`Nclink.Demo.Device.exe [broker] [SN] [秒数] [HTTP端口]`（broker 写
+  `-` 就是离线：出站报文打到控制台）；仓库里任意客户端都能读它，例如
+  `build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2CS0000001 8`。
+
+### HTTP / REST 端点
+
+端点的内容全在库里：`GET /api/schema`（OpenAPI 3.0 文档）、`GET /swagger-ui`
+（浏览器里直接调工具方法）、`POST /api/<工具>/<方法>`（等价于 `methodCall`），
+再加上配置端点（SN / 模型 / 驱动 / mqtt.cfg / 服务器列表）。
+
+```csharp
+using (NclServer device = new NclServer("V2CS0000001"))
+{
+    NclHttpEndpoint http = device.StartHttp(9008, withConfig: true);   // 0 = 随机端口
+    Console.WriteLine("{0}/swagger-ui", http.Url);
+
+    // 自己挂路由：返回 null = 404，抛异常 = 500（异常文本进报文）
+    http.Route("GET", "/api/hello", request => NclHttpReply.Json(
+        "{\"path\":\"" + request.Path + "\",\"query\":\"" + request.Query + "\"}"));
+
+    Console.WriteLine(http.RequestCount);          // 诊断用
+    http.SetCors(false);                           // 默认 Access-Control-Allow-Origin: *
+    http.Dispose();                                // 幂等；device.Dispose() 也会替你收
+}
+```
+
+`method` 支持 `"*"`；`path` 以 `/api/` 开头时是前缀匹配，否则要求完全相等（库的
+匹配规则）。**关端点要在关服务器之前**（路由回调还挂在服务器上），`device.Dispose()`
+已经按这个顺序做了。
+
+### 报文解析
+
+自己拿到的报文（离线回放、日志里存的样本）也能按库的规则解码：
+
+```csharp
+using (NclMessage message = Nclink.Parse("Sample/V203243111F/s1", payload))
+{
+    if (message.Type == NclMessageType.Sample)
+    {
+        NclSample sample = message.AsSample();     // 托管快照，出了 using 也能用
+    }
+    else if (message.Type == NclMessageType.Event)
+    {
+        NclEvent item = message.AsEvent();
+    }
+    Console.WriteLine(message.Json);               // 整条报文的 JSON 文本
+}
 ```
 
 ### 采样怎么读
@@ -120,13 +219,34 @@ device.SampleReceived += (s, e) =>
 
 ## 内存与线程
 
-- **自有**对象要 Dispose：`NclJson`（`Parse`/`Clone`/`GetValue*` 的返回值）、
-  `NclModel`（`Probe`/`Parse` 的返回值）、`NclDeviceClient`。
-- **借用**对象不用管：`NclNode`、`NclJson` 的下标/成员视图——只要宿主对象还活着就
-  有效（内部持有宿主引用）。
-- 采样/事件回调在客户端自己的读取线程上触发，**别在回调里做耗时操作**；回调里抛出的
-  异常不会跨到原生层，会记在 `NclDeviceClient.LastCallbackError` 上。
+无第三方依赖，GC 也不是替代品：带原生内存的对象请显式 `Dispose`（或 `using`）。
+
+| 对象 | 谁释放 |
+|------|--------|
+| `NclJson`（`Parse`/`Clone`/`GetValue*`/`Dispatch` 的返回值） | **自有**：`Dispose` / `using` |
+| `NclModel`（`Probe`/`Parse` 的返回值） | **自有**，同上 |
+| `NclMessage`（`Nclink.Parse` 的返回值） | **自有**，同上 |
+| `NclDeviceClient` | `Dispose`（退订 + 清回调桥）；断开 MQTT 是 `Nclink.Shutdown()` |
+| `NclServer` | `Dispose`（先收 HTTP 端点，再停采样/FTP、断 MQTT、放回调） |
+| `NclHttpEndpoint` | `Dispose`（幂等；`server.Dispose()` 也会收） |
+| `NclNode`、`NclJson` 的下标/成员视图、`NclServer.Model` | **借用**：宿主活着就有效；`Dispose` 是空操作（借用的东西不归你管） |
+| `NclSample` / `NclEvent` | 纯托管快照，没有句柄 |
+
+- 采样/事件回调在客户端自己的读取线程上触发，**别在回调里做耗时操作**；工具方法回调
+  跑在库自己的线程池上（不是 MQTT 读取线程）。回调里抛出的异常不会跨到原生层，会记在
+  `NclDeviceClient.LastCallbackError` / `NclServer.LastCallbackError` 上。
 - `Init`/`Shutdown`/`GetDevice` 是线程安全的（底层有锁）。
+- `Subscribe`/`Unsubscribe` 请在同一个线程里成对调用。
+
+## 自检
+
+```powershell
+dotnet run --project .\bindings\csharp\tests\Nclink.SelfTest -c Release
+```
+
+不需要 broker（跑本机回环）：98 项检查覆盖 JSON / 模型 / 报文解析 / 设备端（离线
+dispatch、工具注册、采样通道、事件、自研传输、关闭语义）/ HTTP 端点（REST、配置
+端点、swagger-ui、自定义路由、错误路径、幂等关闭）。
 
 ## 示例输出
 
@@ -160,13 +280,44 @@ bindings\csharp\samples\Nclink.Demo.Cli\bin\Release\net472\Nclink.Demo.Cli.exe `
     tcp://127.0.0.1:1883 <设备SN> 6
 ```
 
+反过来（C# 当设备端）：
+
+```powershell
+# 有 broker：其它客户端都能读它
+bindings\csharp\samples\Nclink.Demo.Device\bin\Release\net8.0\Nclink.Demo.Device.exe `
+    tcp://127.0.0.1:1883 V2CS0000001 30
+# 离线（不接 MQTT）：出站报文走"自研传输"打到控制台，REST 端点照样能用
+bindings\csharp\samples\Nclink.Demo.Device\bin\Release\net8.0\Nclink.Demo.Device.exe `
+    - V2CS0000001 30 9008
+```
+
+离线模式的输出与 REST 实测：
+
+```
+HTTP: http://localhost:9008/api/schema（Swagger UI: http://localhost:9008/swagger-ui）
+设备端已就绪：SN=V2CS0000001 broker=(不接 MQTT)，工具 6 个操作，采样通道 1 个
+publish Sample/V2CS0000001/cs_channel {"paths":["/STATUS","/PART_COUNT","/CONTROLLER/WARNNING"], ...
+publish Event/V2CS0000001 {"@id":"d9fd5cb3-...","id":"010307","time":"1789609920540","event":{"key":"PART_COUNT","value":13}}
+离线模式：没有 MQTT，客户端读不到；REST 端点照常用。
+
+# 另开一个窗口（PowerShell 的 Invoke-RestMethod / curl 都行）：
+GET  /api/schema        -> 200 openapi=3.0.0
+POST /api/plc/getCount  -> {"status":true,"data":8}
+POST /api/plc/setCount  -> {"status":true,"data":99}   （{"value":99}）
+GET  /api/hello         -> {"sn":"V2CS0000001","partCount":99}
+GET  /swagger-ui        -> 200
+GET  /api/cfg/getSn     -> {"status":true,"data":"V24359A51AD"}
+GET  /api/nope          -> 404 not found
+```
+
 ## 还没做的
 
-- **设备端（Server）**：`ncl_server_*`、工具方法注册、采样任务、事件推送都还没包；
-  垫片里加一组 `nclshim_server_*`（工具回调同样用"JSON 文本进、JSON 文本出"的桥）
-  即可，托管侧再给 `NclServer` + `RegisterTool`。
-- 文件通道（`/nclinkClient/*` 上传下载）与 REST/HTTP 接口。
+- 文件通道（`/nclinkClient/*` 上传下载）：`RegisterFileTool` + `StartFtp` 已经能挂，
+  但"客户端侧的上传/下载"还没有托管包装。
 - TLS（`ssl://`）：库要带 `NCLINK_WITH_TLS=ON` 编，垫片不用改。
 - 零拷贝读采样：现在 `NclSample` 在回调里整份拷贝（方便、安全）；需要极致吞吐可以
   加一个"只在回调期间有效"的借用视图 API。
-- 单元测试工程（现在靠 `Nclink.Demo.Cli` 对着设备端示例做冒烟验证）。
+- NuGet 包：`PackageId` 与元数据已经写好，但还没做 `dotnet pack` + 按 RID 把垫片放进
+  `runtimes/`；现在按"源码 + 预编译垫片"一起用。
+- 对着真 broker 的回归：`tools/interop.sh` 起 Mosquitto / EMQX，目前覆盖的是 C 套件，
+  托管绑定还是手工冒烟（设备端示例 + 客户端示例互读）。

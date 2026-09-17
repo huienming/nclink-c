@@ -73,6 +73,23 @@ namespace Nclink
             return new NclDeviceClient(sn, client);
         }
 
+        /// <summary>
+        /// 把一条 MQTT 报文按库的规则解码（采样 / 事件也是同一条路，只是之后可以
+        /// <see cref="NclMessage.AsSample"/> / <see cref="NclMessage.AsEvent"/> 拿快照）。
+        /// 调用方负责 Dispose 返回的报文。
+        /// </summary>
+        public static NclMessage Parse(string topic, byte[] payload)
+        {
+            return NclMessage.Parse(topic, payload);
+        }
+
+        /// <summary>把一条报文按 UTF-8 文本解码，省得自己编码。</summary>
+        public static NclMessage Parse(string topic, string payload)
+        {
+            return NclMessage.Parse(topic,
+                                    System.Text.Encoding.UTF8.GetBytes(payload ?? string.Empty));
+        }
+
         /// <summary>断开连接、释放所有客户端。</summary>
         public static void Shutdown()
         {

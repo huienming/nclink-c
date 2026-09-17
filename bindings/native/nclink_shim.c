@@ -27,11 +27,13 @@
 #include "nclink/ncl_common.h"
 #include "nclink/ncl_env.h"
 #include "nclink/ncl_file.h"
+#include "nclink/ncl_http.h"
 #include "nclink/ncl_json.h"
 #include "nclink/ncl_logger.h"
 #include "nclink/ncl_message.h"
 #include "nclink/ncl_model.h"
 #include "nclink/ncl_mqtt.h"
+#include "nclink/ncl_rest.h"
 #include "nclink/ncl_server.h"
 
 #include "nclink_shim.h"
@@ -1119,6 +1121,7 @@ NCLSHIM_API const void *nclshim_server_create(const char *sn, const char *model_
 {
     nclshim_server_ctx *ctx;
     ncl_server_options options;
+    char *default_model = NULL;
 
     if (sn == NULL || sn[0] == '\0') {
         return NULL;
@@ -1154,12 +1157,27 @@ NCLSHIM_API const void *nclshim_server_create(const char *sn, const char *model_
     memset(&options, 0, sizeof(options));
     options.sn = sn;
     options.mqtt = ctx->mqtt;                   /* 借用：连接由我们自己释放 */
-    options.model_json = model_json != NULL && model_json[0] != '\0' ? model_json : NULL;
+    if (model_json != NULL && model_json[0] != '\0') {
+        options.model_json = model_json;
+    } else {
+        /*
+         * 没给模型就用库内置的那份：给 ncl_server_create() 传 NULL 是"空模型"，
+         * 设备端没有模型就没法采样、也没法按路径应答。
+         */
+        ncl_node *fallback = ncl_root_node_parse(NULL);
+
+        if (fallback != NULL) {
+            default_model = ncl_node_write_string(fallback);
+            ncl_node_free(fallback);
+            options.model_json = default_model;
+        }
+    }
     if (publish_host != NULL) {
         options.publish = nclshim_publish_thunk;
         options.publish_user = ctx;
     }
     ctx->server = ncl_server_create(&options);
+    free(default_model);
     if (ctx->server == NULL) {
         if (ctx->mqtt != NULL) {
             ncl_mqtt_client_disconnect(ctx->mqtt);
@@ -1638,4 +1656,171 @@ NCLSHIM_API int nclshim_server_push_event_ex(const void *handle, const char *eve
 NCLSHIM_API char *nclshim_strdup(const char *text)
 {
     return text != NULL ? ncl_strdup(text) : NULL;
+}
+
+/* ============================================================== http/rest == */
+
+/*
+ * HTTP / REST 端点。
+ *
+ * 设备端的两组 REST 端点都由库自己注册：
+ *   ncl_rest_attach()        GET /api/schema、/swagger-ui、POST /api/<工具>/<方法>
+ *   ncl_rest_attach_config() GET/POST /api/cfg/*  与 /api/method/*（SN、模型、驱动、
+ *                            mqtt.cfg、服务器列表）
+ * 托管侧另外可以自己挂路由（nclshim_http_route），回调拿 method/path/query/body，
+ * 回 status/content_type/body —— 一律 UTF-8 文本，够写普通 REST 了。
+ */
+
+/** 自定义路由回调：返回 0 表示成功。out_* 里是 malloc 出来的文本（垫片释放）。 */
+typedef int (*nclshim_route_cb)(void *user, const char *method, const char *path,
+                                const char *query, const char *body, int *out_status,
+                                char **out_content_type, char **out_body);
+
+typedef struct nclshim_route_ctx {
+    struct nclshim_route_ctx *next;
+    void *host;                     /* 托管侧给的两格 [函数指针, 用户数据] */
+} nclshim_route_ctx;
+
+typedef struct {
+    ncl_http_server *http;
+    nclshim_route_ctx *routes;      /* 自己挂的路由（回调要活到 http_free） */
+} nclshim_http_ctx;
+
+static void nclshim_http_route_thunk(ncl_http_request *request,
+                                     ncl_http_response *response, void *user)
+{
+    nclshim_route_cb cb = (nclshim_route_cb)((void **)user)[0];
+    void *cb_user = ((void **)user)[1];
+    int status = 200;
+    char *content_type = NULL;
+    char *body = NULL;
+
+    if (cb == NULL) {
+        ncl_http_reply_text(response, 500, "no handler");
+        return;
+    }
+    if (cb(cb_user, ncl_http_method(request), ncl_http_path(request),
+           ncl_http_query_string(request), ncl_http_body(request), &status,
+           &content_type, &body) != 0) {
+        /* 回调失败：状态码至少 5xx，但托管侧给的报文照发（它更清楚出了什么事）。 */
+        if (status < 400) {
+            status = 500;
+        }
+        if (body == NULL) {
+            body = ncl_strdup("handler failed");
+            content_type = ncl_strdup("text/plain; charset=utf-8");
+        }
+    }
+    if (body == NULL) {
+        ncl_http_set_status(response, status);
+        free(content_type);
+        return;
+    }
+    ncl_http_reply(response, status, content_type, body, strlen(body));
+    free(content_type);
+    free(body);
+}
+
+/**
+ * 起一个 HTTP 端点：port=0 用随机端口（端口用 nclshim_http_port 查）。
+ * server 非空时挂 REST（OpenAPI + swagger-ui + 工具端点）；with_config 非 0 再
+ * 挂配置端点（SN/模型/驱动/mqtt.cfg/服务器列表）。失败返回 NULL。
+ */
+NCLSHIM_API const void *nclshim_http_start(unsigned port, const void *server,
+                                           int with_config)
+{
+    nclshim_http_ctx *ctx = (nclshim_http_ctx *)calloc(1, sizeof(*ctx));
+
+    if (ctx == NULL) {
+        return NULL;
+    }
+    ctx->http = ncl_http_server_create(port);
+    if (ctx->http == NULL) {
+        free(ctx);
+        return NULL;
+    }
+    if (server != NULL) {
+        if (ncl_rest_attach(ctx->http, ((nclshim_server_ctx *)server)->server) != NCL_OK) {
+            ncl_http_server_free(ctx->http);
+            free(ctx);
+            return NULL;
+        }
+        if (with_config && ncl_rest_attach_config(ctx->http) != NCL_OK) {
+            ncl_http_server_free(ctx->http);
+            free(ctx);
+            return NULL;
+        }
+    }
+    if (ncl_http_server_start(ctx->http) != NCL_OK) {
+        ncl_http_server_free(ctx->http);
+        free(ctx);
+        return NULL;
+    }
+    return ctx;
+}
+
+NCLSHIM_API void nclshim_http_free(const void *handle)
+{
+    nclshim_http_ctx *ctx = (nclshim_http_ctx *)handle;
+
+    if (ctx == NULL) {
+        return;
+    }
+    ncl_http_server_stop(ctx->http);
+    ncl_http_server_free(ctx->http);
+    while (ctx->routes != NULL) {
+        nclshim_route_ctx *next = ctx->routes->next;
+        free(ctx->routes);
+        ctx->routes = next;
+    }
+    free(ctx);
+}
+
+NCLSHIM_API int nclshim_http_port(const void *handle)
+{
+    const nclshim_http_ctx *ctx = (const nclshim_http_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_http_server_port(ctx->http) : 0;
+}
+
+NCLSHIM_API int nclshim_http_request_count(const void *handle)
+{
+    const nclshim_http_ctx *ctx = (const nclshim_http_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_http_server_request_count(ctx->http) : 0;
+}
+
+NCLSHIM_API void nclshim_http_set_cors(const void *handle, int enabled)
+{
+    const nclshim_http_ctx *ctx = (const nclshim_http_ctx *)handle;
+
+    if (ctx != NULL) {
+        ncl_http_server_set_cors(ctx->http, enabled != 0);
+    }
+}
+
+/** 挂一条自己的路由：method 支持 "*"（见 ncl_http_server_route 的匹配规则）。 */
+NCLSHIM_API int nclshim_http_route(const void *handle, const char *method,
+                                   const char *path, void *host)
+{
+    nclshim_http_ctx *ctx = (nclshim_http_ctx *)handle;
+    nclshim_route_ctx *route;
+    ncl_err rc;
+
+    if (ctx == NULL || method == NULL || path == NULL || host == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    rc = ncl_http_server_route(ctx->http, method, path, nclshim_http_route_thunk,
+                               host);
+    if (rc != NCL_OK) {
+        return (int)rc;
+    }
+    route = (nclshim_route_ctx *)calloc(1, sizeof(*route));
+    if (route == NULL) {
+        return NCL_ERR_NOMEM;       /* 路由已经挂上了，只是回调的宿主记不住 */
+    }
+    route->host = host;
+    route->next = ctx->routes;
+    ctx->routes = route;
+    return NCL_OK;
 }
