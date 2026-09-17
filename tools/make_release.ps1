@@ -79,7 +79,9 @@ Write-Host "assembling $pkg$(if ($WithSource) { ' (with source)' } else { ' (bin
 Copy-Tree "include" "include" @("*.h", "*.hpp")
 
 # examples ship with every release: they are part of the documentation
-Copy-Tree "examples" "examples" @("*.c", "*.cpp", "*.txt")
+# *.h: the device model header (device_model.h) travels with the examples, so
+# that the packaged sources still compile.
+Copy-Tree "examples" "examples" @("*.c", "*.cpp", "*.h", "*.txt")
 
 # Prebuilt example executables: run them straight from the package.
 #   build\examples\*.exe    -> examples/bin/windows-x64-msvc/  (same MSVC x64 Release as the lib)
