@@ -13,8 +13,8 @@
       http-port 省略 = 9008；0 = 系统分配的随机端口
       安装根目录：环境变量 NCL_DEVICE_ROOT（省略 = 当前目录）
 
-**五个语言的设备端示例是同一台设备**：同一个模型（仓库里的
-examples/device_model.json，首次启动拷进 <root>/conf/model/nclink.json）、同一批
+**五个语言的设备端示例是同一台设备**：同一个模型（编译在垫片里：
+nclink.device_model()，首次启动拷进 <root>/conf/model/nclink.json）、同一批
 工具方法与 <operation>#<path> 绑定、同样的两个采样通道与事件节拍（100 ms 一跳，
 每秒一条 PART_COUNT 事件）。模型里每个轴都有一个功率（/AXIS@<轴>/POWER@1）与
 三个加速度（/AXIS@<轴>/ACCELERATION@X|Y|Z）—— 振动信号在三个方向上的分量。

@@ -49,15 +49,14 @@
 /* ------------------------------------------------------------------ 模型 -- */
 
 /*
- * 设备模型：**所有语言的设备端示例共用同一份**，就是仓库里的
- * examples/device_model.json（发布包里在 examples/ 下）。
+ * 设备模型：**所有语言的设备端示例共用同一份**，而且编译在代码里 —— 就是
+ * examples/device_model.c 的 ncl_demo_device_model()（发布包里也带着它）。
+ * 分发时不需要任何外部模型文件。
  *
- * 启动时按这个顺序找：
- *   1. 环境变量 NCL_DEVICE_MODEL 指向的文件；
- *   2. <root>/conf/model/nclink.json（安装根目录里那份，存在就以它为准）；
- *   3. 从当前目录逐级往上找 examples/device_model.json（仓库根、包根都命中）。
- * 只有第 3 条命中、而第 2 条还没有时，才把它写进 <root>/conf/model/nclink.json
- * （首次启动自举）；之后改模型就是改那个文件，或走 REST 的 /api/setModel。
+ * 运行时：<root>/conf/model/nclink.json（安装根目录里那份）存在就以它为准
+ * （改文件、或走 REST 的 /api/setModel 都行）；没有就把编译进来的那份写进去
+ * （首次启动自举）。C# / Java / Python / Go 的示例走同一份源码（垫片/绑定里
+ * 也 #include 了它）。
  *
  * 模型要点（细节见文件本身）：
  *   - 一台数控机床：X/Y/Z/C 四个进给轴 + 主轴 S + 数控系统（CONTROLLER）；
@@ -470,8 +469,8 @@ static void on_mqtt_message(void *user, const ncl_mqtt_publish *publish)
  * 首次启动自举：安装根目录里缺什么补什么，已经存在的文件一律不动。
  *
  *   bin/sn.txt              设备 SN：由 ncl_sn_read() 生成（"V2" + 9 位十六进制）
- *   conf/model/nclink.json  设备模型：从 examples/device_model.json 自举
- *                           （见 demo_load_model()；五个语言的示例共用那一份）
+ *   conf/model/nclink.json  设备模型：从编译进去的那份自举
+ *                           （见 demo_load_model()；五个语言的示例共用同一份源码）
  *   conf/mqtt.cfg           本机 broker：tcp://127.0.0.1:1883，匿名登录
  *
  * 这几个文件就是设备身份与配置的唯一出处，所以"删掉根目录重跑"和"换一台设备"
@@ -490,7 +489,7 @@ static ncl_err demo_bootstrap(void)
     ncl_mkdir_p(ncl_env_conf_path());
 
     /* 模型不在这里写：demo_load_model() 会在 <root>/conf/model/nclink.json
-     * 缺失时用仓库里的 examples/device_model.json 自举。 */
+ * 缺失时用编译进去的那份（ncl_demo_device_model()）自举。 */
 
     /* 2) mqtt.cfg：本机 broker、匿名登录（用户名/密码留空）。 */
     if (!ncl_path_exists(ncl_env_mqtt_cfg_file())) {

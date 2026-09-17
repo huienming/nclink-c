@@ -315,7 +315,7 @@ connected: tcp://127.0.0.1:1883 (nclink 3.1.0)
 probe: model root id=01 name=机床模型文件
 各轴的功率与振动（路径 含义）:
 /AXIS@X/POWER@1          X轴功率
-/AXIS@S/ACCELERATION@2   主轴加速度
+/AXIS@S/ACCELERATION@Z   主轴加速度（Z 向）
 GET /STATUS = 1
 SET /STATUS = 42 ok
 id(/STATUS) = 010302, path(010302) = /STATUS
@@ -323,8 +323,8 @@ methodCall(check) = {"@id":"...","code":"OK","method":"/plc/getCount","check":tr
 subscribed: Sample/V24A92C126D/# and Event/V24A92C126D
 sample Sample/V24A92C126D/EdgeSersors: id=EdgeSersors interval=1ms upload=100ms columns=12 rows=400
   /AXIS@X/POWER@1: 100 个槽位 × 每槽约 1 点 = 100 点
-  /AXIS@X/ACCELERATION@1: 100 个槽位 × 每槽约 4 点 = 400 点（批量）
-  行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-1.0  /AXIS@Y/POWER@1=1137.5 ...
+  /AXIS@X/ACCELERATION@X: 100 个槽位 × 每槽约 4 点 = 400 点（批量）
+  行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-1.0  /AXIS@Y/POWER@1=1137.5 ...
 event Event/V24A92C126D: key=PART_COUNT value=50
 received 35 samples, 6 events
 ```
