@@ -363,8 +363,10 @@ Windows 用 MSVC 时还要注意 ABI 一致：发布包里的 `nclink_core.lib` 
 
 ```powershell
 .\build.ps1
-build\examples\ncl_device_demo.exe <安装根目录>        # 设备端：一直运行到 Ctrl+C
-build\examples\ncl_device_demo.exe <安装根目录> 60     # 只想跑一会儿（脚本/冒烟）
+build\examples\ncl_device_demo.exe                     # 设备端：一直运行到 Ctrl+C
+build\examples\ncl_device_demo.exe - - 60              # 只想跑一会儿（离线、60 秒）
+# 参数顺序 [broker] [sn] [seconds] [http-port]，五个语言的示例一致；
+# 安装根目录走环境变量 NCL_DEVICE_ROOT（省略 = 当前目录）
 build\examples\ncl_client_demo.exe <broker> <设备SN> <秒数>  # 客户端
 ```
 
@@ -532,7 +534,7 @@ MQTT 5.0 broker（mochi-mqtt v2.7.9，匿名 1883；更早几次实测用的是 
     [7] /CONTROLLER/WARNING
 模型里的采集通道 EdgeSersors: 12 个采样项
     [0] /AXIS@X/POWER@1
-    [1] /AXIS@X/ACCELERATION@1
+    [1] /AXIS@X/ACCELERATION@X
     ...（X/Y/Z/C 各一路 + 主轴两路，共 12 项）
 GET /STATUS = 1
 SET /STATUS = 42 成功
@@ -540,7 +542,7 @@ check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
 文件回传路径: D:\...\166587125\demo.txt
   远端文件 demo.txt (14 字节)
 收到采样 [Sample/166587125/EdgeSersors] 通道=EdgeSersors 采样周期=1ms 上报周期=100ms 采样项=12
-    表头 paths(12 项) = ["/AXIS@X/POWER@1","/AXIS@X/ACCELERATION@1",...,"/AXIS@S/ACCELERATION@2"]
+    表头 paths(20 项) = ["/AXIS@X/POWER@1","/AXIS@X/ACCELERATION@X",...,"/AXIS@S/ACCELERATION@Y"]
     原始报文: {"paths":[...同上 12 项...],"id":"EdgeSersors","beginTime":"1789573512114",
               "data":[{"data":[800.0,812.5,...(中间省略)...,1100.0]},        ← 功率：100 个值
                       {"data":[[-1.0,-0.875,-0.75,-0.625],...]},          ← 振动：每槽一批
@@ -548,10 +550,10 @@ check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
     /AXIS@X/POWER@1  编码=raw 本轮 100 个值: [800.0, 812.5, 825.0, 837.5, ...]
     ...
     /AXIS@S/POWER@2  编码=raw 本轮 100 个值: [2175.0, 2187.5, 2200.0, ...]   ← 主轴第二路
-    /AXIS@S/ACCELERATION@2 批量采样: 100 个槽位 × 每槽约 4 点 = 400 点，首个=0.875
+    /AXIS@S/ACCELERATION@Y 批量采样: 100 个槽位 × 每槽约 4 点 = 400 点，首个=0.875
     按行消费: 400 行（数据最多的那一列的点数）
-      行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-1.0  /AXIS@Y/POWER@1=1137.5  ...
-      行[1] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-0.875  /AXIS@Y/POWER@1=1137.5  ...
+      行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-1.0  /AXIS@Y/POWER@1=1137.5  ...
+      行[1] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-0.875  /AXIS@Y/POWER@1=1137.5  ...
       ...（共 400 行，这里只打前 8 行）
 收到采样 [Sample/166587125/sample_channel0] 通道=sample_channel0 采样周期=1000ms 上报周期=1000ms 采样项=8
     表头 paths(8 项) = ["/PART_COUNT","/FEED_OVERRIDE","/CONTROLLER/PROGRAM","/CONTROLLER/TOOL_NUMBER","/AXIS@S/SPEED","/STATUS","/MACHINING_MODE","/CONTROLLER/WARNING"]
@@ -594,9 +596,10 @@ check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
 按"出厂默认值"补齐，已经存在的一律不动。
 
 ```powershell
-build\examples\ncl_device_demo.exe D:\sim4        # 第一次：准备 D:\sim4，然后一直运行
-build\examples\ncl_device_demo.exe D:\sim4        # 第二次：沿用上一次的 SN 与配置
-build\examples\ncl_device_demo.exe D:\sim4 60     # 也可以给秒数：跑 60 秒就自己退出
+$env:NCL_DEVICE_ROOT = "D:\sim4"                   # 安装根目录（第一次会自己建好）
+build\examples\ncl_device_demo.exe                # 第一次：准备 D:\sim4，然后一直运行
+build\examples\ncl_device_demo.exe                # 第二次：沿用上一次的 SN 与配置
+build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 秒就自己退出
 ```
 
 秒数省略（或写 0）就一直运行到 Ctrl+C —— 现场就是这么跑的；给正数则跑完自动退出，
@@ -608,7 +611,7 @@ build\examples\ncl_device_demo.exe D:\sim4 60     # 也可以给秒数：跑 60 
 | 文件 | 首次启动写什么 |
 |------|----------------|
 | `bin/sn.txt` | 设备 SN：`V2` + 9 位**十六进制**（大写，且保证含 A~F 字母，不会是一串纯数字），由 `ncl_sn_read()` 在文件缺失时生成并落盘（见 4.1）。示例不自己造 SN，跟着库走 |
-| `conf/model/nclink.json` | 默认设备模型：一台数控机床（X/Y/Z/C 四轴 + 主轴 S + 数控系统），带两个采样通道：`sample_channel0`（机床运行状态，1 s 采样 / 1 s 上报，八项）、`EdgeSersors`（5 轴的功率与振动，主轴挂两路，共十二项；数据项带 number，路径形如 `/AXIS@S/POWER@1`） |
+| `conf/model/nclink.json` | 设备模型：一台数控机床（X/Y/Z/C 四轴 + 主轴 S + 数控系统），带两个采样通道：`sample_channel0`（机床运行状态，1 s 采样 / 1 s 上报，八项）、`EdgeSersors`（5 轴的功率与振动，**二十项** = 每轴 1 个功率 + 3 个方向的加速度；路径形如 `/AXIS@S/POWER@1`、`/AXIS@S/ACCELERATION@X`）。首次启动时由示例自举（模型编译在代码里：`examples/device_model.c`，五个语言的示例共用这一份），之后以这个文件为准 |
 | `conf/mqtt.cfg` | 本机 broker：`url=tcp://127.0.0.1:1883`，`username=`/`password=` 留空 = 匿名连接（空值不会写进 MQTT 连接报文） |
 
 之后以文件为准，示例不再覆盖：换模型改 `conf/model/nclink.json`（或走 REST 的
@@ -634,35 +637,40 @@ build\examples\ncl_device_demo.exe D:\sim4 60     # 也可以给秒数：跑 60 
 模型里还有进给速度（`010303`）、主轴倍率（`010306`）等其他数据项，没进这个通道；
 要采就把 id 加进 `ids`（见 4.5 的 `addSample`）。
 
-功率与振动（= 加速度）挂在 `AXIS` 组件下，路径形如 `/AXIS@<轴号>/<类型>@<传感器号>`，
-十二项都在通道 1 `EdgeSersors` 里（`sampleInterval` 1 ms 槽位 / `uploadInterval` 100 ms
-上报，即 100 个槽位一条报文）：X/Y/Z/C 各一路，**主轴 S
-挂两路**（功率 1/2、加速度 1/2）—— 一个部件多个传感器就是这么写的（同 `type`、不同
-`number`、不同 id，见下面的"路径的组成"）。采样率靠"每槽装几个点"区分：
-功率每槽 1 点（1 ms 一个），振动每槽 4 点（0.25 ms 一个 = 4 kHz）—— 就是 4.5 里的
-亚毫秒采样：
+功率与振动（= 加速度）挂在 `AXIS` 组件下，路径形如
+`/AXIS@<轴号>/<类型>@<方向或传感器号>`，**二十项**都在通道 1 `EdgeSersors` 里
+（`sampleInterval` 1 ms 槽位 / `uploadInterval` 100 ms 上报，即 100 个槽位一条报文）：
+
+- 每个轴一个功率：`/AXIS@<轴>/POWER@1`（X/Y/Z/C/S 各一路，每槽 1 点）；
+- 每个轴**三个加速度**：`/AXIS@<轴>/ACCELERATION@X|Y|Z` —— 振动信号在 X/Y/Z 三个
+  方向上的分量，方向写在数据项的 `number` 里（同 `type`、不同 `number`、不同 id，
+  见下面的"路径的组成"）。振动每槽 4 点（0.25 ms 一个 = 4 kHz），就是 4.5 里的
+  亚毫秒采样。
 
 | 采样项 id | 路径（表头里的名字） | 示例工具 | 每槽点数 |
 |-----------|----------------------|----------|----------|
-| `01035004` | `/AXIS@X/POWER@1` | `plc/getPowerX1` | 1 |
-| `01035104` | `/AXIS@Y/POWER@1` | `plc/getPowerY1` | 1 |
-| `01035204` | `/AXIS@Z/POWER@1` | `plc/getPowerZ1` | 1 |
-| `01035304` | `/AXIS@C/POWER@1` | `plc/getPowerC1` | 1 |
-| `01035504` | `/AXIS@S/POWER@1` | `plc/getPowerS1` | 1 |
-| **`01035507`** | **`/AXIS@S/POWER@2`** | **`plc/getPowerS2`** | 1 |
-| `01035005` | `/AXIS@X/ACCELERATION@1` | `plc/getAccelerationX1` | 4 |
-| `01035105` | `/AXIS@Y/ACCELERATION@1` | `plc/getAccelerationY1` | 4 |
-| `01035205` | `/AXIS@Z/ACCELERATION@1` | `plc/getAccelerationZ1` | 4 |
-| `01035305` | `/AXIS@C/ACCELERATION@1` | `plc/getAccelerationC1` | 4 |
-| `01035505` | `/AXIS@S/ACCELERATION@1` | `plc/getAccelerationS1` | 4 |
-| **`01035508`** | **`/AXIS@S/ACCELERATION@2`** | **`plc/getAccelerationS2`** | 4 |
+| `01035004` | `/AXIS@X/POWER@1` | `plc/getPowerX` | 1 |
+| `01035104` | `/AXIS@Y/POWER@1` | `plc/getPowerY` | 1 |
+| `01035204` | `/AXIS@Z/POWER@1` | `plc/getPowerZ` | 1 |
+| `01035304` | `/AXIS@C/POWER@1` | `plc/getPowerC` | 1 |
+| `01035504` | `/AXIS@S/POWER@1` | `plc/getPowerS` | 1 |
+| `01035005` | `/AXIS@X/ACCELERATION@X` | `plc/getAccelerationXX` | 4 |
+| `01035006` | `/AXIS@X/ACCELERATION@Y` | `plc/getAccelerationXY` | 4 |
+| `01035007` | `/AXIS@X/ACCELERATION@Z` | `plc/getAccelerationXZ` | 4 |
+| `01035105` | `/AXIS@Y/ACCELERATION@X` | `plc/getAccelerationYX` | 4 |
+| `01035106` | `/AXIS@Y/ACCELERATION@Y` | `plc/getAccelerationYY` | 4 |
+| `01035107` | `/AXIS@Y/ACCELERATION@Z` | `plc/getAccelerationYZ` | 4 |
+| `01035205` | `/AXIS@Z/ACCELERATION@X` | `plc/getAccelerationZX` | 4 |
+| `01035206` | `/AXIS@Z/ACCELERATION@Y` | `plc/getAccelerationZY` | 4 |
+| `01035207` | `/AXIS@Z/ACCELERATION@Z` | `plc/getAccelerationZZ` | 4 |
+| `01035305` | `/AXIS@C/ACCELERATION@X` | `plc/getAccelerationCX` | 4 |
+| `01035306` | `/AXIS@C/ACCELERATION@Y` | `plc/getAccelerationCY` | 4 |
+| `01035307` | `/AXIS@C/ACCELERATION@Z` | `plc/getAccelerationCZ` | 4 |
+| `01035505` | `/AXIS@S/ACCELERATION@X` | `plc/getAccelerationSX` | 4 |
+| `01035506` | `/AXIS@S/ACCELERATION@Y` | `plc/getAccelerationSY` | 4 |
+| `01035507` | `/AXIS@S/ACCELERATION@Z` | `plc/getAccelerationSZ` | 4 |
 
-一条路径一套绑定：服务端按「路径 → 方法」取值，而工具方法的签名里拿不到路径，
-所以这十二条路径各配了一个方法（方法体是同一份样板，示例里用宏生成，名字带轴与
-传感器号，如 `getPowerS2`）。轴的功率
-（W）每次给 1 个标量、振动（mm/s²）每次给 4 个值（0.125 一格的三角波，即"每次
-查询生成 4 个"），都由示例内部"一次一格推进"的假寄存器生成 —— 真机换成从驱动器/
-传感器读即可。消费端按行读（见 4.5 的"按行消费"）：行数 400（振动列的点数），功率
+消费端按行读（见 4.5 的"按行消费"）：行数 400（振动列的点数），功率
 列在同一个槽位的 4 行里读到同一个点。上报周期写 100 ms：Linux 上实测 ≈118 ms 一条，
 Windows 上（库里对短等待走高精度计时器，见 4.5）实测 ≈222 ms 一条 —— 多出来的那部分
 主要是取值本身的开销（每槽 12 次完整 Query）。C 与 C++ 两个客户端示例的回调都这么消费。
@@ -675,7 +683,7 @@ Windows 上（库里对短等待走高精度计时器，见 4.5）实测 ≈222 
 ```
 /AXIS@S/POWER@1          主轴功率 #1
 /AXIS@S/SPEED            主轴转速
-/AXIS@S/ACCELERATION@2   主轴加速度 #2
+/AXIS@S/ACCELERATION@Y   主轴加速度 #2
 ```
 
 注意路径的组成：挂在设备（`MACHINE`）下的数据项是 `/<TYPE>`，挂在组件
@@ -955,11 +963,11 @@ for (size_t row = 0; row < rows; row++) {
 
 ```
 按行消费: 400 行（数据最多的那一列的点数；100 个槽位 × 每槽 4 点）
-  行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-1.0      ← 功率 4 行共用同一个点
-  行[1] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-0.875
-  行[2] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-0.75
-  行[3] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@1=-0.625
-  行[4] /AXIS@X/POWER@1=812.5  /AXIS@X/ACCELERATION@1=-0.5
+  行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-1.0      ← 功率 4 行共用同一个点
+  行[1] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-0.875
+  行[2] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-0.75
+  行[3] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-0.625
+  行[4] /AXIS@X/POWER@1=812.5  /AXIS@X/ACCELERATION@X=-0.5
 ```
 
 C 与 C++ 两个客户端示例的回调都是这么消费的（各打前 8 行）。

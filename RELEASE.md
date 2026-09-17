@@ -15,6 +15,8 @@ lib/windows-amd64-mingw/libnclink_core.a  Windows x64 静态库（mingw-w64，�
 lib/linux-x86_64-gcc/libnclink_core.a  Linux x86_64 静态库（gcc，-O2）
 lib/linux-x86_64-gcc-tls/…             同上，但启用了 TLS（ssl://，链接 -lssl -lcrypto）
 examples/*.c, *.cpp, CMakeLists.txt    两个示例程序的源码（设备端 / 客户端）
+examples/device_model.c, device_model.h  设备模型（编译进设备端示例与各语言绑定的垫片：
+                                      五个语言的设备端示例共用同一份，不依赖外部文件）
 examples/bin/windows-x64-msvc/*.exe    **编好的示例可执行文件**（x64、MSVC Release）
 examples/bin/windows-x86-msvc/*.exe    同上，32 位
 examples/bin/linux-x86_64-gcc/*        Linux 版示例可执行文件（gcc 13 + glibc）
