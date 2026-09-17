@@ -57,8 +57,17 @@ echo "   -> $OUT/libnclink_core.a"
 
 echo "== 编译示例 =="
 for ex in examples/*.c; do
+    # device_model.c 不是程序：它是设备模型（被示例与垫片 #include 进去的）
+    if [ "$ex" = "examples/device_model.c" ]; then
+        continue
+    fi
     name=$(basename "$ex" .c)
-    $CC $CFLAGS "$ex" -o "$OUT/bin/$name" "$OUT/libnclink_core.a" $LDLIBS
+    # 设备端示例要把模型一起编进去（模型是它的一部分）
+    extra=""
+    if [ "$name" = "ncl_device_demo" ]; then
+        extra="examples/device_model.c"
+    fi
+    $CC $CFLAGS "$ex" $extra -o "$OUT/bin/$name" "$OUT/libnclink_core.a" $LDLIBS
     echo "   -> $OUT/bin/$name"
 done
 
