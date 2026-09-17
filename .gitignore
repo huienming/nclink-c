@@ -61,3 +61,5 @@ __pycache__/
 /bindings/**/temp/
 /bindings/**/conf/
 /bindings/**/log/
+# Go 绑定：库在 <root>/bin/ 下落的运行期文件（sn.txt 等）
+/bindings/go/bin/

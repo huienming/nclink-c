@@ -505,6 +505,11 @@ void ncl_server_free(ncl_server *server)
     if (server == NULL) {
         return;
     }
+    /* Sampling tasks must be stopped (and joined) first: their collect cycle
+     * queries the tool bindings and the model, so releasing either while a task
+     * is still running is a use-after-free (seen as a rare SIGSEGV in
+     * ncl_server_lookup on a sampler thread). */
+    ncl_server_stop_all_samples(server);
     if (server->user_cleanup != NULL) {
         server->user_cleanup(server->user_data);
         server->user_data = NULL;
@@ -521,7 +526,6 @@ void ncl_server_free(ncl_server *server)
         ncl_schema_free(server->schemas[i].schema);
     }
     free(server->schemas);
-    ncl_server_stop_all_samples(server);
     free(server->last_tool_name);
     ncl_node_free(server->root_node);
     free(server->sn);

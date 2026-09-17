@@ -12,6 +12,14 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 修复
 
+- **设备端释放时会踩到正在跑的采样任务（随机段错误）**：`ncl_server_free()` 先释放
+  工具绑定表与模型、**最后**才停采样任务；采样线程的每一轮 collect 都要查绑定
+  （`ncl_server_lookup()`），于是它可能读到刚释放的表 —— 命中就表现为
+  `ncl_server_lookup` 里的 SIGSEGV。窗口只有微秒级，所以是"偶发"（Go 绑定的分配器
+  复用得快，13/20 次复现；纯 C 基本靠运气）。现在 `ncl_server_free()` 先把采样任务
+  停下并 join，再释放任何东西；`tests/test_server.c` 加了"带着在跑的通道直接 free"
+  的用例守住这条顺序。
+
 - **没编 TLS 时报的是笼统的 `NCL_ERR`**：`ssl://` 连不上时只看到 "连接失败"，看不出
   是"库没带 TLS 编"。现在客户端管理器在建连接前先判断 URL 与 `ncl_socket_tls_available()`，
   直接返回 `NCL_ERR_NOT_SUPPORTED`（-8）并记一条明确的日志。
@@ -119,6 +127,17 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   用例（C# 134 项 / Java 13 项 / Python 46 项，对 Mosquitto 的 8883/18832 TLS 监听
   与 EMQX 都 0 失败）：正例之外还有"不给 CA 必须被证书校验挡下"的反例；库没编 TLS 时
   明确的 `NCL_ERR_NOT_SUPPORTED` 由离线用例守着。
+- **Go 绑定补齐设备端**：新增 `bindings/go/server.go`（`NewServer` / `RegisterTool` +
+  `Binding` / `RegisterBuiltinTool` / `RegisterFileTool` / `Subscribe` / `InitSamples` /
+  `AddSample` / `RemoveSample` / `PushEvent` / 离线 `Dispatch` 与 `Invoke*` /
+  `StartHTTP` + `Route`）与 `nclink_thunks.c`（cgo 不能把 Go 函数指针交给 C，而 C API
+  是**用函数指针认工具方法**的，所以每种方法一个 C 跳板；回调句柄另起一次分配，因为
+  cgo 只允许把"不含 Go 指针的 Go 内存"交给 C），示例 `example/device` 既能离线跑
+  （出站报文打到控制台）也能过 broker；离线自检不需要 broker。
+- **Go 绑定的 `-tags nclink_tls` 之前等于没开**：那个 tag 只加了 `-lssl -lcrypto`，
+  链的还是非 TLS 的 `libnclink_core.a`，`ssl://` 永远返回 `NCL_ERR_NOT_SUPPORTED`。
+  现在该 tag 链 `libnclink_core_tls.a`（`tools/stage-go-libs.sh` 已经会暂存这份），
+  并补了 `nclink.TLSAvailable()` 供调用方先问一句。
 - **借用视图的 `Dispose` 改成空操作**（C#）：`NclJson` 的下标/成员视图、设备端的
   `NclServer.Model` 这类借用对象以前 `Dispose` 会把句柄置空、之后再用就抛
   `ObjectDisposedException`；现在与 Java / Python 一致——借用的东西不归你管，

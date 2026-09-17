@@ -1251,9 +1251,87 @@ static void test_sub_millisecond_samples(void)
     ncl_fake_server_stop(broker);
 }
 
+/**
+ * Regression: ncl_server_free() used to release the tool bindings and the model
+ * *before* stopping the sampling tasks. A task in the middle of its collect
+ * cycle then queried the freed binding table — a use-after-free that surfaced
+ * as a rare SIGSEGV inside ncl_server_lookup on a sampler thread (only when the
+ * freed memory happened to be reused; the Go binding's allocator made it
+ * reproducible, and it was found there first).
+ *
+ * The window is narrow in C (freed-but-untouched memory stays readable), so this
+ * case is a smoke test for the teardown path: free with a channel running, no
+ * explicit stop, twenty times. Its sharper counterpart lives in the Go suite
+ * (TestServerFreeWithRunningSamples), whose allocator reuses the freed blocks
+ * and turns the same shape into a hard crash.
+ */
+static void test_free_with_running_samples(void)
+{
+    /* A busy sampler: 1 ms slots over eight entries, so the task spends most of
+     * its time inside ncl_server_lookup — exactly the window the old teardown
+     * order blew up in. */
+    static const char *kBusyModelJson =
+        "{\"name\":\"nclink\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\","
+        "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\","
+        "\"configs\":[{\"id\":\"ch1\",\"type\":\"SAMPLE_CHANNEL\","
+        "\"sampleInterval\":1,\"uploadInterval\":60000,"
+        "\"ids\":[{\"id\":\"/STATUS\"},{\"id\":\"/STATUS\"},"
+        "{\"id\":\"/STATUS\"},{\"id\":\"/STATUS\"},"
+        "{\"id\":\"/STATUS\"},{\"id\":\"/STATUS\"},"
+        "{\"id\":\"/STATUS\"},{\"id\":\"/STATUS\"}]}],"
+        "\"dataItems\":[{\"id\":\"030001\",\"type\":\"STATUS\"}]}]}";
+    sample_tool tool;
+    int round;
+
+    NCL_TEST_CASE("freeing a server with a channel still running is safe");
+    memset(&tool, 0, sizeof(tool));
+
+    for (round = 0; round < 10; round++) {
+        static ncl_tool_method methods[30];
+        static ncl_tool_binding bindings[1];
+        static const char *names[30] = {
+            "m0",  "m1",  "m2",  "m3",  "m4",  "m5",  "m6",  "m7",  "m8",
+            "m9",  "m10", "m11", "m12", "m13", "m14", "m15", "m16", "m17",
+            "m18", "m19", "m20", "m21", "m22", "m23", "m24", "m25", "m26",
+            "m27", "m28", "m29"};
+        ncl_server_options options;
+        ncl_server *server;
+        size_t i;
+
+        for (i = 0; i < 30; i++) {
+            memset(&methods[i], 0, sizeof(methods[i]));
+            methods[i].name = names[i];
+            methods[i].fn = sample_get_status;
+        }
+        memset(bindings, 0, sizeof(bindings));
+        bindings[0].path = "/STATUS";
+        bindings[0].operation = NCL_OP_GET_VALUE;
+        bindings[0].method = "m0";
+        memset(&options, 0, sizeof(options));
+        options.sn = TEST_SN;
+        options.model_json = kBusyModelJson;
+        server = ncl_server_create(&options);
+        NCL_CHECK(server != NULL);
+        if (server == NULL) {
+            return;
+        }
+        if (ncl_server_register_tool(server, "sampleTool",
+                                     &tool, methods, 30, bindings, 1) != NCL_OK ||
+            ncl_server_init_samples(server) != NCL_OK) {
+            NCL_CHECK(0);
+            ncl_server_free(server);
+            return;
+        }
+        ncl_sleep_millis(10);
+        ncl_server_free(server);
+    }
+    NCL_CHECK(tool.status_calls > 0);
+}
+
 NCL_TEST_MAIN_BEGIN()
     test_server_end_to_end();
     test_sampling();
     test_sample_channel_shapes();
     test_sub_millisecond_samples();
+    test_free_with_running_samples();
 NCL_TEST_MAIN_END()

@@ -111,7 +111,9 @@ if ($WithSource) {
 }
 
 # Language bindings: sources only, they link the packaged static libraries
-Copy-Tree "bindings/go" "bindings/go" @("*.go", "*.mod", "*.md")
+# (the Go binding also carries nclink_thunks.c: cgo cannot hand a Go function
+# pointer to C, so its callbacks live on the C side)
+Copy-Tree "bindings/go" "bindings/go" @("*.go", "*.mod", "*.md", "*.c", "*.h")
 # obj/ and bin/ are build output (.gitignore excludes them too), not shipped
 Copy-Tree "bindings/csharp" "bindings/csharp" @("*.cs", "*.csproj", "*.md", "*.c", "*.h", "*.ps1", "*.config") "\\obj\\|\\bin\\"
 # The shared native shim (C source + header + build scripts)

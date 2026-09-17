@@ -28,5 +28,8 @@ stage() {
 stage "$ROOT/build-linux/libnclink_core.a"     "$DST/linux-amd64/libnclink_core.a"
 stage "$ROOT/build-linux-tls/libnclink_core.a" "$DST/linux-amd64/libnclink_core_tls.a"
 stage "$ROOT/build-mingw/libnclink_core.a"     "$DST/windows-amd64/libnclink_core.a"
+# Optional: the mingw build with TLS (-tags nclink_tls on Windows links this one,
+# plus the static OpenSSL import libraries).
+stage "$ROOT/build-mingw-tls/libnclink_core.a" "$DST/windows-amd64/libnclink_core_tls.a"
 
 echo "done: $DST"

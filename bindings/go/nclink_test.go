@@ -84,3 +84,23 @@ func TestGetBeforeOpenFails(t *testing.T) {
 		t.Fatal("Get succeeded without Open")
 	}
 }
+
+// The two builds report themselves honestly: without TLS support an "ssl://"
+// URI must come back as NOT_SUPPORTED rather than a vague connect failure.
+func TestTLSReporting(t *testing.T) {
+	t.Logf("TLSAvailable() = %v", TLSAvailable())
+	if TLSAvailable() {
+		t.Skip("this build has TLS: the NOT_SUPPORTED assertion only holds without it")
+	}
+	err := Open("ssl://127.0.0.1:1", "", "")
+	if err == nil {
+		t.Fatal("Open accepted an ssl:// URI in a build without TLS")
+	}
+	var nerr *Error
+	if !errors.As(err, &nerr) {
+		t.Fatalf("error type = %T, want *Error", err)
+	}
+	if nerr.Code != -8 { // NCL_ERR_NOT_SUPPORTED
+		t.Fatalf("error = %v (code %d), want code -8", nerr, nerr.Code)
+	}
+}

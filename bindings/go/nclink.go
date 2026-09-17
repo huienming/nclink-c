@@ -16,10 +16,12 @@ package nclink
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../include
 
-#cgo linux LDFLAGS: -L${SRCDIR}/lib/linux-amd64 -lnclink_core -lpthread
-#cgo windows LDFLAGS: -L${SRCDIR}/lib/windows-amd64 -lnclink_core -lws2_32 -liphlpapi -lwinmm
-#cgo nclink_tls,linux LDFLAGS: -lssl -lcrypto
-#cgo nclink_tls,windows LDFLAGS: -lssl -lcrypto -lgdi32 -lcrypt32
+// -tags nclink_tls swaps in the TLS build of the core library (staged by
+// tools/stage-go-libs.sh as libnclink_core_tls.a) and links OpenSSL with it.
+#cgo !nclink_tls,linux LDFLAGS: -L${SRCDIR}/lib/linux-amd64 -lnclink_core -lpthread
+#cgo nclink_tls,linux LDFLAGS: -L${SRCDIR}/lib/linux-amd64 -lnclink_core_tls -lssl -lcrypto -lpthread
+#cgo !nclink_tls,windows LDFLAGS: -L${SRCDIR}/lib/windows-amd64 -lnclink_core -lws2_32 -liphlpapi -lwinmm
+#cgo nclink_tls,windows LDFLAGS: -L${SRCDIR}/lib/windows-amd64 -lnclink_core_tls -lssl -lcrypto -lgdi32 -lcrypt32 -lws2_32 -liphlpapi -lwinmm
 
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +31,7 @@ package nclink
 #include "nclink/ncl_message.h"
 #include "nclink/ncl_model.h"
 #include "nclink/ncl_server.h"
+#include "nclink/ncl_socket.h"
 
 // Declared for cgo so its address can be handed to the C client. The types must
 // match what cgo generates for the exported Go function (no const).
@@ -55,9 +58,28 @@ type Error struct {
 	Code int
 	Name string
 	Op   string
+	// Message is extra detail when the layer below reported one (the broker
+	// error text, a rejected tool argument, ...). Empty otherwise.
+	Message string
+}
+
+// handleBox isolates a cgo.Handle so that its address can be handed to C.
+//
+// cgo only allows passing a pointer to Go memory that holds no Go pointers, so
+// the handle cannot live inside a struct that has slices or funcs (the Client
+// and Server types do): it gets an allocation of its own, kept alive by the
+// owner. C stores the address and reads the handle back in the callback.
+type handleBox struct {
+	handle cgo.Handle
 }
 
 func (e *Error) Error() string {
+	if e.Message != "" {
+		if e.Op == "" {
+			return e.Message
+		}
+		return e.Op + ": " + e.Message
+	}
 	if e.Op == "" {
 		return e.Name
 	}
@@ -73,6 +95,11 @@ func check(rc C.ncl_err, op string) error {
 
 // Version is the C library version string.
 func Version() string { return C.NCL_VERSION } // a string literal macro
+
+// TLSAvailable reports whether the linked library was built with TLS support
+// (-tags nclink_tls plus the TLS build of the core library). When it is false,
+// an "ssl://" URI fails with NOT_SUPPORTED instead of "connection failed".
+func TLSAvailable() bool { return C.ncl_socket_tls_available() == C.bool(true) }
 
 // ---------------------------------------------------------------- JSON ------
 
@@ -210,7 +237,7 @@ func (m *Model) Close() {
 // Client is one device client, owned by the process wide holder.
 type Client struct {
 	c      *C.ncl_client
-	handle cgo.Handle
+	box    *handleBox
 	onData func(topic string, msg *Message)
 }
 
@@ -301,13 +328,13 @@ func (c *Client) Set(path string, value *Json, timeoutMS uint) error {
 // receives only lives for the duration of the call; copy what you keep.
 func (c *Client) SubscribeSamples(qos int, handler func(topic string, msg *Message)) error {
 	c.onData = handler
-	c.handle = cgo.NewHandle(c)
+	c.box = &handleBox{handle: cgo.NewHandle(c)}
 	if err := check(C.ncl_client_subscribe_samples(c.c, C.int(qos)), "SubscribeSamples"); err != nil {
 		return err
 	}
 	C.ncl_set_sample_handler_shim(c.c,
 		unsafe.Pointer((*[0]byte)(C.nclinkGoSampleThunk)),
-		unsafe.Pointer(&c.handle))
+		unsafe.Pointer(&c.box.handle))
 	return nil
 }
 

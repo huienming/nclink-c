@@ -174,7 +174,7 @@ C++ 封装在 `include/nclink/ncl.hpp`（header-only，RAII + 异常）；四个
 
 | 绑定 | 目录 | 覆盖 | 构建与自检 |
 |------|------|------|------------|
-| Go（cgo） | `bindings/go/` | 客户端 | `sh tools/stage-go-libs.sh` 后 `cd bindings/go && go test ./...` |
+| Go（cgo） | `bindings/go/` | 客户端 + **设备端**（工具注册 / 采样 / 事件 / HTTP、离线 dispatch、自研传输） | `sh tools/stage-go-libs.sh` 后 `cd bindings/go && go test ./...` |
 | C#（P/Invoke，net472 + net8.0） | `bindings/csharp/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `.\bindings\csharp\build.ps1`（垫片 + 三个工程 + 自检 106 项） |
 | Java（JNI，Java 8 字节码） | `bindings/java/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `.\bindings\java\build.ps1`（native + javac + 自检 107 项） |
 | Python（ctypes，只用标准库） | `bindings/python/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `python -m unittest discover -s bindings/python/tests`（46 项） |
@@ -185,7 +185,9 @@ C++ 封装在 `include/nclink/ncl.hpp`（header-only，RAII + 异常）；四个
 连接选项也贯通到托管侧：`ssl://` 的 CA / 双向证书 / 关校验 / SNI（`TlsOptions` /
 `NclTlsOptions`，C API 是 `ncl_client_holder_init_ex`）与文件通道对端的 FTP 地址
 （`ncl_server_set_file_peer` / `ncl_client_holder_start_ftp_ex`）。示例里有
-"Python 当机床、C 客户端来读"这种跨语言跑法。
+"Python 当机床、C 客户端来读"这种跨语言跑法。Go 绑定走 cgo 直接链 C API（不过垫片），
+客户端与设备端（`nclink.NewServer` + `RegisterTool` / `InitSamples` / `PushEvent` /
+`StartHTTP`）都在 `bindings/go/server.go`，设备端示例是 `example/device`。
 
 自检默认不需要 broker；想看"报文真的过 MQTT"的那一段，设
 `NCLINK_TEST_BROKER=tcp://host:port` 再跑一遍（C# / Java / Python 三份绑定都支持）。
