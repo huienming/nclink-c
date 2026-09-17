@@ -44,6 +44,8 @@
 #include "nclink/ncl_rest.h"
 #include "nclink/ncl_server.h"
 
+#include "device_model.h"
+
 /* ------------------------------------------------------------------ 模型 -- */
 
 /*
@@ -66,82 +68,36 @@
  *     EdgeSersors（1 ms / 100 ms：功率一槽 1 点，振动一槽 4 点 = 0.25 ms 一位，
  *     即 MANUAL 4.5 的亚毫秒采样；共 5 + 15 = 20 列）。
  */
-#define DEMO_MODEL_RELATIVE "examples/device_model.json"
-
-/** 从当前目录逐级往上找共享模型；返回堆字符串（调用方 free），找不到返回 NULL。 */
-static char *demo_find_shared_model(void)
-{
-    const char *explicit_path = getenv("NCL_DEVICE_MODEL");
-    char *candidate = NULL;
-    int level;
-
-    if (explicit_path != NULL && explicit_path[0] != '\0') {
-        if (ncl_path_exists(explicit_path)) {
-            return ncl_strdup(explicit_path);
-        }
-        ncl_log_warn("NCL_DEVICE_MODEL 指向的文件不存在：%s", explicit_path);
-    }
-    for (level = 0; level <= 3; level++) {
-        char *parent = NULL;
-        int i;
-
-        if (ncl_asprintf(&candidate, "%s", DEMO_MODEL_RELATIVE) != NCL_OK) {
-            return NULL;
-        }
-        for (i = 0; i < level; i++) {
-            if (ncl_asprintf(&parent, "..%c%s", NCL_PATH_SEP, candidate) != NCL_OK) {
-                free(candidate);
-                return NULL;
-            }
-            free(candidate);
-            candidate = parent;
-        }
-        if (ncl_path_exists(candidate)) {
-            return candidate;
-        }
-        free(candidate);
-        candidate = NULL;
-    }
-    return NULL;
-}
-
 /**
  * 取设备模型文本（堆字符串，调用方 free）。
  *
- * <root>/conf/model/nclink.json 优先；没有就用仓库里的共享模型自举（写进去）。
- * 两个都没有就返回 NULL：与其内置一份迟早走样的副本，不如直接报错。
+ * 模型编译在 examples/device_model.c 里（**唯一出处**，五个语言的示例共用：
+ * ncl_demo_device_model()）。<root>/conf/model/nclink.json 存在就优先用现场那份
+ * （改文件、或走 REST 的 /api/setModel 都行）；没有就把编译进来的那份写进去。
+ * 分发时只带可执行文件与库即可，不需要任何外部模型文件。
  */
 static char *demo_load_model(void)
 {
     char *text = NULL;
-    char *shared;
     char *dir = NULL;
 
     if (ncl_file_read_all(ncl_env_model_file(), &text, NULL) == NCL_OK) {
         return text;
     }
-    shared = demo_find_shared_model();
-    if (shared == NULL) {
-        ncl_log_error("找不到设备模型：%s 不存在，逐级往上也没找到 %s"
-                      "（可用 NCL_DEVICE_MODEL 指定）",
-                      ncl_env_model_file(), DEMO_MODEL_RELATIVE);
-        return NULL;
-    }
-    if (ncl_file_read_all(shared, &text, NULL) != NCL_OK) {
-        ncl_log_error("读取共享模型失败：%s", shared);
-        free(shared);
-        return NULL;
-    }
     if (ncl_asprintf(&dir, "%s%cmodel", ncl_env_conf_path(), NCL_PATH_SEP) == NCL_OK) {
         ncl_mkdir_p(dir);
         free(dir);
     }
-    if (ncl_file_write_all(ncl_env_model_file(), text, strlen(text)) == NCL_OK) {
-        ncl_log_info("首次启动：写入设备模型（%s ← %s）", ncl_env_model_file(), shared);
-    } else {
-        ncl_log_warn("模型写不进去（%s），本次仍按共享模型运行", ncl_env_model_file());
+    text = ncl_strdup(ncl_demo_device_model());
+    if (text == NULL) {
+        return NULL;
     }
-    free(shared);
+    if (ncl_file_write_all(ncl_env_model_file(), text, strlen(text)) == NCL_OK) {
+        ncl_log_info("首次启动：写入设备模型（%s，编译进去的那份）",
+                     ncl_env_model_file());
+    } else {
+        ncl_log_warn("模型写不进去（%s），本次只用内存里那份", ncl_env_model_file());
+    }
     return text;
 }
 
