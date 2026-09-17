@@ -57,7 +57,7 @@ class DeviceClient:
 
     def _check_open(self):
         if self._handle is None:
-            raise NclinkError(-2, "DeviceClient", "客户端已关闭")
+            raise NclinkError(-13, "DeviceClient", "客户端已关闭")
         return self._handle
 
     def __str__(self):

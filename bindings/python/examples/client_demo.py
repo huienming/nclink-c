@@ -80,8 +80,12 @@ def main(argv):
                 print_axis_quantities(device_node)
 
             print("GET /STATUS = %s" % device.get_long("/STATUS"))
-            device.set_value("/STATUS", 42)
-            print("SET /STATUS = 42 ok")
+            try:
+                device.set_value("/STATUS", 42)
+                print("SET /STATUS = 42 ok")
+            except nclink.NclinkError as error:
+                # 设备没把 /STATUS 绑到 setValue 上就会拒绝，这不是客户端的错
+                print("SET /STATUS 被拒绝：%s" % error.name)
             print("id(/STATUS) = %s, path(%s) = %s" % (
                 device.get_id("/STATUS"), device.get_id("/STATUS"),
                 device.get_path(device.get_id("/STATUS"))))

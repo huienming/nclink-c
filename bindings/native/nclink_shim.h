@@ -298,6 +298,106 @@ NCLSHIM_API int nclshim_client_add_sample(const void *client, const char *config
 NCLSHIM_API int nclshim_client_remove_sample(const void *client, const char *id,
                                              unsigned timeout_ms);
 
+/**
+ * 建一个设备端：模型默认走内置模型；broker_url 为空则**不接 MQTT**（离线使用
+ * nclshim_server_dispatch() 驱动，或者自己给 publish_host 当传输）；
+ * publish_host 非空的另一种用法是"自研传输"：每条出站报文都交给托管侧。
+ *
+ * 用户名/密码可为 NULL（匿名）。失败返回 NULL。
+ */
+NCLSHIM_API const void *nclshim_server_create(const char *sn, const char *model_json,
+                                              const char *broker_url,
+                                              const char *username,
+                                              const char *password,
+                                              void *publish_host);
+
+/** 释放设备端：先停服务，再拆连接，最后放工具上下文。 */
+NCLSHIM_API void nclshim_server_free(const void *handle);
+
+NCLSHIM_API const char *nclshim_server_sn(const void *handle);
+
+/** 设备模型（借用句柄，nclshim_node_* 都能用；服务器释放即失效）。 */
+NCLSHIM_API const void *nclshim_server_model(const void *handle);
+
+NCLSHIM_API char *nclshim_server_model_json(const void *handle);
+
+NCLSHIM_API int nclshim_server_binding_count(const void *handle);
+
+NCLSHIM_API int nclshim_server_operation_count(const void *handle);
+
+NCLSHIM_API int nclshim_server_sample_count(const void *handle);
+
+NCLSHIM_API int nclshim_server_sample_upload_count(const void *handle);
+
+NCLSHIM_API int nclshim_server_event_count(const void *handle);
+
+NCLSHIM_API char *nclshim_server_openapi_json(const void *handle, const char *base_url);
+
+NCLSHIM_API int nclshim_server_subscribe(const void *handle);
+
+/**
+ * 注册一个工具：方法表与路径绑定都用 JSON 描述——
+ *
+ *   methods_json:  [{"name":"getValue"},{"name":"setValue","schema":{...}}]
+ *   bindings_json: [{"path":"/STATUS","operation":0,"method":"getValue"}]（可为 NULL）
+ *
+ * host 是托管侧给的两格 [工具回调, 用户数据]，和采样/事件回调一个约定；回调的
+ * 生命周期必须覆盖到 nclshim_server_free()。一个工具最多 32 个方法。
+ */
+NCLSHIM_API int nclshim_server_register_tool(const void *handle, const char *tool_name,
+                                             const char *methods_json,
+                                             const char *bindings_json, void *host);
+
+NCLSHIM_API int nclshim_server_register_builtin_tool(const void *handle);
+
+NCLSHIM_API int nclshim_server_register_file_tool(const void *handle);
+
+NCLSHIM_API int nclshim_server_start_ftp(const void *handle);
+
+/**
+ * 离线驱动一条请求：payload 是原始报文体（不必 NUL 结尾），返回应答报文的 JSON
+ * 文本（malloc，调用方释放）。**不经过 MQTT**，也不发布应答 —— 单测与"自己当
+ * 传输"的宿主用它。
+ */
+NCLSHIM_API int nclshim_server_dispatch(const void *handle, const char *topic,
+                                        const void *payload, int payload_len,
+                                        char **out_json);
+
+NCLSHIM_API int nclshim_server_invoke_method_call(const void *handle,
+                                                  const char *method,
+                                                  const char *params_json,
+                                                  char **out_json);
+
+NCLSHIM_API int nclshim_server_check_method_call(const void *handle,
+                                                 const char *method,
+                                                 const char *params_json,
+                                                 char **out_json);
+
+NCLSHIM_API int nclshim_server_init_samples(const void *handle);
+
+/** 运行时加一个采样通道（config_json 是一个 SAMPLE_CHANNEL 配置节点）。 */
+NCLSHIM_API int nclshim_server_add_sample(const void *handle, const char *config_json);
+
+NCLSHIM_API int nclshim_server_remove_sample(const void *handle, const char *id);
+
+NCLSHIM_API void nclshim_server_stop_all_samples(const void *handle);
+
+/** 推一条事件到 Event/<sn>；event_json 形如 {"key":...,"value":...}。 */
+NCLSHIM_API int nclshim_server_push_event(const void *handle, const char *event_id,
+                                          const char *event_json);
+
+NCLSHIM_API int nclshim_server_push_event_ex(const void *handle, const char *event_id,
+                                             const char *event_json,
+                                             long long time_ms,
+                                             const char *message_id);
+
+/**
+ * 复制一份文本（malloc，调用方 nclshim_free）。**回调里回填字符串必须用它**：
+ * 垫片随后会用自己这边的 free() 释放，托管侧自己 malloc/python bytes/GC 出来的
+ * 内存不能这么用（跨 CRT / 跨分配器）。
+ */
+NCLSHIM_API char *nclshim_strdup(const char *text);
+
 
 #ifdef __cplusplus
 }

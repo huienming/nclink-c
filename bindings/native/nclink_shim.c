@@ -26,10 +26,13 @@
 #include "nclink/ncl_client.h"
 #include "nclink/ncl_common.h"
 #include "nclink/ncl_env.h"
+#include "nclink/ncl_file.h"
 #include "nclink/ncl_json.h"
 #include "nclink/ncl_logger.h"
 #include "nclink/ncl_message.h"
 #include "nclink/ncl_model.h"
+#include "nclink/ncl_mqtt.h"
+#include "nclink/ncl_server.h"
 
 #include "nclink_shim.h"
 
@@ -683,9 +686,9 @@ NCLSHIM_API int nclshim_client_set_value(const void *client, const char *path,
         return NCL_ERR_PARSE;
     }
     rc = (int)ncl_client_set_value((ncl_client *)client, path, value, timeout_ms);
-    if (rc != NCL_OK) {
-        ncl_json_free(value); /* 失败时所有权仍在我们手里 */
-    }
+    /* ncl_client_set_value() **无条件**接管 value（成功时装进请求，失败时自己释放），
+     * 所以这里绝不能再 free —— 设备拒绝写入（应答 NG）时那样会二次释放，
+     * 表现为堆损坏。见 include/nclink/ncl_client.h 的"Takes ownership"。 */
     return rc;
 }
 
@@ -706,9 +709,7 @@ NCLSHIM_API int nclshim_client_set_value_index(const void *client, const char *p
     }
     rc = (int)ncl_client_set_value_index((ncl_client *)client, path, value, index,
                                          timeout_ms);
-    if (rc != NCL_OK) {
-        ncl_json_free(value);
-    }
+    /* 所有权同 ncl_client_set_value()：库无条件接管，这里不要再 free。 */
     return rc;
 }
 
@@ -916,4 +917,725 @@ NCLSHIM_API int nclshim_client_remove_sample(const void *client, const char *id,
     return client != NULL && id != NULL
                ? (int)ncl_client_remove_sample((ncl_client *)client, id, timeout_ms)
                : NCL_ERR_INVALID_ARG;
+}
+
+/* =============================================================== server == */
+
+/*
+ * 设备端（ncl_server）的桥。
+ *
+ * 托管侧只碰三样东西：不透明句柄、JSON 文本、回调。方法表与路径绑定都用 JSON
+ * 描述（C 侧建表），所以托管侧仍然不需要理解任何 C 结构体布局。
+ *
+ * 句柄返回的是下面的 nclshim_server_ctx*（不是 ncl_server*）：服务器、我们自己
+ * 建的 MQTT 连接、注册过的工具上下文都挂在它上面，nclshim_server_free() 一次收干。
+ */
+
+/** 工具方法回调：返回 ncl_err（0 = 成功）。out_result_json 为 NULL 表示"没有值"。 */
+typedef int (*nclshim_tool_cb)(void *user, const char *tool, const char *method,
+                               const void *params, char **out_result_json,
+                               char **out_reason);
+
+/** 自研传输的发布回调：把出站报文（主题 + 已序列化的报文体）交给托管侧。 */
+typedef int (*nclshim_publish_cb)(void *user, const char *topic,
+                                  const void *payload, int payload_len);
+
+/* 一个方法一个 thunk：ncl_tool_fn 只拿到 instance，靠 thunk 的序号分辨方法。 */
+#define NCLSHIM_TOOL_THUNKS 32
+
+typedef struct nclshim_tool_ctx {
+    struct nclshim_tool_ctx *next;
+    char        *tool_name;
+    nclshim_tool_cb cb;
+    void        *user;
+    size_t       method_count;
+    char       **names;
+} nclshim_tool_ctx;
+
+typedef struct {
+    ncl_server       *server;
+    ncl_mqtt_client  *mqtt;          /* 自己建的连接（broker_url 为空时是 NULL） */
+    nclshim_tool_ctx *tools;
+    void             *publish_host;  /* 托管侧的自研发布回调（两格），可为 NULL */
+} nclshim_server_ctx;
+
+static ncl_err nclshim_tool_invoke(int index, void *instance,
+                                   const ncl_json *params, ncl_json **result,
+                                   char **reason);
+
+#define NCLSHIM_DEFINE_TOOL_THUNK(i)                                          \
+    static ncl_err nclshim_tool_thunk_##i(void *instance, const ncl_json *params, \
+                                          ncl_json **result, char **reason)   \
+    {                                                                         \
+        return nclshim_tool_invoke(i, instance, params, result, reason);       \
+    }
+
+NCLSHIM_DEFINE_TOOL_THUNK(0)
+NCLSHIM_DEFINE_TOOL_THUNK(1)
+NCLSHIM_DEFINE_TOOL_THUNK(2)
+NCLSHIM_DEFINE_TOOL_THUNK(3)
+NCLSHIM_DEFINE_TOOL_THUNK(4)
+NCLSHIM_DEFINE_TOOL_THUNK(5)
+NCLSHIM_DEFINE_TOOL_THUNK(6)
+NCLSHIM_DEFINE_TOOL_THUNK(7)
+NCLSHIM_DEFINE_TOOL_THUNK(8)
+NCLSHIM_DEFINE_TOOL_THUNK(9)
+NCLSHIM_DEFINE_TOOL_THUNK(10)
+NCLSHIM_DEFINE_TOOL_THUNK(11)
+NCLSHIM_DEFINE_TOOL_THUNK(12)
+NCLSHIM_DEFINE_TOOL_THUNK(13)
+NCLSHIM_DEFINE_TOOL_THUNK(14)
+NCLSHIM_DEFINE_TOOL_THUNK(15)
+NCLSHIM_DEFINE_TOOL_THUNK(16)
+NCLSHIM_DEFINE_TOOL_THUNK(17)
+NCLSHIM_DEFINE_TOOL_THUNK(18)
+NCLSHIM_DEFINE_TOOL_THUNK(19)
+NCLSHIM_DEFINE_TOOL_THUNK(20)
+NCLSHIM_DEFINE_TOOL_THUNK(21)
+NCLSHIM_DEFINE_TOOL_THUNK(22)
+NCLSHIM_DEFINE_TOOL_THUNK(23)
+NCLSHIM_DEFINE_TOOL_THUNK(24)
+NCLSHIM_DEFINE_TOOL_THUNK(25)
+NCLSHIM_DEFINE_TOOL_THUNK(26)
+NCLSHIM_DEFINE_TOOL_THUNK(27)
+NCLSHIM_DEFINE_TOOL_THUNK(28)
+NCLSHIM_DEFINE_TOOL_THUNK(29)
+NCLSHIM_DEFINE_TOOL_THUNK(30)
+NCLSHIM_DEFINE_TOOL_THUNK(31)
+static ncl_tool_fn const nclshim_tool_thunks[NCLSHIM_TOOL_THUNKS] = {
+    nclshim_tool_thunk_0,  nclshim_tool_thunk_1,  nclshim_tool_thunk_2,
+    nclshim_tool_thunk_3,  nclshim_tool_thunk_4,  nclshim_tool_thunk_5,
+    nclshim_tool_thunk_6,  nclshim_tool_thunk_7,  nclshim_tool_thunk_8,
+    nclshim_tool_thunk_9,  nclshim_tool_thunk_10, nclshim_tool_thunk_11,
+    nclshim_tool_thunk_12, nclshim_tool_thunk_13, nclshim_tool_thunk_14,
+    nclshim_tool_thunk_15, nclshim_tool_thunk_16, nclshim_tool_thunk_17,
+    nclshim_tool_thunk_18, nclshim_tool_thunk_19, nclshim_tool_thunk_20,
+    nclshim_tool_thunk_21, nclshim_tool_thunk_22, nclshim_tool_thunk_23,
+    nclshim_tool_thunk_24, nclshim_tool_thunk_25, nclshim_tool_thunk_26,
+    nclshim_tool_thunk_27, nclshim_tool_thunk_28, nclshim_tool_thunk_29,
+    nclshim_tool_thunk_30, nclshim_tool_thunk_31};
+
+/** 回调桥：把托管侧算出来的 JSON 文本收成库要的 ncl_json，所有权交给库。 */
+static ncl_err nclshim_tool_invoke(int index, void *instance, const ncl_json *params,
+                                   ncl_json **result, char **reason)
+{
+    nclshim_tool_ctx *tool = (nclshim_tool_ctx *)instance;
+    const char *method;
+    char *text = NULL;
+    char *why = NULL;
+    int rc;
+
+    if (result != NULL) {
+        *result = NULL;
+    }
+    if (reason != NULL) {
+        *reason = NULL;
+    }
+    if (tool == NULL || tool->cb == NULL || index < 0 ||
+        (size_t)index >= tool->method_count) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    method = tool->names[index];
+    rc = tool->cb(tool->user, tool->tool_name, method, params, &text, &why);
+    if (rc != NCL_OK) {
+        if (reason != NULL) {
+            *reason = why;
+        } else {
+            free(why);
+        }
+        free(text);
+        return (ncl_err)rc;
+    }
+    if (text != NULL) {
+        ncl_json *value = ncl_json_parse_cstr(text, NULL);
+        free(text);
+        if (value == NULL) {
+            if (reason != NULL) {
+                *reason = why;
+            } else {
+                free(why);
+            }
+            return NCL_ERR_PARSE;
+        }
+        if (result != NULL) {
+            *result = value;
+        } else {
+            ncl_json_free(value);
+        }
+    }
+    free(why);                       /* 成功路径不带 reason */
+    return NCL_OK;
+}
+
+/** 自研传输：出站报文交给托管侧（host 是托管侧给的两格 [函数指针, 用户数据]）。 */
+static ncl_err nclshim_publish_thunk(void *user, const char *topic,
+                                     const char *payload, size_t len)
+{
+    nclshim_server_ctx *ctx = (nclshim_server_ctx *)user;
+    nclshim_publish_cb cb;
+    void *cb_user;
+
+    if (ctx == NULL || ctx->publish_host == NULL) {
+        return NCL_ERR;
+    }
+    cb = (nclshim_publish_cb)((void **)ctx->publish_host)[0];
+    cb_user = ((void **)ctx->publish_host)[1];
+    if (cb == NULL) {
+        return NCL_ERR;
+    }
+    return (ncl_err)cb(cb_user, topic, payload, (int)len);
+}
+
+/** MQTT 入站：解析成报文后交给 ncl_server_on_message（它接管所有权、异步应答）。 */
+static void nclshim_server_on_mqtt(void *user, const ncl_mqtt_publish *publish)
+{
+    nclshim_server_ctx *ctx = (nclshim_server_ctx *)user;
+    ncl_message *request;
+
+    if (ctx == NULL || publish == NULL || publish->topic == NULL) {
+        return;
+    }
+    request = ncl_message_parse(publish->topic, (const char *)publish->payload,
+                                publish->payload_len);
+    if (request == NULL) {
+        ncl_log_warn("无法解析来自 %s 的报文", publish->topic);
+        return;
+    }
+    ncl_server_on_message(ctx->server, publish->topic, request);
+}
+
+/**
+ * 建一个设备端：模型默认走内置模型；broker_url 为空则**不接 MQTT**（离线使用
+ * nclshim_server_dispatch() 驱动，或者自己给 publish_host 当传输）；
+ * publish_host 非空的另一种用法是"自研传输"：每条出站报文都交给托管侧。
+ *
+ * 用户名/密码可为 NULL（匿名）。失败返回 NULL。
+ */
+NCLSHIM_API const void *nclshim_server_create(const char *sn, const char *model_json,
+                                              const char *broker_url,
+                                              const char *username,
+                                              const char *password,
+                                              void *publish_host)
+{
+    nclshim_server_ctx *ctx;
+    ncl_server_options options;
+
+    if (sn == NULL || sn[0] == '\0') {
+        return NULL;
+    }
+    ctx = (nclshim_server_ctx *)calloc(1, sizeof(*ctx));
+    if (ctx == NULL) {
+        return NULL;
+    }
+    ctx->publish_host = publish_host;
+
+    if (broker_url != NULL && broker_url[0] != '\0') {
+        ncl_mqtt_client_options mqtt_options;
+
+        ncl_mqtt_client_options_default(&mqtt_options);
+        mqtt_options.url = broker_url;
+        mqtt_options.client_id = sn;            /* 设备端用 SN 做 clientId */
+        mqtt_options.username = username != NULL && username[0] != '\0' ? username : NULL;
+        mqtt_options.password = password != NULL && password[0] != '\0' ? password : NULL;
+        mqtt_options.keep_alive_seconds = 60;
+        mqtt_options.automatic_reconnect = true;
+        mqtt_options.on_message = nclshim_server_on_mqtt;
+        mqtt_options.user = ctx;
+        ctx->mqtt = ncl_mqtt_client_create(&mqtt_options);
+        if (ctx->mqtt == NULL || ncl_mqtt_client_connect(ctx->mqtt) != NCL_OK) {
+            if (ctx->mqtt != NULL) {
+                ncl_mqtt_client_destroy(ctx->mqtt);
+            }
+            free(ctx);
+            return NULL;
+        }
+    }
+
+    memset(&options, 0, sizeof(options));
+    options.sn = sn;
+    options.mqtt = ctx->mqtt;                   /* 借用：连接由我们自己释放 */
+    options.model_json = model_json != NULL && model_json[0] != '\0' ? model_json : NULL;
+    if (publish_host != NULL) {
+        options.publish = nclshim_publish_thunk;
+        options.publish_user = ctx;
+    }
+    ctx->server = ncl_server_create(&options);
+    if (ctx->server == NULL) {
+        if (ctx->mqtt != NULL) {
+            ncl_mqtt_client_disconnect(ctx->mqtt);
+            ncl_mqtt_client_destroy(ctx->mqtt);
+        }
+        free(ctx);
+        return NULL;
+    }
+    return ctx;
+}
+
+/** 释放设备端：先停服务，再拆连接，最后放工具上下文。 */
+NCLSHIM_API void nclshim_server_free(const void *handle)
+{
+    nclshim_server_ctx *ctx = (nclshim_server_ctx *)handle;
+    nclshim_tool_ctx *tool;
+
+    if (ctx == NULL) {
+        return;
+    }
+    if (ctx->server != NULL) {
+        ncl_server_free(ctx->server);           /* 内部停采样、FTP 与文件工具 */
+    }
+    if (ctx->mqtt != NULL) {
+        ncl_mqtt_client_disconnect(ctx->mqtt);
+        ncl_mqtt_client_destroy(ctx->mqtt);
+    }
+    for (tool = ctx->tools; tool != NULL; ) {
+        nclshim_tool_ctx *next = tool->next;
+        size_t i;
+
+        for (i = 0; i < tool->method_count; i++) {
+            free(tool->names[i]);
+        }
+        free(tool->names);
+        free(tool->tool_name);
+        free(tool);
+        tool = next;
+    }
+    free(ctx);
+}
+
+NCLSHIM_API const char *nclshim_server_sn(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? ncl_server_sn(ctx->server) : NULL;
+}
+
+/** 设备模型（借用句柄，nclshim_node_* 都能用；服务器释放即失效）。 */
+NCLSHIM_API const void *nclshim_server_model(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? ncl_server_model(ctx->server) : NULL;
+}
+
+NCLSHIM_API char *nclshim_server_model_json(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL && ctx->server != NULL
+               ? ncl_node_write_string(ncl_server_model(ctx->server))
+               : NULL;
+}
+
+NCLSHIM_API int nclshim_server_binding_count(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_server_binding_count(ctx->server) : 0;
+}
+
+NCLSHIM_API int nclshim_server_operation_count(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_server_operation_count(ctx->server) : 0;
+}
+
+NCLSHIM_API int nclshim_server_sample_count(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_server_sample_count(ctx->server) : 0;
+}
+
+NCLSHIM_API int nclshim_server_sample_upload_count(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_server_sample_upload_count(ctx->server) : 0;
+}
+
+NCLSHIM_API int nclshim_server_event_count(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_server_event_count(ctx->server) : 0;
+}
+
+NCLSHIM_API char *nclshim_server_openapi_json(const void *handle, const char *base_url)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL
+               ? ncl_server_openapi_schema_json(ctx->server,
+                                                base_url != NULL ? base_url : "")
+               : NULL;
+}
+
+NCLSHIM_API int nclshim_server_subscribe(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_server_subscribe(ctx->server) : NCL_ERR_INVALID_ARG;
+}
+
+/**
+ * 注册一个工具：方法表与路径绑定都用 JSON 描述——
+ *
+ *   methods_json:  [{"name":"getValue"},{"name":"setValue","schema":{...}}]
+ *   bindings_json: [{"path":"/STATUS","operation":0,"method":"getValue"}]（可为 NULL）
+ *
+ * host 是托管侧给的两格 [工具回调, 用户数据]，和采样/事件回调一个约定；回调的
+ * 生命周期必须覆盖到 nclshim_server_free()。一个工具最多 32 个方法。
+ */
+NCLSHIM_API int nclshim_server_register_tool(const void *handle, const char *tool_name,
+                                             const char *methods_json,
+                                             const char *bindings_json, void *host)
+{
+    nclshim_server_ctx *ctx = (nclshim_server_ctx *)handle;
+    ncl_json *doc = NULL;
+    ncl_json *binds = NULL;
+    ncl_tool_method *methods = NULL;
+    ncl_tool_binding *specs = NULL;
+    char **schemas = NULL;
+    nclshim_tool_ctx *tool = NULL;
+    void **slots = (void **)host;
+    size_t count = 0;
+    size_t binding_count = 0;
+    size_t i;
+    ncl_err rc = NCL_OK;
+
+    if (ctx == NULL || ctx->server == NULL || tool_name == NULL ||
+        methods_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    doc = ncl_json_parse_cstr(methods_json, NULL);
+    if (doc == NULL || ncl_json_type_of(doc) != NCL_JSON_ARRAY) {
+        ncl_json_free(doc);
+        return NCL_ERR_PARSE;
+    }
+    count = ncl_json_arr_len(doc);
+    if (count == 0 || count > NCLSHIM_TOOL_THUNKS) {
+        ncl_json_free(doc);
+        return NCL_ERR_INVALID_ARG;             /* 一个工具最多 32 个方法 */
+    }
+
+    methods = (ncl_tool_method *)calloc(count, sizeof(*methods));
+    schemas = (char **)calloc(count, sizeof(*schemas));
+    tool = (nclshim_tool_ctx *)calloc(1, sizeof(*tool));
+    if (methods == NULL || schemas == NULL || tool == NULL) {
+        rc = NCL_ERR_NOMEM;
+        goto done;
+    }
+    tool->names = (char **)calloc(count, sizeof(char *));
+    if (tool->names == NULL) {
+        rc = NCL_ERR_NOMEM;
+        goto done;
+    }
+    tool->cb = slots != NULL ? (nclshim_tool_cb)slots[0] : NULL;
+    tool->user = slots != NULL ? slots[1] : NULL;
+    tool->method_count = count;
+    tool->tool_name = ncl_strdup(tool_name);
+    if (tool->tool_name == NULL) {
+        rc = NCL_ERR_NOMEM;
+        goto done;
+    }
+    for (i = 0; i < count; i++) {
+        const ncl_json *entry = ncl_json_arr_get(doc, i);
+        const char *name = ncl_json_obj_get_string(entry, "name");
+        const ncl_json *schema = ncl_json_obj_get(entry, "schema");
+
+        if (name == NULL) {
+            rc = NCL_ERR_INVALID_ARG;
+            goto done;
+        }
+        tool->names[i] = ncl_strdup(name);
+        if (tool->names[i] == NULL) {
+            rc = NCL_ERR_NOMEM;
+            goto done;
+        }
+        methods[i].name = tool->names[i];
+        methods[i].fn = nclshim_tool_thunks[i];
+        if (schema != NULL && !ncl_json_is_null(schema)) {
+            schemas[i] = ncl_json_write_string(schema);
+            methods[i].params_schema = schemas[i];
+        }
+    }
+
+    if (bindings_json != NULL && bindings_json[0] != '\0') {
+        binds = ncl_json_parse_cstr(bindings_json, NULL);
+        if (binds == NULL || ncl_json_type_of(binds) != NCL_JSON_ARRAY) {
+            rc = NCL_ERR_PARSE;
+            goto done;
+        }
+        binding_count = ncl_json_arr_len(binds);
+        if (binding_count > 0) {
+            specs = (ncl_tool_binding *)calloc(binding_count, sizeof(*specs));
+            if (specs == NULL) {
+                rc = NCL_ERR_NOMEM;
+                goto done;
+            }
+            for (i = 0; i < binding_count; i++) {
+                const ncl_json *entry = ncl_json_arr_get(binds, i);
+                const char *path = ncl_json_obj_get_string(entry, "path");
+                const char *method = ncl_json_obj_get_string(entry, "method");
+                long long op = 0;
+
+                if (path == NULL || method == NULL) {
+                    continue;
+                }
+                (void)ncl_json_as_int(ncl_json_obj_get(entry, "operation"), &op);
+                specs[i].path = path;
+                specs[i].operation = (ncl_operation)op;
+                specs[i].method = method;
+                specs[i].tool = tool_name;
+            }
+        }
+    }
+
+    rc = ncl_server_register_tool(ctx->server, tool_name, tool, methods, count, specs,
+                                  binding_count);
+    if (rc == NCL_OK) {
+        tool->next = ctx->tools;                /* instance 要活到 server 释放 */
+        ctx->tools = tool;
+        tool = NULL;
+    }
+
+done:
+    if (tool != NULL) {
+        size_t n = tool->method_count;
+
+        for (i = 0; i < n; i++) {
+            free(tool->names[i]);
+        }
+        free(tool->names);
+        free(tool->tool_name);
+        free(tool);
+    }
+    for (i = 0; i < count; i++) {
+        free(schemas[i]);
+    }
+    free(schemas);
+    free(methods);
+    free(specs);
+    ncl_json_free(binds);
+    ncl_json_free(doc);
+    return (int)rc;
+}
+
+NCLSHIM_API int nclshim_server_register_builtin_tool(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_server_register_builtin_tool(ctx->server)
+                       : NCL_ERR_INVALID_ARG;
+}
+
+NCLSHIM_API int nclshim_server_register_file_tool(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_server_register_file_tool(ctx->server)
+                       : NCL_ERR_INVALID_ARG;
+}
+
+NCLSHIM_API int nclshim_server_start_ftp(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_server_start_ftp(ctx->server) : NCL_ERR_INVALID_ARG;
+}
+
+/**
+ * 离线驱动一条请求：payload 是原始报文体（不必 NUL 结尾），返回应答报文的 JSON
+ * 文本（malloc，调用方释放）。**不经过 MQTT**，也不发布应答 —— 单测与"自己当
+ * 传输"的宿主用它。
+ */
+NCLSHIM_API int nclshim_server_dispatch(const void *handle, const char *topic,
+                                        const void *payload, int payload_len,
+                                        char **out_json)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+    ncl_message *request;
+    ncl_message *response;
+
+    if (out_json != NULL) {
+        *out_json = NULL;
+    }
+    if (ctx == NULL || topic == NULL || payload == NULL || payload_len < 0 ||
+        out_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    request = ncl_message_parse(topic, (const char *)payload, (size_t)payload_len);
+    if (request == NULL) {
+        return NCL_ERR_PARSE;
+    }
+    response = ncl_server_dispatch(ctx->server, topic, request);
+    ncl_message_free(request);
+    if (response == NULL) {
+        return NCL_ERR;
+    }
+    *out_json = ncl_message_write_string(response);
+    ncl_message_free(response);
+    return *out_json != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
+/** 离线调用一个工具方法（不经过 MQTT）；check=1 只校验参数。 */
+static int nclshim_server_call_method(const void *handle, const char *method,
+                                      const char *params_json, int check,
+                                      char **out_json)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+    ncl_message *request;
+    ncl_message *response;
+
+    if (out_json != NULL) {
+        *out_json = NULL;
+    }
+    if (ctx == NULL || method == NULL || out_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+    if (request == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    ncl_message_set_method(request, method);
+    if (params_json != NULL && params_json[0] != '\0') {
+        ncl_json *params = ncl_json_parse_cstr(params_json, NULL);
+
+        if (params == NULL) {
+            ncl_message_free(request);
+            return NCL_ERR_PARSE;
+        }
+        ncl_message_set_params(request, params);        /* 转移所有权 */
+    }
+    if (check) {
+        ncl_message_set_check(request, true);
+    }
+    response = check ? ncl_server_check_method_call(ctx->server, request)
+                     : ncl_server_invoke_method_call(ctx->server, request);
+    ncl_message_free(request);
+    if (response == NULL) {
+        return NCL_ERR;
+    }
+    *out_json = ncl_message_write_string(response);
+    ncl_message_free(response);
+    return *out_json != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
+NCLSHIM_API int nclshim_server_invoke_method_call(const void *handle,
+                                                  const char *method,
+                                                  const char *params_json,
+                                                  char **out_json)
+{
+    return nclshim_server_call_method(handle, method, params_json, 0, out_json);
+}
+
+NCLSHIM_API int nclshim_server_check_method_call(const void *handle,
+                                                 const char *method,
+                                                 const char *params_json,
+                                                 char **out_json)
+{
+    return nclshim_server_call_method(handle, method, params_json, 1, out_json);
+}
+
+NCLSHIM_API int nclshim_server_init_samples(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL ? (int)ncl_server_init_samples(ctx->server)
+                       : NCL_ERR_INVALID_ARG;
+}
+
+/** 运行时加一个采样通道（config_json 是一个 SAMPLE_CHANNEL 配置节点）。 */
+NCLSHIM_API int nclshim_server_add_sample(const void *handle, const char *config_json)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+    ncl_json *document;
+    ncl_node *config;
+    int rc;
+
+    if (ctx == NULL || config_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    document = ncl_json_parse_cstr(config_json, NULL);
+    if (document == NULL) {
+        return NCL_ERR_PARSE;
+    }
+    config = ncl_node_from_json(document, NCL_NODE_CONFIG);
+    ncl_json_free(document);
+    if (config == NULL) {
+        return NCL_ERR_INVALID_MODEL;
+    }
+    rc = (int)ncl_server_add_sample(ctx->server, config);
+    ncl_node_free(config);
+    return rc;
+}
+
+NCLSHIM_API int nclshim_server_remove_sample(const void *handle, const char *id)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL && id != NULL
+               ? (int)ncl_server_remove_sample(ctx->server, id)
+               : NCL_ERR_INVALID_ARG;
+}
+
+NCLSHIM_API void nclshim_server_stop_all_samples(const void *handle)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    if (ctx != NULL) {
+        ncl_server_stop_all_samples(ctx->server);
+    }
+}
+
+/** 推一条事件到 Event/<sn>；event_json 形如 {"key":...,"value":...}。 */
+NCLSHIM_API int nclshim_server_push_event(const void *handle, const char *event_id,
+                                          const char *event_json)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+    ncl_json *event;
+    int rc;
+
+    if (ctx == NULL || event_id == NULL || event_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    event = ncl_json_parse_cstr(event_json, NULL);
+    if (event == NULL) {
+        return NCL_ERR_PARSE;
+    }
+    rc = (int)ncl_server_push_event(ctx->server, event_id, event);
+    ncl_json_free(event);
+    return rc;
+}
+
+NCLSHIM_API int nclshim_server_push_event_ex(const void *handle, const char *event_id,
+                                             const char *event_json,
+                                             long long time_ms,
+                                             const char *message_id)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+    ncl_json *event;
+    int rc;
+
+    if (ctx == NULL || event_id == NULL || event_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    event = ncl_json_parse_cstr(event_json, NULL);
+    if (event == NULL) {
+        return NCL_ERR_PARSE;
+    }
+    rc = (int)ncl_server_push_event_ex(ctx->server, event_id, event, time_ms,
+                                       message_id);
+    ncl_json_free(event);
+    return rc;
+}
+/**
+ * 复制一份文本（malloc，调用方 nclshim_free）。**回调里回填字符串必须用它**：
+ * 垫片随后会用自己这边的 free() 释放，托管侧自己 malloc/python bytes/GC 出来的
+ * 内存不能这么用（跨 CRT / 跨分配器）。
+ */
+NCLSHIM_API char *nclshim_strdup(const char *text)
+{
+    return text != NULL ? ncl_strdup(text) : NULL;
 }

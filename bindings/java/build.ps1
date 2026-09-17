@@ -9,7 +9,7 @@
 #   .\build.ps1 -CoreLib <path>
 #
 # Keep this file ASCII-only: Windows PowerShell 5.1 reads .ps1 files with the OEM
-# code page.
+# code page, and non-ASCII bytes in a script can break parsing.
 [CmdletBinding()]
 param(
     [string]$CoreLib = "",
@@ -44,15 +44,15 @@ foreach ($tree in @("src", "demo", "tests")) {
 if ($sources.Count -eq 0) { throw "no .java sources found under $here" }
 
 New-Item -ItemType Directory -Force -Path $classes | Out-Null
-# Java 8 bytecode: ???/???????????????? java.lang / java.util??
+# Java 8 bytecode: usable on older toolchains; the binding only uses java.lang /
+# java.util.
 & $javac.Source -encoding UTF-8 --release 8 -d $classes @sources
 if ($LASTEXITCODE -ne 0) { throw "javac failed ($LASTEXITCODE)" }
 Write-Host "classes: $classes"
 
 if (-not $NoTest) {
-    # -Dfile.encoding=UTF-8：JDK 17 及更早在非 UTF-8 区域（Windows 控制台 / Linux
-    # 容器里的 POSIX locale）默认按 ASCII 输出，中文会变成 "?"。
-    & $java.Source "-Djava.library.path=$libdir" "-Dfile.encoding=UTF-8" `
-        -cp $classes com.nclink.SelfTest
+    # -Dfile.encoding=UTF-8: JDK 17 and older print ASCII in a non-UTF-8 locale
+    # (Windows console, POSIX locale in a container), turning Chinese into "?".
+    & $java.Source "-Djava.library.path=$libdir" "-Dfile.encoding=UTF-8" -cp $classes com.nclink.SelfTest
     if ($LASTEXITCODE -ne 0) { throw "self-test failed ($LASTEXITCODE)" }
 }

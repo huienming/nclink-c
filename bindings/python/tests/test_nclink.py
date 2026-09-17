@@ -199,15 +199,160 @@ class ConnectionTest(unittest.TestCase):
             nclink.get_device("V203243111F")
         self.assertEqual(caught.exception.op, "get_device")
 
-    def test_init_rejects_an_unreachable_broker(self):
+    def test_init_rejects_a_broken_broker_uri(self):
+        # 端口 0 是非法的：库立刻报错，不碰网络。
+        # （别用"没人监听的端口"来测：某些环境里本机端口会被代理黑洞掉，connect
+        #   既不失败也不超时，测试会挂很久。）
         with self.assertRaises(nclink.NclinkError) as caught:
-            nclink.init("tcp://127.0.0.1:1")     # 1 号端口不会有 broker
+            nclink.init("tcp://127.0.0.1:0")
         self.assertEqual(caught.exception.op, "init")
         self.assertFalse(nclink.is_open())
 
     def test_empty_broker_uri(self):
         with self.assertRaises(ValueError):
             nclink.init("")
+
+
+class ServerTest(unittest.TestCase):
+    """设备端（不需要 broker）：注册工具、离线驱动请求、采样通道、事件推送。"""
+
+    def _device(self, publish=None):
+        device = nclink.Server(sn="V2TEST00001", publish=publish)
+        self.addCleanup(device.close)
+        device.register_tool(
+            "plc",
+            methods={"getValue": None, "getCount": None},
+            handlers={"getValue": lambda params: 42,
+                      "getCount": lambda params: {"n": 7}},
+            bindings=[("/STATUS", nclink.Operation.GET_VALUE, "getValue")])
+        return device
+
+    def test_create_and_model(self):
+        with nclink.Server(sn="V2TEST00001") as device:
+            self.assertEqual(device.sn, "V2TEST00001")
+            # 不给模型时用库内置的那份，路径与采样才有依据
+            self.assertEqual(device.model.root.id, "01")
+            self.assertEqual(device.model.root.type_name, "NC_LINK_ROOT")
+            self.assertIn("NC_LINK_ROOT", device.model_json())
+
+    def test_empty_sn(self):
+        with self.assertRaises(ValueError):
+            nclink.Server(sn="")
+
+    def test_register_tool_and_dispatch(self):
+        device = self._device()
+        self.assertEqual(device.operation_count, 2)
+        self.assertGreaterEqual(device.binding_count, 1)
+
+        payload = '{"@id":"q1","ids":[{"id":"/STATUS","params":{"operation":"get_value"}}]}'
+        reply = device.dispatch("Query/Request/V2TEST00001", payload)
+        self.assertEqual(reply.type, nclink.MessageType.QUERY_RESPONSE)
+        body = reply.to_python()
+        self.assertEqual(body["@id"], "q1")
+        self.assertEqual(body["values"][0]["code"], "OK")
+        self.assertEqual(body["values"][0]["values"], [42])
+
+    def test_unbound_path_is_ng(self):
+        device = self._device()
+        payload = '{"@id":"q1","ids":[{"id":"/NOPE","params":{"operation":"get_value"}}]}'
+        body = device.dispatch("Query/Request/V2TEST00001", payload).to_python()
+        self.assertNotEqual(body["values"][0]["code"], "OK")
+
+    def test_method_call_and_check(self):
+        device = self._device()
+        body = device.invoke_method_call("getCount").to_python()
+        self.assertEqual(body["code"], "OK")
+        self.assertEqual(body["data"], {"n": 7})
+
+        # 没有 schema 的方法只接受空参数（库的规则），check 只校验不执行
+        body = device.check_method_call("getCount", {"a": 1}).to_python()
+        self.assertEqual(body["code"], "NG")
+        self.assertTrue(body["reason"])
+        body = device.check_method_call("getValue", None).to_python()
+        self.assertEqual(body["code"], "OK")
+
+    def test_schema_checked_method(self):
+        device = nclink.Server(sn="V2TEST00001")
+        self.addCleanup(device.close)
+        device.register_tool(
+            "plc",
+            methods={"setValue": {"type": "object", "properties": {"value": {"type": "integer"}},
+                                  "required": ["value"]}},
+            handlers={"setValue": lambda params: params["value"]})
+        body = device.check_method_call("setValue", {"value": 42}).to_python()
+        self.assertEqual(body["code"], "OK")
+        body = device.check_method_call("setValue", {"value": "nope"}).to_python()
+        self.assertEqual(body["code"], "NG")
+        body = device.invoke_method_call("setValue", {"value": 42}).to_python()
+        self.assertEqual(body["data"], 42)
+
+    def test_handler_that_raises_is_ng(self):
+        device = nclink.Server(sn="V2TEST00001")
+        self.addCleanup(device.close)
+
+        def boom(params):
+            raise ValueError("坏掉了")
+
+        device.register_tool("plc", methods={"getValue": None},
+                             handlers={"getValue": boom},
+                             bindings=[("/STATUS", nclink.Operation.GET_VALUE, "getValue")])
+        payload = '{"@id":"q1","ids":[{"id":"/STATUS","params":{"operation":"get_value"}}]}'
+        body = device.dispatch("Query/Request/V2TEST00001", payload).to_python()
+        self.assertEqual(body["values"][0]["code"], "NG")
+        self.assertIn("坏掉了", body["values"][0]["reason"])
+        self.assertIsInstance(device.last_callback_error, ValueError)
+
+    def test_handler_returning_none_has_no_value(self):
+        device = nclink.Server(sn="V2TEST00001")
+        self.addCleanup(device.close)
+        device.register_tool("plc", methods={"getValue": None},
+                             handlers={"getValue": lambda params: None},
+                             bindings=[("/STATUS", nclink.Operation.GET_VALUE, "getValue")])
+        payload = '{"@id":"q1","ids":[{"id":"/STATUS","params":{"operation":"get_value"}}]}'
+        body = device.dispatch("Query/Request/V2TEST00001", payload).to_python()
+        self.assertEqual(body["values"][0]["code"], "NG")
+
+    def test_missing_handler_is_rejected(self):
+        device = nclink.Server(sn="V2TEST00001")
+        self.addCleanup(device.close)
+        with self.assertRaises(ValueError):
+            device.register_tool("plc", methods={"getValue": None})
+
+    def test_push_event_goes_to_the_transport(self):
+        published = []
+        device = self._device(publish=lambda topic, payload: published.append((topic, payload)))
+        device.push_event("010307", {"key": "PART_COUNT", "value": 7})
+        self.assertEqual(device.event_count, 1)
+        topic, payload = published[0]
+        self.assertEqual(topic, "Event/V2TEST00001")
+        event = nclink.Json.parse(payload).to_python()
+        self.assertEqual(event["id"], "010307")
+        self.assertEqual(event["event"], {"key": "PART_COUNT", "value": 7})
+
+    def test_add_and_remove_sample_channel(self):
+        device = self._device()
+        self.assertEqual(device.sample_count, 0)
+        # 采样通道是模型里的一个 CONFIG 节点：ids 是各项路径，周期单位毫秒
+        device.add_sample({"name": "测试通道", "id": "ch1", "type": "SAMPLE_CHANNEL",
+                           "sampleInterval": 1000, "uploadInterval": 1000,
+                           "ids": [{"id": "/STATUS"}]})
+        self.assertEqual(device.sample_count, 1)
+        device.remove_sample("ch1")
+        self.assertEqual(device.sample_count, 0)
+        device.stop_all_samples()
+
+    def test_openapi_document(self):
+        device = self._device()
+        document = device.openapi_json("http://localhost:9008/api")
+        self.assertIn("/plc/getCount", document)
+        self.assertIn("openapi", document)
+
+    def test_close_is_idempotent(self):
+        device = self._device()
+        device.close()
+        device.close()
+        with self.assertRaises(nclink.NclinkError):
+            device.model
 
 
 if __name__ == "__main__":

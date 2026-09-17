@@ -289,4 +289,68 @@ final class Native {
     static native int clientAddSample(long client, String configJson, int timeoutMs);
 
     static native int clientRemoveSample(long client, String id, int timeoutMs);
+
+    // ------------------------------------------------------------ server -- //
+
+    /** 建服务器：返回 rc；句柄与回调 host 从两个出参里取。 */
+    static native int serverCreate(String sn, String modelJson, String broker,
+                                   String username, String password,
+                                   Server publishSink, long[] outServer,
+                                   long[] outHost);
+
+    static native void serverFree(long server);
+
+    /** 放掉一个回调 host（全局引用 + 结构体）。 */
+    static native void hostFree(long host);
+
+    static native String serverSn(long server);
+
+    static native long serverModel(long server);
+
+    static native String serverModelJson(long server);
+
+    static native String serverOpenapiJson(long server, String baseUrl);
+
+    static native int serverBindingCount(long server);
+
+    static native int serverOperationCount(long server);
+
+    static native int serverSampleCount(long server);
+
+    static native int serverSampleUploadCount(long server);
+
+    static native int serverEventCount(long server);
+
+    static native int serverSubscribe(long server);
+
+    static native int serverRegisterBuiltinTool(long server);
+
+    static native int serverRegisterFileTool(long server);
+
+    static native int serverStartFtp(long server);
+
+    static native int serverInitSamples(long server);
+
+    /** 注册工具：返回 rc；host 从出参取（Server 存着，close() 时 hostFree）。 */
+    static native int serverRegisterTool(long server, String tool, String methodsJson,
+                                         String bindingsJson, Server target,
+                                         long[] outHost);
+
+    static native int serverDispatch(long server, String topic, byte[] payload,
+                                     String[] outJson);
+
+    static native int serverInvokeMethodCall(long server, String method, String paramsJson,
+                                             String[] outJson);
+
+    static native int serverCheckMethodCall(long server, String method, String paramsJson,
+                                            String[] outJson);
+
+    static native int serverAddSample(long server, String configJson);
+
+    static native int serverRemoveSample(long server, String id);
+
+    static native void serverStopAllSamples(long server);
+
+    static native int serverPushEvent(long server, String eventId, String eventJson,
+                                      long timeMs, String messageId);
 }

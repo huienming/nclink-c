@@ -44,6 +44,7 @@ from ._json import Json, JsonType
 from ._message import Event, Message, MessageType, Sample, SampleColumn, parse
 from ._model import Model, Node, NodeType
 from .client import DeviceClient
+from .server import Operation, Server
 
 __all__ = [
     "NclinkError",
@@ -51,6 +52,7 @@ __all__ = [
     "Model", "Node", "NodeType",
     "Sample", "SampleColumn", "Event", "Message", "MessageType", "parse",
     "DeviceClient",
+    "Server", "Operation",
     "LogLevel",
     "init", "shutdown", "is_open", "get_device", "version",
     "set_root", "root",

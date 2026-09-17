@@ -46,8 +46,13 @@ public final class ClientDemo {
                         printAxisQuantities(deviceNode);
                     }
                     System.out.println("GET /STATUS = " + device.getLong("/STATUS"));
-                    device.setValue("/STATUS", "42");
-                    System.out.println("SET /STATUS = 42 ok");
+                    try {
+                        device.setValue("/STATUS", "42");
+                        System.out.println("SET /STATUS = 42 ok");
+                    } catch (NclinkException error) {
+                        // 设备没把 /STATUS 绑到 setValue 上就会拒绝，这不是客户端的错
+                        System.out.println("SET /STATUS 被拒绝：" + error.name());
+                    }
                     String id = device.getId("/STATUS");
                     System.out.println("id(/STATUS) = " + id + ", path(" + id + ") = "
                             + device.getPath(id));

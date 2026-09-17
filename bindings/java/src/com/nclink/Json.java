@@ -81,7 +81,7 @@ public final class Json implements AutoCloseable {
 
     private long requireOpen() {
         if (handle == 0) {
-            throw new NclinkException(-2, "Json", "句柄已关闭");
+            throw new NclinkException(-13, "Json", "句柄已关闭");
         }
         return handle;
     }

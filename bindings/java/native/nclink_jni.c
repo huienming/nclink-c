@@ -1027,3 +1027,479 @@ JNIEXPORT jint JNICALL Java_com_nclink_Native_clientRemoveSample(JNIEnv *env,
     free(raw);
     return (jint)rc;
 }
+
+/* ============================================================== server == */
+
+/*
+ * 设备端（ncl_server）。
+ *
+ * 工具方法回调从库的线程池上抛回 DeviceClient 那样的 Java 对象（这里是
+ * com.nclink.Server）：按需 AttachCurrentThread，回调结束再 Detach；
+ * 出参字符串用 nclshim_strdup 分配（垫片随后自己 free，跨分配器不算错）。
+ */
+
+/** 取当前挂起异常的 message（垫片堆上的副本；调用方按需释放）。 */
+static char *jni_exception_text(JNIEnv *env)
+{
+    jthrowable error = (*env)->ExceptionOccurred(env);
+    jclass cls;
+    jmethodID mid;
+    jstring text;
+    char *copy;
+
+    (*env)->ExceptionClear(env);
+    if (error == NULL) {
+        return nclshim_strdup("Java 回调抛出异常");
+    }
+    cls = (*env)->GetObjectClass(env, error);
+    mid = (*env)->GetMethodID(env, cls, "toString", "()Ljava/lang/String;");
+    if (mid == NULL) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, cls);
+        (*env)->DeleteLocalRef(env, error);
+        return nclshim_strdup("Java 回调抛出异常");
+    }
+    text = (jstring)(*env)->CallObjectMethod(env, error, mid);
+    if (text != NULL) {
+        const char *chars = (*env)->GetStringUTFChars(env, text, NULL);
+
+        copy = nclshim_strdup(chars != NULL ? chars : "Java 回调抛出异常");
+        if (chars != NULL) {
+            (*env)->ReleaseStringUTFChars(env, text, chars);
+        }
+        (*env)->DeleteLocalRef(env, text);
+    } else {
+        copy = nclshim_strdup("Java 回调抛出异常");
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, error);
+    return copy;
+}
+
+/** 一次工具调用：把 (tool, method, params句柄) 抛回 Java，收 JSON 文本回来。 */
+static int jni_invoke_tool(JNIEnv *env, jni_host *host, const char *tool,
+                           const char *method, const void *params, char **out_json,
+                           char **out_reason)
+{
+    jclass cls;
+    jmethodID mid;
+    jstring jtool;
+    jstring jmethod;
+    jstring result;
+    const char *chars;
+
+    cls = (*env)->GetObjectClass(env, host->target);
+    if (cls == NULL) {
+        return -1;
+    }
+    mid = (*env)->GetMethodID(env, cls, "onToolNative",
+                              "(Ljava/lang/String;Ljava/lang/String;J)Ljava/lang/String;");
+    if (mid == NULL) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, cls);
+        return -1;
+    }
+    jtool = to_jstring(env, tool);
+    jmethod = to_jstring(env, method);
+    result = (jstring)(*env)->CallObjectMethod(env, host->target, mid, jtool, jmethod,
+                                               PTR(params));
+    if ((*env)->ExceptionCheck(env)) {
+        *out_reason = jni_exception_text(env);
+        if (jtool != NULL) {
+            (*env)->DeleteLocalRef(env, jtool);
+        }
+        if (jmethod != NULL) {
+            (*env)->DeleteLocalRef(env, jmethod);
+        }
+        (*env)->DeleteLocalRef(env, cls);
+        return -1;
+    }
+    if (result != NULL) {
+        chars = (*env)->GetStringUTFChars(env, result, NULL);
+        *out_json = nclshim_strdup(chars);
+        (*env)->ReleaseStringUTFChars(env, result, chars);
+        (*env)->DeleteLocalRef(env, result);
+    }
+    if (jtool != NULL) {
+        (*env)->DeleteLocalRef(env, jtool);
+    }
+    if (jmethod != NULL) {
+        (*env)->DeleteLocalRef(env, jmethod);
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    return 0;
+}
+
+static int jni_tool_callback(void *user, const char *tool, const char *method,
+                            const void *params, char **out_json, char **out_reason)
+{
+    jni_host *host = (jni_host *)user;
+    JNIEnv *env = NULL;
+    jboolean attached = JNI_FALSE;
+    int rc;
+
+    if (host == NULL || g_vm == NULL) {
+        return -1;
+    }
+    if ((*g_vm)->GetEnv(g_vm, (void **)&env, JNI_VERSION_1_8) != JNI_OK) {
+        if ((*g_vm)->AttachCurrentThread(g_vm, (void **)&env, NULL) != JNI_OK) {
+            return -1;
+        }
+        attached = JNI_TRUE;
+    }
+    if ((*env)->PushLocalFrame(env, 16) != 0) {
+        if (attached) {
+            (*g_vm)->DetachCurrentThread(g_vm);
+        }
+        return -1;
+    }
+    rc = jni_invoke_tool(env, host, tool, method, params, out_json, out_reason);
+    (*env)->PopLocalFrame(env, NULL);
+    if (attached) {
+        (*g_vm)->DetachCurrentThread(g_vm);
+    }
+    return rc;
+}
+
+static int jni_publish_callback(void *user, const char *topic, const void *payload,
+                                int payload_len)
+{
+    jni_host *host = (jni_host *)user;
+    JNIEnv *env = NULL;
+    jboolean attached = JNI_FALSE;
+    jclass cls;
+    jmethodID mid;
+    jstring jtopic;
+    jbyteArray body;
+
+    if (host == NULL || g_vm == NULL) {
+        return -1;
+    }
+    if ((*g_vm)->GetEnv(g_vm, (void **)&env, JNI_VERSION_1_8) != JNI_OK) {
+        if ((*g_vm)->AttachCurrentThread(g_vm, (void **)&env, NULL) != JNI_OK) {
+            return -1;
+        }
+        attached = JNI_TRUE;
+    }
+    if ((*env)->PushLocalFrame(env, 16) != 0) {
+        if (attached) {
+            (*g_vm)->DetachCurrentThread(g_vm);
+        }
+        return -1;
+    }
+    cls = (*env)->GetObjectClass(env, host->target);
+    mid = cls != NULL ? (*env)->GetMethodID(env, cls, "onPublishNative",
+                                            "(Ljava/lang/String;[B)V")
+                      : NULL;
+    if (mid != NULL) {
+        jtopic = to_jstring(env, topic);
+        body = (*env)->NewByteArray(env, payload_len);
+        if (body != NULL && payload_len > 0) {
+            (*env)->SetByteArrayRegion(env, body, 0, payload_len, (const jbyte *)payload);
+        }
+        (*env)->CallVoidMethod(env, host->target, mid, jtopic,
+                               body != NULL ? body : NULL);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
+    } else if (cls != NULL) {
+        (*env)->ExceptionClear(env);
+    }
+    if (cls != NULL) {
+        (*env)->DeleteLocalRef(env, cls);
+    }
+    (*env)->PopLocalFrame(env, NULL);
+    if (attached) {
+        (*g_vm)->DetachCurrentThread(g_vm);
+    }
+    return 0;
+}
+
+/** 一个设备端 = host（回调引用） + 原生句柄。 */
+typedef struct {
+    jni_host *tool;      /* 工具回调（可空） */
+    jni_host *publish;   /* 自研传输（可空） */
+} jni_server_hosts;
+
+static jni_host *make_host(JNIEnv *env, jobject target, void *fn)
+{
+    jni_host *host;
+
+    if (target == NULL) {
+        return NULL;
+    }
+    host = (jni_host *)calloc(1, sizeof(*host));
+    if (host == NULL) {
+        return NULL;
+    }
+    host->target = (*env)->NewGlobalRef(env, target);
+    host->slots[0] = fn;
+    /* 垫片把 slots[1] 当"用户数据"传给回调，所以这里回指自己。 */
+    host->slots[1] = host;
+    return host;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverCreate(
+    JNIEnv *env, jclass cls, jstring sn, jstring model, jstring broker, jstring user,
+    jstring password, jobject publish_target, jlongArray out_server, jlongArray out_host)
+{
+    char *raw_sn = from_jstring(env, sn);
+    char *raw_model = from_jstring(env, model);
+    char *raw_broker = from_jstring(env, broker);
+    char *raw_user = from_jstring(env, user);
+    char *raw_pass = from_jstring(env, password);
+    jni_host *publish = NULL;
+    const void *server;
+
+    (void)cls;
+    set_long(env, out_server, 0, 0);
+    set_long(env, out_host, 0, 0);
+    if (publish_target != NULL) {
+        publish = make_host(env, publish_target, (void *)jni_publish_callback);
+        if (publish == NULL) {
+            free(raw_sn); free(raw_model); free(raw_broker); free(raw_user); free(raw_pass);
+            return -2;                      /* NCL_ERR_NOMEM */
+        }
+    }
+    server = nclshim_server_create(raw_sn, raw_model, raw_broker, raw_user, raw_pass,
+                                   publish);
+    free(raw_sn); free(raw_model); free(raw_broker); free(raw_user); free(raw_pass);
+    if (server == NULL) {
+        if (publish != NULL) {
+            (*env)->DeleteGlobalRef(env, publish->target);
+            free(publish);
+        }
+        return -12;                         /* NCL_ERR_CONNECT：多半是 broker 连不上 */
+    }
+    set_long(env, out_server, 0, PTR(server));
+    set_long(env, out_host, 0, PTR(publish));
+    return 0;
+}
+
+JNIEXPORT void JNICALL Java_com_nclink_Native_serverFree(JNIEnv *env, jclass cls,
+                                                        jlong server)
+{
+    (void)env;
+    (void)cls;
+    nclshim_server_free(HANDLE(server));
+}
+
+/** 放掉一个回调 host（全局引用 + 结构体）：Server 收尾时对每个 host 调一次。 */
+JNIEXPORT void JNICALL Java_com_nclink_Native_hostFree(JNIEnv *env, jclass cls,
+                                                       jlong host)
+{
+    jni_host *entry = (jni_host *)HANDLE(host);
+
+    (void)cls;
+    if (entry != NULL) {
+        if (entry->target != NULL) {
+            (*env)->DeleteGlobalRef(env, entry->target);
+        }
+        free(entry);
+    }
+}
+
+JNIEXPORT jstring JNICALL Java_com_nclink_Native_serverSn(JNIEnv *env, jclass cls,
+                                                          jlong server)
+{
+    (void)cls;
+    return to_jstring(env, nclshim_server_sn(HANDLE(server)));
+}
+
+JNIEXPORT jlong JNICALL Java_com_nclink_Native_serverModel(JNIEnv *env, jclass cls,
+                                                           jlong server)
+{
+    (void)env;
+    (void)cls;
+    return PTR(nclshim_server_model(HANDLE(server)));
+}
+
+JNIEXPORT jstring JNICALL Java_com_nclink_Native_serverModelJson(JNIEnv *env,
+                                                                 jclass cls,
+                                                                 jlong server)
+{
+    (void)cls;
+    return take_jstring(env, nclshim_server_model_json(HANDLE(server)));
+}
+
+JNIEXPORT jstring JNICALL Java_com_nclink_Native_serverOpenapiJson(JNIEnv *env,
+                                                                   jclass cls,
+                                                                   jlong server,
+                                                                   jstring base_url)
+{
+    char *base = from_jstring(env, base_url);
+    char *text = nclshim_server_openapi_json(HANDLE(server), base);
+    (void)cls;
+    free(base);
+    return take_jstring(env, text);
+}
+
+#define SERVER_INT(JavaName, ShimFn)                                          \
+    JNIEXPORT jint JNICALL Java_com_nclink_Native_##JavaName(                  \
+        JNIEnv *env, jclass cls, jlong server)                                 \
+    {                                                                          \
+        (void)env;                                                             \
+        (void)cls;                                                             \
+        return (jint)ShimFn(HANDLE(server));                                   \
+    }
+
+SERVER_INT(serverBindingCount, nclshim_server_binding_count)
+SERVER_INT(serverOperationCount, nclshim_server_operation_count)
+SERVER_INT(serverSampleCount, nclshim_server_sample_count)
+SERVER_INT(serverSampleUploadCount, nclshim_server_sample_upload_count)
+SERVER_INT(serverEventCount, nclshim_server_event_count)
+SERVER_INT(serverSubscribe, nclshim_server_subscribe)
+SERVER_INT(serverRegisterBuiltinTool, nclshim_server_register_builtin_tool)
+SERVER_INT(serverRegisterFileTool, nclshim_server_register_file_tool)
+SERVER_INT(serverStartFtp, nclshim_server_start_ftp)
+SERVER_INT(serverInitSamples, nclshim_server_init_samples)
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverRegisterTool(
+    JNIEnv *env, jclass cls, jlong server, jstring tool, jstring methods,
+    jstring bindings, jobject target, jlongArray out_host)
+{
+    char *raw_tool = from_jstring(env, tool);
+    char *raw_methods = from_jstring(env, methods);
+    char *raw_bindings = from_jstring(env, bindings);
+    jni_host *host = make_host(env, target, (void *)jni_tool_callback);
+    int rc;
+
+    (void)cls;
+    set_long(env, out_host, 0, 0);
+    if (host == NULL) {
+        free(raw_tool); free(raw_methods); free(raw_bindings);
+        return -2;
+    }
+    rc = nclshim_server_register_tool(HANDLE(server), raw_tool, raw_methods,
+                                      raw_bindings, host);
+    free(raw_tool); free(raw_methods); free(raw_bindings);
+    if (rc != 0) {
+        (*env)->DeleteGlobalRef(env, host->target);
+        free(host);
+        return (jint)rc;
+    }
+    /* host 交给 Java 存着（close() 时 hostFree 连同全局引用一起放掉）。 */
+    set_long(env, out_host, 0, PTR(host));
+    return 0;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverDispatch(
+    JNIEnv *env, jclass cls, jlong server, jstring topic, jbyteArray payload,
+    jobjectArray out)
+{
+    char *raw_topic = from_jstring(env, topic);
+    jbyte *bytes;
+    jsize length;
+    char *reply = NULL;
+    int rc;
+
+    (void)cls;
+    if (payload == NULL) {
+        free(raw_topic);
+        return -5;
+    }
+    length = (*env)->GetArrayLength(env, payload);
+    bytes = (*env)->GetByteArrayElements(env, payload, NULL);
+    if (bytes == NULL) {
+        free(raw_topic);
+        return -2;
+    }
+    rc = nclshim_server_dispatch(HANDLE(server), raw_topic, bytes, (int)length, &reply);
+    (*env)->ReleaseByteArrayElements(env, payload, bytes, JNI_ABORT);
+    free(raw_topic);
+    set_string(env, out, 0, reply);
+    return (jint)rc;
+}
+
+static jint server_call_method(JNIEnv *env, jlong server, jstring method,
+                               jstring params, jboolean check, jobjectArray out)
+{
+    char *raw_method = from_jstring(env, method);
+    char *raw_params = from_jstring(env, params);
+    char *reply = NULL;
+    int rc;
+
+    rc = check != JNI_FALSE
+             ? nclshim_server_check_method_call(HANDLE(server), raw_method, raw_params,
+                                                &reply)
+             : nclshim_server_invoke_method_call(HANDLE(server), raw_method, raw_params,
+                                                 &reply);
+    free(raw_method);
+    free(raw_params);
+    set_string(env, out, 0, reply);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverInvokeMethodCall(
+    JNIEnv *env, jclass cls, jlong server, jstring method, jstring params,
+    jobjectArray out)
+{
+    (void)cls;
+    return server_call_method(env, server, method, params, JNI_FALSE, out);
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverCheckMethodCall(
+    JNIEnv *env, jclass cls, jlong server, jstring method, jstring params,
+    jobjectArray out)
+{
+    (void)cls;
+    return server_call_method(env, server, method, params, JNI_TRUE, out);
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverAddSample(JNIEnv *env, jclass cls,
+                                                             jlong server, jstring config)
+{
+    char *raw = from_jstring(env, config);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_server_add_sample(HANDLE(server), raw);
+    free(raw);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverRemoveSample(JNIEnv *env,
+                                                                 jclass cls,
+                                                                 jlong server,
+                                                                 jstring id)
+{
+    char *raw = from_jstring(env, id);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_server_remove_sample(HANDLE(server), raw);
+    free(raw);
+    return (jint)rc;
+}
+
+JNIEXPORT void JNICALL Java_com_nclink_Native_serverStopAllSamples(JNIEnv *env,
+                                                                   jclass cls,
+                                                                   jlong server)
+{
+    (void)env;
+    (void)cls;
+    nclshim_server_stop_all_samples(HANDLE(server));
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverPushEvent(
+    JNIEnv *env, jclass cls, jlong server, jstring event_id, jstring event,
+    jlong time_ms, jstring message_id)
+{
+    char *raw_id = from_jstring(env, event_id);
+    char *raw_event = from_jstring(env, event);
+    char *raw_message = from_jstring(env, message_id);
+    int rc;
+
+    (void)cls;
+    if (message_id == NULL && time_ms < 0) {
+        rc = nclshim_server_push_event(HANDLE(server), raw_id, raw_event);
+    } else {
+        rc = nclshim_server_push_event_ex(HANDLE(server), raw_id, raw_event,
+                                          (long long)time_ms, raw_message);
+    }
+    free(raw_id);
+    free(raw_event);
+    free(raw_message);
+    return (jint)rc;
+}

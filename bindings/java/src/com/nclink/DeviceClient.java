@@ -35,7 +35,7 @@ public final class DeviceClient implements AutoCloseable {
 
     private long requireOpen() {
         if (handle == 0) {
-            throw new NclinkException(-2, "DeviceClient", "客户端已关闭");
+            throw new NclinkException(-13, "DeviceClient", "客户端已关闭");
         }
         return handle;
     }

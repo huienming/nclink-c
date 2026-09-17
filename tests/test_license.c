@@ -33,7 +33,8 @@
 
 static const char *const kDirs[] = {"include", "src", "tests", "examples", "tools"};
 static const char *const kRootFiles[] = {"build.ps1", "build-linux.sh"};
-static const char *const kExtensions[] = {".c", ".h", ".py", ".mjs", ".ps1", ".sh"};
+static const char *const kExtensions[] = {".c",  ".h",   ".py", ".java",
+                                          ".mjs", ".ps1", ".sh"};
 
 static size_t g_scanned;
 static size_t g_missing;

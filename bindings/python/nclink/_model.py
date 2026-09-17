@@ -36,16 +36,28 @@ class NodeType(IntEnum):
 
 
 class Model:
-    """整棵模型树。"""
+    """整棵模型树。
 
-    __slots__ = ("_handle", "_finalizer", "__weakref__")
+    默认是**自有**对象（`parse()` / `probe()` 的返回值，用完 `close()`）；设备端
+    (`Server.model`) 给的是**借用**视图：它跟着服务器活，`close()` 是空操作。
+    """
 
-    def __init__(self, handle):
+    __slots__ = ("_handle", "_finalizer", "_owned", "_owner", "__weakref__")
+
+    def __init__(self, handle, owner=None, owned=True):
         if not handle:
             raise NclinkError(-2, "Model", "空句柄")
         self._handle = handle
+        self._owner = owner                  # 借用视图：钉住宿主（服务器/模型）
+        self._owned = bool(owned)
         # 忘了 close() 时由它兜底；close() 之后要 detach，否则就是二次释放
-        self._finalizer = weakref.finalize(self, lib.nclshim_model_free, handle)
+        self._finalizer = (weakref.finalize(self, lib.nclshim_model_free, handle)
+                           if self._owned else None)
+
+    @classmethod
+    def _borrowed(cls, handle, owner):
+        """借用视图（服务器自己的模型）：不持有所有权，close() 是空操作。"""
+        return cls(handle, owner=owner, owned=False)
 
     @classmethod
     def parse(cls, json_text=None):
@@ -76,12 +88,14 @@ class Model:
         return take_text(lib.nclshim_model_write(self._handle))
 
     def close(self):
-        if self._handle:
+        if self._handle and self._owned:
             lib.nclshim_model_free(self._handle)
             if self._finalizer is not None:
                 self._finalizer.detach()
                 self._finalizer = None
             self._handle = None
+        elif not self._owned:
+            self._handle = None              # 借用视图：只是不再用
 
     @property
     def closed(self):
@@ -89,7 +103,7 @@ class Model:
 
     def _check_open(self):
         if self._handle is None:
-            raise NclinkError(-2, "Model", "句柄已关闭")
+            raise NclinkError(-13, "Model", "句柄已关闭")
         return self._handle
 
     def __enter__(self):

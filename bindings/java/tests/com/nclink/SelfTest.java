@@ -44,6 +44,7 @@ public final class SelfTest {
         model();
         messages();
         connection();
+        server();
 
         System.out.println();
         System.out.println(checks + " 项检查，" + failures + " 失败");
@@ -224,7 +225,9 @@ public final class SelfTest {
                     "getDevice".equals(error.op()));
         }
         try {
-            Nclink.init("tcp://127.0.0.1:1");            // 1 号端口不会有 broker
+            // 端口 0 非法：库立刻报错，不碰网络。（别用"没人监听的端口"测：某些
+            // 环境里本机端口会被代理黑洞掉，connect 既不失败也不超时。）
+            Nclink.init("tcp://127.0.0.1:0");
             check("连不上要抛异常", false);
         } catch (NclinkException error) {
             check("连不上要抛异常（" + error.op() + "）", "init".equals(error.op()));
@@ -235,6 +238,171 @@ public final class SelfTest {
             check("空 uri 要抛 IllegalArgumentException", false);
         } catch (IllegalArgumentException expected) {
             check("空 uri 要抛 IllegalArgumentException", true);
+        }
+    }
+
+    // ------------------------------------------------------------ 设备端 -- //
+
+    private static void server() {
+        // 建一个设备端（不接 broker，离线驱动）
+        try (Server device = new Server("V2TEST00001")) {
+            check("Server.sn", "V2TEST00001".equals(device.sn()));
+            check("Server 默认模型", device.model() != null
+                    && "01".equals(device.model().root().id()));
+
+            device.registerTool(
+                    "plc",
+                    new String[] {"getValue", "getCount"},
+                    new Server.Binding[] {
+                        new Server.Binding("/STATUS", Operation.GET_VALUE, "getValue")},
+                    (method, params) -> {
+                        if ("getValue".equals(method)) {
+                            return Integer.valueOf(42);
+                        }
+                        return java.util.Collections.singletonMap("n", Integer.valueOf(7));
+                    });
+            check("工具计数", device.operationCount() == 2 && device.bindingCount() >= 1);
+
+            String query = "{\"@id\":\"q1\",\"ids\":[{\"id\":\"/STATUS\","
+                    + "\"params\":{\"operation\":\"get_value\"}}]}";
+            Object reply = device.dispatch("Query/Request/V2TEST00001",
+                    query.getBytes(StandardCharsets.UTF_8));
+            check("dispatch 返回 QUERY_RESPONSE", reply instanceof Message
+                    && ((Message) reply).type() == MessageType.QUERY_RESPONSE);
+            Map<?, ?> body = (Map<?, ?>) ((Message) reply).toJavaObject();
+            Map<?, ?> first = (Map<?, ?>) ((List<?>) body.get("values")).get(0);
+            check("路径绑定应答 code=OK", "OK".equals(first.get("code")));
+            check("路径绑定应答的值", ((List<?>) first.get("values")).get(0).equals(Long.valueOf(42)));
+
+            String missing = "{\"@id\":\"q2\",\"ids\":[{\"id\":\"/NOPE\","
+                    + "\"params\":{\"operation\":\"get_value\"}}]}";
+            Map<?, ?> missingBody = (Map<?, ?>) ((Message) device.dispatch(
+                    "Query/Request/V2TEST00001", missing.getBytes(StandardCharsets.UTF_8)))
+                    .toJavaObject();
+            Map<?, ?> missingFirst = (Map<?, ?>) ((List<?>) missingBody.get("values")).get(0);
+            check("没绑定的路径应答 NG", !"OK".equals(missingFirst.get("code")));
+
+            Map<?, ?> call = (Map<?, ?>) ((Message) device.invokeMethodCall("getCount"))
+                    .toJavaObject();
+            check("invokeMethodCall code=OK", "OK".equals(call.get("code")));
+            check("invokeMethodCall data", String.valueOf(call.get("data")).contains("7"));
+
+            Map<?, ?> checked = (Map<?, ?>) ((Message) device.checkMethodCall("getCount",
+                    "{\"a\":1}")).toJavaObject();
+            check("没有 schema 的方法 check 只收空参数（NG）",
+                    "NG".equals(checked.get("code")) && checked.get("reason") != null);
+            Map<?, ?> checkedOk = (Map<?, ?>) ((Message) device.checkMethodCall("getValue"))
+                    .toJavaObject();
+            check("check 空参数 OK", "OK".equals(checkedOk.get("code")));
+
+            check("openapi 文档含方法路径", device.openapiJson("http://localhost:9008/api")
+                    .contains("/plc/getCount"));
+
+            check("加/删采样通道", addAndRemoveSample());
+        } catch (NclinkException error) {
+            check("设备端基础用例（" + error.getMessage() + "）", false);
+        }
+
+        // 带 schema 的方法：check 会按 schema 校验
+        try (Server device = new Server("V2TEST00001")) {
+            device.registerTool(
+                    "plc",
+                    java.util.Collections.singletonMap("setValue",
+                            "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}},"
+                            + "\"required\":[\"value\"]}"),
+                    null,
+                    (method, params) -> ((Map<?, ?>) params.toJavaObject()).get("value"));
+            Map<?, ?> ok = (Map<?, ?>) ((Message) device.checkMethodCall("setValue",
+                    "{\"value\":42}")).toJavaObject();
+            check("schema 校验通过", "OK".equals(ok.get("code")));
+            Map<?, ?> bad = (Map<?, ?>) ((Message) device.checkMethodCall("setValue",
+                    "{\"value\":\"nope\"}")).toJavaObject();
+            check("schema 校验不过", "NG".equals(bad.get("code")));
+            Map<?, ?> called = (Map<?, ?>) ((Message) device.invokeMethodCall("setValue",
+                    "{\"value\":42}")).toJavaObject();
+            check("schema 方法调用取到值", called.get("data").equals(Long.valueOf(42)));
+        }
+
+        // 处理函数抛异常：应答 NG + reason，异常记在 lastCallbackError 上
+        try (Server device = new Server("V2TEST00001")) {
+            device.registerTool("plc", new String[] {"getValue"},
+                    new Server.Binding[] {
+                        new Server.Binding("/STATUS", Operation.GET_VALUE, "getValue")},
+                    (method, params) -> {
+                        throw new IllegalStateException("坏掉了");
+                    });
+            String query = "{\"@id\":\"q1\",\"ids\":[{\"id\":\"/STATUS\","
+                    + "\"params\":{\"operation\":\"get_value\"}}]}";
+            Map<?, ?> body = (Map<?, ?>) ((Message) device.dispatch("Query/Request/V2TEST00001",
+                    query.getBytes(StandardCharsets.UTF_8))).toJavaObject();
+            Map<?, ?> first = (Map<?, ?>) ((List<?>) body.get("values")).get(0);
+            check("处理函数抛异常 -> NG", "NG".equals(first.get("code")));
+            check("异常文本进 reason", String.valueOf(first.get("reason")).contains("坏掉了"));
+            check("异常记在 lastCallbackError",
+                    device.lastCallbackError() instanceof IllegalStateException);
+        }
+
+        // 没有处理函数就注册不了
+        try (Server device = new Server("V2TEST00001")) {
+            try {
+                device.registerTool("plc", new String[] {"getValue"}, null, null);
+                check("缺处理函数要抛异常", false);
+            } catch (IllegalStateException expected) {
+                check("缺处理函数要抛异常", true);
+            }
+        }
+
+        // 自研传输：事件交给 PublishSink
+        final List<String> topics = new ArrayList<String>();
+        final List<byte[]> payloads = new ArrayList<byte[]>();
+        try (Server device = new Server("V2TEST00002", null, null, null, null,
+                (topic, payload) -> {
+                    topics.add(topic);
+                    payloads.add(payload);
+                })) {
+            device.pushEvent("010307", "{\"key\":\"PART_COUNT\",\"value\":7}");
+            check("事件进自研传输", topics.size() == 1
+                    && "Event/V2TEST00002".equals(topics.get(0)));
+            check("事件计数", device.eventCount() == 1);
+            if (!payloads.isEmpty()) {
+                Json event = Json.parse(new String(payloads.get(0), StandardCharsets.UTF_8));
+                try {
+                    Map<?, ?> map = (Map<?, ?>) event.toJavaObject();
+                    check("事件报文体", "010307".equals(map.get("id"))
+                            && String.valueOf(map.get("event")).contains("PART_COUNT"));
+                } finally {
+                    event.close();
+                }
+            }
+        }
+
+        // close 可重复，关掉之后再用要抛异常
+        Server device = new Server("V2TEST00003");
+        device.close();
+        device.close();
+        try {
+            device.sn();
+            check("关闭后再用要抛异常", false);
+        } catch (NclinkException expected) {
+            check("关闭后再用要抛异常（" + expected.name() + "）", true);
+        }
+    }
+
+    /** 离线加一个采样通道再删掉（不启动采样线程，只验证注册）。 */
+    private static boolean addAndRemoveSample() {
+        Server device = new Server("V2TEST00004");
+        try {
+            device.addSample("{\"name\":\"测试通道\",\"id\":\"ch1\","
+                    + "\"type\":\"SAMPLE_CHANNEL\",\"sampleInterval\":1000,"
+                    + "\"uploadInterval\":1000,\"ids\":[{\"id\":\"/STATUS\"}]}");
+            if (device.sampleCount() != 1) {
+                return false;
+            }
+            device.removeSample("ch1");
+            return device.sampleCount() == 0;
+        } finally {
+            device.stopAllSamples();
+            device.close();
         }
     }
 

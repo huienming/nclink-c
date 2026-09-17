@@ -34,7 +34,7 @@ C 库是静态库、没有导出符号，而且 Python 侧不该依赖 C 结构�
 # 2) 编原生垫片 → bindings/native/bin/nclink_shim.dll
 powershell -ExecutionPolicy Bypass -File .\bindings\native\build-shim.ps1
 
-# 3) 自检（19 项，不需要 broker）
+# 3) 自检（客户端 + 设备端，不需要 broker）
 python -m unittest discover -s bindings/python/tests -v
 ```
 
@@ -132,6 +132,43 @@ elif isinstance(message, nclink.Event):
     print(message.key, message.value)
 ```
 
+## 设备端（Python 当一台机床）
+
+`nclink.Server` 把设备端（`ncl_server`）也包了：注册工具方法、把模型里的路径绑到
+方法上、启动采样通道、推事件。MQTT 由库负责（也可以完全不接 broker）。
+
+```python
+import nclink
+
+device = nclink.Server(sn="V2PY0000001", model=model_json, broker="tcp://127.0.0.1:1883")
+device.register_tool(
+    "plc",
+    methods={"getStatus": None, "setCount": {"type": "object",
+                                             "properties": {"value": {"type": "integer"}}}},
+    handlers={"getStatus": lambda params: 1,
+              "setCount": lambda params: params["value"]},
+    bindings=[("/STATUS", nclink.Operation.GET_VALUE, "getStatus"),
+              ("/PART_COUNT", nclink.Operation.SET_VALUE, "setCount")])
+device.register_builtin_tool()      # addSample / removeSample
+device.subscribe()                  # 订阅 6 个请求主题
+device.init_samples()               # 启动模型里声明的采样通道
+device.push_event("010307", {"key": "PART_COUNT", "value": 7})
+
+print(device.model.root.id, device.operation_count, device.sample_count)
+print(device.sample_upload_count, device.event_count, device.openapi_json("http://x/api"))
+device.close()
+```
+
+- 处理函数收 `params`（Python 对象或 None），返回要应答的值：**返回 None = 没有值**
+  （库按 NG 应答，与 C API 一致）；抛异常 → 该次调用按错误应答、异常文本进 reason，
+  异常本身记在 `device.last_callback_error` 上，不会穿回原生层。
+- 不接 broker 时（`broker=None`）用 `device.dispatch(topic, payload)` 或
+  `device.invoke_method_call(method, params)` 离线驱动；给 `publish=` 一个回调就能
+  自己当传输（每条出站报文交给你）。
+- 设备端示例：`python examples/device_demo.py tcp://127.0.0.1:1883 V2PY0000001 30`
+  （它注册 4 个方法 + 一个采样通道 + 每秒一条事件，仓库里任意客户端都能读它，例如
+  `build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2PY0000001 8`）。
+
 ## 内存与所有权
 
 | 对象 | 谁释放 |
@@ -141,6 +178,7 @@ elif isinstance(message, nclink.Event):
 | `DeviceClient` | `close()`（退订 + 清回调；断开 MQTT 是 `nclink.shutdown()`） |
 | `Node`、`Json` 的下标/成员视图 | **借用**：持有宿主引用，不用关 |
 | `Sample` / `Event` / `Message` | 纯 Python 快照，没有句柄 |
+| `Server` | **自有**：`close()`（停采样/FTP、断开 MQTT、放掉所有回调） |
 
 采样/事件回调在客户端自己的**读取线程**上触发，回调里别做耗时操作；回调里抛出的异常
 不会穿到原生层，会记在 `device.last_callback_error` 上。`init` / `shutdown` /

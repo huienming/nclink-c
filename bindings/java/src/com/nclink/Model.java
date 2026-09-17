@@ -11,12 +11,27 @@ package com.nclink;
  */
 public final class Model implements AutoCloseable {
     private long handle;
+    private final boolean owned;
+    private final Object owner;      // 借用视图：钉住宿主（服务器）
 
     public Model(long handle) {
+        this(handle, true, null);
+    }
+
+    private Model(long handle, boolean owned, Object owner) {
         if (handle == 0) {
             throw new NclinkException(-2, "Model", "空句柄");
         }
         this.handle = handle;
+        this.owned = owned;
+        this.owner = owner;
+    }
+
+    /**
+     * 借用视图：句柄归别人（设备端自己的模型），{@link #close()} 只是不再使用。
+     */
+    static Model borrowed(long handle, Object owner) {
+        return new Model(handle, false, owner);
     }
 
     /** 解析模型文档；{@code null} 或空串 = 库内置的默认模型。 */
@@ -52,8 +67,10 @@ public final class Model implements AutoCloseable {
 
     @Override
     public void close() {
-        if (handle != 0) {
+        if (handle != 0 && owned) {
             Native.modelFree(handle);
+        }
+        if (handle != 0) {
             handle = 0;
         }
     }
@@ -64,7 +81,7 @@ public final class Model implements AutoCloseable {
 
     private long requireOpen() {
         if (handle == 0) {
-            throw new NclinkException(-2, "Model", "句柄已关闭");
+            throw new NclinkException(-13, "Model", "句柄已关闭");
         }
         return handle;
     }

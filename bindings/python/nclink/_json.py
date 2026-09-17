@@ -57,7 +57,13 @@ class Json:
         """解析 JSON 文本；不合法抛 NclinkError。"""
         if isinstance(text, Json):
             return text.clone()
-        handle = lib.nclshim_json_parse(None if text is None else str(text).encode("utf-8"))
+        if text is None:
+            raw = None
+        elif isinstance(text, bytes):
+            raw = text
+        else:
+            raw = str(text).encode("utf-8")
+        handle = lib.nclshim_json_parse(raw)
         if not handle:
             raise NclinkError(-3, "Json.parse", "JSON 文本不合法")
         return cls(handle, owned=True)
@@ -91,7 +97,7 @@ class Json:
 
     def _check_open(self):
         if self._handle is None:
-            raise NclinkError(-2, "Json", "句柄已关闭")
+            raise NclinkError(-13, "Json", "句柄已关闭")
         return self._handle
 
     def __enter__(self):

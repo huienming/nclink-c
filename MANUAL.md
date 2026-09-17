@@ -201,6 +201,12 @@ Nclink.shutdown();
 构建：`.\bindings\java\build.ps1`（native + javac + 自检）/ Linux
 `./bindings/java/build.sh`（需要 `JAVA_HOME` 找 `jni.h`）。
 
+设备端同样包了：`new Server(sn, modelJson, broker)` + `registerTool()` +
+`new Server.Binding(路径, Operation.GET_VALUE, 方法名)` + `subscribe()` +
+`initSamples()` + `pushEvent()`，即"这个 Java 进程就是一台机床"；不接 broker 也能用
+`dispatch()` / `invokeMethodCall()` 离线驱动。示例见
+`bindings/java/demo/com/nclink/demo/DeviceDemo.java`。
+
 ### 2.4.4 Python 绑定（ctypes）
 
 `bindings/python/` 是 ctypes 绑定，只用标准库：
@@ -217,7 +223,11 @@ nclink.shutdown()
 ```
 
 构建：`bindings\native\build-shim.ps1`（原生垫片）→
-`python -m unittest discover -s bindings/python/tests`（自检，19 项，不需要 broker）。
+`python -m unittest discover -s bindings/python/tests`（自检，不需要 broker）。
+
+设备端同样包了：`nclink.Server(sn=..., model=..., broker=...)` + `register_tool()` +
+`subscribe()` + `init_samples()` + `push_event()`；示例
+`bindings/python/examples/device_demo.py`（可以拿仓库里任意客户端去读它）。
 
 **三种托管绑定共用同一份原生垫片** `bindings/native/nclink_shim.c`：它把 C API
 摊平成"不透明句柄 + 标量 + UTF-8 文本"，托管侧不依赖 C 结构体的内存布局。C# 走
@@ -2769,4 +2779,3 @@ Copyright (c) 2026 huienming
   temp/                   文件通道的临时交换目录
   <sn>/                   客户端侧文件镜像（相对路径的基准）
 ```
-

@@ -147,6 +147,7 @@ _PROTOTYPES = [
     ("nclshim_version", ctypes.c_char_p),
     ("nclshim_err_name", ctypes.c_char_p, ctypes.c_int),
     ("nclshim_free", None, ctypes.c_void_p),
+    ("nclshim_strdup", ctypes.c_void_p, ctypes.c_char_p),
     ("nclshim_env_set_root", None, ctypes.c_char_p),
     ("nclshim_env_root", ctypes.c_char_p),
     ("nclshim_log_init", ctypes.c_int, ctypes.c_char_p),
@@ -256,6 +257,39 @@ _PROTOTYPES = [
      ctypes.c_uint),
     ("nclshim_client_remove_sample", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
      ctypes.c_uint),
+    # server（设备端）
+    ("nclshim_server_create", ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p,
+     ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p),
+    ("nclshim_server_free", None, ctypes.c_void_p),
+    ("nclshim_server_sn", ctypes.c_char_p, ctypes.c_void_p),
+    ("nclshim_server_model", ctypes.c_void_p, ctypes.c_void_p),
+    ("nclshim_server_model_json", ctypes.c_void_p, ctypes.c_void_p),
+    ("nclshim_server_binding_count", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_server_operation_count", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_server_sample_count", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_server_sample_upload_count", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_server_event_count", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_server_openapi_json", ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p),
+    ("nclshim_server_subscribe", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_server_register_tool", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
+     ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p),
+    ("nclshim_server_register_builtin_tool", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_server_register_file_tool", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_server_start_ftp", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_server_dispatch", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
+     ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)),
+    ("nclshim_server_invoke_method_call", ctypes.c_int, ctypes.c_void_p,
+     ctypes.c_char_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)),
+    ("nclshim_server_check_method_call", ctypes.c_int, ctypes.c_void_p,
+     ctypes.c_char_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)),
+    ("nclshim_server_init_samples", ctypes.c_int, ctypes.c_void_p),
+    ("nclshim_server_add_sample", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p),
+    ("nclshim_server_remove_sample", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p),
+    ("nclshim_server_stop_all_samples", None, ctypes.c_void_p),
+    ("nclshim_server_push_event", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
+     ctypes.c_char_p),
+    ("nclshim_server_push_event_ex", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
+     ctypes.c_char_p, ctypes.c_longlong, ctypes.c_char_p),
 ]
 
 
@@ -272,6 +306,24 @@ _declare()
 # 回调：void (*)(void *user, const char *topic, const void *msg)
 MESSAGE_CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p,
                                     ctypes.c_void_p)
+
+# 设备端工具回调：int (*)(user, tool, method, params, char **out_json, char **out_reason)
+TOOL_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
+                                 ctypes.c_char_p, ctypes.c_void_p,
+                                 ctypes.POINTER(ctypes.c_void_p),
+                                 ctypes.POINTER(ctypes.c_void_p))
+
+# 自研传输的发布回调：int (*)(user, topic, payload, len)
+PUBLISH_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
+                                    ctypes.c_void_p, ctypes.c_int)
+
+
+def strdup(text):
+    """把 str/bytes 复制成垫片堆上的 C 字符串（回调回填字符串时必须用它）。
+
+    返回 c_void_p；用完不再需要调用方释放 —— 垫片接手后自己 free。
+    """
+    return lib.nclshim_strdup(encode(text))
 
 
 def version():
