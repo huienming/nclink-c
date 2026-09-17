@@ -42,8 +42,16 @@ namespace Nclink.Demo
                         }
 
                         Console.WriteLine("GET /STATUS = {0}", device.GetLong("/STATUS"));
-                        device.SetValue("/STATUS", "42");
-                        Console.WriteLine("SET /STATUS = 42 ok");
+                        try
+                        {
+                            device.SetValue("/STATUS", "42");
+                            Console.WriteLine("SET /STATUS = 42 ok");
+                        }
+                        catch (NclinkException error)
+                        {
+                            /* 对端模型里 /STATUS 不可写时会被拒绝（NG），不是错误 */
+                            Console.WriteLine("SET /STATUS 被拒绝: {0}", error.CodeName);
+                        }
                     }
 
                     device.SampleReceived += OnSample;

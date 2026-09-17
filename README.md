@@ -184,6 +184,10 @@ C++ 封装在 `include/nclink/ncl.hpp`（header-only，RAII + 异常）；四个
 （`Server`：注册工具方法、路径绑定、采样通道、事件推送、HTTP/REST 端点），示例里有
 "Python 当机床、C 客户端来读"这种跨语言跑法。
 
+自检默认不需要 broker；想看"报文真的过 MQTT"的那一段，设
+`NCLINK_TEST_BROKER=tcp://host:port` 再跑一遍（Python / C# 绑定支持，
+详见各自的 `README.md`）。
+
 ## 快速上手
 
 ```c

@@ -85,6 +85,16 @@ namespace Nclink
             return new NclJson(handle, true, null);
         }
 
+        /// <summary>
+        /// 收一个"库返还的 JSON 文本"（malloc 出来的 `char*`，比如方法调用的应答）：
+        /// 解析成自有对象并释放原文本。文本为空返回 null。
+        /// </summary>
+        internal static NclJson TakeText(IntPtr text)
+        {
+            string json = Native.TakeUtf8(text);
+            return string.IsNullOrEmpty(json) ? null : Parse(json);
+        }
+
         public NclJsonType Type
         {
             get

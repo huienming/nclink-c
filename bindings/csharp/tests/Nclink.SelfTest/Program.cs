@@ -46,6 +46,7 @@ namespace Nclink.SelfTest
             Messages();
             Server();
             Http();
+            Broker();
 
             Console.WriteLine();
             Console.WriteLine("{0} 项检查，{1} 失败", _checks, _failures);
@@ -479,6 +480,156 @@ namespace Nclink.SelfTest
         }
 
         /* ------------------------------------------------------------ 夹具 -- */
+
+        /// <summary>
+        /// 对**真 broker** 的端到端检查：设了 <c>NCLINK_TEST_BROKER</c> 才跑。
+        ///
+        /// 设备端与客户端放在同一个进程里，报文真的过一遍 broker。离线用例
+        /// （Server/Http 那两节）覆盖不到的"过 MQTT 的那一段"就靠它守住——
+        /// 客户端方法调用应答是 JSON **文本**、要解析成 NclJson，就是这里发现的。
+        /// </summary>
+        private static void Broker()
+        {
+            string broker = Environment.GetEnvironmentVariable("NCLINK_TEST_BROKER");
+            if (string.IsNullOrEmpty(broker))
+            {
+                Console.WriteLine("跳过（设置 NCLINK_TEST_BROKER=tcp://host:port 才跑真 broker 用例）");
+                return;
+            }
+
+            const string sn = "V2CSE2E0001";
+            string model =
+                "{\"name\":\"C# E2E 机床\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\"," +
+                "\"devices\":[{\"id\":\"02\",\"type\":\"MACHINE\",\"name\":\"模拟机床\"," +
+                "\"configs\":[{\"name\":\"采样通道\",\"id\":\"e2e_channel\"," +
+                "\"type\":\"SAMPLE_CHANNEL\",\"sampleInterval\":200," +
+                "\"uploadInterval\":200,\"ids\":[{\"id\":\"/STATUS\"}," +
+                "{\"id\":\"/PART_COUNT\"}]}]," +
+                "\"dataItems\":[{\"name\":\"状态\",\"id\":\"030001\"," +
+                "\"type\":\"STATUS\",\"settable\":false}," +
+                "{\"name\":\"加工计件\",\"id\":\"030002\",\"type\":\"PART_COUNT\"," +
+                "\"settable\":true}]}]}";
+
+            long[] state = new long[2];              // [0]=status [1]=count
+            state[0] = 1;
+            using (NclServer device = new NclServer(sn, model, broker))
+            {
+                device.RegisterTool(
+                    "plc",
+                    new string[] { "getStatus", "getCount", "setCount" },
+                    new NclToolBinding[]
+                    {
+                        new NclToolBinding("/STATUS", NclOperation.GetValue,
+                                           "getStatus"),
+                        new NclToolBinding("/PART_COUNT", NclOperation.GetValue,
+                                           "getCount"),
+                        new NclToolBinding("/PART_COUNT", NclOperation.SetValue,
+                                           "setCount")
+                    },
+                    delegate(string method, NclJson parameters)
+                    {
+                        if (method == "setCount")
+                        {
+                            state[1] = parameters.Get("value").AsLong();
+                            return state[1];
+                        }
+                        return method == "getCount" ? state[1] : state[0];
+                    });
+                device.Subscribe();
+                device.InitSamples();
+
+                Nclink.Init(broker);
+                try
+                {
+                    using (NclDeviceClient client = Nclink.GetDevice(sn))
+                    {
+                        using (NclModel probed = client.Probe())
+                        {
+                            Check("真 broker：probe 到模型", probed.Root.Id == "01");
+                            Check("真 broker：模型能按 id 查节点",
+                                  probed.FindById("030001") != null);
+                        }
+
+                        using (NclJson value = client.GetValue("/STATUS"))
+                        {
+                            Check("真 broker：路径绑定取值", value.AsLong() == 1);
+                        }
+
+                        client.SetValue("/PART_COUNT", "7");
+                        Check("真 broker：路径绑定写值到达处理函数", state[1] == 7);
+                        using (NclJson value = client.GetValue("/PART_COUNT"))
+                        {
+                            Check("真 broker：写进去的值读得回来", value.AsLong() == 7);
+                        }
+
+                        // 方法调用的应答是 JSON 文本：绑定必须解析成 NclJson
+                        using (NclJson reply = client.MethodCall("/plc/getCount"))
+                        {
+                            Check("真 broker：methodCall 应答解析成 JSON",
+                                  reply.Get("code").AsString() == "OK"
+                                  && reply.Get("data").AsLong() == 7);
+                        }
+                        using (NclJson reply = client.MethodCall(
+                                   "/plc/setCount", "{\"value\":21}"))
+                        {
+                            Check("真 broker：methodCall 带参数",
+                                  reply.Get("data").AsLong() == 21 && state[1] == 21);
+                        }
+                        using (NclJson reply = client.MethodCall("/plc/getStatus", null,
+                                                                 check: true))
+                        {
+                            Check("真 broker：methodCall check",
+                                  reply.Get("code").AsString() == "OK");
+                        }
+
+                        int samples = 0;
+                        int events = 0;
+                        string samplePaths = null;
+                        string eventKey = null;
+                        long eventValue = -1;
+                        client.SampleReceived += delegate(object sender,
+                                                          NclSampleEventArgs args)
+                        {
+                            samples++;
+                            List<string> paths = new List<string>();
+                            foreach (NclSampleColumn column in args.Sample.Columns)
+                            {
+                                paths.Add(column.Path);
+                            }
+                            samplePaths = string.Join(",", paths.ToArray());
+                        };
+                        client.EventReceived += delegate(object sender, NclEventArgs args)
+                        {
+                            events++;
+                            eventKey = args.Event.Key;
+                            eventValue = Convert.ToInt64(args.Event.Value);
+                        };
+                        client.SubscribeSamples(2);
+                        client.SubscribeEvents(2);
+                        device.PushEvent("010307", "{\"key\":\"PART_COUNT\",\"value\":21}");
+
+                        for (int i = 0; i < 80 && (samples == 0 || events == 0); i++)
+                        {
+                            System.Threading.Thread.Sleep(100);
+                        }
+                        Check("真 broker：收到采样上报（" + samples + " 条）", samples > 0);
+                        Check("真 broker：采样列路径",
+                              samplePaths == "/STATUS,/PART_COUNT");
+                        Check("真 broker：收到事件推送（" + events + " 条）", events > 0);
+                        Check("真 broker：事件内容",
+                              eventKey == "PART_COUNT" && eventValue == 21);
+                        Check("真 broker：设备端上报计数 > 0",
+                              device.SampleUploadCount > 0);
+                        Check("真 broker：回调没出错", device.LastCallbackError == null
+                                                       && client.LastCallbackError == null);
+                    }
+                }
+                finally
+                {
+                    Nclink.Shutdown();
+                }
+            }
+        }
 
         /// <summary>深度优先找一个带 id 的子节点（find 不含节点自身）。</summary>
         private static NclNode FirstWithId(NclNode node)

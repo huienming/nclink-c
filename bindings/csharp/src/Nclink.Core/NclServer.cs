@@ -418,7 +418,7 @@ namespace Nclink
                 Native.ServerDispatch(RequireOpen(), Native.Utf8Z(topic), buffer,
                                       data.Length, out response),
                 "Dispatch");
-            return Response(response);
+            return NclJson.TakeText(response);
         }
 
         /// <summary>离线驱动一条请求，报文体按 UTF-8 文本给。</summary>
@@ -469,15 +469,9 @@ namespace Nclink
                                                          Native.Utf8Z(paramsJson),
                                                          out response);
             NclinkException.Check(rc, check ? "CheckMethodCall" : "InvokeMethodCall");
-            return Response(response);
+            return NclJson.TakeText(response);
         }
 
-        /* 离线接口返回的是**应答报文的 JSON 文本**（malloc），不是 JSON 句柄。 */
-        private static NclJson Response(IntPtr text)
-        {
-            string json = Native.TakeUtf8(text);
-            return json == null ? null : NclJson.Parse(json);
-        }
 
         /* ------------------------------------------------------------ 采样 -- */
 

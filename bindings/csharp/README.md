@@ -242,11 +242,19 @@ device.SampleReceived += (s, e) =>
 
 ```powershell
 dotnet run --project .\bindings\csharp\tests\Nclink.SelfTest -c Release
+
+# 连真 broker 再跑一遍端到端（设备端 + 客户端同进程，报文真的过 MQTT）
+$env:NCLINK_TEST_BROKER = "tcp://127.0.0.1:1883"
+dotnet run --project .\bindings\csharp\tests\Nclink.SelfTest -c Release
 ```
 
 不需要 broker（跑本机回环）：98 项检查覆盖 JSON / 模型 / 报文解析 / 设备端（离线
 dispatch、工具注册、采样通道、事件、自研传输、关闭语义）/ HTTP 端点（REST、配置
 端点、swagger-ui、自定义路由、错误路径、幂等关闭）。
+
+设了 `NCLINK_TEST_BROKER` 再多跑 14 项"过 MQTT"的端到端（设备端与客户端同进程）：
+probe、路径绑定取值/写值、`MethodCall`（应答文本要解析成 `NclJson`）、采样上报与
+事件推送 —— 一共 112 项。
 
 ## 示例输出
 

@@ -159,7 +159,11 @@ class DeviceClient:
             1 if check else 0, int(timeout_ms), ctypes.byref(out))
         if rc != 0:
             raise NclinkError(rc, "method_call")
-        return Json(out.value, owned=True)
+        # 方法调用返还的是**应答报文的 JSON 文本**，不是 JSON 句柄
+        text = take_text(out.value)
+        if text is None:
+            raise NclinkError(-1, "method_call", "没有应答")
+        return Json.parse(text)
 
     def ping(self, timeout_ms=5000):
         """心跳：Ping/<sn> -> Pong/<sn>。"""

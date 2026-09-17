@@ -169,7 +169,8 @@ namespace Nclink
                                                            : null,
                                         check ? 1 : 0, timeoutMs, out response),
                 "MethodCall");
-            return NclJson.Owned(response);
+            /* 方法调用返还的是**应答报文的 JSON 文本**（malloc），不是 JSON 句柄 */
+            return NclJson.TakeText(response);
         }
 
         /// <summary>ping。</summary>

@@ -262,7 +262,9 @@ Nclink.Shutdown();
 
 构建：`powershell -ExecutionPolicy Bypass -File .\bindings\csharp\build.ps1`
 （垫片 + 三个工程 + 自检 98 项）/ Linux 用
-`dotnet run --project bindings/csharp/tests/Nclink.SelfTest -c Release`。
+`dotnet run --project bindings/csharp/tests/Nclink.SelfTest -c Release`（都不需要
+broker）；想看"报文真的过 MQTT"的那一段，设 `NCLINK_TEST_BROKER=tcp://host:port`
+再跑一遍自检（设备端 + 客户端同进程，112 项）。
 
 客户端 + 设备端都包：`NclServer`（`RegisterTool` / `NclToolBinding` / `Subscribe` /
 `InitSamples` / `PushEvent` / 离线 `Dispatch` / 自研传输 `NclPublishSink`）、

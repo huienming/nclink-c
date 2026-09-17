@@ -47,6 +47,13 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 修复
 
+- **托管绑定的客户端方法调用（`methodCall`）把应答文本当成了 JSON 句柄**：库返还的是
+  **应答报文的 JSON 文本**（`char*`），C# 的 `NclDeviceClient.MethodCall` 与 Python 的
+  `DeviceClient.method_call` 直接把它包成 JSON 对象 → 一读就炸
+  （Python 报 `ValueError: ... is not a valid JsonType`，C# 读到野指针）。Java 那边
+  是 `Json.parse(out[0])`，一直是对的。现在两边都用
+  `NclJson.TakeText()` / `Json.parse(take_text(...))` 解析；离线自检覆盖不到这条路径，
+  所以顺带加了"对真 broker"的可选端到端用例（见下）。
 - **垫片 `nclshim_server_create()` 的"模型默认走内置模型"没实现**：文件头的注释一直
   这么写，但代码把 `model_json == NULL` 直接当"空模型"传给 `ncl_server_create()`，
   于是"不传模型"的设备端没有模型——采样通道、按路径应答都无从谈起（Java / Python
@@ -96,6 +103,11 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   报文解析 / 设备端（离线 dispatch、工具注册、采样通道、事件、自研传输、关闭语义）/
   HTTP（REST、配置端点、swagger-ui、自定义路由、错误路径、幂等关闭）；net472 与
   net8.0 两个目标都跑通。Java 自检补上 HTTP 用例（75 → 99 项），Python 32 → 36 项。
+- **可选的真 broker 端到端用例**：`NCLINK_TEST_BROKER=tcp://host:port` 一设，Python
+  （`tests/test_broker_e2e.py`）与 C#（自检里的 `Broker` 一节）就把设备端与客户端
+  放进**同一个进程**、报文真的过一遍 MQTT：probe、路径绑定取值/写值、`methodCall`、
+  采样上报、事件推送。C# 112 项 / Python 37 项，实测 Mosquitto 2 与 EMQX 5.8.9 各
+  跑一遍都 0 失败（上面那个 methodCall 的 bug 就是这么抓到的）。
 - **借用视图的 `Dispose` 改成空操作**（C#）：`NclJson` 的下标/成员视图、设备端的
   `NclServer.Model` 这类借用对象以前 `Dispose` 会把句柄置空、之后再用就抛
   `ObjectDisposedException`；现在与 Java / Python 一致——借用的东西不归你管，

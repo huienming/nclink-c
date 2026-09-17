@@ -36,6 +36,9 @@ powershell -ExecutionPolicy Bypass -File .\bindings\native\build-shim.ps1
 
 # 3) 自检（客户端 + 设备端，不需要 broker）
 python -m unittest discover -s bindings/python/tests -v
+
+# 4) 想连真 broker 再跑一遍端到端（设备端 + 客户端同进程，报文真的过 MQTT）
+NCLINK_TEST_BROKER=tcp://127.0.0.1:1883 python -m unittest discover -s bindings/python/tests -v
 ```
 
 Linux：
@@ -45,6 +48,10 @@ Linux：
 sh bindings/native/build-shim.sh      # 出 bindings/native/bin/libnclink_shim.so
 python -m unittest discover -s bindings/python/tests -v
 ```
+
+`tests/test_broker_e2e.py` 默认跳过（没设 `NCLINK_TEST_BROKER` 时）；设了就跑
+"设备端 + 客户端同进程"的端到端：probe、路径绑定取值/写值、methodCall、
+采样上报、事件推送——离线自检覆盖不到的"过 MQTT 那一 段"靠它守住。
 
 `nclink_shim.dll` / `libnclink_shim.so` 不用拷来拷去：绑定的加载顺序是
 
