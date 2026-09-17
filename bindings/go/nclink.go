@@ -27,7 +27,9 @@ package nclink
 #include <string.h>
 #include "nclink/ncl_client.h"
 #include "nclink/ncl_common.h"
+#include "nclink/ncl_env.h"
 #include "nclink/ncl_json.h"
+#include "nclink/ncl_logger.h"
 #include "nclink/ncl_message.h"
 #include "nclink/ncl_model.h"
 #include "nclink/ncl_server.h"
@@ -38,7 +40,7 @@ package nclink
 extern void nclinkGoSampleThunk(ncl_client *client, char *topic,
                                 ncl_message *message, void *user);
 
-/* 设备模型与 C 示例共用同一份源码（device_model.c 里 include 它）。 */
+// 设备模型与 C 示例共用同一份源码（nclink_thunks.c 里 include 了它）。
 const char *ncl_demo_device_model(void);
 
 // Tiny shim: a Go function value can only be converted to a C function pointer
@@ -102,6 +104,42 @@ func Version() string { return C.NCL_VERSION } // a string literal macro
 // DeviceModel is the device model the language demos share (JSON text). It is
 // compiled into the binding, so a demo needs no external model file.
 func DeviceModel() string { return C.GoString(C.ncl_demo_device_model()) }
+
+// SetRoot points the library at an install root (conf/, bin/, log/ live under
+// it); the default is the current directory.
+func SetRoot(path string) {
+	cs := C.CString(path)
+	defer C.free(unsafe.Pointer(cs))
+	C.ncl_env_set_root(cs)
+}
+
+// Root is the install root in use.
+func Root() string { return C.GoString(C.ncl_env_root()) }
+
+// LogInit starts logging ("" = <root>/log/out.txt).
+func LogInit(dir string) {
+	if dir == "" {
+		C.ncl_log_init(nil)
+		return
+	}
+	cdir := C.CString(dir)
+	defer C.free(unsafe.Pointer(cdir))
+	C.ncl_log_init(cdir)
+}
+
+// LogShutdown flushes and closes the log.
+func LogShutdown() { C.ncl_log_shutdown() }
+
+// ReadSN is the device serial number from <root>/bin/sn.txt, generated (and
+// persisted) as "V2" + nine hex digits when the file is missing.
+func ReadSN() (string, error) {
+	text := C.ncl_sn_read()
+	if text == nil {
+		return "", &Error{Code: -2, Name: "NoMemoryException", Op: "ReadSN"}
+	}
+	defer C.free(unsafe.Pointer(text))
+	return C.GoString(text), nil
+}
 
 // TLSAvailable reports whether the linked library was built with TLS support
 // (-tags nclink_tls plus the TLS build of the core library). When it is false,

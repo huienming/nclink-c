@@ -17,6 +17,10 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+/* 设备模型与 C 示例共用同一份源码（examples/device_model.c）：Go 的示例因此也
+ * 不需要任何外部模型文件。 */
+#include "../../examples/device_model.c"
+
 #include "nclink/ncl_http.h"
 #include "nclink/ncl_mqtt.h"
 #include "nclink/ncl_server.h"
