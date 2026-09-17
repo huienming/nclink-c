@@ -65,15 +65,24 @@ static void upload_path(char *out, size_t out_len, const char *name)
     snprintf(out, out_len, "%s%s", ncl_env_root(), joined);
 }
 
-/** Basename of a "/"-separated remote path. */
+/**
+ * Basename of a path. 走协议时路径是 "/" 分隔的，但标记对象
+ * {"@file": "<本地路径>"} 里给的是**本机路径**（Windows 上是 "\"），
+ * 两种分隔符都要认，否则临时文件名会变成整个路径、复制必然失败。
+ */
 static const char *remote_basename(const char *path)
 {
     const char *slash;
+    const char *back;
 
     if (path == NULL) {
         return NULL;
     }
     slash = strrchr(path, '/');
+    back = strrchr(path, '\\');
+    if (back != NULL && (slash == NULL || back > slash)) {
+        slash = back;
+    }
     return slash != NULL ? slash + 1 : path;
 }
 
@@ -357,7 +366,6 @@ static ncl_file_tool_state *file_state_of(ncl_server *server)
 {
     ncl_file_tool_state *state =
         (ncl_file_tool_state *)ncl_server_user_data(server);
-    char *sn;
 
     if (state != NULL) {
         return state;
@@ -366,8 +374,17 @@ static ncl_file_tool_state *file_state_of(ncl_server *server)
     if (state == NULL) {
         return NULL;
     }
-    sn = ncl_sn_read();
-    state->sn = sn != NULL ? sn : ncl_strdup(ncl_server_sn(server));
+    /*
+     * 对端目录用的是"协议里的 SN"，也就是服务器自己的 SN：客户端把文件放在
+     * <cwd>/<它寻址的那个 SN>/ 下，而它寻址的就是这个 SN。bin/sn.txt 是
+     * "设备从文件里读 SN"那条路用的（ncl_sn_read() 会生成它），两者可能不一样
+     * ——用 bin/sn.txt 的话，显式指定 SN 的设备端就找不到客户端摆好的文件。
+     */
+    state->sn = ncl_strdup(ncl_server_sn(server));
+    if (state->sn == NULL) {
+        free(state);
+        return NULL;
+    }
     {
         ncl_mqtt_config config;
         char *host = NULL;
@@ -548,6 +565,7 @@ ncl_json *ncl_file_extract_file_values(ncl_json *data)
         const char *name;
         char target[NCL_PATH_MAX_BUF];
         char token[NCL_PATH_MAX_BUF];
+        char relative[NCL_PATH_MAX_BUF];
 
         if (value == NULL || ncl_json_type_of(value) != NCL_JSON_OBJECT ||
             key == NULL || strcmp(key, "fileKeys") == 0) {
@@ -558,13 +576,25 @@ ncl_json *ncl_file_extract_file_values(ncl_json *data)
             continue;
         }
         name = remote_basename(path);
-        snprintf(target, sizeof(target), "%s%ctemp%c%s", ncl_env_root(),
-                 NCL_PATH_SEP, NCL_PATH_SEP, name != NULL ? name : "");
+        /*
+         * 落点和文件工具本地的镜像路径一致：<root>/uploadFile/temp/<名字>。
+         * 客户端随后按 "/temp/<名字>" 来取（file 工具的 read / get_value），
+         * read 找的就是这个镜像路径；放到 <root>/temp/ 下的话它就找不到了。
+         */
+        snprintf(relative, sizeof(relative), "%s/%s", NCL_FILE_TEMP_DIR,
+                 name != NULL ? name : "");
+        upload_path(target, sizeof(target), relative);
         snprintf(token, sizeof(token), "%s/%s", NCL_FILE_TEMP_DIR,
                  name != NULL ? name : "");
-        if (ncl_file_copy(path, target) != NCL_OK) {
-            ncl_log_error("无法复制临时文件: %s", path);
-            continue;
+        {
+            ncl_err rc = ncl_file_copy(path, target);
+
+            if (rc != NCL_OK) {
+                /* 通常是把结果里的 {"@file": ...} 指到了一个读不到/写不进去的位置 */
+                ncl_log_error("无法复制临时文件: %s -> %s (%s)", path, target,
+                              ncl_err_name(rc));
+                continue;
+            }
         }
         ncl_json_obj_set(data, key, ncl_json_new_string(token));
         if (file_keys == NULL) {

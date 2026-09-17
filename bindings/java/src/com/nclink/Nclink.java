@@ -126,4 +126,54 @@ public final class Nclink {
             Native.messageFree(message);
         }
     }
+
+    // ---------------------------------------------------------- 文件通道 -- //
+
+    /**
+     * 起进程级 FTP 端点（127.0.0.1:2323，admin / 123456，根 = 安装根）。
+     *
+     * <p>文件通道里**设备是 FTP 客户端**，本机得有 FTP 服务端等着它来取/送；
+     * {@link #init} 时已经起过了，这里是给"先要文件后连 broker"的场合用的（幂等）。
+     */
+    public static void startFileServer() {
+        NclinkException.check(Native.fileStartFtp(), "startFileServer");
+    }
+
+    /** 停掉进程级 FTP 端点。 */
+    public static void stopFileServer() {
+        Native.fileStopFtp();
+    }
+
+    /** 这个扩展名的文件传输时要不要压缩（文本类为 true）。 */
+    public static boolean fileNeedCompression(String fileName) {
+        return Native.fileNeedCompression(fileName) != 0;
+    }
+
+    /** 按 256 KB 一片算，这个字节数要几片。 */
+    public static int fileTotalChunks(long size) {
+        return Native.fileTotalChunks(size);
+    }
+
+    /** 本地文件内容的 SHA-256（小写十六进制）；读不了返回 null。 */
+    public static String fileChecksum(String path) {
+        return Native.fileChecksum(path);
+    }
+
+    /** 本地文件/目录的属性（目录的 fileType 为 1）；拿不到返回 null。 */
+    public static FileInfo fileAttribute(String path, String parent) {
+        String json = Native.fileAttributeJson(path, parent);
+        if (json == null || json.isEmpty()) {
+            return null;
+        }
+        Json value = Json.parse(json);
+        try {
+            return FileInfo.fromJavaObject(value.toJavaObject());
+        } finally {
+            value.close();
+        }
+    }
+
+    public static FileInfo fileAttribute(String path) {
+        return fileAttribute(path, null);
+    }
 }

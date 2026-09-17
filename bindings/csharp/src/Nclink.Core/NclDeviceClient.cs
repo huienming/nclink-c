@@ -30,7 +30,7 @@ namespace Nclink
     /// <see cref="Nclink.GetDevice"/> 拿某个 SN 的客户端；<see cref="Nclink.Shutdown"/>
     /// 之后这个对象就失效了。
     /// </summary>
-    public sealed class NclDeviceClient : IDisposable
+    public sealed partial class NclDeviceClient : IDisposable
     {
         /* 采样/事件回调：原生侧要求"两格数组 [函数指针, 用户数据]"。 */
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]

@@ -52,3 +52,10 @@ __pycache__/
 
 # Bindings: runtime logs/samples the self-tests and demos create next to the code
 /bindings/*/log/
+
+# Bindings: runtime dirs the self-tests and demos create under their own folder
+/bindings/**/V*/
+/bindings/**/uploadFile/
+/bindings/**/temp/
+/bindings/**/conf/
+/bindings/**/log/

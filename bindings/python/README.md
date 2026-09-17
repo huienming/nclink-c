@@ -51,7 +51,8 @@ python -m unittest discover -s bindings/python/tests -v
 
 `tests/test_broker_e2e.py` 默认跳过（没设 `NCLINK_TEST_BROKER` 时）；设了就跑
 "设备端 + 客户端同进程"的端到端：probe、路径绑定取值/写值、methodCall、
-采样上报、事件推送——离线自检覆盖不到的"过 MQTT 那一 段"靠它守住。
+采样上报、事件推送，以及整条文件通道（上传 / 列目录 / 下载 / 建目录 / 删文件 /
+带文件参数的方法调用）——离线自检覆盖不到的"过 MQTT 那一段"靠它守住。
 
 `nclink_shim.dll` / `libnclink_shim.so` 不用拷来拷去：绑定的加载顺序是
 
@@ -199,6 +200,49 @@ http.close()                                         # 幂等；device.close() �
 - 设备端示例会把它挂起来：`python examples/device_demo.py ... 30 9008`，然后
   `curl -X POST http://127.0.0.1:9008/api/plc/getCount -d '{}'` 就能调工具方法。
 
+### 文件通道（上传 / 下载）
+
+MQTT 报文里只传 `/temp/<名字>` 这样的**令牌**，字节走 FTP。方向要记住：**设备是
+FTP 客户端**，本机是 FTP 服务端（进程级端点 127.0.0.1:2323、admin / 123456、根 =
+安装根；`nclink.init()` 时已经起好，`nclink.start_file_server()` 是显式的幂等版本）。
+
+```python
+# 设备端（收文件的那一边）
+device = nclink.Server(sn="V2PY0000001", model=model_json,
+                       broker="tcp://127.0.0.1:1883")
+device.register_file_tool()          # /CONTROLLER/FILE：write/read/ll/mkdir/delete
+device.subscribe()
+
+# 客户端（上位机那一侧）
+with nclink.get_device("V2PY0000001") as client:
+    client.upload_local_file("report.txt", "/data/report.txt")   # 传上去
+    for item in client.list_files("/data"):                       # nclink.FileInfo
+        print(item.file_name, item.file_size, item.total_chunks, item.checksum)
+    local = client.download_to("/data/report.txt", "back.txt")    # 取回来
+    client.make_directory("/docs")
+    client.delete_file("/data/report.txt")
+
+    # 带文件参数的方法调用：keys 与 paths 一一对应，应答里的 fileKeys 会被换成本地路径
+    with client.method_call_file("plc/convert", params={"input": ""},
+                                 keys=["input"], paths=["a.bin"]) as reply:
+        print(reply.to_python()["data"])
+
+# 本地文件小工具（不需要 broker）
+nclink.file_need_compression("model.json")     # True
+nclink.file_total_chunks(300 * 1024)           # 2
+nclink.file_checksum("report.txt")             # SHA-256 十六进制
+nclink.file_attribute("report.txt")            # nclink.FileInfo
+```
+
+- `upload_file(relative)` 只是"把已经在 `<当前目录>/<sn><relative>` 上的文件传上去"
+  （与 C API 一致）；`upload_local_file()` 会先替你摆到那个位置。
+- 下载回来的文件先落在 `<当前目录>/<sn>/` 下，`download_file()` 返回绝对路径，
+  `download_to()` 再替你复制到目标。
+- 设备按 `conf/mqtt.cfg` 里 broker 的主机名 + 端口 2323 找本机的 FTP 端点（拿不到配置
+  就 127.0.0.1）——所以本机与 broker 是同一台机器时开箱即用。
+- 设备侧的 `start_ftp()` 是"设备自己也开个 FTP 端点"（读 `bin/ftp.txt`），客户端传文件
+  用不到它；缺文件时它抛 `NclinkError`，示例里是容忍着来的。
+
 ## 内存与所有权
 
 | 对象 | 谁释放 |
@@ -211,6 +255,7 @@ http.close()                                         # 幂等；device.close() �
 | `Server` | **自有**：`close()`（停采样/FTP、断开 MQTT、放掉所有回调） |
 | `HttpEndpoint` | **自有**：`close()`（幂等；`server.close()` 也会收） |
 | `server.model` | **借用**：服务器活着就有效，不用关 |
+| `FileInfo` | 纯 Python 快照，没有句柄 |
 
 采样/事件回调在客户端自己的**读取线程**上触发，回调里别做耗时操作；回调里抛出的异常
 不会穿到原生层，会记在 `device.last_callback_error` 上。`init` / `shutdown` /
@@ -239,8 +284,6 @@ received 32 samples, 6 events
 
 ## 还没做的
 
-- 文件通道（`/nclinkClient/*` 上传下载）：`register_file_tool` + `start_ftp` 已经能挂，
-  但"客户端侧的上传/下载"还没有托管包装。
 - TLS（`ssl://`）：库带 `NCLINK_WITH_TLS=ON` 编即可，绑定不用改。
 - 打包成 wheel / PyPI：现在按"C 库 + 绑定源码"一起用；要做 wheel 得把
   `nclink_shim.dll` 打进包（`package_data`）并带上平台标签。

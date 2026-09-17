@@ -370,4 +370,22 @@ final class Native {
     /** 挂自定义路由：返回 rc，host 从出参取（HttpEndpoint close 时 hostFree）。 */
     static native int httpRoute(long http, String method, String path,
                                 HttpEndpoint target, long[] outHost);
+
+    // ------------------------------------------------------------- file -- //
+    /** 起进程级 FTP 端点（幂等；open 里已经起过）。 */
+    static native int fileStartFtp();
+    static native void fileStopFtp();
+    static native int clientFileWrite(long client, String localFilePath);
+    static native String clientFileRead(long client, String remoteFilePath);
+    static native String clientFileLlJson(long client, String remoteDir);
+    static native int clientFileMkdir(long client, String remoteDir);
+    static native int clientFileDelete(long client, String remoteFilePath);
+    /** 带文件参数的方法调用；应答 JSON 文本从出参取。 */
+    static native int clientMethodCallFile(long client, String method, String paramsJson,
+                                           String keysJson, String pathsJson,
+                                           int timeoutMs, String[] outJson);
+    static native int fileNeedCompression(String fileName);
+    static native int fileTotalChunks(long size);
+    static native String fileChecksum(String path);
+    static native String fileAttributeJson(String path, String parent);
 }

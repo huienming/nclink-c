@@ -11,9 +11,12 @@
 examples/client_demo.py）。
 """
 
+import hashlib
 import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
@@ -446,6 +449,59 @@ class HttpTest(unittest.TestCase):
         with self.assertRaises(nclink.NclinkError):
             endpoint.route("GET", "/x", lambda *args: None)
         device.close()          # 再关服务器也不该炸
+
+
+class FileToolTest(unittest.TestCase):
+    """文件小工具（离线：本地文件，不需要 broker 与设备）。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="nclink-file-")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.content = "文件通道 hello\n"
+        self.path = os.path.join(self.dir, "hello.txt")
+        with open(self.path, "w", encoding="utf-8") as handle:
+            handle.write(self.content)
+
+    def test_compression_and_chunks(self):
+        self.assertTrue(nclink.file_need_compression("a.txt"))
+        self.assertTrue(nclink.file_need_compression("model.json"))
+        self.assertFalse(nclink.file_need_compression("a.bin"))
+        self.assertEqual(nclink.file_total_chunks(0), 0)
+        self.assertEqual(nclink.file_total_chunks(1), 1)
+        self.assertEqual(nclink.file_total_chunks(256 * 1024), 1)
+        self.assertEqual(nclink.file_total_chunks(256 * 1024 + 1), 2)
+
+    def test_checksum_matches_hashlib(self):
+        # 按**文件字节**算（Windows 上文本模式会把 \n 写成 \r\n）
+        with open(self.path, "rb") as handle:
+            expected = hashlib.sha256(handle.read()).hexdigest()
+        self.assertEqual(nclink.file_checksum(self.path), expected)
+        self.assertIsNone(nclink.file_checksum(os.path.join(self.dir, "nope")))
+
+    def test_attribute_of_file_and_directory(self):
+        info = nclink.file_attribute(self.path, self.dir)
+        self.assertEqual(info.file_name, "hello.txt")
+        self.assertEqual(info.file_size, os.path.getsize(self.path))
+        self.assertEqual(info.total_chunks, 1)
+        self.assertFalse(info.is_dir)
+        self.assertTrue(info.compressed)
+        folder = nclink.file_attribute(self.dir)
+        self.assertTrue(folder.is_dir)
+        self.assertEqual(folder.file_size, 0)
+        self.assertIsNone(nclink.file_attribute(os.path.join(self.dir, "nope")))
+
+    def test_file_info_parsing(self):
+        info = nclink.FileInfo.from_json({"fileName": "x.bin", "fileType": 1,
+                                          "fileSize": 10, "totalChunks": 1,
+                                          "compressed": False,
+                                          "checksum": "ab", "parantDir": "/a",
+                                          "modifyTime": 123})
+        self.assertTrue(info.is_dir)
+        self.assertEqual(info.parent_dir, "/a")
+        self.assertIn("目录", str(info))
+        self.assertEqual(nclink.FileInfo.parse_list("[]"), [])
+        self.assertEqual(len(nclink.FileInfo.parse_list(
+            '[{"fileName":"a"},{"fileName":"b"}]')), 2)
 
 
 if __name__ == "__main__":

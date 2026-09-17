@@ -1384,6 +1384,155 @@ JNIEXPORT jint JNICALL Java_com_nclink_Native_serverRegisterTool(
     return 0;
 }
 
+/* ================================================================ file == */
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_fileStartFtp(JNIEnv *env, jclass cls)
+{
+    (void)env;
+    (void)cls;
+    return (jint)nclshim_file_start_ftp();
+}
+
+JNIEXPORT void JNICALL Java_com_nclink_Native_fileStopFtp(JNIEnv *env, jclass cls)
+{
+    (void)env;
+    (void)cls;
+    nclshim_file_stop_ftp();
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientFileWrite(JNIEnv *env, jclass cls,
+                                                             jlong client,
+                                                             jstring local_path)
+{
+    char *raw = from_jstring(env, local_path);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_client_file_write(HANDLE(client), raw);
+    free(raw);
+    return (jint)rc;
+}
+
+JNIEXPORT jstring JNICALL Java_com_nclink_Native_clientFileRead(JNIEnv *env,
+                                                               jclass cls,
+                                                               jlong client,
+                                                               jstring remote_path)
+{
+    char *raw = from_jstring(env, remote_path);
+    char *local = nclshim_client_file_read(HANDLE(client), raw);
+
+    (void)cls;
+    free(raw);
+    return take_jstring(env, local);
+}
+
+JNIEXPORT jstring JNICALL Java_com_nclink_Native_clientFileLlJson(JNIEnv *env,
+                                                                 jclass cls,
+                                                                 jlong client,
+                                                                 jstring remote_dir)
+{
+    char *raw = from_jstring(env, remote_dir);
+    char *json = nclshim_client_file_ll_json(HANDLE(client), raw);
+
+    (void)cls;
+    free(raw);
+    return take_jstring(env, json);
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientFileMkdir(JNIEnv *env, jclass cls,
+                                                             jlong client,
+                                                             jstring remote_dir)
+{
+    char *raw = from_jstring(env, remote_dir);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_client_file_mkdir(HANDLE(client), raw);
+    free(raw);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientFileDelete(JNIEnv *env, jclass cls,
+                                                              jlong client,
+                                                              jstring remote_path)
+{
+    char *raw = from_jstring(env, remote_path);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_client_file_delete(HANDLE(client), raw);
+    free(raw);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientMethodCallFile(
+    JNIEnv *env, jclass cls, jlong client, jstring method, jstring params,
+    jstring keys, jstring paths, jint timeout_ms, jobjectArray out)
+{
+    char *raw_method = from_jstring(env, method);
+    char *raw_params = from_jstring(env, params);
+    char *raw_keys = from_jstring(env, keys);
+    char *raw_paths = from_jstring(env, paths);
+    char *reply = NULL;
+    int rc;
+
+    (void)cls;
+    rc = nclshim_client_method_call_file(HANDLE(client), raw_method, raw_params,
+                                         raw_keys, raw_paths,
+                                         (unsigned)timeout_ms, &reply);
+    set_string(env, out, 0, reply);
+    free(raw_method);
+    free(raw_params);
+    free(raw_keys);
+    free(raw_paths);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_fileNeedCompression(JNIEnv *env,
+                                                                 jclass cls,
+                                                                 jstring file_name)
+{
+    char *raw = from_jstring(env, file_name);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_file_need_compression(raw);
+    free(raw);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_fileTotalChunks(JNIEnv *env, jclass cls,
+                                                             jlong size)
+{
+    (void)env;
+    (void)cls;
+    return (jint)nclshim_file_total_chunks((long long)size);
+}
+
+JNIEXPORT jstring JNICALL Java_com_nclink_Native_fileChecksum(JNIEnv *env, jclass cls,
+                                                             jstring path)
+{
+    char *raw = from_jstring(env, path);
+    char *hex = nclshim_file_checksum(raw);
+
+    (void)cls;
+    free(raw);
+    return take_jstring(env, hex);
+}
+
+JNIEXPORT jstring JNICALL Java_com_nclink_Native_fileAttributeJson(
+    JNIEnv *env, jclass cls, jstring path, jstring parent)
+{
+    char *raw_path = from_jstring(env, path);
+    char *raw_parent = from_jstring(env, parent);
+    char *json = nclshim_file_attribute_json(raw_path, raw_parent);
+
+    (void)cls;
+    free(raw_path);
+    free(raw_parent);
+    return take_jstring(env, json);
+}
+
 JNIEXPORT jint JNICALL Java_com_nclink_Native_serverDispatch(
     JNIEnv *env, jclass cls, jlong server, jstring topic, jbyteArray payload,
     jobjectArray out)

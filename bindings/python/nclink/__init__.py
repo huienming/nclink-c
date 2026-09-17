@@ -40,6 +40,7 @@ from __future__ import annotations
 from enum import IntEnum
 
 from ._ffi import NclinkError, decode, encode, lib, version
+from ._file import FileInfo
 from ._json import Json, JsonType
 from ._message import Event, Message, MessageType, Sample, SampleColumn, parse
 from ._model import Model, Node, NodeType
@@ -53,10 +54,14 @@ __all__ = [
     "Sample", "SampleColumn", "Event", "Message", "MessageType", "parse",
     "DeviceClient",
     "Server", "Operation", "HttpEndpoint",
+    "FileInfo",
     "LogLevel",
     "init", "shutdown", "is_open", "get_device", "version",
     "set_root", "root",
     "log_init", "log_shutdown", "set_log_level", "set_console_log",
+    "start_file_server", "stop_file_server",
+    "file_need_compression", "file_total_chunks", "file_checksum",
+    "file_attribute",
 ]
 
 
@@ -128,3 +133,51 @@ def set_log_level(level):
 def set_console_log(enabled):
     """是否同时往控制台打（默认开）。"""
     lib.nclshim_log_set_console(1 if enabled else 0)
+
+
+# ------------------------------------------------------------ 文件通道 -- #
+
+def start_file_server():
+    """起进程级 FTP 端点（127.0.0.1:2323，admin / 123456，根 = 安装根）。
+
+    文件通道里**设备是 FTP 客户端**，本机得有个 FTP 服务端等着它来取/送；
+    `init()` 时已经起过了，这里是给"先要文件后连 broker"的场合用的（幂等）。
+    """
+    rc = lib.nclshim_file_start_ftp()
+    if rc != 0:
+        raise NclinkError(rc, "start_file_server")
+
+
+def stop_file_server():
+    """停掉进程级 FTP 端点。"""
+    lib.nclshim_file_stop_ftp()
+
+
+def file_need_compression(file_name):
+    """这个扩展名的文件传输时要不要压缩（文本类为 True）。"""
+    return bool(lib.nclshim_file_need_compression(encode(file_name)))
+
+
+def file_total_chunks(size):
+    """按 256 KB 一片算，这个字节数要几片。"""
+    return int(lib.nclshim_file_total_chunks(int(size)))
+
+
+def file_checksum(path):
+    """本地文件内容的 SHA-256（小写十六进制）；读不了返回 None。"""
+    text = lib.nclshim_file_checksum(encode(path))
+    if not text:
+        return None
+    from ._ffi import take_text
+
+    return take_text(text)
+
+
+def file_attribute(path, parent=None):
+    """本地文件/目录的属性（目录的 file_type 为 1）；拿不到返回 None。"""
+    text = lib.nclshim_file_attribute_json(encode(path), encode(parent))
+    if not text:
+        return None
+    from ._ffi import take_text
+
+    return FileInfo.parse_list("[%s]" % take_text(text))[0]

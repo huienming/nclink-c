@@ -111,6 +111,11 @@ def main(argv):
                       ("/PART_COUNT", nclink.Operation.SET_VALUE, "setCount"),
                       ("/CONTROLLER/WARNNING", nclink.Operation.GET_VALUE, "getWarning")])
         device.register_builtin_tool()          # addSample / removeSample
+        device.register_file_tool()             # /CONTROLLER/FILE：文件通道
+        try:
+            device.start_ftp()                  # 设备自己的 FTP 端点（读 bin/ftp.txt）
+        except nclink.NclinkError:
+            print("提示：bin/ftp.txt 还没有，跳过设备侧 FTP 端点（客户端传文件不受影响）。")
         device.subscribe()                      # 订阅 6 个请求主题
         device.init_samples()                   # 启动模型里声明的采样通道
 

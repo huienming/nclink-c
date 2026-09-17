@@ -51,6 +51,7 @@ public final class SelfTest {
         connection();
         server();
         http();
+        files();
 
         System.out.println();
         System.out.println(checks + " 项检查，" + failures + " 失败");
@@ -410,6 +411,74 @@ public final class SelfTest {
             device.stopAllSamples();
             device.close();
         }
+    }
+
+    /* ----------------------------------------------------------- files -- */
+
+    /** 文件小工具（离线：本地文件，不需要 broker 与设备）。 */
+    private static void files() {
+        File dir = new File(System.getProperty("java.io.tmpdir"),
+                            "nclink-selftest-" + System.nanoTime());
+        if (!dir.mkdirs()) {
+            check("建临时目录", false);
+            return;
+        }
+        File file = new File(dir, "hello.txt");
+        String content = "文件通道 hello\n";
+        try {
+            writeText(file, content);
+            check("文件工具：文本类要压缩", Nclink.fileNeedCompression("a.txt")
+                    && Nclink.fileNeedCompression("model.json"));
+            check("文件工具：二进制类不压缩", !Nclink.fileNeedCompression("a.bin"));
+            check("文件工具：分片数（256 KB 一片）",
+                    Nclink.fileTotalChunks(0) == 0 && Nclink.fileTotalChunks(1) == 1
+                    && Nclink.fileTotalChunks(256 * 1024) == 1
+                    && Nclink.fileTotalChunks(256 * 1024 + 1) == 2);
+
+            byte[] bytes = java.nio.file.Files.readAllBytes(file.toPath());
+            java.security.MessageDigest sha =
+                    java.security.MessageDigest.getInstance("SHA-256");
+            StringBuilder hex = new StringBuilder();
+            for (byte value : sha.digest(bytes)) {
+                hex.append(String.format("%02x", Byte.valueOf(value)));
+            }
+            check("文件工具：SHA-256 与 JDK 算的一致",
+                    hex.toString().equals(Nclink.fileChecksum(file.getPath())));
+
+            FileInfo info = Nclink.fileAttribute(file.getPath(), dir.getPath());
+            check("文件工具：属性（名字/大小/片数/不是目录）", info != null
+                    && "hello.txt".equals(info.fileName())
+                    && info.fileSize() == bytes.length && info.totalChunks() == 1
+                    && !info.isDir() && info.compressed());
+            FileInfo folder = Nclink.fileAttribute(dir.getPath());
+            check("文件工具：目录属性（fileType=1）",
+                    folder != null && folder.isDir() && folder.fileSize() == 0);
+            check("文件工具：不存在的路径返回 null",
+                    Nclink.fileAttribute(new File(dir, "nope.bin").getPath()) == null);
+        } catch (Exception error) {
+            check("文件工具用例（" + error + "）", false);
+        } finally {
+            deleteTree(dir);
+        }
+    }
+
+    private static void writeText(File file, String text) throws java.io.IOException {
+        java.io.OutputStream out = new java.io.FileOutputStream(file);
+        try {
+            out.write(text.getBytes(StandardCharsets.UTF_8));
+        } finally {
+            out.close();
+        }
+    }
+
+    private static void deleteTree(File file) {
+        File[] children = file.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteTree(child);
+            }
+        }
+        file.delete();
     }
 
     /* ------------------------------------------------------------ http -- */

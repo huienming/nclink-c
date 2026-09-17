@@ -417,6 +417,44 @@ namespace Nclink
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_strdup")]
         internal static extern IntPtr Strdup(byte[] text);
 
+        /* -------------------------------------------------------------- file -- */
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_file_start_ftp")]
+        internal static extern int FileStartFtp();
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_file_stop_ftp")]
+        internal static extern void FileStopFtp();
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_file_write")]
+        internal static extern int ClientFileWrite(IntPtr client, byte[] localFilePath);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_file_read")]
+        internal static extern IntPtr ClientFileRead(IntPtr client, byte[] remoteFilePath);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_file_ll_json")]
+        internal static extern IntPtr ClientFileLlJson(IntPtr client, byte[] remoteDir);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_file_mkdir")]
+        internal static extern int ClientFileMkdir(IntPtr client, byte[] remoteDir);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_file_delete")]
+        internal static extern int ClientFileDelete(IntPtr client, byte[] remoteFilePath);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_method_call_file")]
+        internal static extern int ClientMethodCallFile(IntPtr client, byte[] method, byte[] paramsJson, byte[] keysJson, byte[] pathsJson, uint timeoutMs, out IntPtr responseJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_file_need_compression")]
+        internal static extern int FileNeedCompression(byte[] fileName);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_file_total_chunks")]
+        internal static extern int FileTotalChunks(long size);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_file_checksum")]
+        internal static extern IntPtr FileChecksum(byte[] path);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_file_attribute_json")]
+        internal static extern IntPtr FileAttributeJson(byte[] path, byte[] parent);
+
         /* ----------------------------------------------------------- helpers -- */
 
         /// <summary>空终止的 UTF-8 字节串 → string（原生返回 NULL 时得到 null）。</summary>

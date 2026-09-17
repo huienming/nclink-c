@@ -1824,3 +1824,253 @@ NCLSHIM_API int nclshim_http_route(const void *handle, const char *method,
     ctx->routes = route;
     return NCL_OK;
 }
+
+/* ============================================================== file/fs == */
+
+/*
+ * 文件通道：MQTT 报文里只传 "/temp/<名字>" 这样的令牌，字节走 FTP。
+ *
+ *   设备端（收/发文件）：nclshim_server_register_file_tool() +
+ *                        nclshim_server_start_ftp()（读 bin/ftp.txt 起端点）
+ *   客户端（传/收文件）：进程级 FTP 端点（127.0.0.1:2323，admin/123456，根 =
+ *                        安装根；nclshim_open() 里已经起了）+ 每个客户端一份
+ *                        文件通道（客户端管理器建客户端时已经装好）。
+ *
+ * 路径基准：
+ *   设备侧  <root>/uploadFile/<相对路径>         对端看到的目录树是 /<sn>/<相对>
+ *   客户端  <root>/<sn>/<相对路径>               要上传的文件先放这儿
+ * 即同一个相对路径（如 "/demo.txt"）在两边各自落到上面两个位置。
+ *
+ * 相对于设备：设备是 FTP 客户端、托管侧是 FTP 服务端。设备地址取 conf/mqtt.cfg
+ * 里 broker 的主机名、端口 2323（拿不到配置就 127.0.0.1）——所以托管侧与 broker
+ * 同一台机器时开箱即用。
+ */
+
+/** 起进程级 FTP 端点（幂等；nclshim_open 也会起）。 */
+NCLSHIM_API int nclshim_file_start_ftp(void)
+{
+    return (int)ncl_client_holder_start_ftp();
+}
+
+NCLSHIM_API void nclshim_file_stop_ftp(void)
+{
+    ncl_client_holder_stop_ftp();
+}
+
+/**
+ * 上传一个文件：local_file_path 是**相对路径**（形如 "/demo.txt"），文件必须在
+ * <root>/<sn><相对路径> 上（与 C API 一致）。
+ */
+NCLSHIM_API int nclshim_client_file_write(const void *client,
+                                          const char *local_file_path)
+{
+    if (client == NULL || local_file_path == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return (int)ncl_client_write((ncl_client *)client, local_file_path);
+}
+
+/** 下载一个文件；返回落盘后的本地绝对路径（malloc，调用方 nclshim_free）。 */
+NCLSHIM_API char *nclshim_client_file_read(const void *client,
+                                           const char *remote_file_path)
+{
+    if (client == NULL || remote_file_path == NULL) {
+        return NULL;
+    }
+    return ncl_client_read((ncl_client *)client, remote_file_path);
+}
+
+/** 列目录：返回属性数组的 JSON 文本（malloc）；失败返回 NULL。 */
+NCLSHIM_API char *nclshim_client_file_ll_json(const void *client,
+                                              const char *remote_dir)
+{
+    ncl_ptrvec files;
+    ncl_json *array;
+    char *json = NULL;
+
+    if (client == NULL || remote_dir == NULL) {
+        return NULL;
+    }
+    ncl_ptrvec_init(&files, ncl_file_attribute_release);
+    if (ncl_client_ll((ncl_client *)client, remote_dir, &files) != NCL_OK) {
+        ncl_ptrvec_free(&files);
+        return NULL;
+    }
+    array = ncl_file_attributes_to_json(&files);
+    if (array != NULL) {
+        json = ncl_json_write_string(array);
+        ncl_json_free(array);
+    }
+    ncl_ptrvec_free(&files);
+    return json;
+}
+
+NCLSHIM_API int nclshim_client_file_mkdir(const void *client, const char *remote_dir)
+{
+    ncl_file_client_tool *tool;
+
+    if (client == NULL || remote_dir == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    tool = ncl_client_file_tool((ncl_client *)client);
+    if (tool == NULL) {
+        return NCL_ERR_STATE;               /* 没装文件通道 */
+    }
+    return ncl_file_client_tool_mkdir(tool, remote_dir) ? NCL_OK : NCL_ERR;
+}
+
+NCLSHIM_API int nclshim_client_file_delete(const void *client,
+                                           const char *remote_file_path)
+{
+    ncl_file_client_tool *tool;
+
+    if (client == NULL || remote_file_path == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    tool = ncl_client_file_tool((ncl_client *)client);
+    if (tool == NULL) {
+        return NCL_ERR_STATE;
+    }
+    return ncl_file_client_tool_delete(tool, remote_file_path) ? NCL_OK : NCL_ERR;
+}
+
+/**
+ * 带文件参数的方法调用：keys_json / paths_json 是等长的字符串数组，params[keys[i]]
+ * 会先换成 "/temp/<名字>"（文件从 paths_json[i] 经文件通道送过去），应答里
+ * "fileKeys" 列出的键会被换成本地路径。应答 JSON 文本由调用方 nclshim_free。
+ */
+NCLSHIM_API int nclshim_client_method_call_file(const void *client,
+                                                const char *method,
+                                                const char *params_json,
+                                                const char *keys_json,
+                                                const char *paths_json,
+                                                unsigned timeout_ms,
+                                                char **out_json)
+{
+    ncl_message *request = NULL;
+    ncl_message *response = NULL;
+    ncl_json *keys_doc = NULL;
+    ncl_json *paths_doc = NULL;
+    const char **keys = NULL;
+    const char **paths = NULL;
+    size_t count;
+    size_t i;
+    ncl_err rc = NCL_OK;
+
+    if (out_json != NULL) {
+        *out_json = NULL;
+    }
+    if (client == NULL || method == NULL || keys_json == NULL ||
+        paths_json == NULL || out_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    keys_doc = ncl_json_parse_cstr(keys_json, NULL);
+    paths_doc = ncl_json_parse_cstr(paths_json, NULL);
+    if (keys_doc == NULL || paths_doc == NULL) {
+        rc = NCL_ERR_PARSE;
+        goto done;
+    }
+    count = ncl_json_arr_len(keys_doc);
+    if (ncl_json_arr_len(paths_doc) != count) {
+        rc = NCL_ERR_INVALID_ARG;
+        goto done;
+    }
+    if (count > 0) {
+        keys = (const char **)calloc(count, sizeof(*keys));
+        paths = (const char **)calloc(count, sizeof(*paths));
+        if (keys == NULL || paths == NULL) {
+            rc = NCL_ERR_NOMEM;
+            goto done;
+        }
+        for (i = 0; i < count; i++) {
+            keys[i] = ncl_json_as_string(ncl_json_arr_get(keys_doc, i));
+            paths[i] = ncl_json_as_string(ncl_json_arr_get(paths_doc, i));
+            if (keys[i] == NULL || paths[i] == NULL) {
+                rc = NCL_ERR_INVALID_ARG;   /* 借用：文档活着就有效 */
+                goto done;
+            }
+        }
+    }
+    request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+    if (request == NULL) {
+        rc = NCL_ERR_NOMEM;
+        goto done;
+    }
+    ncl_message_set_method(request, method);
+    if (params_json != NULL && params_json[0] != '\0') {
+        ncl_json *params = ncl_json_parse_cstr(params_json, NULL);
+
+        if (params == NULL) {
+            ncl_message_free(request);
+            request = NULL;
+            rc = NCL_ERR_PARSE;
+            goto done;
+        }
+        ncl_message_set_params(request, params);    /* 转移所有权 */
+    }
+    /* 这个调用接管 request（成功失败都一样），别再自己释放。 */
+    rc = ncl_client_method_call_file((ncl_client *)client, request, keys, paths,
+                                     count, timeout_ms, &response);
+    request = NULL;
+    if (rc != NCL_OK || response == NULL) {
+        ncl_message_free(response);
+        rc = rc != NCL_OK ? rc : NCL_ERR;
+        goto done;
+    }
+    *out_json = ncl_message_write_string(response);
+    ncl_message_free(response);
+    rc = *out_json != NULL ? NCL_OK : NCL_ERR_NOMEM;
+
+done:
+    free(keys);
+    free(paths);
+    ncl_json_free(keys_doc);
+    ncl_json_free(paths_doc);
+    return (int)rc;
+}
+
+/* ---------------------------------------------------------- 文件小工具 -- */
+
+NCLSHIM_API int nclshim_file_need_compression(const char *file_name)
+{
+    return file_name != NULL && ncl_file_need_compression(file_name) ? 1 : 0;
+}
+
+NCLSHIM_API int nclshim_file_total_chunks(long long size)
+{
+    return size > 0 ? ncl_file_total_chunks(size) : 0;
+}
+
+/** 文件内容的 SHA-256（小写十六进制，malloc；调用方 nclshim_free）。 */
+NCLSHIM_API char *nclshim_file_checksum(const char *path)
+{
+    char *hex = NULL;
+
+    if (path == NULL) {
+        return NULL;
+    }
+    return ncl_file_checksum(path, &hex) == NCL_OK ? hex : NULL;
+}
+
+/** 本地文件的属性（一个 JSON 对象；字段顺序按规范固定）：见 ncl_file_attribute_to_json。 */
+NCLSHIM_API char *nclshim_file_attribute_json(const char *path, const char *parent)
+{
+    ncl_file_attribute *attribute = NULL;
+    ncl_json *json;
+    char *text = NULL;
+
+    if (path == NULL) {
+        return NULL;
+    }
+    if (ncl_file_attribute_of(path, parent, &attribute) != NCL_OK ||
+        attribute == NULL) {
+        return NULL;
+    }
+    json = ncl_file_attribute_to_json(attribute);
+    if (json != NULL) {
+        text = ncl_json_write_string(json);
+        ncl_json_free(json);
+    }
+    ncl_file_attribute_free(attribute);
+    return text;
+}

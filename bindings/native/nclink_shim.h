@@ -418,6 +418,54 @@ NCLSHIM_API void nclshim_http_set_cors(const void *handle, int enabled);
 NCLSHIM_API int nclshim_http_route(const void *handle, const char *method,
                                    const char *path, void *host);
 
+/** 起进程级 FTP 端点（幂等；nclshim_open 也会起）。 */
+NCLSHIM_API int nclshim_file_start_ftp(void);
+
+NCLSHIM_API void nclshim_file_stop_ftp(void);
+
+/**
+ * 上传一个文件：local_file_path 是**相对路径**（形如 "/demo.txt"），文件必须在
+ * <root>/<sn><相对路径> 上（与 C API 一致）。
+ */
+NCLSHIM_API int nclshim_client_file_write(const void *client,
+                                          const char *local_file_path);
+
+/** 下载一个文件；返回落盘后的本地绝对路径（malloc，调用方 nclshim_free）。 */
+NCLSHIM_API char *nclshim_client_file_read(const void *client,
+                                           const char *remote_file_path);
+
+/** 列目录：返回属性数组的 JSON 文本（malloc）；失败返回 NULL。 */
+NCLSHIM_API char *nclshim_client_file_ll_json(const void *client,
+                                              const char *remote_dir);
+
+NCLSHIM_API int nclshim_client_file_mkdir(const void *client, const char *remote_dir);
+
+NCLSHIM_API int nclshim_client_file_delete(const void *client,
+                                           const char *remote_file_path);
+
+/**
+ * 带文件参数的方法调用：keys_json / paths_json 是等长的字符串数组，params[keys[i]]
+ * 会先换成 "/temp/<名字>"（文件从 paths_json[i] 经文件通道送过去），应答里
+ * "fileKeys" 列出的键会被换成本地路径。应答 JSON 文本由调用方 nclshim_free。
+ */
+NCLSHIM_API int nclshim_client_method_call_file(const void *client,
+                                                const char *method,
+                                                const char *params_json,
+                                                const char *keys_json,
+                                                const char *paths_json,
+                                                unsigned timeout_ms,
+                                                char **out_json);
+
+NCLSHIM_API int nclshim_file_need_compression(const char *file_name);
+
+NCLSHIM_API int nclshim_file_total_chunks(long long size);
+
+/** 文件内容的 SHA-256（小写十六进制，malloc；调用方 nclshim_free）。 */
+NCLSHIM_API char *nclshim_file_checksum(const char *path);
+
+/** 本地文件的属性（一个 JSON 对象；字段顺序按规范固定）：见 ncl_file_attribute_to_json。 */
+NCLSHIM_API char *nclshim_file_attribute_json(const char *path, const char *parent);
+
 
 #ifdef __cplusplus
 }

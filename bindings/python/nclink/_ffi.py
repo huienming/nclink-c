@@ -298,6 +298,23 @@ _PROTOTYPES = [
     ("nclshim_http_set_cors", None, ctypes.c_void_p, ctypes.c_int),
     ("nclshim_http_route", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
      ctypes.c_char_p, ctypes.c_void_p),
+    # 文件通道（MQTT 只传令牌，字节走 FTP）
+    ("nclshim_file_start_ftp", ctypes.c_int),
+    ("nclshim_file_stop_ftp", None),
+    ("nclshim_client_file_write", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p),
+    ("nclshim_client_file_read", ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p),
+    ("nclshim_client_file_ll_json", ctypes.c_void_p, ctypes.c_void_p,
+     ctypes.c_char_p),
+    ("nclshim_client_file_mkdir", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p),
+    ("nclshim_client_file_delete", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p),
+    ("nclshim_client_method_call_file", ctypes.c_int, ctypes.c_void_p,
+     ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+     ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)),
+    ("nclshim_file_need_compression", ctypes.c_int, ctypes.c_char_p),
+    ("nclshim_file_total_chunks", ctypes.c_int, ctypes.c_longlong),
+    ("nclshim_file_checksum", ctypes.c_void_p, ctypes.c_char_p),
+    ("nclshim_file_attribute_json", ctypes.c_void_p, ctypes.c_char_p,
+     ctypes.c_char_p),
 ]
 
 

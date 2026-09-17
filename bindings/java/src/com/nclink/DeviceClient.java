@@ -197,6 +197,130 @@ public final class DeviceClient implements AutoCloseable {
         ping(5000);
     }
 
+    // ------------------------------------------------------ 文件通道 -- //
+
+    /**
+     * 上传 {@code relativePath}（形如 {@code /demo.txt}）：文件必须已经在
+     * {@code <当前目录>/<sn><relativePath>} 上——用 {@link #uploadLocalFile} 就不用
+     * 操心这件事。
+     */
+    public void uploadFile(String relativePath) {
+        NclinkException.check(Native.clientFileWrite(requireOpen(), relativePath),
+                              "uploadFile");
+    }
+
+    /** 把本地文件传过去；{@code relativePath} 省略时用本地文件名。 */
+    public void uploadLocalFile(java.io.File localPath, String relativePath)
+            throws java.io.IOException {
+        if (relativePath == null || relativePath.isEmpty()) {
+            relativePath = "/" + localPath.getName();
+        }
+        java.io.File staged = new java.io.File(stagedPath(relativePath));
+        java.io.File parent = staged.getParentFile();
+        if (parent != null) {
+            parent.mkdirs();
+        }
+        if (!staged.getAbsoluteFile().equals(localPath.getAbsoluteFile())) {
+            java.nio.file.Files.copy(localPath.toPath(), staged.toPath(),
+                                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+        uploadFile(relativePath);
+    }
+
+    public void uploadLocalFile(java.io.File localPath) throws java.io.IOException {
+        uploadLocalFile(localPath, null);
+    }
+
+    /** 下载文件，返回落盘后的本地绝对路径（在 {@code <当前目录>/<sn>/} 下面）。 */
+    public String downloadFile(String relativePath) {
+        String local = Native.clientFileRead(requireOpen(), relativePath);
+        if (local == null || local.isEmpty()) {
+            throw new NclinkException(-1, "downloadFile", "下载失败: " + relativePath);
+        }
+        return local;
+    }
+
+    /** 下载并复制到 {@code localPath}；返回落点绝对路径。 */
+    public String downloadTo(String relativePath, java.io.File localPath)
+            throws java.io.IOException {
+        java.io.File staged = new java.io.File(downloadFile(relativePath));
+        java.io.File parent = localPath.getParentFile();
+        if (parent != null) {
+            parent.mkdirs();
+        }
+        java.nio.file.Files.copy(staged.toPath(), localPath.toPath(),
+                                 java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        return localPath.getAbsolutePath();
+    }
+
+    /** 列设备上的某个目录（默认根 "/"）。 */
+    public java.util.List<FileInfo> listFiles(String remoteDir) {
+        return FileInfo.parseList(Native.clientFileLlJson(requireOpen(),
+                                                          remoteDir == null ? "/"
+                                                                            : remoteDir));
+    }
+
+    public java.util.List<FileInfo> listFiles() {
+        return listFiles("/");
+    }
+
+    /** 在设备上建目录。 */
+    public void makeDirectory(String remoteDir) {
+        NclinkException.check(Native.clientFileMkdir(requireOpen(), remoteDir),
+                              "makeDirectory");
+    }
+
+    /** 删设备上的文件或目录（目录递归删）。 */
+    public void deleteFile(String remotePath) {
+        NclinkException.check(Native.clientFileDelete(requireOpen(), remotePath),
+                              "deleteFile");
+    }
+
+    /**
+     * 带文件参数的方法调用：{@code keys} 与 {@code paths} 一一对应，参数里那些键会
+     * 被换成 "/temp/&lt;名字&gt;"（文件经文件通道送过去），应答里 "fileKeys" 列出的
+     * 值会被换成本地路径。
+     */
+    public Json methodCallFile(String method, String paramsJson, String[] keys,
+                               String[] paths) {
+        String[] out = new String[1];
+        NclinkException.check(Native.clientMethodCallFile(requireOpen(), method,
+                                                          paramsJson,
+                                                          jsonArray(keys),
+                                                          jsonArray(paths), 5000,
+                                                          out),
+                              "methodCallFile");
+        return Json.parse(out[0]);
+    }
+
+    /** 文件通道的暂存位置：{@code <当前目录>/<sn><相对路径>}。 */
+    public String stagedPath(String relativePath) {
+        String root = new java.io.File(System.getProperty("user.dir"), sn())
+                .getAbsolutePath();
+        if (relativePath == null || relativePath.isEmpty()) {
+            return root;
+        }
+        String tail = relativePath.replace('\\', '/');
+        while (tail.startsWith("/")) {
+            tail = tail.substring(1);
+        }
+        return root + java.io.File.separator
+                + tail.replace('/', java.io.File.separatorChar);
+    }
+
+    private static String jsonArray(String[] values) {
+        StringBuilder builder = new StringBuilder("[");
+        if (values != null) {
+            for (int i = 0; i < values.length; i++) {
+                if (i > 0) {
+                    builder.append(',');
+                }
+                builder.append(JsonValues.quoted(values[i]));
+            }
+        }
+        return builder.append(']').toString();
+    }
+
     public void ping(int timeoutMs) {
         NclinkException.check(Native.clientPing(requireOpen(), timeoutMs), "ping");
     }

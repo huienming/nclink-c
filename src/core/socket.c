@@ -11,6 +11,12 @@
 #include "nclink/ncl_logger.h"
 #include "nclink/ncl_platform.h"
 
+/**
+ * 若干个候选地址里，非最后一个先只试这么久（毫秒）：一个卡住的地址（本机 IPv6
+ * 环回、黑洞路由之类）不该把 ncl_socket_connect() 的整个预算吃光。
+ */
+#define NCL_SOCKET_STAGGER_MS 300u
+
 #if defined(NCL_WITH_TLS)
 #  include <openssl/err.h>
 #  include <openssl/ssl.h>
@@ -339,11 +345,40 @@ ncl_socket *ncl_socket_connect(const char *host, unsigned port,
         return NULL;
     }
 
-    rc = NCL_ERR_CONNECT;
-    for (addr = addresses; addr != NULL; addr = addr->ai_next) {
-        rc = ncl_socket_connect_addr(addr, timeout_ms, &handle, err, err_len);
-        if (rc == NCL_OK) {
-            break;
+    /*
+     * 一个主机名可能解析出多个地址（典型是 "localhost" -> ::1 + 127.0.0.1）。
+     * 有的地址会**静静地卡在那儿**（比如本机 IPv6 环回上没人听，SYN 不回也不拒），
+     * 如果每个地址都给完整超时，卡住的那个就把整个预算吃光 —— 表现就是
+     * "连 localhost 要 5 秒才通"，而调用方（比如方法调用）早就超时了。
+     * 所以：不是最后一个地址就只给一小段（NCL_SOCKET_STAGGER_MS），最后一个
+     * 地址拿剩下的全部预算；只有一个地址时行为不变。
+     */
+    {
+        unsigned budget = timeout_ms != 0 ? timeout_ms : 10000u;
+        int64_t started = ncl_time_monotonic_millis();
+
+        rc = NCL_ERR_CONNECT;
+        for (addr = addresses; addr != NULL; addr = addr->ai_next) {
+            int64_t used = ncl_time_monotonic_millis() - started;
+            unsigned remaining = used >= 0 && (unsigned)used < budget
+                                     ? budget - (unsigned)used
+                                     : 0;
+            unsigned attempt;
+
+            if (addr->ai_next == NULL) {
+                attempt = remaining;
+            } else {
+                attempt = NCL_SOCKET_STAGGER_MS < remaining
+                              ? NCL_SOCKET_STAGGER_MS
+                              : remaining;
+            }
+            if (attempt == 0) {
+                break;
+            }
+            rc = ncl_socket_connect_addr(addr, attempt, &handle, err, err_len);
+            if (rc == NCL_OK) {
+                break;
+            }
         }
     }
     freeaddrinfo(addresses);

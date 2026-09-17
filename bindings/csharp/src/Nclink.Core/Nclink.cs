@@ -129,5 +129,56 @@ namespace Nclink
         {
             Native.LogSetConsole(enabled ? 1 : 0);
         }
+
+        /* -------------------------------------------------------- 文件通道 -- */
+
+        /// <summary>
+        /// 起进程级 FTP 端点（127.0.0.1:2323，admin / 123456，根 = 安装根）：
+        /// 文件通道里**设备是 FTP 客户端**，托管侧得有个 FTP 服务端等着它来取/送。
+        /// <see cref="Init"/> 时已经起过了，这里是给"先要文件后连 broker"的场合用的。
+        /// </summary>
+        public static void StartFileServer()
+        {
+            NclinkException.Check(Native.FileStartFtp(), "StartFileServer");
+        }
+
+        /// <summary>停掉进程级 FTP 端点。</summary>
+        public static void StopFileServer()
+        {
+            Native.FileStopFtp();
+        }
+
+        /// <summary>这个扩展名的文件传输时要不要压缩（文本类为 true）。</summary>
+        public static bool NeedCompression(string fileName)
+        {
+            return Native.FileNeedCompression(Native.Utf8Z(fileName)) != 0;
+        }
+
+        /// <summary>按 256 KB 一片算，这个字节数要几片。</summary>
+        public static int TotalChunks(long size)
+        {
+            return Native.FileTotalChunks(size);
+        }
+
+        /// <summary>本地文件内容的 SHA-256（小写十六进制）；读不了返回 null。</summary>
+        public static string FileChecksum(string path)
+        {
+            return Native.TakeUtf8(Native.FileChecksum(Native.Utf8Z(path)));
+        }
+
+        /// <summary>本地文件/目录的属性（目录的 FileType = 1）；拿不到返回 null。</summary>
+        public static NclFileInfo FileAttribute(string path, string parent = null)
+        {
+            string json = Native.TakeUtf8(
+                Native.FileAttributeJson(Native.Utf8Z(path), Native.Utf8Z(parent)));
+            if (json == null)
+            {
+                return null;
+            }
+            using (NclJson value = NclJson.Parse(json))
+            {
+                return NclFileInfo.Parse(value);
+            }
+        }
     }
 }

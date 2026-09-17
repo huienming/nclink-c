@@ -55,4 +55,12 @@ if (-not $NoTest) {
     # (Windows console, POSIX locale in a container), turning Chinese into "?".
     & $java.Source "-Djava.library.path=$libdir" "-Dfile.encoding=UTF-8" -cp $classes com.nclink.SelfTest
     if ($LASTEXITCODE -ne 0) { throw "self-test failed ($LASTEXITCODE)" }
+
+    # Opt-in: with NCLINK_TEST_BROKER=tcp://host:port the device and the client run
+    # in one process and talk over a real broker (probe, bindings, sampling, events
+    # and the whole file channel).
+    if ($env:NCLINK_TEST_BROKER) {
+        & $java.Source "-Djava.library.path=$libdir" "-Dfile.encoding=UTF-8" -cp $classes com.nclink.BrokerE2E
+        if ($LASTEXITCODE -ne 0) { throw "broker e2e failed ($LASTEXITCODE)" }
+    }
 }

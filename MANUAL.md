@@ -213,6 +213,14 @@ HTTP / REST 端点：`device.startHttp(9008, true)`（`0` = 随机端口）挂�
 `http.route(method, path, handler)` 还能挂自己的路由（返回 `HttpEndpoint.Reply`）。
 关端点要在关 `device` 之前——`device.close()` 已经先收 HTTP 再停服务。
 
+文件通道（`/CONTROLLER/FILE`，MQTT 只传 `/temp/<名字>` 令牌、字节走 FTP）：
+`device.registerFileTool()` 让设备端能收文件；客户端侧
+`client.uploadLocalFile(本地文件, "/data/x.bin")` / `client.downloadTo("/data/x.bin",
+本地文件)` / `client.listFiles("/data")`（`FileInfo`）/ `client.makeDirectory` /
+`client.deleteFile` / `client.methodCallFile(...)`（带文件参数的方法调用）。方向是
+**设备当 FTP 客户端**、上位机当 FTP 服务端（`Nclink.startFileServer()` 起
+127.0.0.1:2323，`init` 时已经起过）。
+
 ### 2.4.4 Python 绑定（ctypes）
 
 `bindings/python/` 是 ctypes 绑定，只用标准库：
@@ -239,6 +247,11 @@ HTTP / REST 端点用 `device.start_http(port, with_config=True)`：库自带
 `GET /api/schema`（OpenAPI 3.0）、`GET /swagger-ui`、`POST /api/<工具>/<方法>` 与
 配置端点；`http.route("GET", "/api/hello", handler)` 挂自己的路由（处理函数返回
 `None` / `str` / 可 JSON 对象 / `(status, content_type, body)`）。
+
+文件通道同一套形状：设备端 `device.register_file_tool()`，客户端
+`client.upload_local_file(...)` / `download_to(...)` / `list_files(...)`（`FileInfo`）/
+`make_directory(...)` / `delete_file(...)` / `method_call_file(...)`；本机的 FTP 服务端
+由 `nclink.init()` 起好（`nclink.start_file_server()` 是显式版本）。
 
 ### 2.4.5 C# 绑定（P/Invoke）
 
@@ -269,7 +282,11 @@ broker）；想看"报文真的过 MQTT"的那一段，设 `NCLINK_TEST_BROKER=t
 客户端 + 设备端都包：`NclServer`（`RegisterTool` / `NclToolBinding` / `Subscribe` /
 `InitSamples` / `PushEvent` / 离线 `Dispatch` / 自研传输 `NclPublishSink`）、
 `NclHttpEndpoint`（`StartHttp` + `Route`，与 Java / Python 同一套 REST 端点）、
-`Nclink.Parse(topic, payload)` → `NclMessage`（`AsSample()` / `AsEvent()` 拿快照）。
+`Nclink.Parse(topic, payload)` → `NclMessage`（`AsSample()` / `AsEvent()` 拿快照），
+以及文件通道：设备端 `RegisterFileTool`、客户端
+`UploadLocalFile` / `DownloadTo` / `ListFiles`（`NclFileInfo`）/ `MakeDirectory` /
+`DeleteRemoteFile` / `MethodCallFile`，本地小工具 `Nclink.FileChecksum` /
+`FileAttribute` / `NeedCompression` / `TotalChunks`。
 示例：`Nclink.Demo.Cli`（客户端）与 `Nclink.Demo.Device`（设备端，`broker` 传 `-`
 即离线，出站报文走自研传输打到控制台）。
 

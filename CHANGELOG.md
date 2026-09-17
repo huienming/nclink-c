@@ -47,6 +47,28 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 修复
 
+- **主机名解析出多个地址时，第一个卡住的地址会吃光整个超时**：`ncl_socket_connect()`
+  按 `getaddrinfo()` 的顺序逐个试，但每个都给完整超时。Windows 上 `localhost` 会先
+ 解析出 `::1`，而本机 IPv6 环回上没监听时那个 connect **不会立刻被拒**，于是白等
+  一整个超时（默认 5 s）才轮到 `127.0.0.1`——表现就是"连 localhost 要 5 秒"，
+  文件通道里更要命（设备侧 FTP 连接等 5 s，方法调用那头早就超时了）。现在非最后一个
+  地址只试 300 ms（`NCL_SOCKET_STAGGER_MS`），最后一个地址拿剩下的全部预算；只有
+  一个地址时行为不变。实测 `ncl_server_file_tool_detect("localhost", ...)` 由
+  **5032 ms → 313 ms**。
+- **方法名少了前导斜杠就不认**：文件头一直写着 `"/plc/getValue"` 与 `"plc/getValue"`
+  都接受，但 `ncl_server_dispatch()` 只在**以 `/` 开头**时才拆 `<工具>/<方法>`，
+  `"plc/getValue"` 被当成一个裸方法名 → "未找到方法"。现在两种写法都拆。
+- **设备端文件工具的对端目录用了 `bin/sn.txt` 的 SN**：客户端把文件放在
+  `<当前目录>/<它寻址的 SN>/` 下，而设备端却按 `bin/sn.txt` 里的 SN 去取 —— 只要
+  `bin/sn.txt` 与设备端实际用的 SN 不同（显式指定 SN 的设备端就是这种情况），
+  上传必然 550。现在一律用服务器自己的 SN（协议里的那个）。
+- **`{"@file": ...}` 标记对象在 Windows 上废掉**：临时文件名取的是路径的 basename，
+  而 `remote_basename()` 只认 `/`，Windows 本机路径（`C:\...`）整条被当成了文件名，
+  复制必然失败（`fileKeys` 也不会出现在应答里）。现在两种分隔符都认。
+- **工具返回的文件与文件工具的镜像目录对不上**：方法结果里的文件被复制到
+  `<root>/temp/`，而文件工具的 `read`（客户端按 `/temp/<名字>` 来取）找的是
+  `<root>/uploadFile/temp/`；于是"工具返回文件"只能命中"客户端本地已有一份"的
+  特殊情况，真取字节就 404。现在落到 `<root>/uploadFile/temp/`，与镜像一致。
 - **托管绑定的客户端方法调用（`methodCall`）把应答文本当成了 JSON 句柄**：库返还的是
   **应答报文的 JSON 文本**（`char*`），C# 的 `NclDeviceClient.MethodCall` 与 Python 的
   `DeviceClient.method_call` 直接把它包成 JSON 对象 → 一读就炸
@@ -85,6 +107,13 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 构建与发布
 
+- **文件通道进了三份托管绑定**（`ncl_file` 早就在库里，垫片里新加一组
+  `nclshim_*file*`）：客户端侧 `upload_file` / `download_file` / `list_files` /
+  `make_directory` / `delete_file` / `method_call_file`（带文件参数的方法调用）+ 本地
+  小工具（`need_compression` / `total_chunks` / `checksum` / `attribute` → `FileInfo`），
+  C# 是 `NclDeviceClient.UploadLocalFile / DownloadTo / ListFiles / MethodCallFile`
+  + `Nclink.StartFileServer()`，Java 与 Python 同一套形状；三个设备端示例都挂上了
+  `register_file_tool()`（客户端传文件用得到）+ 容忍式 `start_ftp()`。
 - **HTTP / REST 端点进了三份托管绑定**（`ncl_rest_attach` 早就在库里）：
   `start_http(port, with_config)` + 自定义路由（`method` 支持 `"*"`、`/api/` 开头是
   前缀匹配）+ `request_count` / `set_cors`；C# 是 `NclServer.StartHttp()` /
@@ -106,8 +135,11 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 - **可选的真 broker 端到端用例**：`NCLINK_TEST_BROKER=tcp://host:port` 一设，Python
   （`tests/test_broker_e2e.py`）与 C#（自检里的 `Broker` 一节）就把设备端与客户端
   放进**同一个进程**、报文真的过一遍 MQTT：probe、路径绑定取值/写值、`methodCall`、
-  采样上报、事件推送。C# 112 项 / Python 37 项，实测 Mosquitto 2 与 EMQX 5.8.9 各
-  跑一遍都 0 失败（上面那个 methodCall 的 bug 就是这么抓到的）。
+  采样上报、事件推送，以及整条**文件通道**（上传 / 列目录 / 下载 / 建目录 / 删文件 /
+  带文件参数的方法调用 + 工具返回文件）。Java 也补了 `com.nclink.BrokerE2E`
+  （`build.ps1` 里设了环境变量就会跑）。C# 130 项 / Java 11 项 / Python 42 项，实测
+  Mosquitto 2 与 EMQX 5.8.9 各跑一遍都 0 失败（methodCall 的应答解析、文件通道的
+  几个 bug 都是这么抓到的）。
 - **借用视图的 `Dispose` 改成空操作**（C#）：`NclJson` 的下标/成员视图、设备端的
   `NclServer.Model` 这类借用对象以前 `Dispose` 会把句柄置空、之后再用就抛
   `ObjectDisposedException`；现在与 Java / Python 一致——借用的东西不归你管，

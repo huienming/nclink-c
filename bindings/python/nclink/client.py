@@ -9,6 +9,7 @@ import ctypes
 import json as _json_stdlib
 
 from ._ffi import NclinkError, MESSAGE_CALLBACK, decode, encode, lib, take_text
+from . import _file
 from ._json import Json
 from ._message import Event, Sample
 from ._model import Model
@@ -170,6 +171,47 @@ class DeviceClient:
         rc = lib.nclshim_client_ping(self._check_open(), int(timeout_ms))
         if rc != 0:
             raise NclinkError(rc, "ping")
+
+    # ------------------------------------------------------ 文件通道 -- #
+
+    def upload_file(self, relative_path, timeout_ms=5000):
+        """上传 `<当前目录>/<sn><相对路径>` 上的文件；`upload_local_file()` 会替你
+        把本地文件摆到那个位置。"""
+        return _file.upload_file(self, relative_path, timeout_ms)
+
+    def upload_local_file(self, local_path, relative_path=None, timeout_ms=5000):
+        """把本地文件传过去（相对路径省略时用本地文件名）。"""
+        return _file.upload_local_file(self, local_path, relative_path, timeout_ms)
+
+    def download_file(self, relative_path):
+        """下载文件，返回落盘后的本地绝对路径（在 `<当前目录>/<sn>/` 下面）。"""
+        return _file.download_file(self, relative_path)
+
+    def download_to(self, relative_path, local_path):
+        """下载并复制到 `local_path`；返回落点绝对路径。"""
+        return _file.download_to(self, relative_path, local_path)
+
+    def list_files(self, remote_dir="/"):
+        """列设备上的目录，返回 `FileInfo` 列表。"""
+        return _file.list_files(self, remote_dir)
+
+    def make_directory(self, remote_dir):
+        """在设备上建目录。"""
+        return _file.make_directory(self, remote_dir)
+
+    def delete_file(self, remote_path):
+        """删设备上的文件或目录（目录递归删）。"""
+        return _file.delete_file(self, remote_path)
+
+    def method_call_file(self, method, params=None, keys=None, paths=None,
+                         timeout_ms=5000):
+        """带文件参数的方法调用（keys 与 paths 一一对应）。"""
+        return _file.method_call_file(self, method, params, keys, paths,
+                                      timeout_ms)
+
+    def staged_path(self, relative_path):
+        """文件通道的暂存位置：`<当前目录>/<sn><相对路径>`。"""
+        return _file._staged_path(self.sn, relative_path)
 
     # ------------------------------------------------------- 路径 / id -- #
 

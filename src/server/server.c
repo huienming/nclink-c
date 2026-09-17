@@ -935,11 +935,15 @@ ncl_message *ncl_server_invoke_method_call(ncl_server *server,
         ncl_message_set_code(response, NCL_KW_CODE_NG);
         return response;
     }
-    if (method_copy[0] == '/') {
-        char *slash = strchr(method_copy + 1, '/');
+    {
+        /* 少一个前导斜杠的 "tool/method" 也认：文件通道里的 "/temp/<名字>" 这类
+         * 方法路径用得很随意，文档也一直是这么承诺的。 */
+        char *scan = method_copy[0] == '/' ? method_copy + 1 : method_copy;
+        char *slash = strchr(scan, '/');
+
         if (slash != NULL) {
             *slash = '\0';
-            tool_copy = ncl_strdup(method_copy + 1);
+            tool_copy = ncl_strdup(scan);
             memmove(method_copy, slash + 1, strlen(slash + 1) + 1);
             tool = tool_copy;
         }

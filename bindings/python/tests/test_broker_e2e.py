@@ -15,7 +15,9 @@
 
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
 import unittest
 
@@ -141,6 +143,84 @@ class BrokerE2ETest(unittest.TestCase):
             self.assertGreaterEqual(device.sample_upload_count, 1)
             self.assertEqual(events[-1].key, "PART_COUNT")
             self.assertEqual(events[-1].value, state["count"])
+
+    def test_file_channel(self):
+        """文件通道：MQTT 只传令牌，字节走 FTP（设备是 FTP 客户端，本机是服务端）。"""
+        nclink.log_init()
+        device = nclink.Server(sn=SN, model=json.dumps(MODEL, ensure_ascii=False),
+                               broker=BROKER)
+        self.addCleanup(device.close)
+        device.register_file_tool()
+        seen = {"size": -1}
+        device.register_tool(
+            "sink",
+            methods={"take": None, "give": None},
+            handlers={"take": lambda params: self._take(seen, params),
+                      "give": lambda params: {"copy": {"@file": give["path"]}}})
+        device.subscribe()
+
+        nclink.init(BROKER)
+        self.addCleanup(nclink.shutdown)
+        try:
+            nclink.start_file_server()          # 幂等（init 里已经起过）
+        except nclink.NclinkError as error:
+            self.skipTest("FTP 2323 起不来（%s），跳过文件通道" % error)
+
+        give = {"path": None}
+        work = tempfile.mkdtemp(prefix="nclink-e2e-")
+        self.addCleanup(shutil.rmtree, work, True)
+        local = os.path.join(work, "report.txt")
+        content = "文件通道 e2e %s\n" % time.time()
+        with open(local, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        size = os.path.getsize(local)
+
+        with nclink.get_device(SN) as client:
+            client.upload_local_file(local, "/data/report.txt")
+            on_device = os.path.join(nclink.root(), "uploadFile", "data",
+                                     "report.txt")
+            self.assertTrue(os.path.exists(on_device), "设备侧没收到文件")
+            with open(on_device, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), content)
+
+            listed = client.list_files("/data")
+            self.assertEqual([item.file_name for item in listed], ["report.txt"])
+            self.assertEqual(listed[0].file_size, size)
+            self.assertFalse(listed[0].is_dir)
+
+            back = client.download_to("/data/report.txt",
+                                      os.path.join(work, "back.txt"))
+            with open(back, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), content)
+
+            client.make_directory("/docs")
+            self.assertIn("docs", [item.file_name for item in client.list_files("/")])
+
+            # 带文件参数的方法调用：参数里的文件传上去、返回值里的文件取回来
+            with client.method_call_file(
+                    "sink/take", params={"blob": ""}, keys=["blob"],
+                    paths=[local]) as reply:
+                self.assertEqual(reply.to_python()["code"], "OK")
+            self.assertEqual(seen["size"], size)
+
+            give["path"] = on_device
+            with client.method_call_file("sink/give") as reply:
+                data = reply.to_python()["data"]
+                self.assertIn("copy", data["fileKeys"])
+                with open(data["copy"], encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), content)
+
+            client.delete_file("/data/report.txt")
+            self.assertEqual(client.list_files("/data"), [])
+
+    @staticmethod
+    def _take(seen, params):
+        """设备侧的工具：把收到的文件参数读出来（路径在设备的 uploadFile 下）。"""
+        token = (params or {}).get("blob") or ""
+        path = os.path.join(nclink.root(), "uploadFile",
+                            *token.lstrip("/").split("/"))
+        seen["size"] = os.path.getsize(path) if os.path.exists(path) else -1
+        return seen["size"]
 
 
 if __name__ == "__main__":

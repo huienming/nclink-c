@@ -1,6 +1,6 @@
 # NC-Link C# 绑定
 
-`nclink-core-c` 的 .NET 封装：**客户端 + 设备端（Server）+ HTTP/REST 端点**，
+`nclink-core-c` 的 .NET 封装：**客户端 + 设备端（Server）+ HTTP/REST 端点 + 文件通道**，
 同一份代码同时支持 .NET Framework 与 .NET（Core）。
 
 | 目标框架 | 说明 |
@@ -169,6 +169,56 @@ using (NclServer device = new NclServer("V2CS0000001"))
 匹配规则）。**关端点要在关服务器之前**（路由回调还挂在服务器上），`device.Dispose()`
 已经按这个顺序做了。
 
+### 文件通道（上传 / 下载）
+
+MQTT 报文里只传 `/temp/<名字>` 这样的**令牌**，字节走 FTP。方向要记住：**设备是
+FTP 客户端**，托管侧是 FTP 服务端（进程级端点 127.0.0.1:2323、admin / 123456、根
+= 安装根；`Nclink.Init()` 时已经起好，`Nclink.StartFileServer()` 是显式的幂等版本）。
+
+```csharp
+// 设备端（收文件的那一边）
+using (NclServer device = new NclServer("V2CS0000001", null, "tcp://127.0.0.1:1883"))
+{
+    device.RegisterFileTool();          // /CONTROLLER/FILE：write/read/ll/mkdir/delete
+    device.Subscribe();
+}
+
+// 客户端（上位机那一侧）
+using (NclDeviceClient client = Nclink.GetDevice("V2CS0000001"))
+{
+    client.UploadLocalFile(@"D:\work\report.txt", "/data/report.txt");  // 传上去
+    foreach (NclFileInfo item in client.ListFiles("/data"))
+    {
+        Console.WriteLine("{0} {1} 字节 {2} 片", item.FileName, item.FileSize,
+                          item.TotalChunks);
+    }
+    string local = client.DownloadTo("/data/report.txt", @"D:\work\back.txt");
+    client.MakeDirectory("/docs");
+    client.DeleteRemoteFile("/data/report.txt");
+
+    // 带文件参数的方法调用：keys 与 paths 一一对应，应答里的 fileKeys 会被换成本地路径
+    using (NclJson reply = client.MethodCallFile("plc/convert",
+                                                "{\"input\":\"\"}",
+                                                new[] { "input" }, new[] { @"D:\a.bin" }))
+    { }
+}
+
+// 本地文件小工具（不需要 broker）
+bool binary = Nclink.NeedCompression("model.json");
+int chunks = Nclink.TotalChunks(300 * 1024);
+string sha256 = Nclink.FileChecksum(@"D:\work\report.txt");
+NclFileInfo info = Nclink.FileAttribute(@"D:\work\report.txt");
+```
+
+- `UploadFile(relative)` 只是"把已经在 `<当前目录>/<sn><relative>` 上的文件传上去"
+  （与 C API 一致）；`UploadLocalFile` 会先替你摆到那个位置。
+- 下载回来的文件先落在 `<当前目录>/<sn>/` 下，`DownloadFile` 返回绝对路径，
+  `DownloadTo` 再替你复制到目标。
+- 设备按 `conf/mqtt.cfg` 里 broker 的主机名 + 端口 2323 找托管侧的 FTP 端点（拿不到
+  配置就 127.0.0.1）——所以托管侧与 broker 同一台机器时开箱即用。
+- 设备侧的 `StartFtp()` 是"设备自己也开个 FTP 端点"（读 `bin/ftp.txt`），客户端传文件
+  用不到它；缺文件时它抛异常，示例里是容忍着来的。
+
 ### 报文解析
 
 自己拿到的报文（离线回放、日志里存的样本）也能按库的规则解码：
@@ -231,6 +281,7 @@ device.SampleReceived += (s, e) =>
 | `NclHttpEndpoint` | `Dispose`（幂等；`server.Dispose()` 也会收） |
 | `NclNode`、`NclJson` 的下标/成员视图、`NclServer.Model` | **借用**：宿主活着就有效；`Dispose` 是空操作（借用的东西不归你管） |
 | `NclSample` / `NclEvent` | 纯托管快照，没有句柄 |
+| `NclFileInfo` | 纯托管快照，没有句柄 |
 
 - 采样/事件回调在客户端自己的读取线程上触发，**别在回调里做耗时操作**；工具方法回调
   跑在库自己的线程池上（不是 MQTT 读取线程）。回调里抛出的异常不会跨到原生层，会记在
@@ -248,13 +299,15 @@ $env:NCLINK_TEST_BROKER = "tcp://127.0.0.1:1883"
 dotnet run --project .\bindings\csharp\tests\Nclink.SelfTest -c Release
 ```
 
-不需要 broker（跑本机回环）：98 项检查覆盖 JSON / 模型 / 报文解析 / 设备端（离线
+不需要 broker（跑本机回环）：105 项检查覆盖 JSON / 模型 / 报文解析 / 设备端（离线
 dispatch、工具注册、采样通道、事件、自研传输、关闭语义）/ HTTP 端点（REST、配置
-端点、swagger-ui、自定义路由、错误路径、幂等关闭）。
+端点、swagger-ui、自定义路由、错误路径、幂等关闭）/ 文件小工具（压缩判断、分片数、
+SHA-256、属性）。
 
-设了 `NCLINK_TEST_BROKER` 再多跑 14 项"过 MQTT"的端到端（设备端与客户端同进程）：
-probe、路径绑定取值/写值、`MethodCall`（应答文本要解析成 `NclJson`）、采样上报与
-事件推送 —— 一共 112 项。
+设了 `NCLINK_TEST_BROKER` 再多跑 25 项"过 MQTT"的端到端（设备端与客户端同进程）：
+probe、路径绑定取值/写值、`MethodCall`（应答文本要解析成 `NclJson`）、采样上报、
+事件推送，以及整条文件通道（上传 / 列目录 / 下载 / 建目录 / 删文件 / 带文件参数的
+方法调用，含"工具返回文件"的反向）—— 一共 130 项。
 
 ## 示例输出
 
@@ -320,8 +373,6 @@ GET  /api/nope          -> 404 not found
 
 ## 还没做的
 
-- 文件通道（`/nclinkClient/*` 上传下载）：`RegisterFileTool` + `StartFtp` 已经能挂，
-  但"客户端侧的上传/下载"还没有托管包装。
 - TLS（`ssl://`）：库要带 `NCLINK_WITH_TLS=ON` 编，垫片不用改。
 - 零拷贝读采样：现在 `NclSample` 在回调里整份拷贝（方便、安全）；需要极致吞吐可以
   加一个"只在回调期间有效"的借用视图 API。

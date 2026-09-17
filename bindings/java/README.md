@@ -32,7 +32,11 @@ C 库是静态库、没有导出符号，而且 Java 侧不该依赖 C 结构体
 # 1) 先编核心静态库（仓库根）
 .\build.ps1
 
-# 2) Java 绑定：native + javac + 自检（99 项，不需要 broker）
+# 2) Java 绑定：native + javac + 自检（106 项，不需要 broker）
+powershell -ExecutionPolicy Bypass -File .\bindings\java\build.ps1
+
+# 3) 想连真 broker 再跑一遍端到端（设备端 + 客户端同进程，报文真的过 MQTT）
+$env:NCLINK_TEST_BROKER = "tcp://127.0.0.1:1883"
 powershell -ExecutionPolicy Bypass -File .\bindings\java\build.ps1
 ```
 
@@ -194,6 +198,51 @@ http.close();                    // 幂等；device.close() 也会替你收
 - 设备端示例会把它挂起来：`DeviceDemo ... [HTTP端口]`，然后
   `curl -X POST http://127.0.0.1:9008/api/plc/getCount -d '{}'` 就能调工具方法。
 
+### 文件通道（上传 / 下载）
+
+MQTT 报文里只传 `/temp/<名字>` 这样的**令牌**，字节走 FTP。方向要记住：**设备是
+FTP 客户端**，本机是 FTP 服务端（进程级端点 127.0.0.1:2323、admin / 123456、根 =
+安装根；`Nclink.init()` 时已经起好，`Nclink.startFileServer()` 是显式的幂等版本）。
+
+```java
+// 设备端（收文件的那一边）
+try (Server device = new Server("V2JAVA00001", modelJson, broker)) {
+    device.registerFileTool();       // /CONTROLLER/FILE：write/read/ll/mkdir/delete
+    device.subscribe();
+}
+
+// 客户端（上位机那一侧）
+try (DeviceClient client = Nclink.getDevice("V2JAVA00001")) {
+    client.uploadLocalFile(new File("report.txt"), "/data/report.txt");
+    for (FileInfo item : client.listFiles("/data")) {
+        System.out.println(item.fileName() + " " + item.fileSize() + " 字节");
+    }
+    client.downloadTo("/data/report.txt", new File("back.txt"));
+    client.makeDirectory("/docs");
+    client.deleteFile("/data/report.txt");
+
+    // 带文件参数的方法调用：keys 与 paths 一一对应，应答里的 fileKeys 会被换成本地路径
+    try (Json reply = client.methodCallFile("plc/convert", "{\"input\":\"\"}",
+                                            new String[] {"input"},
+                                            new String[] {"a.bin"})) { }
+}
+
+// 本地文件小工具（不需要 broker）
+Nclink.fileNeedCompression("model.json");  // true
+Nclink.fileTotalChunks(300 * 1024);        // 2
+Nclink.fileChecksum("report.txt");         // SHA-256 十六进制
+Nclink.fileAttribute("report.txt");        // com.nclink.FileInfo
+```
+
+- `uploadFile(relative)` 只是"把已经在 `<当前目录>/<sn><relative>` 上的文件传上去"
+  （与 C API 一致）；`uploadLocalFile()` 会先替你摆到那个位置。
+- 下载回来的文件先落在 `<当前目录>/<sn>/` 下，`downloadFile()` 返回绝对路径，
+  `downloadTo()` 再替你复制到目标。
+- 设备按 `conf/mqtt.cfg` 里 broker 的主机名 + 端口 2323 找本机的 FTP 端点（拿不到配置
+  就 127.0.0.1）——所以本机与 broker 是同一台机器时开箱即用。
+- 设备侧的 `startFtp()` 是"设备自己也开个 FTP 端点"（读 `bin/ftp.txt`），客户端传文件
+  用不到它；缺文件时它抛 `NclinkException`，示例里是容忍着来的。
+
 ## 内存与线程
 
 | 对象 | 谁释放 |
@@ -206,6 +255,7 @@ http.close();                    // 幂等；device.close() 也会替你收
 | `Server` | **自有**：`close()`（停采样/FTP、断开 MQTT、放掉所有回调） |
 | `HttpEndpoint` | **自有**：`close()`（幂等；`server.close()` 也会收） |
 | `Server.model()` | **借用**：服务器活着就有效，不用关 |
+| `FileInfo` | 纯 Java 快照，没有句柄 |
 
 Java 没有可靠的析构钩子，所以**自有的对象必须显式 close**（忘了就漏到进程结束，不会
 崩）。采样/事件回调在客户端自己的**读取线程**上触发：JNI 会把该线程挂到 JVM 上、
@@ -239,8 +289,6 @@ received 35 samples, 6 events
 
 ## 还没做的
 
-- 文件通道（`/nclinkClient/*` 上传下载）：`registerFileTool` + `startFtp` 已经能挂，
-  但"客户端侧的上传/下载"还没有托管包装。
 - TLS（`ssl://`）：库带 `NCLINK_WITH_TLS=ON` 编即可，绑定不用改。
 - Maven / Gradle 坐标与 jar 打包：现在是"源码 + 一个原生库"直接用；要发包得把
   `nclink_jni.dll` / `libnclink_jni.so` 按平台打进 jar 或另发。

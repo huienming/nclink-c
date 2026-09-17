@@ -126,6 +126,16 @@ namespace Nclink.Demo
                             }
                         });
                     device.RegisterBuiltinTool();   // addSample / removeSample
+                    device.RegisterFileTool();      // /CONTROLLER/FILE：文件通道
+                    try
+                    {
+                        device.StartFtp();          // 设备自己的 FTP 端点（读 bin/ftp.txt）
+                    }
+                    catch (NclinkException)
+                    {
+                        Console.WriteLine("提示：bin/ftp.txt 还没有，跳过设备侧 FTP 端点" +
+                                          "（客户端传文件不受影响）。");
+                    }
                     if (broker != null)
                     {
                         device.Subscribe();         // 订阅 6 个请求主题（要接 MQTT）

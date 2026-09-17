@@ -6,6 +6,7 @@ package com.nclink.demo;
 import com.nclink.Json;
 import com.nclink.HttpEndpoint;
 import com.nclink.Nclink;
+import com.nclink.NclinkException;
 import com.nclink.Operation;
 import com.nclink.Server;
 
@@ -92,6 +93,13 @@ public final class DeviceDemo {
                                            "getWarning")},
                     (method, params) -> machine.handle(method, params));
             device.registerBuiltinTool();       // addSample / removeSample
+            device.registerFileTool();          // /CONTROLLER/FILE：文件通道
+            try {
+                device.startFtp();              // 设备自己的 FTP 端点（读 bin/ftp.txt）
+            } catch (NclinkException error) {
+                System.out.println("提示：bin/ftp.txt 还没有，跳过设备侧 FTP 端点"
+                        + "（客户端传文件不受影响）。");
+            }
             device.subscribe();                 // 订阅 6 个请求主题
             device.initSamples();               // 启动模型里声明的采样通道
 

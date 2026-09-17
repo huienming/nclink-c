@@ -46,6 +46,7 @@ namespace Nclink.SelfTest
             Messages();
             Server();
             Http();
+            Files();
             Broker();
 
             Console.WriteLine();
@@ -482,6 +483,184 @@ namespace Nclink.SelfTest
         /* ------------------------------------------------------------ 夹具 -- */
 
         /// <summary>
+        /// 文件通道端到端：上传 / 列目录 / 下载 / 建目录 / 删；再走一遍"带文件参数
+        /// 的方法调用"（参数里的文件传上去、返回值里的文件取回来）。
+        /// </summary>
+        private static void FileChannel(NclServer device, NclDeviceClient client)
+        {
+            string dir = Path.Combine(Path.GetTempPath(),
+                                      "nclink-e2e-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string local = Path.Combine(dir, "report.txt");
+            string content = "文件通道 e2e " + Guid.NewGuid().ToString("N") + "\n";
+            File.WriteAllText(local, content, new UTF8Encoding(false));
+            long contentBytes = new FileInfo(local).Length;
+            string deviceRoot = Path.Combine(Nclink.RootDirectory, "uploadFile");
+            string onDevice = Path.Combine(deviceRoot, "data", "report.txt");
+            long seen = -1;
+            string[] givePath = new string[1];
+
+            try
+            {
+                // 设备端挂文件工具；"sink" 用来试带文件参数的方法调用
+                device.RegisterFileTool();
+                device.RegisterTool("sink", new string[] { "take", "give" }, null,
+                    delegate(string method, NclJson parameters)
+                    {
+                        if (method == "take")
+                        {
+                            string token = parameters.Get("blob").AsString();
+                            string path = Path.Combine(deviceRoot,
+                                token.TrimStart('/').Replace('/',
+                                    Path.DirectorySeparatorChar));
+                            seen = File.Exists(path) ? new FileInfo(path).Length : -1;
+                            return seen;
+                        }
+                        return "{\"copy\":{\"@file\":\""
+                               + givePath[0].Replace("\\", "\\\\") + "\"}}";
+                    });
+
+                client.UploadLocalFile(local, "/data/report.txt");
+                Check("文件通道：上传后设备侧有文件", File.Exists(onDevice));
+                Check("文件通道：设备侧字节一致（" + contentBytes + " 字节）",
+                      File.Exists(onDevice) && new FileInfo(onDevice).Length == contentBytes
+                      && File.ReadAllText(onDevice) == content);
+
+                IList<NclFileInfo> listed = client.ListFiles("/data");
+                bool found = false;
+                foreach (NclFileInfo entry in listed)
+                {
+                    if (entry.FileName == "report.txt")
+                    {
+                        found = !entry.IsDirectory
+                                && entry.FileSize == contentBytes;
+                    }
+                }
+                Check("文件通道：列目录看到它（" + listed.Count + " 项）", found);
+
+                string back = Path.Combine(dir, "back.txt");
+                client.DownloadTo("/data/report.txt", back);
+                Check("文件通道：下载回来的字节一致",
+                      File.Exists(back) && File.ReadAllText(back) == content);
+
+                client.MakeDirectory("/docs");
+                bool hasDocs = false;
+                foreach (NclFileInfo entry in client.ListFiles("/"))
+                {
+                    hasDocs = hasDocs || (entry.FileName == "docs" && entry.IsDirectory);
+                }
+                Check("文件通道：建目录", hasDocs);
+
+                // 带文件参数的方法调用：参数里的文件传上去
+                using (NclJson reply = client.MethodCallFile(
+                           "sink/take", "{\"blob\":\"\"}", new string[] { "blob" },
+                           new string[] { local }))
+                {
+                    Check("文件通道：方法参数带文件（设备收到 "
+                          + seen + " 字节）", seen == contentBytes);
+                    Check("文件通道：这次的应答正常",
+                          reply != null && reply.Get("code").AsString() == "OK");
+                }
+
+                // 返回值里的文件取回来（工具返回 {"@file": ...} 标记）
+                givePath[0] = onDevice;
+                using (NclJson reply = client.MethodCallFile("sink/give", "{}", null, null))
+                {
+                    NclJson copy = reply == null ? null : reply.Get("data").Get("copy");
+                    string got = copy == null ? null : copy.AsString();
+                    Check("文件通道：返回值里的文件已下载到本地", got != null
+                          && File.Exists(got) && File.ReadAllText(got) == content);
+                    NclJson keys = reply == null ? null : reply.Get("data").Get("fileKeys");
+                    Check("文件通道：应答里有 fileKeys",
+                          keys != null && keys[0].AsString() == "copy");
+                }
+
+                // 托管侧自己写的文件（路径不在文件通道的暂存目录里）也要能取回来
+                string own = Path.Combine(dir, "own.txt");
+                File.WriteAllText(own, "own file " + content, new UTF8Encoding(false));
+                givePath[0] = own;
+                using (NclJson reply = client.MethodCallFile("sink/give", "{}", null, null))
+                {
+                    string got = reply == null
+                                     ? null
+                                     : reply.Get("data").Get("copy").AsString();
+                    Check("文件通道：返回值里的文件（本地任意路径）也下得回来",
+                          got != null && File.Exists(got)
+                          && File.ReadAllText(got) == File.ReadAllText(own));
+                }
+
+                client.DeleteRemoteFile("/data/report.txt");
+                bool stillThere = false;
+                foreach (NclFileInfo entry in client.ListFiles("/data"))
+                {
+                    stillThere = stillThere || entry.FileName == "report.txt";
+                }
+                Check("文件通道：删掉之后列不到了", !stillThere);
+            }
+            catch (NclinkException error)
+            {
+                Check("文件通道用例（" + error.Operation + ": " + error.Message + "）",
+                      false);
+            }
+            finally
+            {
+                Directory.Delete(dir, true);
+            }
+        }
+
+        /// <summary>文件小工具（离线：本地文件，不需要 broker 与设备）。</summary>
+        private static void Files()
+        {
+            string dir = Path.Combine(Path.GetTempPath(),
+                                      "nclink-selftest-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "hello.txt");
+            string content = "hello nclink 文件通道\n";
+            File.WriteAllText(path, content, new UTF8Encoding(false));
+            try
+            {
+                Check("文件工具：文本类要压缩",
+                      Nclink.NeedCompression("a.txt")
+                      && Nclink.NeedCompression("model.json"));
+                Check("文件工具：二进制类不压缩", !Nclink.NeedCompression("a.bin"));
+                Check("文件工具：分片数（256 KB 一片）",
+                      Nclink.TotalChunks(0) == 0 && Nclink.TotalChunks(1) == 1
+                      && Nclink.TotalChunks(256 * 1024) == 1
+                      && Nclink.TotalChunks(256 * 1024 + 1) == 2);
+
+                byte[] bytes = Encoding.UTF8.GetBytes(content);
+                string expected;
+                using (System.Security.Cryptography.SHA256 sha =
+                           System.Security.Cryptography.SHA256.Create())
+                {
+                    StringBuilder hex = new StringBuilder(64);
+                    foreach (byte b in sha.ComputeHash(bytes))
+                    {
+                        hex.Append(b.ToString("x2"));
+                    }
+                    expected = hex.ToString();
+                }
+                Check("文件工具：SHA-256 与 .NET 算的一致",
+                      Nclink.FileChecksum(path) == expected);
+
+                NclFileInfo info = Nclink.FileAttribute(path, dir);
+                Check("文件工具：属性（名字/大小/片数/不是目录）",
+                      info != null && info.FileName == "hello.txt"
+                      && info.FileSize == bytes.Length && info.TotalChunks == 1
+                      && !info.IsDirectory && info.Compressed);
+                NclFileInfo folder = Nclink.FileAttribute(dir);
+                Check("文件工具：目录属性（fileType=1）",
+                      folder != null && folder.IsDirectory && folder.FileSize == 0);
+                Check("文件工具：不存在的路径返回 null",
+                      Nclink.FileAttribute(Path.Combine(dir, "nope.bin")) == null);
+            }
+            finally
+            {
+                Directory.Delete(dir, true);
+            }
+        }
+
+        /// <summary>
         /// 对**真 broker** 的端到端检查：设了 <c>NCLINK_TEST_BROKER</c> 才跑。
         ///
         /// 设备端与客户端放在同一个进程里，报文真的过一遍 broker。离线用例
@@ -514,6 +693,19 @@ namespace Nclink.SelfTest
             state[0] = 1;
             using (NclServer device = new NclServer(sn, model, broker))
             {
+                // 文件通道要本机当 FTP 服务端（端口 2323）：被别的程序占着就跳过这一段，
+                // 别把整个自检拖垮（StartFileServer 起不来会抛）。
+                bool fileServer = true;
+                try
+                {
+                    Nclink.StartFileServer();
+                }
+                catch (NclinkException error)
+                {
+                    fileServer = false;
+                    Console.WriteLine("跳过文件通道（FTP 2323 起不来: "
+                                      + error.CodeName + "）");
+                }
                 device.RegisterTool(
                     "plc",
                     new string[] { "getStatus", "getCount", "setCount" },
@@ -622,6 +814,12 @@ namespace Nclink.SelfTest
                               device.SampleUploadCount > 0);
                         Check("真 broker：回调没出错", device.LastCallbackError == null
                                                        && client.LastCallbackError == null);
+
+                        /* ---- 文件通道：MQTT 只传令牌，字节走 FTP ---- */
+                        if (fileServer)
+                        {
+                            FileChannel(device, client);
+                        }
                     }
                 }
                 finally
