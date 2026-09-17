@@ -91,7 +91,7 @@ static ncl_err ncl_config_read(const char *path, size_t max_bytes, char **out,
  * ncl_sn_read() produces. The init call also
  * overwrites bin/sn.txt unconditionally, so calling the /api/cfg/init endpoint
  * replaces the identity a device already has. Both quirks are reproduced
- * deliberately; see PORTING.md section 3.
+ * deliberately; see the serial number rules in MANUAL.md (3.4 and 4.1).
  */
 static char *ncl_config_random_sn(void)
 {

@@ -18,7 +18,7 @@
 #define TEST_SN "V203243111F"
 
 /* The device model used by the tests. The STATUS data item sits directly under
- * the device, so its path is "/STATUS" (see the path rules in PORTING.md). */
+ * the device, so its path is "/STATUS" (see the path rules in MANUAL.md 4.3). */
 static const char *kModelJson =
     "{\"name\":\"nclink\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\","
     "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\",\"configs\":[],"

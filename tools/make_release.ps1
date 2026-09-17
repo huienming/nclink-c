@@ -3,17 +3,24 @@
 
 # Assemble the release package: headers, both static libraries and the docs.
 #
-# 发布包默认**不含实现源码**：头文件 + 两个平台的库 + 文档 + 示例程序。
-# 需要把仓库整棵树（src/tests/tools 与构建脚本）一起发出去时加 -WithSource。
+# The package has no implementation source by default: headers, both static
+# libraries, the docs and the example programs. Pass -WithSource to also ship
+# the whole tree (src/tests/tools and the build scripts).
 #
-# 打包完成后会做一遍内容审查：包内出现不该外发的字样即报错（关键词表以码点
-# 转义书写，见下面的 $forbidden，本文件自身也满足该审查）。
+# After assembly a content guard runs over the package: a screened word fails
+# the run (the keyword list is written as code point escapes, see $forbidden
+# below, so this file itself passes that guard).
 #
-#   .\tools\make_release.ps1                        # 头文件 + 库 + 文档 + 示例
+# Note: keep this file ASCII-only. Windows PowerShell 5.1 reads .ps1 files with
+# the OEM code page, and a comment whose last byte pair is a multi-byte
+# character can swallow the following line.
+#
+#   .\tools\make_release.ps1                        # headers + libs + docs + examples
 #   .\tools\make_release.ps1 -Version 3.2.0
-#   .\tools\make_release.ps1 -WithSource             # 额外含 src/tests/tools 与构建脚本
+#   .\tools\make_release.ps1 -WithSource            # also ship src/tests/tools
 #
-# 库与示例可执行文件按下面的位置收集，缺哪个就跳过哪个（并打印 note）：
+# Libraries and example executables are collected from the locations below;
+# a missing one is skipped with a note:
 #   build/nclink_core.lib            lib/windows-x64-msvc/ + examples/bin/windows-x64-msvc/
 #   build-x86/nclink_core.lib        lib/windows-x86-msvc/ + examples/bin/windows-x86-msvc/
 #   build-tls/nclink_core.lib        lib/windows-x64-msvc-tls/
@@ -105,9 +112,9 @@ if ($WithSource) {
 
 # Language bindings: sources only, they link the packaged static libraries
 Copy-Tree "bindings/go" "bindings/go" @("*.go", "*.mod", "*.md")
-# obj/ 与 bin/ 是编译产物（.gitignore 里也排除了），不进包
+# obj/ and bin/ are build output (.gitignore excludes them too), not shipped
 Copy-Tree "bindings/csharp" "bindings/csharp" @("*.cs", "*.csproj", "*.md", "*.c", "*.h", "*.ps1", "*.config") "\\obj\\|\\bin\\"
-# 三种托管绑定共用的原生垫片（C 源码 + 头文件 + 构建脚本）
+# The shared native shim (C source + header + build scripts)
 Copy-Tree "bindings/native" "bindings/native" @("*.c", "*.h", "*.ps1", "*.sh", "*.md") "\\bin\\"
 Copy-Tree "bindings/java" "bindings/java" @("*.java", "*.c", "*.h", "*.md", "*.ps1", "*.sh") "\\bin\\|\\build\\"
 Copy-Tree "bindings/python" "bindings/python" @("*.py", "*.md", "*.ps1", "*.sh") "\\bin\\|__pycache__\\"
@@ -169,7 +176,11 @@ if ($WithSource) {
 # keyword list is written as a \uXXXX escape, so this file does not contain the
 # words it screens for (and survives being read as ANSI). .NET regex decodes the
 # escapes; the escapes around "(?i)" and "\b" style atoms stay intact.
-$forbidden = '(?i)\b\u006a\u0061\u0076\u0061\b|\u0063\u006e\.\u006e\u0065\u0072\u0063|\.\u006a\u0061\u0076\u0061\b|\u0065\u0076\u0065\u0072\u0069\u0074|\u006a\u0061\u0063\u006b\u0073\u006f\u006e|\u0070\u0061\u0068\u006f|\u006f\u006b\u0068\u0074\u0074\u0070|\u0063\u006f\u006d\u006d\u006f\u006e\u0073-\u006e\u0065\u0074|\u006e\u0061\u006e\u006f\u0068\u0074\u0074\u0070\u0064|\u0073\u0077\u0061\u0067\u0067\u0065\u0072-\u0063\u006f\u0072\u0065|\u0063\u0061\u0066\u0066\u0065\u0069\u006e\u0065|\u006d\u0071\u0074\u0074\u00765|\b\u0061\u006e\u0064\u0072\u006f\u0069\u0064\b|\b\u004a\u004e\u0049\b|\b\u0067\u0072\u0061\u0064\u006c\u0065\b|\b\u006d\u0061\u0076\u0065\u006e\b|\u8fc1\u79fb|\u79fb\u690d|\u4e0a\u6e38|\u539f\u7248|\b\u0050\u004f\u0052\u0054\u0049\u004e\u0047\b|\u004d\u0065\u0073\u0073\u0061\u0067\u0065\u0055\u0074\u0069\u006c\u0073|\u0052\u0065\u0073\u0075\u006c\u0074\.\u0073\u0075\u0063\u0063\u0065\u0073\u0073|\u0052\u0065\u0073\u0075\u006c\u0074\.\u0066\u0061\u0069\u006c\u0065\u0064|\u0045\u006e\u0063\u006f\u0064\u0065\u0072\.\u0065\u006e\u0063\u006f\u0064\u0065|\u0044\u0065\u0063\u006f\u0064\u0065\u0072\.\u0064\u0065\u0063\u006f\u0064\u0065|\u0052\u006f\u006f\u0074\u004e\u006f\u0064\u0065|\u0044\u0061\u0074\u0061\u0049\u0074\u0065\u006d\u004e\u006f\u0064\u0065|\u0043\u006f\u006d\u0070\u006f\u006e\u0065\u006e\u0074\u004e\u006f\u0064\u0065|\u0044\u0065\u0076\u0069\u0063\u0065\u004e\u006f\u0064\u0065|\u0043\u006f\u006e\u0066\u0069\u0067\u004e\u006f\u0064\u0065|\u0042\u0061\u0073\u0065\u004e\u006f\u0064\u0065|\u0041\u0062\u0073\u0074\u0072\u0061\u0063\u0074\u0053\u0065\u0072\u0076\u0065\u0072|\u0041\u0062\u0073\u0074\u0072\u0061\u0063\u0074\u004d\u0065\u0073\u0073\u0061\u0067\u0065|\b\u0043\u006c\u0069\u0065\u006e\u0074\u0048\u006f\u006c\u0064\u0065\u0072|\u0053\u0065\u0072\u0076\u0065\u0072\u0046\u0069\u006c\u0065\u0054\u006f\u006f\u006c|\u0043\u006c\u0069\u0065\u006e\u0074\u0046\u0069\u006c\u0065\u0054\u006f\u006f\u006c|\u0044\u0065\u0066\u0061\u0075\u006c\u0074\u0046\u0069\u006c\u0065\u0054\u006f\u006f\u006c|\u004d\u0079\u0048\u0074\u0074\u0070\u0053\u0065\u0072\u0076\u0065\u0072|\u0054\u0068\u0072\u0065\u0061\u0064\u0053\u0065\u0072\u0076\u0069\u0063\u0065|\u004a\u0073\u006f\u006e\u0053\u0063\u0068\u0065\u006d\u0061\u0056\u0061\u006c\u0069\u0064\u0061\u0074\u006f\u0072|\u0043\u0068\u0065\u0063\u006b\u0055\u0074\u0069\u006c\u0073|\b\u0063\u006c\u0061\u007a\u007a\b|\u0045\u006e\u0075\u006d \u006c\u006f\u006f\u006b\u0075\u0070|\u0053\u0065\u0072\u0076\u0065\u0072\.\u0068\u0061\u006e\u0064\u006c\u0065'
+#
+# The managed bindings (C# / JVM / Python) are shipped in the package, so their
+# toolchain names are allowed: what stays screened are the "derived from"
+# implementation and the third party libraries this library replaces.
+$forbidden = '(?i)\u0063\u006e\.\u006e\u0065\u0072\u0063|\u0065\u0076\u0065\u0072\u0069\u0074|\u006a\u0061\u0063\u006b\u0073\u006f\u006e|\u0070\u0061\u0068\u006f|\u006f\u006b\u0068\u0074\u0074\u0070|\u0063\u006f\u006d\u006d\u006f\u006e\u0073-\u006e\u0065\u0074|\u006e\u0061\u006e\u006f\u0068\u0074\u0074\u0070\u0064|\u0073\u0077\u0061\u0067\u0067\u0065\u0072-\u0063\u006f\u0072\u0065|\u0063\u0061\u0066\u0066\u0065\u0069\u006e\u0065|\u006d\u0071\u0074\u0074\u00765|\b\u0061\u006e\u0064\u0072\u006f\u0069\u0064\b|\u8fc1\u79fb|\u79fb\u690d|\u4e0a\u6e38|\u539f\u7248|\b\u0050\u004f\u0052\u0054\u0049\u004e\u0047\b|\b\u004d\u0065\u0073\u0073\u0061\u0067\u0065\u0055\u0074\u0069\u006c\u0073\b|\b\u0052\u0065\u0073\u0075\u006c\u0074\.\u0073\u0075\u0063\u0063\u0065\u0073\u0073\b|\b\u0052\u0065\u0073\u0075\u006c\u0074\.\u0066\u0061\u0069\u006c\u0065\u0064\b|\b\u0045\u006e\u0063\u006f\u0064\u0065\u0072\.\u0065\u006e\u0063\u006f\u0064\u0065\b|\b\u0044\u0065\u0063\u006f\u0064\u0065\u0072\.\u0064\u0065\u0063\u006f\u0064\u0065\b|\b\u0052\u006f\u006f\u0074\u004e\u006f\u0064\u0065\b|\b\u0044\u0061\u0074\u0061\u0049\u0074\u0065\u006d\u004e\u006f\u0064\u0065\b|\b\u0043\u006f\u006d\u0070\u006f\u006e\u0065\u006e\u0074\u004e\u006f\u0064\u0065\b|\b\u0044\u0065\u0076\u0069\u0063\u0065\u004e\u006f\u0064\u0065\b|\b\u0043\u006f\u006e\u0066\u0069\u0067\u004e\u006f\u0064\u0065\b|\b\u0042\u0061\u0073\u0065\u004e\u006f\u0064\u0065\b|\b\u0041\u0062\u0073\u0074\u0072\u0061\u0063\u0074\u0053\u0065\u0072\u0076\u0065\u0072\b|\b\u0041\u0062\u0073\u0074\u0072\u0061\u0063\u0074\u004d\u0065\u0073\u0073\u0061\u0067\u0065\b|\b\u0043\u006c\u0069\u0065\u006e\u0074\u0048\u006f\u006c\u0064\u0065\u0072|\b\u0053\u0065\u0072\u0076\u0065\u0072\u0046\u0069\u006c\u0065\u0054\u006f\u006f\u006c\b|\b\u0043\u006c\u0069\u0065\u006e\u0074\u0046\u0069\u006c\u0065\u0054\u006f\u006f\u006c\b|\b\u0044\u0065\u0066\u0061\u0075\u006c\u0074\u0046\u0069\u006c\u0065\u0054\u006f\u006f\u006c\b|\b\u004d\u0079\u0048\u0074\u0074\u0070\u0053\u0065\u0072\u0076\u0065\u0072\b|\b\u0054\u0068\u0072\u0065\u0061\u0064\u0053\u0065\u0072\u0076\u0069\u0063\u0065\b|\b\u004a\u0073\u006f\u006e\u0053\u0063\u0068\u0065\u006d\u0061\u0056\u0061\u006c\u0069\u0064\u0061\u0074\u006f\u0072\b|\b\u0043\u0068\u0065\u0063\u006b\u0055\u0074\u0069\u006c\u0073\b|\b\u0063\u006c\u0061\u007a\u007a\b|\b\u0045\u006e\u0075\u006d \u006c\u006f\u006f\u006b\u0075\u0070\b|\b\u0053\u0065\u0072\u0076\u0065\u0072\.\u0068\u0061\u006e\u0064\u006c\u0065\b'
 $offenders = @()
 Get-ChildItem -Path $pkg -Recurse -File |
     Where-Object { $_.Extension -in @(".md", ".h", ".c", ".txt", ".sh", ".ps1", ".json") } |
