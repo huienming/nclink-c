@@ -26,6 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import nclink  # noqa: E402
 
 BROKER = os.environ.get("NCLINK_TEST_BROKER", "").strip()
+TLS_BROKER = os.environ.get("NCLINK_TEST_TLS_BROKER", "").strip()
+TLS_CA = os.environ.get("NCLINK_TEST_TLS_CA", "").strip()
 SN = "V2PYE2E0001"
 
 MODEL = {
@@ -90,7 +92,8 @@ class BrokerE2ETest(unittest.TestCase):
         device.subscribe()
         device.init_samples()
 
-        nclink.init(BROKER)
+        # 顺手过一遍 open_ex：给了 TLS 选项也要能连普通的 tcp://
+        nclink.init(BROKER, tls=nclink.TlsOptions())
         self.addCleanup(nclink.shutdown)
 
         with nclink.get_device(SN) as client:
@@ -151,6 +154,7 @@ class BrokerE2ETest(unittest.TestCase):
                                broker=BROKER)
         self.addCleanup(device.close)
         device.register_file_tool()
+        device.set_file_peer("127.0.0.1", 2323)     # 显式指定对端
         seen = {"size": -1}
         device.register_tool(
             "sink",
@@ -221,6 +225,55 @@ class BrokerE2ETest(unittest.TestCase):
                             *token.lstrip("/").split("/"))
         seen["size"] = os.path.getsize(path) if os.path.exists(path) else -1
         return seen["size"]
+
+
+@unittest.skipUnless(TLS_BROKER and TLS_CA,
+                     "设置 NCLINK_TEST_TLS_BROKER=ssl://host:port 与 NCLINK_TEST_TLS_CA=<pem> 才会跑")
+class TlsE2ETest(unittest.TestCase):
+    """TLS（ssl://）：设备端与客户端都过一遍真 TLS broker。
+
+    垫片得带 TLS 编译（`build-shim.ps1 -Tls`），并且是带 TLS 的库——库没编 TLS 时
+    这里会直接跳过（`nclink.tls_available()` 为 False）。
+    """
+
+    SN = "V2PYTLSE2E1"
+    MODEL = {"name": "TLS 机床", "id": "01", "type": "NC_LINK_ROOT",
+             "devices": [{"id": "02", "type": "MACHINE", "name": "模拟机床",
+                          "dataItems": [{"name": "状态", "id": "030001",
+                                         "type": "STATUS"}]}]}
+
+    def setUp(self):
+        if not nclink.tls_available():
+            self.skipTest("这个垫片没带 TLS（build-shim.ps1 -Tls）")
+        nclink.log_init()
+
+    def test_round_trip_over_tls(self):
+        tls = nclink.TlsOptions(ca_file=TLS_CA, server_name="127.0.0.1")
+        device = nclink.Server(sn=self.SN,
+                               model=json.dumps(self.MODEL, ensure_ascii=False),
+                               broker=TLS_BROKER, tls=tls)
+        self.addCleanup(device.close)
+        device.register_tool("plc", methods={"getStatus": None},
+                             handlers={"getStatus": lambda params: 42},
+                             bindings=[("/STATUS", nclink.Operation.GET_VALUE,
+                                        "getStatus")])
+        device.subscribe()
+
+        nclink.init(TLS_BROKER, tls=tls)
+        self.addCleanup(nclink.shutdown)
+        with nclink.get_device(self.SN) as client:
+            with client.probe() as model:
+                self.assertEqual(model.root.id, "01")
+            with client.get_value("/STATUS") as value:
+                self.assertEqual(value.to_python(), 42)
+
+    def test_untrusted_certificate_is_rejected(self):
+        """不给 CA（走平台信任库）连自签服务端必须失败；显式关校验才放行。"""
+        with self.assertRaises(nclink.NclinkError):
+            nclink.init(TLS_BROKER)
+        nclink.init(TLS_BROKER, tls=nclink.TlsOptions(verify_peer=False))
+        self.assertTrue(nclink.is_open())
+        nclink.shutdown()
 
 
 if __name__ == "__main__":

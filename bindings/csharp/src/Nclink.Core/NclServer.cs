@@ -167,6 +167,16 @@ namespace Nclink
         /// <param name="publish">自研传输；给了它就不再走 MQTT 发布。</param>
         public NclServer(string sn, string modelJson, string broker, string username,
                          string password, NclPublishSink publish)
+            : this(sn, modelJson, broker, username, password, publish, null)
+        {
+        }
+
+        /// <summary>
+        /// 全量构造：<paramref name="tls"/> 只有 <paramref name="broker"/> 是
+        /// <c>ssl://</c> / <c>tls://</c> 时用得上（要带 TLS 编译的库与垫片）。
+        /// </summary>
+        public NclServer(string sn, string modelJson, string broker, string username,
+                         string password, NclPublishSink publish, NclTlsOptions tls)
         {
             if (string.IsNullOrEmpty(sn))
             {
@@ -180,10 +190,23 @@ namespace Nclink
                 _publishHost = NclCallbackHost.Allocate(_publishCallback, _publishAnchor);
             }
 
-            IntPtr handle = Native.ServerCreate(Native.Utf8Z(sn), Native.Utf8Z(modelJson),
-                                                Native.Utf8Z(broker),
-                                                Native.Utf8Z(username),
-                                                Native.Utf8Z(password), _publishHost);
+            IntPtr handle;
+            if (tls == null)
+            {
+                handle = Native.ServerCreate(Native.Utf8Z(sn), Native.Utf8Z(modelJson),
+                                             Native.Utf8Z(broker),
+                                             Native.Utf8Z(username),
+                                             Native.Utf8Z(password), _publishHost);
+            }
+            else
+            {
+                handle = Native.ServerCreateEx(
+                    Native.Utf8Z(sn), Native.Utf8Z(modelJson), Native.Utf8Z(broker),
+                    Native.Utf8Z(username), Native.Utf8Z(password),
+                    Native.Utf8Z(tls.CaFile), Native.Utf8Z(tls.ClientCertificate),
+                    Native.Utf8Z(tls.ClientKey), Native.Utf8Z(tls.ServerName),
+                    tls.VerifyPeer ? 1 : 0, _publishHost);
+            }
             if (handle == IntPtr.Zero)
             {
                 NclCallbackHost.Release(ref _publishHost, ref _publishAnchor);
@@ -383,6 +406,29 @@ namespace Nclink
         {
             NclinkException.Check(Native.ServerRegisterFileTool(RequireOpen()),
                                   "RegisterFileTool");
+        }
+
+        /// <summary>
+        /// 覆盖文件通道对端的 FTP 端点。
+        ///
+        /// 默认按 <c>conf/mqtt.cfg</c> 推：broker 的主机名 + 端口 2323 + admin/123456
+        /// ——只有对端跑在 broker 那台机器上才成立。对端在别处（或者端口/账号不同）时
+        /// 在**第一次传文件之前**调它。<paramref name="port"/> 传 0、
+        /// <paramref name="username"/> / <paramref name="password"/> 留空就用默认。
+        /// </summary>
+        public void SetFilePeer(string host, int port = 2323, string username = null,
+                                string password = null)
+        {
+            if (string.IsNullOrEmpty(host))
+            {
+                throw new ArgumentNullException("host");
+            }
+            NclinkException.Check(
+                Native.ServerSetFilePeer(RequireOpen(), Native.Utf8Z(host),
+                                         unchecked((uint)port),
+                                         Native.Utf8Z(username),
+                                         Native.Utf8Z(password)),
+                "SetFilePeer");
         }
 
         /// <summary>启动 FTP 端点（端口与账号来自 bin/ftp.txt）。</summary>

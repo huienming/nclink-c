@@ -224,6 +224,10 @@ _PROTOTYPES = [
     ("nclshim_event_value", ctypes.c_void_p, ctypes.c_void_p),
     # client
     ("nclshim_open", ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p),
+    ("nclshim_open_ex", ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p,
+     ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+     ctypes.c_char_p, ctypes.c_int),
+    ("nclshim_tls_available", ctypes.c_int),
     ("nclshim_close", None),
     ("nclshim_is_open", ctypes.c_int),
     ("nclshim_client_get", ctypes.c_void_p, ctypes.c_char_p),
@@ -260,6 +264,10 @@ _PROTOTYPES = [
     # server（设备端）
     ("nclshim_server_create", ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p,
      ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p),
+    ("nclshim_server_create_ex", ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p,
+     ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+     ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int,
+     ctypes.c_void_p),
     ("nclshim_server_free", None, ctypes.c_void_p),
     ("nclshim_server_sn", ctypes.c_char_p, ctypes.c_void_p),
     ("nclshim_server_model", ctypes.c_void_p, ctypes.c_void_p),
@@ -300,6 +308,10 @@ _PROTOTYPES = [
      ctypes.c_char_p, ctypes.c_void_p),
     # 文件通道（MQTT 只传令牌，字节走 FTP）
     ("nclshim_file_start_ftp", ctypes.c_int),
+    ("nclshim_file_start_ftp_ex", ctypes.c_int, ctypes.c_uint, ctypes.c_char_p,
+     ctypes.c_char_p, ctypes.c_char_p),
+    ("nclshim_server_set_file_peer", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p,
+     ctypes.c_uint, ctypes.c_char_p, ctypes.c_char_p),
     ("nclshim_file_stop_ftp", None),
     ("nclshim_client_file_write", ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p),
     ("nclshim_client_file_read", ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p),

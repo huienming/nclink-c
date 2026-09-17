@@ -508,8 +508,8 @@ static ncl_err ncl_tls_handshake(SSL *ssl, ncl_sock_handle handle,
     /* Back to blocking mode: the client drives timeouts with select(). */
 #if defined(NCL_OS_WINDOWS)
     {
-        u_long mode = 0;
-        ioctlsocket(handle, FIONBIO, &mode);
+        u_long blocking = 0;
+        ioctlsocket(handle, FIONBIO, &blocking);
     }
 #else
     {

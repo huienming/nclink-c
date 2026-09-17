@@ -44,8 +44,10 @@ __pycache__/
 /bindings/csharp/**/obj/
 # 共用原生垫片 / Java 绑定的构建产物
 /bindings/native/bin/
+/bindings/native/bin-tls/
 /bindings/java/build/
 /bindings/java/native/bin/
+/bindings/java/native/bin-tls/
 *.dll
 *.exp
 *.so

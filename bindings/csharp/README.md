@@ -19,7 +19,7 @@ bindings/csharp/
   src/Nclink.Core/            托管封装（多目标：netstandard2.0 / net472 / net8.0）
   samples/Nclink.Demo.Cli/    客户端示例（net472 + net8.0 两个产物）
   samples/Nclink.Demo.Device/ 设备端示例（"这个进程就是一台机床"）
-  tests/Nclink.SelfTest/      自检（不需要 broker）：98 项检查
+  tests/Nclink.SelfTest/      自检（不需要 broker）：106 项检查
   build.ps1                   一键构建：垫片 + 三个工程 + 自检
 ```
 
@@ -218,6 +218,43 @@ NclFileInfo info = Nclink.FileAttribute(@"D:\work\report.txt");
   配置就 127.0.0.1）——所以托管侧与 broker 同一台机器时开箱即用。
 - 设备侧的 `StartFtp()` 是"设备自己也开个 FTP 端点"（读 `bin/ftp.txt`），客户端传文件
   用不到它；缺文件时它抛异常，示例里是容忍着来的。
+- 对端不跟 broker 同机（或者端口/账号不一样）时显式指定：
+  ```csharp
+  device.SetFilePeer("10.0.0.7", 2323);                          // 设备端指到上位机的 FTP
+  Nclink.StartFileServer(2323, @"D:\files", "admin", "123456");   // 本机端点换端口/根/账号
+  ```
+
+### TLS（ssl://）
+
+```csharp
+if (!Nclink.TlsAvailable) { /* 这个垫片没带 TLS：见下面"TLS 构建" */ }
+
+Nclink.Init("ssl://broker.example.com:8883", null, null,
+            new NclTlsOptions
+            {
+                CaFile = @"C:\certs\ca.pem",                  // 内网 CA；留空 = 平台信任库
+                ClientCertificate = @"C:\certs\client.pem",   // 双向 TLS 才要
+                ClientKey = @"C:\certs\client.key",
+                ServerName = "broker.example.com",            // 留空 = URL 里的主机名
+                VerifyPeer = true                             // 默认就是 true
+            });
+
+// 设备端直连 ssl:// broker 也支持：
+new NclServer(sn, modelJson, "ssl://broker.example.com:8883", null, null, null,
+              new NclTlsOptions { CaFile = @"C:\certs\ca.pem" });
+```
+
+**TLS 构建**（库与垫片都得带 TLS）：
+
+```powershell
+.\build.ps1 -Tls                                   # 出 build-tls\nclink_core.lib
+powershell -ExecutionPolicy Bypass -File .\bindings\native\build-shim.ps1 -Tls
+# → bindings\native\bin-tls\nclink_shim.dll（连 libssl-3-x64.dll / libcrypto-3-x64.dll 一起拷好了）
+# 把那个 DLL 放到你的程序旁边（P/Invoke 按 DLL 名解析，所以要么同目录、
+# 要么把它的目录加进 PATH）就能用 ssl:// 了
+```
+
+库没带 TLS 时用 `ssl://` 会拿到明确的 `NOT_SUPPORTED`（-8），不用在"连接失败"里猜。
 
 ### 报文解析
 
@@ -297,17 +334,25 @@ dotnet run --project .\bindings\csharp\tests\Nclink.SelfTest -c Release
 # 连真 broker 再跑一遍端到端（设备端 + 客户端同进程，报文真的过 MQTT）
 $env:NCLINK_TEST_BROKER = "tcp://127.0.0.1:1883"
 dotnet run --project .\bindings\csharp\tests\Nclink.SelfTest -c Release
+
+# TLS 端到端（再 +2 项）：垫片要带 TLS 编（build-shim.ps1 -Tls），
+# 并把 bin-tls 里的 nclink_shim.dll 与两个 OpenSSL DLL 放到程序旁边
+$env:NCLINK_TEST_TLS_BROKER = "ssl://127.0.0.1:18832"
+$env:NCLINK_TEST_TLS_CA = "tests/data/tls_localhost_cert.pem"
+dotnet run --project .\bindings\csharp\tests\Nclink.SelfTest -c Release
 ```
 
-不需要 broker（跑本机回环）：105 项检查覆盖 JSON / 模型 / 报文解析 / 设备端（离线
+不需要 broker（跑本机回环）：106 项检查覆盖 JSON / 模型 / 报文解析 / 设备端（离线
 dispatch、工具注册、采样通道、事件、自研传输、关闭语义）/ HTTP 端点（REST、配置
 端点、swagger-ui、自定义路由、错误路径、幂等关闭）/ 文件小工具（压缩判断、分片数、
 SHA-256、属性）。
 
-设了 `NCLINK_TEST_BROKER` 再多跑 25 项"过 MQTT"的端到端（设备端与客户端同进程）：
+设了 `NCLINK_TEST_BROKER` 再多跑 26 项"过 MQTT"的端到端（设备端与客户端同进程）：
 probe、路径绑定取值/写值、`MethodCall`（应答文本要解析成 `NclJson`）、采样上报、
 事件推送，以及整条文件通道（上传 / 列目录 / 下载 / 建目录 / 删文件 / 带文件参数的
-方法调用，含"工具返回文件"的反向）—— 一共 130 项。
+方法调用，含"工具返回文件"的反向）—— 一共 132 项。再设 `NCLINK_TEST_TLS_BROKER`
+与 `NCLINK_TEST_TLS_CA` 多跑 2 项 TLS 端到端（设备端与客户端都过 `ssl://`；不给 CA
+必须被拒），一共 134 项。
 
 ## 示例输出
 
@@ -373,10 +418,10 @@ GET  /api/nope          -> 404 not found
 
 ## 还没做的
 
-- TLS（`ssl://`）：库要带 `NCLINK_WITH_TLS=ON` 编，垫片不用改。
 - 零拷贝读采样：现在 `NclSample` 在回调里整份拷贝（方便、安全）；需要极致吞吐可以
   加一个"只在回调期间有效"的借用视图 API。
 - NuGet 包：`PackageId` 与元数据已经写好，但还没做 `dotnet pack` + 按 RID 把垫片放进
   `runtimes/`；现在按"源码 + 预编译垫片"一起用。
-- 对着真 broker 的回归：`tools/interop.sh` 起 Mosquitto / EMQX，目前覆盖的是 C 套件，
-  托管绑定还是手工冒烟（设备端示例 + 客户端示例互读）。
+- 对着真 broker 的回归：自检里那一段（`NCLINK_TEST_BROKER=tcp://host:port`，132 项）
+  是手工设环境变量跑的；`tools/interop.sh` 起 Mosquitto / EMQX 目前只驱动 C 套件，
+  还没把三份托管绑定串进去。

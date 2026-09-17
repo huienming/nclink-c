@@ -3,10 +3,128 @@
 本文件记录 NC-Link C 实现（`nclink-core-c`）的版本变更。版本号跟随
 NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
-## 3.1.0
+## 3.2.0
 
-采样链路的消费侧补齐、设备端示例改成现场跑法、C# 绑定可用，发布包直接带**编好的
-示例可执行文件**（Windows x64 / x86 与 Linux）。
+三种托管绑定补齐 HTTP/REST、设备端与文件通道，并加上 TLS 选项；顺带修掉
+一批文件通道与连接路径上的库问题。
+
+版本号从 3.1.0 起：`NCL_VERSION`、CMake 工程版本与发布包名都跟到 **3.2.0**。
+
+### 修复
+
+- **没编 TLS 时报的是笼统的 `NCL_ERR`**：`ssl://` 连不上时只看到 "连接失败"，看不出
+  是"库没带 TLS 编"。现在客户端管理器在建连接前先判断 URL 与 `ncl_socket_tls_available()`，
+  直接返回 `NCL_ERR_NOT_SUPPORTED`（-8）并记一条明确的日志。
+
+- **主机名解析出多个地址时，第一个卡住的地址会吃光整个超时**：`ncl_socket_connect()`
+  按 `getaddrinfo()` 的顺序逐个试，但每个都给完整超时。Windows 上 `localhost` 会先
+ 解析出 `::1`，而本机 IPv6 环回上没监听时那个 connect **不会立刻被拒**，于是白等
+  一整个超时（默认 5 s）才轮到 `127.0.0.1`——表现就是"连 localhost 要 5 秒"，
+  文件通道里更要命（设备侧 FTP 连接等 5 s，方法调用那头早就超时了）。现在非最后一个
+  地址只试 300 ms（`NCL_SOCKET_STAGGER_MS`），最后一个地址拿剩下的全部预算；只有
+  一个地址时行为不变。实测 `ncl_server_file_tool_detect("localhost", ...)` 由
+  **5032 ms → 313 ms**。
+- **方法名少了前导斜杠就不认**：文件头一直写着 `"/plc/getValue"` 与 `"plc/getValue"`
+  都接受，但 `ncl_server_dispatch()` 只在**以 `/` 开头**时才拆 `<工具>/<方法>`，
+  `"plc/getValue"` 被当成一个裸方法名 → "未找到方法"。现在两种写法都拆。
+- **设备端文件工具的对端目录用了 `bin/sn.txt` 的 SN**：客户端把文件放在
+  `<当前目录>/<它寻址的 SN>/` 下，而设备端却按 `bin/sn.txt` 里的 SN 去取 —— 只要
+  `bin/sn.txt` 与设备端实际用的 SN 不同（显式指定 SN 的设备端就是这种情况），
+  上传必然 550。现在一律用服务器自己的 SN（协议里的那个）。
+- **`{"@file": ...}` 标记对象在 Windows 上废掉**：临时文件名取的是路径的 basename，
+  而 `remote_basename()` 只认 `/`，Windows 本机路径（`C:\...`）整条被当成了文件名，
+  复制必然失败（`fileKeys` 也不会出现在应答里）。现在两种分隔符都认。
+- **工具返回的文件与文件工具的镜像目录对不上**：方法结果里的文件被复制到
+  `<root>/temp/`，而文件工具的 `read`（客户端按 `/temp/<名字>` 来取）找的是
+  `<root>/uploadFile/temp/`；于是"工具返回文件"只能命中"客户端本地已有一份"的
+  特殊情况，真取字节就 404。现在落到 `<root>/uploadFile/temp/`，与镜像一致。
+- **Java 设备端连不上 `ssl://`（连编译都过不了）**：README 与端到端用例都用
+  `new Server(sn, model, broker, user, pass, sink, TlsOptions)`，但 `com.nclink.Server`
+  只有 6 个参数的构造，`Native.serverCreateEx` 与 JNI 那侧的实现也缺 ——
+  `javac` 直接失败。三处都补齐，与 C# / Python 的同一形状（设备端与客户端现在都能
+  走 TLS）。
+- **Java 绑定选不到带 TLS 的原生库**：`Native` 的加载顺序里"当前目录 →
+  `bindings/java/native/bin/`"写死在 `-Djava.library.path` 前面，于是按 README 指到
+  `bin-tls/` 也没用（永远先命中不带 TLS 的那份，`tlsAvailable()` 报 false）。现在
+  显式给的 `-Djava.library.path` 优先于仓库里的默认位置。
+- **托管绑定的客户端方法调用（`methodCall`）把应答文本当成了 JSON 句柄**：库返还的是
+  **应答报文的 JSON 文本**（`char*`），C# 的 `NclDeviceClient.MethodCall` 与 Python 的
+  `DeviceClient.method_call` 直接把它包成 JSON 对象 → 一读就炸
+  （Python 报 `ValueError: ... is not a valid JsonType`，C# 读到野指针）。Java 那边
+  是 `Json.parse(out[0])`，一直是对的。现在两边都用
+  `NclJson.TakeText()` / `Json.parse(take_text(...))` 解析；离线自检覆盖不到这条路径，
+  所以顺带加了"对真 broker"的可选端到端用例（见下）。
+- **垫片 `nclshim_server_create()` 的"模型默认走内置模型"没实现**：文件头的注释一直
+  这么写，但代码把 `model_json == NULL` 直接当"空模型"传给 `ncl_server_create()`，
+  于是"不传模型"的设备端没有模型——采样通道、按路径应答都无从谈起（Java / Python
+  绑定绕过了它：它们自己先把内置模型序列化出来再传）。现在垫片真的会把内置模型
+  （`ncl_root_node_parse(NULL)`）序列化后传进去，C# / Java / Python 的行为一致。
+
+### 构建与发布
+
+- **TLS 选项贯通到三份托管绑定**（之前只有 C API 能设 CA / 双向证书 / 关校验 / SNI）：
+  库新增 `ncl_client_holder_options` + `ncl_client_holder_init_ex()`，垫片新增
+  `nclshim_open_ex()`、`nclshim_tls_available()`，以及设备端那条路
+  `nclshim_server_create_ex()`（设备直连 `ssl://` broker）。托管侧：C#
+  `Nclink.Init(uri, user, pass, NclTlsOptions)` / `Nclink.TlsAvailable`、
+  Java `Nclink.init(..., TlsOptions)` / `Nclink.tlsAvailable()`、
+  Python `nclink.init(..., tls=TlsOptions(...))` / `nclink.tls_available()`，
+  设备端同理各带一个 TLS 参数。
+- **文件通道的对端可配**（原来固定按 conf/mqtt.cfg 推"broker 主机 + 2323 + admin/123456"，
+  对端不跟 broker 同机就用不了）：库新增 `ncl_server_set_file_peer()`（设备端指定对端
+  FTP 的 host/port/账号）与 `ncl_client_holder_start_ftp_ex()`（本机 FTP 端点换端口 /
+  根目录 / 账号）；垫片与三份绑定各包一层（C# `NclServer.SetFilePeer` +
+  `Nclink.StartFileServer(port, root, user, pass)`、Java 与 Python 同名）。
+- **垫片加 TLS 构建开关**：`bindings/native/build-shim.ps1 -Tls`（连 `build-tls` 的库、
+  带上 OpenSSL 导入库，并把运行期要用的两个 DLL 拷到输出目录），README 里写了完整步骤。
+- **C# 补上 `LoadModel` / `ClearModel`**（垫片里唯一没被 C# 包的一个函数）：
+  客户端可以装上自己那份模型，路径 ↔ id 与采样补齐都靠它。
+
+- **文件通道进了三份托管绑定**（`ncl_file` 早就在库里，垫片里新加一组
+  `nclshim_*file*`）：客户端侧 `upload_file` / `download_file` / `list_files` /
+  `make_directory` / `delete_file` / `method_call_file`（带文件参数的方法调用）+ 本地
+  小工具（`need_compression` / `total_chunks` / `checksum` / `attribute` → `FileInfo`），
+  C# 是 `NclDeviceClient.UploadLocalFile / DownloadTo / ListFiles / MethodCallFile`
+  + `Nclink.StartFileServer()`，Java 与 Python 同一套形状；三个设备端示例都挂上了
+  `register_file_tool()`（客户端传文件用得到）+ 容忍式 `start_ftp()`。
+- **HTTP / REST 端点进了三份托管绑定**（`ncl_rest_attach` 早就在库里）：
+  `start_http(port, with_config)` + 自定义路由（`method` 支持 `"*"`、`/api/` 开头是
+  前缀匹配）+ `request_count` / `set_cors`；C# 是 `NclServer.StartHttp()` /
+  `NclHttpEndpoint.Route()`，Java 是 `Server.startHttp()` / `HttpEndpoint.route()`，
+  Python 是 `Server.start_http()` / `HttpEndpoint.route()`。端点内容全在库里：
+  `GET /api/schema`（OpenAPI 3.0）、`GET /swagger-ui`、`POST /api/<工具>/<方法>`
+  （等价于 methodCall，走 Result 信封），配置端点（SN / 模型 / 驱动 / mqtt.cfg /
+  服务器列表）。
+- **C# 绑定补齐设备端**：`NclServer`（工具注册 / 路径绑定 / 采样通道 / 事件推送 /
+  离线 dispatch / 自研传输）+ `NclHttpEndpoint` + `Nclink.Parse()` / `NclMessage`
+  （报文解码，`AsSample()` / `AsEvent()` 拿快照），`NclOperation` / `NclToolBinding` /
+  `NclToolHandler` 与 Java / Python 一套语义；新增设备端示例
+  `samples/Nclink.Demo.Device`（`broker` 写 `-` 就是离线：出站报文走自研传输打到
+  控制台，REST 端点照常可用）与一键构建 `bindings/csharp/build.ps1`。
+- **C# 自检工程** `tests/Nclink.SelfTest`（106 项，不需要 broker）：JSON / 模型 /
+  报文解析 / 设备端（离线 dispatch、工具注册、采样通道、事件、自研传输、关闭语义）/
+  HTTP（REST、配置端点、swagger-ui、自定义路由、错误路径、幂等关闭）；net472 与
+  net8.0 两个目标都跑通。Java 自检补上 HTTP 与文件小工具用例（75 → 107 项），
+  Python 32 → 46 项。
+- **可选的真 broker 端到端用例**：`NCLINK_TEST_BROKER=tcp://host:port` 一设，Python
+  （`tests/test_broker_e2e.py`）与 C#（自检里的 `Broker` 一节）就把设备端与客户端
+  放进**同一个进程**、报文真的过一遍 MQTT：probe、路径绑定取值/写值、`methodCall`、
+  采样上报、事件推送，以及整条**文件通道**（上传 / 列目录 / 下载 / 建目录 / 删文件 /
+  带文件参数的方法调用 + 工具返回文件）。Java 也补了 `com.nclink.BrokerE2E`
+  （`build.ps1` 里设了环境变量就会跑）。C# 132 项 / Java 12 项 / Python 46 项，实测
+  Mosquitto 2 与 EMQX 5.8.9 各跑一遍都 0 失败（methodCall 的应答解析、文件通道的
+  几个 bug 都是这么抓到的）。
+- **可选的真 TLS broker 端到端用例**：再有 `NCLINK_TEST_TLS_BROKER=ssl://host:port`
+  与 `NCLINK_TEST_TLS_CA=<pem>`，三份绑定就多跑一段"设备端与客户端都过 `ssl://`"的
+  用例（C# 134 项 / Java 13 项 / Python 46 项，对 Mosquitto 的 8883/18832 TLS 监听
+  与 EMQX 都 0 失败）：正例之外还有"不给 CA 必须被证书校验挡下"的反例；库没编 TLS 时
+  明确的 `NCL_ERR_NOT_SUPPORTED` 由离线用例守着。
+- **借用视图的 `Dispose` 改成空操作**（C#）：`NclJson` 的下标/成员视图、设备端的
+  `NclServer.Model` 这类借用对象以前 `Dispose` 会把句柄置空、之后再用就抛
+  `ObjectDisposedException`；现在与 Java / Python 一致——借用的东西不归你管，
+  `Dispose` 什么都不做。
+- Python 设备端示例的收尾计数：关闭后再读 `sample_upload_count` / `event_count` 会抛
+  `ClosedException`，现在先读计数再关。
 
 ### 采样与报文
 
@@ -47,40 +165,6 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 修复
 
-- **主机名解析出多个地址时，第一个卡住的地址会吃光整个超时**：`ncl_socket_connect()`
-  按 `getaddrinfo()` 的顺序逐个试，但每个都给完整超时。Windows 上 `localhost` 会先
- 解析出 `::1`，而本机 IPv6 环回上没监听时那个 connect **不会立刻被拒**，于是白等
-  一整个超时（默认 5 s）才轮到 `127.0.0.1`——表现就是"连 localhost 要 5 秒"，
-  文件通道里更要命（设备侧 FTP 连接等 5 s，方法调用那头早就超时了）。现在非最后一个
-  地址只试 300 ms（`NCL_SOCKET_STAGGER_MS`），最后一个地址拿剩下的全部预算；只有
-  一个地址时行为不变。实测 `ncl_server_file_tool_detect("localhost", ...)` 由
-  **5032 ms → 313 ms**。
-- **方法名少了前导斜杠就不认**：文件头一直写着 `"/plc/getValue"` 与 `"plc/getValue"`
-  都接受，但 `ncl_server_dispatch()` 只在**以 `/` 开头**时才拆 `<工具>/<方法>`，
-  `"plc/getValue"` 被当成一个裸方法名 → "未找到方法"。现在两种写法都拆。
-- **设备端文件工具的对端目录用了 `bin/sn.txt` 的 SN**：客户端把文件放在
-  `<当前目录>/<它寻址的 SN>/` 下，而设备端却按 `bin/sn.txt` 里的 SN 去取 —— 只要
-  `bin/sn.txt` 与设备端实际用的 SN 不同（显式指定 SN 的设备端就是这种情况），
-  上传必然 550。现在一律用服务器自己的 SN（协议里的那个）。
-- **`{"@file": ...}` 标记对象在 Windows 上废掉**：临时文件名取的是路径的 basename，
-  而 `remote_basename()` 只认 `/`，Windows 本机路径（`C:\...`）整条被当成了文件名，
-  复制必然失败（`fileKeys` 也不会出现在应答里）。现在两种分隔符都认。
-- **工具返回的文件与文件工具的镜像目录对不上**：方法结果里的文件被复制到
-  `<root>/temp/`，而文件工具的 `read`（客户端按 `/temp/<名字>` 来取）找的是
-  `<root>/uploadFile/temp/`；于是"工具返回文件"只能命中"客户端本地已有一份"的
-  特殊情况，真取字节就 404。现在落到 `<root>/uploadFile/temp/`，与镜像一致。
-- **托管绑定的客户端方法调用（`methodCall`）把应答文本当成了 JSON 句柄**：库返还的是
-  **应答报文的 JSON 文本**（`char*`），C# 的 `NclDeviceClient.MethodCall` 与 Python 的
-  `DeviceClient.method_call` 直接把它包成 JSON 对象 → 一读就炸
-  （Python 报 `ValueError: ... is not a valid JsonType`，C# 读到野指针）。Java 那边
-  是 `Json.parse(out[0])`，一直是对的。现在两边都用
-  `NclJson.TakeText()` / `Json.parse(take_text(...))` 解析；离线自检覆盖不到这条路径，
-  所以顺带加了"对真 broker"的可选端到端用例（见下）。
-- **垫片 `nclshim_server_create()` 的"模型默认走内置模型"没实现**：文件头的注释一直
-  这么写，但代码把 `model_json == NULL` 直接当"空模型"传给 `ncl_server_create()`，
-  于是"不传模型"的设备端没有模型——采样通道、按路径应答都无从谈起（Java / Python
-  绑定绕过了它：它们自己先把内置模型序列化出来再传）。现在垫片真的会把内置模型
-  （`ncl_root_node_parse(NULL)`）序列化后传进去，C# / Java / Python 的行为一致。
 - **`ncl_mqtt_client_disconnect()` 断开前先把套接字里在途的字节读干净**。
   之前是"发完 DISCONNECT 直接 shutdown(SD_BOTH) + closesocket"：Windows 上若关闭时
   还有没读走的接收数据（例如刚到的 SUBACK），close 会走 **RST** 而不是 FIN，对端收到
@@ -107,45 +191,6 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 构建与发布
 
-- **文件通道进了三份托管绑定**（`ncl_file` 早就在库里，垫片里新加一组
-  `nclshim_*file*`）：客户端侧 `upload_file` / `download_file` / `list_files` /
-  `make_directory` / `delete_file` / `method_call_file`（带文件参数的方法调用）+ 本地
-  小工具（`need_compression` / `total_chunks` / `checksum` / `attribute` → `FileInfo`），
-  C# 是 `NclDeviceClient.UploadLocalFile / DownloadTo / ListFiles / MethodCallFile`
-  + `Nclink.StartFileServer()`，Java 与 Python 同一套形状；三个设备端示例都挂上了
-  `register_file_tool()`（客户端传文件用得到）+ 容忍式 `start_ftp()`。
-- **HTTP / REST 端点进了三份托管绑定**（`ncl_rest_attach` 早就在库里）：
-  `start_http(port, with_config)` + 自定义路由（`method` 支持 `"*"`、`/api/` 开头是
-  前缀匹配）+ `request_count` / `set_cors`；C# 是 `NclServer.StartHttp()` /
-  `NclHttpEndpoint.Route()`，Java 是 `Server.startHttp()` / `HttpEndpoint.route()`，
-  Python 是 `Server.start_http()` / `HttpEndpoint.route()`。端点内容全在库里：
-  `GET /api/schema`（OpenAPI 3.0）、`GET /swagger-ui`、`POST /api/<工具>/<方法>`
-  （等价于 methodCall，走 Result 信封），配置端点（SN / 模型 / 驱动 / mqtt.cfg /
-  服务器列表）。
-- **C# 绑定补齐设备端**：`NclServer`（工具注册 / 路径绑定 / 采样通道 / 事件推送 /
-  离线 dispatch / 自研传输）+ `NclHttpEndpoint` + `Nclink.Parse()` / `NclMessage`
-  （报文解码，`AsSample()` / `AsEvent()` 拿快照），`NclOperation` / `NclToolBinding` /
-  `NclToolHandler` 与 Java / Python 一套语义；新增设备端示例
-  `samples/Nclink.Demo.Device`（`broker` 写 `-` 就是离线：出站报文走自研传输打到
-  控制台，REST 端点照常可用）与一键构建 `bindings/csharp/build.ps1`。
-- **C# 自检工程** `tests/Nclink.SelfTest`（98 项，不需要 broker）：JSON / 模型 /
-  报文解析 / 设备端（离线 dispatch、工具注册、采样通道、事件、自研传输、关闭语义）/
-  HTTP（REST、配置端点、swagger-ui、自定义路由、错误路径、幂等关闭）；net472 与
-  net8.0 两个目标都跑通。Java 自检补上 HTTP 用例（75 → 99 项），Python 32 → 36 项。
-- **可选的真 broker 端到端用例**：`NCLINK_TEST_BROKER=tcp://host:port` 一设，Python
-  （`tests/test_broker_e2e.py`）与 C#（自检里的 `Broker` 一节）就把设备端与客户端
-  放进**同一个进程**、报文真的过一遍 MQTT：probe、路径绑定取值/写值、`methodCall`、
-  采样上报、事件推送，以及整条**文件通道**（上传 / 列目录 / 下载 / 建目录 / 删文件 /
-  带文件参数的方法调用 + 工具返回文件）。Java 也补了 `com.nclink.BrokerE2E`
-  （`build.ps1` 里设了环境变量就会跑）。C# 130 项 / Java 11 项 / Python 42 项，实测
-  Mosquitto 2 与 EMQX 5.8.9 各跑一遍都 0 失败（methodCall 的应答解析、文件通道的
-  几个 bug 都是这么抓到的）。
-- **借用视图的 `Dispose` 改成空操作**（C#）：`NclJson` 的下标/成员视图、设备端的
-  `NclServer.Model` 这类借用对象以前 `Dispose` 会把句柄置空、之后再用就抛
-  `ObjectDisposedException`；现在与 Java / Python 一致——借用的东西不归你管，
-  `Dispose` 什么都不做。
-- Python 设备端示例的收尾计数：关闭后再读 `sample_upload_count` / `event_count` 会抛
-  `ClosedException`，现在先读计数再关。
 - `build.ps1 -Arch x86 -BuildDir build-x86`：新增 **32 位（Win32/x86）** 构建
   （库、示例、测试都是 x86，同一个 Ninja 工程换 `vcvars32` 即可）。
 - 发布包新增 `lib/windows-x86-msvc/`、`examples/bin/{windows-x64-msvc,windows-x86-msvc,
@@ -158,7 +203,6 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 - 手册（`MANUAL.md` / `MANUAL.docx`）跟改：两个采样通道与各自的实测输出、按行消费、
   亚毫秒采样、设备端"一直运行 + Ctrl+C"、日志与编码说明。
 - `RELEASE.md` 的包内清单、ABI 表与验证状态按本次实测更新。
-
 ## 3.0.0
 
 首个 C 版本，零第三方依赖（仅可选的 zlib），Windows（MSVC）与 Linux（gcc）
@@ -271,5 +315,6 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 未实现部分
 
-HTTP multipart、驱动层 Modbus/串口、`Edge/*` 主题、`ssl://`（TLS）暂未提供，
-调用时会返回明确错误码。
+HTTP multipart、驱动层 Modbus/串口、`Edge/*` 主题暂未提供，调用时会返回明确错误码。
+（`ssl://` 在本版本已提供，见 TLS 一节：需要按 `NCLINK_WITH_TLS=ON` 构建；
+没带 TLS 编译时用 `ssl://` 会返回 `NCL_ERR_NOT_SUPPORTED`。）

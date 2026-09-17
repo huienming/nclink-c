@@ -10,7 +10,7 @@
 # 转义书写，见下面的 $forbidden，本文件自身也满足该审查）。
 #
 #   .\tools\make_release.ps1                        # 头文件 + 库 + 文档 + 示例
-#   .\tools\make_release.ps1 -Version 3.1.0
+#   .\tools\make_release.ps1 -Version 3.2.0
 #   .\tools\make_release.ps1 -WithSource             # 额外含 src/tests/tools 与构建脚本
 #
 # 库与示例可执行文件按下面的位置收集，缺哪个就跳过哪个（并打印 note）：
@@ -23,7 +23,7 @@
 #
 [CmdletBinding()]
 param(
-    [string]$Version = "3.1.0",
+    [string]$Version = "3.2.0",
     [string]$Name = "",
     [switch]$NoZip,
     [switch]$WithSource

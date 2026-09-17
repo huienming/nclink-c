@@ -17,6 +17,8 @@
 param(
     [string]$CoreLib = "",
     [string]$OutDir = "",
+    [switch]$Tls,
+    [string]$OpenSslRoot = "C:\ProgramData\anaconda3\Library",
     [ValidateSet("x64", "x86")]
     [string]$Arch = "x64"
 )
@@ -24,11 +26,29 @@ param(
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
 $root = (Resolve-Path (Join-Path $here "..\..")).Path
-$out = if ($OutDir -ne "") { $OutDir } else { Join-Path $here "bin" }
-$lib = if ($CoreLib -ne "") { $CoreLib } else { Join-Path $root "build\nclink_core.lib" }
+$out = if ($OutDir -ne "") { $OutDir }
+       elseif ($Tls) { Join-Path $here "bin-tls" }
+       else { Join-Path $here "bin" }
+$lib = if ($CoreLib -ne "") { $CoreLib }
+       elseif ($Tls) { Join-Path $root "build-tls\nclink_core.lib" }
+       else { Join-Path $root "build\nclink_core.lib" }
 
 if (-not (Test-Path -LiteralPath $lib)) {
+    if ($Tls) {
+        throw "missing TLS core library: $lib (run .\build.ps1 -Tls in the repo root first)"
+    }
     throw "missing native core library: $lib (run .\build.ps1 in the repo root first)"
+}
+
+# ssl:// 需要 TLS 版的库 + OpenSSL 的导入库（运行期还要那两个 DLL，见下面拷贝）。
+$tlsLibs = ""
+if ($Tls) {
+    $sslLib = Join-Path $OpenSslRoot "lib\libssl.lib"
+    $cryptoLib = Join-Path $OpenSslRoot "lib\libcrypto.lib"
+    if (-not (Test-Path -LiteralPath $sslLib) -or -not (Test-Path -LiteralPath $cryptoLib)) {
+        throw "OpenSSL import libraries not found under $OpenSslRoot\lib (use -OpenSslRoot)"
+    }
+    $tlsLibs = '"{0}" "{1}" ' -f $sslLib, $cryptoLib
 }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
@@ -44,7 +64,7 @@ $dll = Join-Path $out "nclink_shim.dll"
 # /MT and /MD makes the linker ask for both CRTs and fail on __imp_* symbols.
 $cl = 'cl /nologo /LD /MD /O2 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS ' +
       ('/I "{0}\include" /Fe:"{1}" "{2}" "{3}" ws2_32.lib ' -f $root, $dll, $source, $lib) +
-      'iphlpapi.lib crypt32.lib msvcrt.lib'
+      $tlsLibs + 'iphlpapi.lib crypt32.lib msvcrt.lib'
 # cd into the output directory so the object files land next to the DLL.
 $script = "@echo off`r`ncall `"$vcvars`" >nul`r`ncd /d `"$out`"`r`n$cl`r`n"
 
@@ -58,3 +78,17 @@ try {
 }
 
 Write-Host "native shim: $dll"
+
+if ($Tls) {
+    # The import libraries need the OpenSSL DLLs at run time: put them next to
+    # the shim so a test can load it without touching PATH.
+    foreach ($name in @("libssl-3-x64.dll", "libcrypto-3-x64.dll")) {
+        $from = Join-Path $OpenSslRoot ("bin\" + $name)
+        if (Test-Path -LiteralPath $from) {
+            Copy-Item -LiteralPath $from -Destination (Join-Path $out $name) -Force
+        } else {
+            Write-Host "  note: $name not found under $OpenSslRoot\bin (make sure it is on PATH)"
+        }
+    }
+    Write-Host "TLS shim: $dll (needs the OpenSSL DLLs next to it or on PATH)"
+}

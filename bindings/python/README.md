@@ -242,6 +242,42 @@ nclink.file_attribute("report.txt")            # nclink.FileInfo
   就 127.0.0.1）——所以本机与 broker 是同一台机器时开箱即用。
 - 设备侧的 `start_ftp()` 是"设备自己也开个 FTP 端点"（读 `bin/ftp.txt`），客户端传文件
   用不到它；缺文件时它抛 `NclinkError`，示例里是容忍着来的。
+- 对端不跟 broker 同机（或者端口/账号不一样）时显式指定：
+
+```python
+device.set_file_peer("10.0.0.7", 2323)                    # 设备端指到本机的 FTP
+nclink.start_file_server(2323, root="D:/files", username="admin", password="123456")
+```
+
+### TLS（ssl://）
+
+```python
+nclink.tls_available()          # 这个垫片带 TLS 编译吗
+
+nclink.init("ssl://broker.example.com:8883",
+            tls=nclink.TlsOptions(ca_file="ca.pem",          # 内网 CA；不设 = 平台信任库
+                                  client_cert="client.pem",  # 双向 TLS 才要
+                                  client_key="client.key",
+                                  server_name="broker.example.com",
+                                  verify_peer=True))         # 默认就是 True
+
+# 设备端直连 ssl:// broker 也支持：
+nclink.Server(sn="V2PY0000001", broker="ssl://broker.example.com:8883",
+              tls=nclink.TlsOptions(ca_file="ca.pem"))
+```
+
+**TLS 构建**：`sh bindings/native/build-shim.sh` 那套在 Linux 上要带 `NCL_WITH_TLS=1` 编库
+（见手册 2.4），Windows 上：
+
+```powershell
+.\build.ps1 -Tls
+powershell -ExecutionPolicy Bypass -File .\bindings\native\build-shim.ps1 -Tls
+# → bindings\native\bin-tls\nclink_shim.dll；让 NCLINK_SHIM 指向它，或用它覆盖包目录那份
+```
+
+库没带 TLS 时用 `ssl://` 会拿到明确的 `NOT_SUPPORTED`（-8）。用例：设
+`NCLINK_TEST_TLS_BROKER=ssl://127.0.0.1:18832` 与 `NCLINK_TEST_TLS_CA=tests/data/tls_localhost_cert.pem`
+就多跑两个 TLS 端到端（设备端 + 客户端都过真 TLS broker；不给 CA 必须被拒）。
 
 ## 内存与所有权
 
@@ -284,6 +320,7 @@ received 32 samples, 6 events
 
 ## 还没做的
 
-- TLS（`ssl://`）：库带 `NCLINK_WITH_TLS=ON` 编即可，绑定不用改。
 - 打包成 wheel / PyPI：现在按"C 库 + 绑定源码"一起用；要做 wheel 得把
   `nclink_shim.dll` 打进包（`package_data`）并带上平台标签。
+- 零拷贝读采样：现在回调里给的是纯 Python 快照（方便、安全）；需要极致吞吐可以加一个
+  "只在回调期间有效"的借用视图 API。

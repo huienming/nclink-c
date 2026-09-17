@@ -150,7 +150,7 @@ Windows 需要 OpenSSL 3 的**静态库**（`OPENSSL_ROOT_DIR`、vcpkg 或自编
 docker run --rm -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh build-linux"
 ./build-linux.sh            # 或直接在 Linux 机器上
 # 3. 组装（会带上 build/ 与 build-linux/bin 里编好的示例可执行文件）
-.\tools\make_release.ps1 -Version 3.1.0
+.\tools\make_release.ps1 -Version 3.2.0
 ```
 
 产物：`dist/nclink-core-c-<版本>/`（头文件 + Windows x64/x86 与 Linux 静态库 + 文档 +
@@ -175,18 +175,23 @@ C++ 封装在 `include/nclink/ncl.hpp`（header-only，RAII + 异常）；四个
 | 绑定 | 目录 | 覆盖 | 构建与自检 |
 |------|------|------|------------|
 | Go（cgo） | `bindings/go/` | 客户端 | `sh tools/stage-go-libs.sh` 后 `cd bindings/go && go test ./...` |
-| C#（P/Invoke，net472 + net8.0） | `bindings/csharp/` | 客户端 + **设备端**（HTTP/REST、文件通道） | `.\bindings\csharp\build.ps1`（垫片 + 三个工程 + 自检 105 项） |
-| Java（JNI，Java 8 字节码） | `bindings/java/` | 客户端 + **设备端**（HTTP/REST、文件通道） | `.\bindings\java\build.ps1`（native + javac + 自检 106 项） |
-| Python（ctypes，只用标准库） | `bindings/python/` | 客户端 + **设备端**（HTTP/REST、文件通道） | `python -m unittest discover -s bindings/python/tests`（40 项） |
+| C#（P/Invoke，net472 + net8.0） | `bindings/csharp/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `.\bindings\csharp\build.ps1`（垫片 + 三个工程 + 自检 106 项） |
+| Java（JNI，Java 8 字节码） | `bindings/java/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `.\bindings\java\build.ps1`（native + javac + 自检 107 项） |
+| Python（ctypes，只用标准库） | `bindings/python/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `python -m unittest discover -s bindings/python/tests`（46 项） |
 
 每个目录的 `README.md` 里都有用法、内存/线程规则与示例输出。C# / Java / Python 三个
 托管绑定**两边都包**：既能当客户端（`DeviceClient`/`NclDeviceClient`），也能当设备端
 （`Server`：注册工具方法、路径绑定、采样通道、事件推送、HTTP/REST 端点、文件通道），
-示例里有"Python 当机床、C 客户端来读"这种跨语言跑法。
+连接选项也贯通到托管侧：`ssl://` 的 CA / 双向证书 / 关校验 / SNI（`TlsOptions` /
+`NclTlsOptions`，C API 是 `ncl_client_holder_init_ex`）与文件通道对端的 FTP 地址
+（`ncl_server_set_file_peer` / `ncl_client_holder_start_ftp_ex`）。示例里有
+"Python 当机床、C 客户端来读"这种跨语言跑法。
 
 自检默认不需要 broker；想看"报文真的过 MQTT"的那一段，设
-`NCLINK_TEST_BROKER=tcp://host:port` 再跑一遍（Python / C# 绑定支持，
-详见各自的 `README.md`）。
+`NCLINK_TEST_BROKER=tcp://host:port` 再跑一遍（C# / Java / Python 三份绑定都支持）。
+再设 `NCLINK_TEST_TLS_BROKER=ssl://host:port` 与 `NCLINK_TEST_TLS_CA=<pem>` 就多跑一段
+TLS 端到端（要求用带 TLS 的库与垫片；不给 CA 必须握手失败）。细节见各自的
+`README.md`。
 
 ## 快速上手
 

@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import unittest
@@ -60,6 +61,17 @@ EVENT_PAYLOAD = '{"@id":"m1","id":"e1","time":"1700000000000","event":{"key":"PA
 class VersionTest(unittest.TestCase):
     def test_version(self):
         self.assertTrue(nclink.version().startswith("3."), nclink.version())
+
+    def test_tls_reporting_and_unsupported_ssl(self):
+        """TLS 选项的贯通：先问库有没有编 TLS；没编时 ssl:// 必须明确报 NOT_SUPPORTED。"""
+        available = nclink.tls_available()
+        self.assertIsInstance(available, bool)
+        if available:
+            self.skipTest("这个垫片带了 TLS，ssl:// 的用例在真 broker 那边跑")
+        with self.assertRaises(nclink.NclinkError) as ctx:
+            nclink.init("ssl://127.0.0.1:18883", "u", "p",
+                        tls=nclink.TlsOptions(ca_file="no-such-ca.pem"))
+        self.assertEqual(ctx.exception.code, -8, ctx.exception)   # NOT_SUPPORTED
 
 
 class JsonTest(unittest.TestCase):
@@ -502,6 +514,21 @@ class FileToolTest(unittest.TestCase):
         self.assertEqual(nclink.FileInfo.parse_list("[]"), [])
         self.assertEqual(len(nclink.FileInfo.parse_list(
             '[{"fileName":"a"},{"fileName":"b"}]')), 2)
+
+    def test_file_server_custom_port(self):
+        """进程级 FTP 端点换端口 / 换根目录也能起（对端找的就是这个端点）。"""
+        nclink.stop_file_server()
+        try:
+            nclink.start_file_server(port=24124, root=nclink.root())
+            with socket.create_connection(("127.0.0.1", 24124), timeout=3) as sock:
+                greeting = sock.recv(64).decode("ascii", "replace").strip()
+            self.assertTrue(greeting.startswith("220"), greeting)
+        finally:
+            nclink.stop_file_server()
+            try:
+                nclink.start_file_server()          # 恢复默认（2323）
+            except nclink.NclinkError:
+                pass                                # 2323 被占就算了
 
 
 if __name__ == "__main__":

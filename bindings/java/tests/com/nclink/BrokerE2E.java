@@ -80,6 +80,7 @@ public final class BrokerE2E {
                         return Long.valueOf(state[0]);
                     });
             device.registerFileTool();
+            device.setFilePeer("127.0.0.1", 2323, null, null);   // 显式指定对端
             device.registerTool("sink",
                     new String[] {"take", "give"},
                     null,
@@ -97,8 +98,12 @@ public final class BrokerE2E {
                     });
             device.subscribe();
 
-            Nclink.init(broker);
+            // 顺手过一遍带 TLS 选项的 init：给了选项也要能连普通的 tcp://
+            Nclink.init(broker, null, null, new TlsOptions());
             try (DeviceClient client = Nclink.getDevice(SN)) {
+                check("带 TLS 选项的 init 已连上（TlsAvailable=" + Nclink.tlsAvailable()
+                              + "）",
+                      Nclink.isOpen());
                 try (Model probed = client.probe()) {
                     check("真 broker：probe 到模型", "01".equals(probed.root().id()));
                 }
@@ -124,6 +129,14 @@ public final class BrokerE2E {
         Nclink.logShutdown();
         deleteTree(work);
 
+        // TLS（可选）：设了这两个环境变量就再跑一遍 ssl://
+        String tlsBroker = System.getenv("NCLINK_TEST_TLS_BROKER");
+        String tlsCa = System.getenv("NCLINK_TEST_TLS_CA");
+        if (tlsBroker != null && !tlsBroker.trim().isEmpty() && tlsCa != null
+                && !tlsCa.trim().isEmpty()) {
+            tlsRoundTrip(tlsBroker.trim(), tlsCa.trim(), model);
+        }
+
         System.out.println();
         System.out.println(checks + " 项检查，" + failures + " 失败");
         if (failures != 0) {
@@ -132,6 +145,34 @@ public final class BrokerE2E {
     }
 
     /** 文件通道那一段（FTP 端点起不来时整段跳过）。 */
+    /** TLS 那一段：设备端与客户端都走 ssl://（要带 TLS 的 nclink_jni）。 */
+    private static void tlsRoundTrip(String broker, String ca, String model)
+            throws Exception {
+        if (!Nclink.tlsAvailable()) {
+            System.out.println("跳过 TLS 用例（这个 nclink_jni 没带 TLS）");
+            return;
+        }
+        TlsOptions tls = new TlsOptions().caFile(ca).serverName("127.0.0.1");
+        String sn = SN + "T";
+        try (Server device = new Server(sn, model, broker, null, null, null, tls)) {
+            device.registerTool("plc", new String[] {"getStatus"}, null,
+                    (method, params) -> Integer.valueOf(42));
+            device.subscribe();
+            Nclink.init(broker, null, null, tls);
+            try (DeviceClient client = Nclink.getDevice(sn)) {
+                try (Json reply = client.methodCall("/plc/getStatus")) {
+                    Map<?, ?> body = (Map<?, ?>) reply.toJavaObject();
+                    check("TLS：设备端与客户端都过 ssl://（code=" + body.get("code")
+                                  + "）",
+                          "OK".equals(body.get("code"))
+                          && body.get("data").equals(Long.valueOf(42)));
+                }
+            } finally {
+                Nclink.shutdown();
+            }
+        }
+    }
+
     private static void fileChannel(DeviceClient client, File work, File local,
                                     String content, long size, String deviceMirror,
                                     long[] seen) throws Exception {

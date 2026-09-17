@@ -26,7 +26,7 @@ namespace Nclink
     /// <summary>
     /// 一台设备的客户端（由进程级的 <see cref="Nclink"/> 持有，别自己释放）。
     ///
-    /// 生命周期：先用 <see cref="Nclink.Init"/> 建进程级连接，再
+    /// 生命周期：先用 <see cref="Nclink.Init(string, string, string)"/> 建进程级连接，再
     /// <see cref="Nclink.GetDevice"/> 拿某个 SN 的客户端；<see cref="Nclink.Shutdown"/>
     /// 之后这个对象就失效了。
     /// </summary>
@@ -75,6 +75,26 @@ namespace Nclink
             NclinkException.Check(
                 Native.ClientProbe(_client, timeoutMs, out model), "Probe");
             return new NclModel(model);
+        }
+
+        /// <summary>
+        /// 把一份模型装进客户端（<c>null</c> = 清掉当前模型）：路径 ↔ 节点 id 互查、
+        /// 采样报文按模型补齐缺的 paths 都靠它。客户端拿的是**自己的拷贝**，
+        /// 传进来的 <paramref name="model"/> 还是调用方的（照常 Dispose）。
+        /// </summary>
+        public void LoadModel(NclModel model)
+        {
+            ThrowIfDisposed();
+            NclinkException.Check(
+                Native.ClientSetRootNode(_client,
+                                         model == null ? IntPtr.Zero : model.Handle),
+                "LoadModel");
+        }
+
+        /// <summary>清掉客户端当前装载的模型。</summary>
+        public void ClearModel()
+        {
+            LoadModel(null);
         }
 
         /// <summary>getValue(path)。</summary>

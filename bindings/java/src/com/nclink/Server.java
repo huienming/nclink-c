@@ -64,6 +64,11 @@ public final class Server implements AutoCloseable {
         this(sn, modelJson, broker, null, null, null);
     }
 
+    public Server(String sn, String modelJson, String broker, String username,
+                  String password, PublishSink sink) {
+        this(sn, modelJson, broker, username, password, sink, null);
+    }
+
     /**
      * @param sn        设备序列号（必填；做 MQTT clientId 与主题地址）
      * @param modelJson 模型文档；null = 库内置的那份（NC_LINK_ROOT）
@@ -71,9 +76,12 @@ public final class Server implements AutoCloseable {
      * @param username  用户名；null/空 = 匿名
      * @param password  密码；null/空 = 匿名
      * @param sink      自研传输；给了它就不再走 MQTT 发布
+     * @param tls       TLS 选项；只有 {@code broker} 是 {@code ssl://} / {@code tls://}
+     *                  时用得上（要带 TLS 编译的库与 JNI 库，见
+     *                  {@link Nclink#tlsAvailable()}）。null = 默认
      */
     public Server(String sn, String modelJson, String broker, String username,
-                  String password, PublishSink sink) {
+                  String password, PublishSink sink, TlsOptions tls) {
         if (sn == null || sn.isEmpty()) {
             throw new IllegalArgumentException("sn 不能为空");
         }
@@ -89,9 +97,17 @@ public final class Server implements AutoCloseable {
         this.publishSink = sink;
         long[] created = new long[1];
         long[] host = new long[1];
-        NclinkException.check(Native.serverCreate(sn, model, broker, username, password,
-                                                  sink == null ? null : this, created, host),
-                              "Server");
+        int rc;
+        if (tls == null) {
+            rc = Native.serverCreate(sn, model, broker, username, password,
+                                     sink == null ? null : this, created, host);
+        } else {
+            rc = Native.serverCreateEx(sn, model, broker, username, password,
+                                       tls.caFile(), tls.clientCert(), tls.clientKey(),
+                                       tls.serverName(), tls.verifyPeer(),
+                                       sink == null ? null : this, created, host);
+        }
+        NclinkException.check(rc, "Server");
         handle = created[0];
         publishHost = host[0];
     }
@@ -242,6 +258,26 @@ public final class Server implements AutoCloseable {
     public void registerFileTool() {
         NclinkException.check(Native.serverRegisterFileTool(requireOpen()),
                               "registerFileTool");
+    }
+
+    /**
+     * 覆盖文件通道对端的 FTP 端点。
+     *
+     * <p>默认按 conf/mqtt.cfg 推：broker 的主机名 + 端口 2323 + admin/123456 ——
+     * 只有对端跑在 broker 那台机器上才成立。对端在别处（或者端口/账号不同）时在
+     * **第一次传文件之前**调它；{@code port} 为 0、账号为 null 就用默认值。
+     */
+    public void setFilePeer(String host, int port, String username, String password) {
+        if (host == null || host.isEmpty()) {
+            throw new IllegalArgumentException("host 不能为空");
+        }
+        NclinkException.check(
+                Native.serverSetFilePeer(requireOpen(), host, port, username, password),
+                "setFilePeer");
+    }
+
+    public void setFilePeer(String host) {
+        setFilePeer(host, 2323, null, null);
     }
 
     public void startFtp() {

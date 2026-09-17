@@ -28,6 +28,14 @@ import json as _json_stdlib
 import weakref
 from enum import IntEnum
 
+def _as_tls_options(tls):
+    """dict / None / TlsOptions 都收（延迟 import 避免与包 __init__ 循环）。"""
+    if tls is None or not isinstance(tls, dict):
+        return tls
+    from . import TlsOptions
+
+    return TlsOptions(**tls)
+
 from ._ffi import (NclinkError, PUBLISH_CALLBACK, ROUTE_CALLBACK, TOOL_CALLBACK,
                    decode, encode, lib, strdup, take_text)
 from ._json import Json
@@ -74,7 +82,7 @@ class Server:
     """设备端。用完 `close()`（或 `with`）。"""
 
     def __init__(self, sn, model=None, broker=None, username=None, password=None,
-                 publish=None):
+                 publish=None, tls=None):
         """
         `sn`：设备序列号（必填，做 MQTT clientId 与主题地址）。
 
@@ -84,6 +92,9 @@ class Server:
 
         `publish`：可选的自研传输：`publish(topic: str, payload: bytes)`，给了它
         就不再走 MQTT 发布（但 `broker` 仍可用于收请求）。
+
+        `tls`：`TlsOptions`（或同名字段的 dict），只在 `broker` 是 `ssl://` /
+        `tls://` 时用得上（要带 TLS 编译的库与垫片，见 `nclink.tls_available()`）。
         """
         if not sn:
             raise ValueError("sn 不能为空")
@@ -119,9 +130,17 @@ class Server:
             publish_host = self._host_for(self._publish_callback)
             self._publish_host = publish_host
 
-        handle = lib.nclshim_server_create(encode(sn), encode(model_text),
-                                           encode(broker), encode(username),
-                                           encode(password), publish_host)
+        tls = _as_tls_options(tls)
+        if tls is None:
+            handle = lib.nclshim_server_create(encode(sn), encode(model_text),
+                                               encode(broker), encode(username),
+                                               encode(password), publish_host)
+        else:
+            handle = lib.nclshim_server_create_ex(
+                encode(sn), encode(model_text), encode(broker), encode(username),
+                encode(password), encode(tls.ca_file), encode(tls.client_cert),
+                encode(tls.client_key), encode(tls.server_name),
+                1 if tls.verify_peer else 0, publish_host)
         if not handle:
             raise NclinkError(ERR_NOT_FOUND, "Server",
                               "创建设备端失败（broker 连不上？）: %s" % sn)
@@ -290,6 +309,21 @@ class Server:
         rc = lib.nclshim_server_register_file_tool(self._require_open())
         if rc != 0:
             raise NclinkError(rc, "register_file_tool")
+
+    def set_file_peer(self, host, port=2323, username=None, password=None):
+        """覆盖文件通道对端的 FTP 端点。
+
+        默认按 `conf/mqtt.cfg` 推：broker 的主机名 + 端口 2323 + admin/123456 ——
+        只有对端跑在 broker 那台机器上才成立。对端在别处（或者端口/账号不一样）时
+        在**第一次传文件之前**调它；`port=0`、账号留空就用默认值。
+        """
+        if not host:
+            raise ValueError("host 不能为空")
+        rc = lib.nclshim_server_set_file_peer(self._require_open(), encode(host),
+                                              int(port), encode(username),
+                                              encode(password))
+        if rc != 0:
+            raise NclinkError(rc, "set_file_peer")
 
     def start_ftp(self):
         """启动 FTP 端点（端口与账号来自 bin/ftp.txt）。"""

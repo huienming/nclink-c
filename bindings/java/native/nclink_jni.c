@@ -700,6 +700,40 @@ JNIEXPORT jint JNICALL Java_com_nclink_Native_open(JNIEnv *env, jclass cls,
     return (jint)rc;
 }
 
+JNIEXPORT jint JNICALL Java_com_nclink_Native_openEx(
+    JNIEnv *env, jclass cls, jstring uri, jstring user, jstring password,
+    jstring ca_file, jstring client_cert, jstring client_key, jstring server_name,
+    jboolean verify_peer)
+{
+    char *raw_uri = from_jstring(env, uri);
+    char *raw_user = from_jstring(env, user);
+    char *raw_pass = from_jstring(env, password);
+    char *raw_ca = from_jstring(env, ca_file);
+    char *raw_cert = from_jstring(env, client_cert);
+    char *raw_key = from_jstring(env, client_key);
+    char *raw_name = from_jstring(env, server_name);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_open_ex(raw_uri, raw_user, raw_pass, raw_ca, raw_cert, raw_key,
+                         raw_name, verify_peer != JNI_FALSE ? 1 : 0);
+    free(raw_uri);
+    free(raw_user);
+    free(raw_pass);
+    free(raw_ca);
+    free(raw_cert);
+    free(raw_key);
+    free(raw_name);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_tlsAvailable(JNIEnv *env, jclass cls)
+{
+    (void)env;
+    (void)cls;
+    return (jint)nclshim_tls_available();
+}
+
 JNIEXPORT void JNICALL Java_com_nclink_Native_close(JNIEnv *env, jclass cls)
 {
     (void)env;
@@ -1277,6 +1311,52 @@ JNIEXPORT jint JNICALL Java_com_nclink_Native_serverCreate(
     return 0;
 }
 
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverCreateEx(
+    JNIEnv *env, jclass cls, jstring sn, jstring model, jstring broker, jstring user,
+    jstring password, jstring ca_file, jstring client_cert, jstring client_key,
+    jstring server_name, jboolean verify_peer, jobject publish_target,
+    jlongArray out_server, jlongArray out_host)
+{
+    char *raw_sn = from_jstring(env, sn);
+    char *raw_model = from_jstring(env, model);
+    char *raw_broker = from_jstring(env, broker);
+    char *raw_user = from_jstring(env, user);
+    char *raw_pass = from_jstring(env, password);
+    char *raw_ca = from_jstring(env, ca_file);
+    char *raw_cert = from_jstring(env, client_cert);
+    char *raw_key = from_jstring(env, client_key);
+    char *raw_name = from_jstring(env, server_name);
+    jni_host *publish = NULL;
+    const void *server;
+
+    (void)cls;
+    set_long(env, out_server, 0, 0);
+    set_long(env, out_host, 0, 0);
+    if (publish_target != NULL) {
+        publish = make_host(env, publish_target, (void *)jni_publish_callback);
+        if (publish == NULL) {
+            free(raw_sn); free(raw_model); free(raw_broker); free(raw_user);
+            free(raw_pass); free(raw_ca); free(raw_cert); free(raw_key); free(raw_name);
+            return -2;                      /* NCL_ERR_NOMEM */
+        }
+    }
+    server = nclshim_server_create_ex(raw_sn, raw_model, raw_broker, raw_user, raw_pass,
+                                      raw_ca, raw_cert, raw_key, raw_name,
+                                      verify_peer != JNI_FALSE ? 1 : 0, publish);
+    free(raw_sn); free(raw_model); free(raw_broker); free(raw_user); free(raw_pass);
+    free(raw_ca); free(raw_cert); free(raw_key); free(raw_name);
+    if (server == NULL) {
+        if (publish != NULL) {
+            (*env)->DeleteGlobalRef(env, publish->target);
+            free(publish);
+        }
+        return -12;                         /* NCL_ERR_CONNECT：多半是 broker 连不上 */
+    }
+    set_long(env, out_server, 0, PTR(server));
+    set_long(env, out_host, 0, PTR(publish));
+    return 0;
+}
+
 JNIEXPORT void JNICALL Java_com_nclink_Native_serverFree(JNIEnv *env, jclass cls,
                                                         jlong server)
 {
@@ -1391,6 +1471,42 @@ JNIEXPORT jint JNICALL Java_com_nclink_Native_fileStartFtp(JNIEnv *env, jclass c
     (void)env;
     (void)cls;
     return (jint)nclshim_file_start_ftp();
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_fileStartFtpEx(JNIEnv *env, jclass cls,
+                                                            jint port, jstring root,
+                                                            jstring user,
+                                                            jstring password)
+{
+    char *raw_root = from_jstring(env, root);
+    char *raw_user = from_jstring(env, user);
+    char *raw_password = from_jstring(env, password);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_file_start_ftp_ex((unsigned)port, raw_root, raw_user, raw_password);
+    free(raw_root);
+    free(raw_user);
+    free(raw_password);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverSetFilePeer(
+    JNIEnv *env, jclass cls, jlong server, jstring host, jint port, jstring user,
+    jstring password)
+{
+    char *raw_host = from_jstring(env, host);
+    char *raw_user = from_jstring(env, user);
+    char *raw_password = from_jstring(env, password);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_server_set_file_peer(HANDLE(server), raw_host, (unsigned)port,
+                                      raw_user, raw_password);
+    free(raw_host);
+    free(raw_user);
+    free(raw_password);
+    return (jint)rc;
 }
 
 JNIEXPORT void JNICALL Java_com_nclink_Native_fileStopFtp(JNIEnv *env, jclass cls)

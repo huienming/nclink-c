@@ -25,6 +25,11 @@ typedef struct {
     ncl_ftp_server       *ftp;    /**< FTP endpoint of the device */
     char                 *sn;
     bool                  ftp_owned;
+    /* 显式指定的对端（ncl_server_set_file_peer）；host 非空时不再按 conf/mqtt.cfg 推 */
+    char                 *peer_host;
+    unsigned              peer_port;
+    char                 *peer_user;
+    char                 *peer_password;
 } ncl_file_tool_state;
 
 /* --------------------------------------------------------------- helpers -- */
@@ -355,12 +360,36 @@ static void file_state_destroy(void *data)
         state->remote = NULL;
     }
     free(state->sn);
+    free(state->peer_host);
+    free(state->peer_user);
+    free(state->peer_password);
     free(state);
 }
 
+/** 用当前生效的对端参数建（或换）FTP 客户端。 */
+static void file_state_open_remote(ncl_file_tool_state *state, const char *host,
+                                   unsigned port, const char *user,
+                                   const char *password)
+{
+    if (state == NULL) {
+        return;
+    }
+    if (state->remote != NULL) {
+        ncl_server_file_tool_free(state->remote);
+        state->remote = NULL;
+    }
+    state->remote = ncl_server_file_tool_create(
+        host != NULL ? host : "127.0.0.1",
+        port != 0 ? port : (unsigned)NCL_FTP_CLIENT_HOLDER_PORT,
+        user != NULL && user[0] != '\0' ? user : NCL_FTP_DEFAULT_USER,
+        password != NULL && password[0] != '\0' ? password : NCL_FTP_DEFAULT_PASSWORD,
+        state->sn);
+}
+
 /**
- * Fetch (creating on demand) the file state of @p server, with the same peer
- * derivation: the host of the MQTT URL, on the client side FTP port.
+ * Fetch (creating on demand) the file state of @p server. 对端默认按
+ * "conf/mqtt.cfg 里 broker 的主机名 + 客户端侧 FTP 端口"推；先用
+ * ncl_server_set_file_peer() 显式指定过就按指定的来。
  */
 static ncl_file_tool_state *file_state_of(ncl_server *server)
 {
@@ -385,7 +414,10 @@ static ncl_file_tool_state *file_state_of(ncl_server *server)
         free(state);
         return NULL;
     }
-    {
+    if (state->peer_host != NULL) {
+        file_state_open_remote(state, state->peer_host, state->peer_port,
+                               state->peer_user, state->peer_password);
+    } else {
         ncl_mqtt_config config;
         char *host = NULL;
         unsigned port = 0;
@@ -395,17 +427,15 @@ static ncl_file_tool_state *file_state_of(ncl_server *server)
         if (ncl_mqtt_config_read(&config) == NCL_OK && config.url != NULL &&
             ncl_socket_parse_url(config.url, &host, &port, &tls) == NCL_OK) {
             /* Host part of the broker URL. */
-            state->remote = ncl_server_file_tool_create(
-                host, NCL_FTP_CLIENT_HOLDER_PORT, NCL_FTP_DEFAULT_USER,
-                NCL_FTP_DEFAULT_PASSWORD, state->sn);
+            file_state_open_remote(state, host, NCL_FTP_CLIENT_HOLDER_PORT, NULL,
+                                   NULL);
         }
         free(host);
         ncl_mqtt_config_free(&config);
     }
     if (state->remote == NULL) {
-        state->remote = ncl_server_file_tool_create(
-            "127.0.0.1", NCL_FTP_CLIENT_HOLDER_PORT, NCL_FTP_DEFAULT_USER,
-            NCL_FTP_DEFAULT_PASSWORD, state->sn);
+        file_state_open_remote(state, "127.0.0.1", NCL_FTP_CLIENT_HOLDER_PORT, NULL,
+                               NULL);
     }
     if (ncl_server_set_user_data(server, state, file_state_destroy) != NCL_OK) {
         file_state_destroy(state);
@@ -431,6 +461,53 @@ ncl_err ncl_server_register_file_tool(ncl_server *server)
                                     k_file_bindings,
                                     sizeof(k_file_bindings) /
                                         sizeof(k_file_bindings[0]));
+}
+
+ncl_err ncl_server_set_file_peer(ncl_server *server, const char *host, unsigned port,
+                                 const char *user, const char *password)
+{
+    ncl_file_tool_state *state;
+    char *host_copy;
+    char *user_copy = NULL;
+    char *pass_copy = NULL;
+
+    if (server == NULL || host == NULL || host[0] == '\0') {
+        return NCL_ERR_INVALID_ARG;
+    }
+    state = file_state_of(server);
+    if (state == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    host_copy = ncl_strdup(host);
+    if (host_copy == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    if (user != NULL && user[0] != '\0') {
+        user_copy = ncl_strdup(user);
+        if (user_copy == NULL) {
+            free(host_copy);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    if (password != NULL && password[0] != '\0') {
+        pass_copy = ncl_strdup(password);
+        if (pass_copy == NULL) {
+            free(host_copy);
+            free(user_copy);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    free(state->peer_host);
+    free(state->peer_user);
+    free(state->peer_password);
+    state->peer_host = host_copy;
+    state->peer_port = port;
+    state->peer_user = user_copy;
+    state->peer_password = pass_copy;
+    /* 换掉已经建好的对端：下一次传输用新地址重连。 */
+    file_state_open_remote(state, state->peer_host, state->peer_port,
+                           state->peer_user, state->peer_password);
+    return state->remote != NULL ? NCL_OK : NCL_ERR_CONNECT;
 }
 
 /* ---------------------------------------------------------- FTP endpoint -- */
@@ -498,7 +575,8 @@ void ncl_server_stop_ftp(ncl_server *server)
 
 static ncl_ftp_server *g_holder_ftp;
 
-ncl_err ncl_client_holder_start_ftp(void)
+ncl_err ncl_client_holder_start_ftp_ex(unsigned port, const char *root,
+                                      const char *user, const char *password)
 {
     ncl_ftp_server_options options;
 
@@ -506,10 +584,12 @@ ncl_err ncl_client_holder_start_ftp(void)
         return NCL_OK;
     }
     memset(&options, 0, sizeof(options));
-    options.port = NCL_FTP_CLIENT_HOLDER_PORT;
-    options.root = ncl_env_root();
-    options.user = NCL_FTP_DEFAULT_USER;
-    options.password = NCL_FTP_DEFAULT_PASSWORD;
+    options.port = port != 0 ? port : (unsigned)NCL_FTP_CLIENT_HOLDER_PORT;
+    options.root = root != NULL && root[0] != '\0' ? root : ncl_env_root();
+    options.user = user != NULL && user[0] != '\0' ? user : NCL_FTP_DEFAULT_USER;
+    options.password = password != NULL && password[0] != '\0'
+                           ? password
+                           : NCL_FTP_DEFAULT_PASSWORD;
     options.allow_write = true;
     g_holder_ftp = ncl_ftp_server_create_ex(&options);
     if (g_holder_ftp == NULL) {
@@ -520,8 +600,14 @@ ncl_err ncl_client_holder_start_ftp(void)
         g_holder_ftp = NULL;
         return NCL_ERR_CONNECT;
     }
-    ncl_log_info("FTP服务器已启动,端口:%d", NCL_FTP_CLIENT_HOLDER_PORT);
+    ncl_log_info("FTP服务器已启动,端口:%d", options.port);
+
     return NCL_OK;
+}
+
+ncl_err ncl_client_holder_start_ftp(void)
+{
+    return ncl_client_holder_start_ftp_ex(0, NULL, NULL, NULL);
 }
 
 void ncl_client_holder_stop_ftp(void)

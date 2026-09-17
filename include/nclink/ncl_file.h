@@ -252,8 +252,18 @@ ncl_err ncl_client_ll(ncl_client *client, const char *remote_dir,
 void ncl_client_set_file_tool(ncl_client *client, ncl_file_client_tool *tool);
 ncl_file_client_tool *ncl_client_file_tool(ncl_client *client);
 
-/** Start the process wide FTP server on 127.0.0.1:2323 rooted at the current
- *  working directory with user admin / 123456. Safe to call twice. */
+/**
+ * Start the process wide FTP server that receives the files a device pushes.
+ *
+ * The default (ncl_client_holder_start_ftp) listens on port 2323, is rooted at
+ * ncl_env_root() and accepts admin / 123456. The _ex form overrides any of it
+ * (port 0 / NULL keep the default) — use it when 2323 is taken or the peer
+ * should connect somewhere else. Safe to call twice: an already running
+ * endpoint is returned as is.
+ */
+ncl_err ncl_client_holder_start_ftp_ex(unsigned port, const char *root,
+                                      const char *user, const char *password);
+
 ncl_err ncl_client_holder_start_ftp(void);
 
 /** Stop the process wide FTP server. */
@@ -271,6 +281,18 @@ ncl_err ncl_client_holder_restart(void);
 
 /** Register the built in "file" tool on @p server. */
 ncl_err ncl_server_register_file_tool(ncl_server *server);
+
+/**
+ * Override the FTP endpoint of the peer the file channel talks to.
+ *
+ * By default the device derives it from conf/mqtt.cfg: the host of the broker
+ * URL, port 2323, user admin / password 123456 — which only works when the peer
+ * runs on the broker host. Call this before the first file transfer to point at
+ * the real endpoint (host is required; port 0, user or password NULL keep the
+ * defaults). It replaces the FTP connection that is already open.
+ */
+ncl_err ncl_server_set_file_peer(ncl_server *server, const char *host, unsigned port,
+                                 const char *user, const char *password);
 
 /**
  * Start the server side FTP endpoint: read bin/ftp.txt for the port and

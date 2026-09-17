@@ -426,6 +426,7 @@ public final class SelfTest {
         File file = new File(dir, "hello.txt");
         String content = "文件通道 hello\n";
         try {
+            fileServerCustomPort();
             writeText(file, content);
             check("文件工具：文本类要压缩", Nclink.fileNeedCompression("a.txt")
                     && Nclink.fileNeedCompression("model.json"));
@@ -459,6 +460,36 @@ public final class SelfTest {
             check("文件工具用例（" + error + "）", false);
         } finally {
             deleteTree(dir);
+        }
+    }
+
+    /** 进程级 FTP 端点换端口 / 换根目录也能起（对端找的就是这个端点）。 */
+    private static void fileServerCustomPort() {
+        int port = 24124;
+        Nclink.stopFileServer();
+        try {
+            Nclink.startFileServer(port, Nclink.rootDirectory(), null, null);
+            java.net.Socket probe = new java.net.Socket("127.0.0.1", port);
+            try {
+                probe.setSoTimeout(3000);
+                byte[] buffer = new byte[64];
+                int got = probe.getInputStream().read(buffer);
+                String greeting = new String(buffer, 0, Math.max(got, 0),
+                                             StandardCharsets.US_ASCII).trim();
+                check("文件端点：自定义端口在听（" + port + "：" + greeting + "）",
+                        greeting.startsWith("220"));
+            } finally {
+                probe.close();
+            }
+        } catch (Exception error) {
+            check("文件端点：自定义端口用例（" + error + "）", false);
+        } finally {
+            Nclink.stopFileServer();
+            try {
+                Nclink.startFileServer();           // 恢复默认（2323）
+            } catch (NclinkException expected) {
+                /* 2323 被占就算了 */
+            }
         }
     }
 

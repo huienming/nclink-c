@@ -104,7 +104,7 @@ namespace Nclink
     /// 客户端的文件通道：MQTT 报文里只传 "/temp/&lt;名字&gt;" 令牌，字节走 FTP。
     ///
     /// 方向很重要：**设备是 FTP 客户端**，托管侧是 FTP 服务端（进程级端点
-    /// 127.0.0.1:2323，admin / 123456，根 = 安装根，<see cref="Nclink.Init"/> 时
+    /// 127.0.0.1:2323，admin / 123456，根 = 安装根，<see cref="Nclink.Init(string, string, string)"/> 时
     /// 已经起好）。本地文件放 &lt;当前目录&gt;/&lt;sn&gt;/&lt;相对路径&gt;：
     ///
     /// <list type="bullet">

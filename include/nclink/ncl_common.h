@@ -24,7 +24,7 @@ extern "C" {
  * Library version. The NC-Link specification revision implemented by this
  * library is still 3.0.0 (GB/T 41970-2022).
  */
-#define NCL_VERSION "3.1.0"
+#define NCL_VERSION "3.2.0"
 
 /* ------------------------------------------------------------------ error -- */
 typedef int ncl_err;

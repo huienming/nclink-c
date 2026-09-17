@@ -254,6 +254,12 @@ namespace Nclink
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_open")]
         internal static extern int Open(byte[] uri, byte[] user, byte[] password);
 
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_open_ex")]
+        internal static extern int OpenEx(byte[] uri, byte[] user, byte[] password, byte[] caFile, byte[] clientCert, byte[] clientKey, byte[] serverName, int verifyPeer);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_tls_available")]
+        internal static extern int TlsAvailable();
+
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_close")]
         internal static extern void Close();
 
@@ -265,6 +271,9 @@ namespace Nclink
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_probe")]
         internal static extern int ClientProbe(IntPtr client, uint timeoutMs, out IntPtr model);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_set_root_node")]
+        internal static extern int ClientSetRootNode(IntPtr client, IntPtr root);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_get_value")]
         internal static extern int ClientGetValue(IntPtr client, byte[] path, uint timeoutMs, out IntPtr value);
@@ -321,6 +330,9 @@ namespace Nclink
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_create")]
         internal static extern IntPtr ServerCreate(byte[] sn, byte[] modelJson, byte[] broker, byte[] username, byte[] password, IntPtr publishHost);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_create_ex")]
+        internal static extern IntPtr ServerCreateEx(byte[] sn, byte[] modelJson, byte[] broker, byte[] username, byte[] password, byte[] caFile, byte[] clientCert, byte[] clientKey, byte[] serverName, int verifyPeer, IntPtr publishHost);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_free")]
         internal static extern void ServerFree(IntPtr handle);
@@ -421,6 +433,12 @@ namespace Nclink
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_file_start_ftp")]
         internal static extern int FileStartFtp();
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_file_start_ftp_ex")]
+        internal static extern int FileStartFtpEx(uint port, byte[] root, byte[] user, byte[] password);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_set_file_peer")]
+        internal static extern int ServerSetFilePeer(IntPtr handle, byte[] host, uint port, byte[] user, byte[] password);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_file_stop_ftp")]
         internal static extern void FileStopFtp();

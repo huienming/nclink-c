@@ -47,6 +47,30 @@ public final class Nclink {
         NclinkException.check(Native.open(uri, username, password), "init");
     }
 
+    /**
+     * 建进程级连接，附带 TLS 选项（{@code ssl://} 要带 TLS 编译的库与 JNI 库，见
+     * {@link #tlsAvailable()}）。
+     */
+    public static void init(String uri, String username, String password,
+                            TlsOptions tls) {
+        if (uri == null || uri.isEmpty()) {
+            throw new IllegalArgumentException("uri 不能为空，例如 ssl://host:8883");
+        }
+        if (tls == null) {
+            init(uri, username, password);
+            return;
+        }
+        NclinkException.check(
+                Native.openEx(uri, username, password, tls.caFile(), tls.clientCert(),
+                              tls.clientKey(), tls.serverName(), tls.verifyPeer()),
+                "init");
+    }
+
+    /** 当前的原生库有没有编 TLS（false 时 {@code ssl://} 会报 NOT_SUPPORTED）。 */
+    public static boolean tlsAvailable() {
+        return Native.tlsAvailable() != 0;
+    }
+
     /** 断开连接、释放所有客户端（没连过就是空操作）。 */
     public static void shutdown() {
         if (isOpen()) {
@@ -137,6 +161,17 @@ public final class Nclink {
      */
     public static void startFileServer() {
         NclinkException.check(Native.fileStartFtp(), "startFileServer");
+    }
+
+    /**
+     * 同上，但可以换端口 / 根目录 / 账号（{@code port} 为 0、其余为 null 就用默认）：
+     * 托管侧与 broker 不在一台机器、或者 2323 被占时用它。
+     */
+    public static void startFileServer(int port, String rootDirectory, String username,
+                                       String password) {
+        NclinkException.check(
+                Native.fileStartFtpEx(port, rootDirectory, username, password),
+                "startFileServer");
     }
 
     /** 停掉进程级 FTP 端点。 */

@@ -32,12 +32,18 @@ C 库是静态库、没有导出符号，而且 Java 侧不该依赖 C 结构体
 # 1) 先编核心静态库（仓库根）
 .\build.ps1
 
-# 2) Java 绑定：native + javac + 自检（106 项，不需要 broker）
+# 2) Java 绑定：native + javac + 自检（107 项，不需要 broker）
 powershell -ExecutionPolicy Bypass -File .\bindings\java\build.ps1
 
-# 3) 想连真 broker 再跑一遍端到端（设备端 + 客户端同进程，报文真的过 MQTT）
+# 3) 想连真 broker 再跑一遍端到端（设备端 + 客户端同进程，报文真的过 MQTT；12 项）
 $env:NCLINK_TEST_BROKER = "tcp://127.0.0.1:1883"
 powershell -ExecutionPolicy Bypass -File .\bindings\java\build.ps1
+
+# 4) TLS 端到端（再 +1 项：设备端与客户端都走 ssl://；要带 TLS 的库 + JNI 库）
+$env:NCLINK_TEST_TLS_BROKER = "ssl://127.0.0.1:18832"
+$env:NCLINK_TEST_TLS_CA = "tests/data/tls_localhost_cert.pem"
+java "-Djava.library.path=bindings/java/native/bin-tls" `
+     -cp bindings/java/build/classes com.nclink.BrokerE2E
 ```
 
 Linux：
@@ -51,8 +57,9 @@ Linux：
 
 1. 环境变量 `NCLINK_JNI` 指向的文件；
 2. `NCLINK_JNI_DIR` 目录下的 `nclink_jni.dll` / `libnclink_jni.so`；
-3. 当前目录、`bindings/java/native/bin/`、`native/bin/`、class 文件旁边；
-4. 交给系统：`-Djava.library.path=...`。
+3. 显式给的 `-Djava.library.path=...`（TLS 版就靠它指到 `bin-tls/`，见下文）；
+4. 当前目录、`bindings/java/native/bin/`、`native/bin/`、class 文件旁边；
+5. 交给系统：`System.loadLibrary`。
 
 没有 Maven/Gradle 也能用：把 `src`（或编译出的 classes/jar）和 `nclink_jni.dll`
 放进你的工程即可。
@@ -242,6 +249,41 @@ Nclink.fileAttribute("report.txt");        // com.nclink.FileInfo
   就 127.0.0.1）——所以本机与 broker 是同一台机器时开箱即用。
 - 设备侧的 `startFtp()` 是"设备自己也开个 FTP 端点"（读 `bin/ftp.txt`），客户端传文件
   用不到它；缺文件时它抛 `NclinkException`，示例里是容忍着来的。
+- 对端不跟 broker 同机（或者端口/账号不一样）时显式指定：
+
+```java
+device.setFilePeer("10.0.0.7", 2323, null, null);          // 设备端指到上位机的 FTP
+Nclink.startFileServer(2323, "D:/files", "admin", "123456");   // 本机端点换端口/根/账号
+```
+
+### TLS（ssl://）
+
+```java
+if (!Nclink.tlsAvailable()) { /* 这个 JNI 库没带 TLS：见下面"TLS 构建" */ }
+
+Nclink.init("ssl://broker.example.com:8883", null, null,
+        new TlsOptions()
+                .caFile("C:/certs/ca.pem")                 // 内网 CA；不设 = 平台信任库
+                .clientCert("C:/certs/client.pem", "C:/certs/client.key")  // 双向 TLS
+                .serverName("broker.example.com")          // 不设 = URL 里的主机名
+                .verifyPeer(true));                        // 默认就是 true
+
+// 设备端直连 ssl:// broker 也支持：
+new Server(sn, modelJson, "ssl://broker.example.com:8883", null, null, null,
+           new TlsOptions().caFile("C:/certs/ca.pem"));
+```
+
+**TLS 构建**（库与 JNI 库都得带 TLS）：
+
+```powershell
+.\build.ps1 -Tls                                     # 出 build-tls\nclink_core.lib
+.\bindings\java\native\build-native.ps1 -Tls       # 出 bindings\java\native\bin-tls\nclink_jni.dll
+```
+跑的时候把原生库指到那个目录：`-Djava.library.path=bindings/java/native/bin-tls`（或
+`NCLINK_JNI_DIR=bindings/java/native/bin-tls`）。OpenSSL 的两个 DLL 已经拷进
+`bin-tls/`，不用再动 PATH。
+
+库没带 TLS 时用 `ssl://` 会拿到明确的 `NOT_SUPPORTED`（-8）。
 
 ## 内存与线程
 
@@ -289,6 +331,7 @@ received 35 samples, 6 events
 
 ## 还没做的
 
-- TLS（`ssl://`）：库带 `NCLINK_WITH_TLS=ON` 编即可，绑定不用改。
 - Maven / Gradle 坐标与 jar 打包：现在是"源码 + 一个原生库"直接用；要发包得把
   `nclink_jni.dll` / `libnclink_jni.so` 按平台打进 jar 或另发。
+- 零拷贝读采样：现在回调里给的是纯 Java 快照（方便、安全）；需要极致吞吐可以加一个
+  "只在回调期间有效"的借用视图 API。

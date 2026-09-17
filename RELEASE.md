@@ -1,6 +1,6 @@
 # NC-Link C 实现 · 发布包说明
 
-版本 **3.1.0**（实现 GB/T 41970-2022 协议 3.0.0）
+版本 **3.2.0**（实现 GB/T 41970-2022 协议 3.0.0）
 本包为 **零第三方依赖** 的 C11 静态库，交付内容为**头文件 + 两个平台的预编译库 +
 使用手册 + 示例程序**；不含实现源码（需要源码请见第 5 节）。
 
@@ -11,7 +11,7 @@ include/nclink/*.h                     公共头文件（全部对外 API）
 lib/windows-x64-msvc/nclink_core.lib   Windows x64 静态库（MSVC，Release）
 lib/windows-x86-msvc/nclink_core.lib   Windows x86（32 位）静态库（MSVC，Release）
 lib/windows-x64-msvc-tls/…             x64 + TLS（ssl://，OpenSSL 静态链接，无 DLL 依赖）
-lib/windows-amd64-mingw/libnclink_core.a  Windows x64 静态库（mingw-w64，供 Go/cgo 链接）
+lib/windows-amd64-mingw/libnclink_core.a  Windows x64 静态库（mingw-w64，供 Go/cgo 链接；**可选**，没有 mingw 工具链时不打包）
 lib/linux-x86_64-gcc/libnclink_core.a  Linux x86_64 静态库（gcc，-O2）
 lib/linux-x86_64-gcc-tls/…             同上，但启用了 TLS（ssl://，链接 -lssl -lcrypto）
 examples/*.c, *.cpp, CMakeLists.txt    两个示例程序的源码（设备端 / 客户端）
@@ -19,9 +19,9 @@ examples/bin/windows-x64-msvc/*.exe    **编好的示例可执行文件**（x64�
 examples/bin/windows-x86-msvc/*.exe    同上，32 位
 examples/bin/linux-x86_64-gcc/*        Linux 版示例可执行文件（gcc 13 + glibc）
 bindings/go/                           Go 绑定源码（cgo，链接上面的静态库）
-bindings/csharp/                       C# 绑定源码（客户端 + 设备端 + HTTP/REST；netstandard2.0 / .NET 8 / .NET Framework 4.7.2 三目标，含设备端示例与自检）
-bindings/java/                         Java 绑定源码（JNI，Java 8 字节码，无第三方依赖；客户端 + 设备端 + HTTP/REST）
-bindings/python/                       Python 绑定源码（ctypes，只用标准库；客户端 + 设备端 + HTTP/REST）
+bindings/csharp/                       C# 绑定源码（客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项；netstandard2.0 / .NET 8 / .NET Framework 4.7.2 三目标，含设备端示例与自检）
+bindings/java/                         Java 绑定源码（JNI，Java 8 字节码，无第三方依赖；客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项）
+bindings/python/                       Python 绑定源码（ctypes，只用标准库；客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项）
 bindings/native/                       三种托管绑定共用的原生垫片（C#/Java/Python）
 MANUAL.md / MANUAL.docx                使用手册（Word 版由 md 生成，内容一致）
 README.md                              工程概览与测试清单
@@ -72,9 +72,10 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | broker 互操作 | `tests/test_broker` 对 EMQX 5.8.9 实测 **44 项检查、0 失败**：QoS 0/1/2、通配订阅、40 KB 报文、退订、空闲保活、会话顶替、重连后订阅恢复（`tools/interop.sh` 可在 Docker 里同时跑 EMQX 与 Mosquitto） |
 | x86（32 位） | 库 / 示例 / 测试全部通过；产物 PE 头 Machine = 0x014c（i386），与 x64 同一套源码、同一套编译选项 |
 | TLS | Windows（MSVC + OpenSSL 3.0.18 静态链接）与 Linux（gcc + OpenSSL 3.0.20）都编过并 22/22 通过；**x86 暂未出 TLS 版** |
-| 托管绑定自检 | C# 98 项（`bindings/csharp/tests/Nclink.SelfTest`，net472 与 net8.0 各跑一遍）、Java 99 项、Python 36 项，全部 0 失败；覆盖客户端、设备端（工具注册 / 采样通道 / 事件 / 离线 dispatch / 自研传输）与 HTTP/REST 端点（OpenAPI、swagger-ui、工具端点、配置端点、自定义路由），都不需要 broker |
-| 绑定对真 broker | `NCLINK_TEST_BROKER=tcp://host:port` 打开的可选用例（设备端 + 客户端同进程，报文真的过 MQTT）：C# 130 项、Java 11 项、Python 42 项，对 **Mosquitto 2** 与 **EMQX 5.8.9** 各跑一遍都 0 失败（probe、路径绑定读写、methodCall、采样、事件、文件通道上传下载与带文件参数的方法调用） |
-| 文件通道 | 托管绑定：上传 / 列目录 / 下载 / 建目录 / 删文件 / 带文件参数的方法调用（含"工具返回文件"的反向）都实测通过；跨语言也过一遍：C 客户端示例对 **C# 设备端示例** 的 `上传 /demo.txt` → `文件回读路径` → `远端文件 demo.txt (14 字节)` 全通 |
+| 托管绑定自检 | C# 106 项（`bindings/csharp/tests/Nclink.SelfTest`，net472 与 net8.0 各跑一遍）、Java 107 项、Python 46 项，全部 0 失败；覆盖客户端、设备端（工具注册 / 采样通道 / 事件 / 离线 dispatch / 自研传输）、HTTP/REST 端点（OpenAPI、swagger-ui、工具端点、配置端点、自定义路由）与文件小工具（压缩判断、分片数、SHA-256、属性），都不需要 broker |
+| 绑定对真 broker | `NCLINK_TEST_BROKER=tcp://host:port` 打开的可选用例（设备端 + 客户端同进程，报文真的过 MQTT）：C# 132 项、Java 12 项、Python 46 项，对 **Mosquitto 2** 与 **EMQX 5.8.9** 各跑一遍都 0 失败（probe、路径绑定读写、methodCall、采样、事件、文件通道上传下载与带文件参数的方法调用） |
+| 文件通道 | 托管绑定：上传 / 列目录 / 下载 / 建目录 / 删文件 / 带文件参数的方法调用（含"工具返回文件"的反向）、自定义 FTP 端口与显式指定对端，都实测通过；跨语言也过一遍：C 客户端示例对 **C# 设备端示例** 的 `上传 /demo.txt` → `文件回读路径` → `远端文件 demo.txt (14 字节)` 全通 |
+| 绑定 + TLS | 三份托管绑定都过一遍（`build-shim.ps1 -Tls` / Java 的 `build-native.ps1 -Tls`）+ Mosquitto 的 8883 TLS 监听：`ssl://` 设备端与客户端都用 CA 连通（C# 134 项、Java 13 项、Python 46 项，对 Mosquitto 2 与 EMQX 5.8.9 都 0 失败），不给 CA 时握手被拒（证书校验），`verify_peer=false` 放行；库没编 TLS 时 `ssl://` 返回明确的 `NCL_ERR_NOT_SUPPORTED` |
 | 跨语言互读 | C# 设备端 ← C 客户端 / Python 客户端（Mosquitto 与 EMQX）、C# 客户端 ← Java 设备端（`GET`、采样、事件；`SET /STATUS` 按对端模型拒绝）、C# 与 Java 设备端的 REST 端点实测（`/api/schema`、`/swagger-ui`、工具端点、自定义路由） |
 | HTTP/REST 端点实跑 | C# 设备端示例（离线 + REST）与 Java / Python 设备端示例都挂上了端点：`GET /api/schema`、`GET /swagger-ui`、`POST /api/<工具>/<方法>`、`GET /api/cfg/*` 与自定义路由实测通过 |
 | Go 绑定用的 mingw 库 | 本次发布**未带**（本机没有 mingw 工具链）；需要时按 `tools/stage-go-libs.sh` 里的命令行自编 |

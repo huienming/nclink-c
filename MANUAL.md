@@ -220,6 +220,12 @@ HTTP / REST 端点：`device.startHttp(9008, true)`（`0` = 随机端口）挂�
 `client.deleteFile` / `client.methodCallFile(...)`（带文件参数的方法调用）。方向是
 **设备当 FTP 客户端**、上位机当 FTP 服务端（`Nclink.startFileServer()` 起
 127.0.0.1:2323，`init` 时已经起过）。
+对端 FTP 不跟 broker 同机、或端口/账号不同时显式指定：`device.setFilePeer(host,
+port, user, pass)` 与 `Nclink.startFileServer(port, root, user, pass)`。
+
+`ssl://` 的连接选项也在绑定里：`Nclink.init(uri, user, pass, TlsOptions)`（CA、双向
+证书、SNI、`verifyPeer(false)`）与设备端 `new Server(..., TlsOptions)`；用之前先问
+`Nclink.tlsAvailable()`，库与 JNI 库都要带 TLS 编（见绑定 README 的"TLS 构建"）。
 
 ### 2.4.4 Python 绑定（ctypes）
 
@@ -252,6 +258,11 @@ HTTP / REST 端点用 `device.start_http(port, with_config=True)`：库自带
 `client.upload_local_file(...)` / `download_to(...)` / `list_files(...)`（`FileInfo`）/
 `make_directory(...)` / `delete_file(...)` / `method_call_file(...)`；本机的 FTP 服务端
 由 `nclink.init()` 起好（`nclink.start_file_server()` 是显式版本）。
+对端 FTP 不跟 broker 同机时显式指定：`device.set_file_peer(host, port, user, pass)`
+与 `nclink.start_file_server(port, root=..., username=..., password=...)`。
+
+`ssl://` 的连接选项：`nclink.init(uri, tls=nclink.TlsOptions(ca_file=..., ...))` 与
+设备端 `nclink.Server(..., tls=...)`；先问 `nclink.tls_available()`。
 
 ### 2.4.5 C# 绑定（P/Invoke）
 
@@ -274,10 +285,10 @@ Nclink.Shutdown();
 ```
 
 构建：`powershell -ExecutionPolicy Bypass -File .\bindings\csharp\build.ps1`
-（垫片 + 三个工程 + 自检 98 项）/ Linux 用
+（垫片 + 三个工程 + 自检 106 项）/ Linux 用
 `dotnet run --project bindings/csharp/tests/Nclink.SelfTest -c Release`（都不需要
 broker）；想看"报文真的过 MQTT"的那一段，设 `NCLINK_TEST_BROKER=tcp://host:port`
-再跑一遍自检（设备端 + 客户端同进程，112 项）。
+再跑一遍自检（设备端 + 客户端同进程，132 项）。
 
 客户端 + 设备端都包：`NclServer`（`RegisterTool` / `NclToolBinding` / `Subscribe` /
 `InitSamples` / `PushEvent` / 离线 `Dispatch` / 自研传输 `NclPublishSink`）、
@@ -287,6 +298,11 @@ broker）；想看"报文真的过 MQTT"的那一段，设 `NCLINK_TEST_BROKER=t
 `UploadLocalFile` / `DownloadTo` / `ListFiles`（`NclFileInfo`）/ `MakeDirectory` /
 `DeleteRemoteFile` / `MethodCallFile`，本地小工具 `Nclink.FileChecksum` /
 `FileAttribute` / `NeedCompression` / `TotalChunks`。
+`ssl://` 的连接选项：`Nclink.Init(uri, user, pass, new NclTlsOptions { CaFile = ... })`
+与设备端 `new NclServer(..., new NclTlsOptions { ... })`（先用 `Nclink.TlsAvailable`
+问一下）；文件通道对端可配：`server.SetFilePeer(host, port, user, pass)` /
+`Nclink.StartFileServer(port, root, user, pass)`；客户端侧还能用 `Nclink.LoadModel()`
+装上自己那份模型（`ClearModel()` 卸下），路径 ↔ id 与采样补齐都靠它。
 示例：`Nclink.Demo.Cli`（客户端）与 `Nclink.Demo.Device`（设备端，`broker` 传 `-`
 即离线，出站报文走自研传输打到控制台）。
 
@@ -294,6 +310,9 @@ broker）；想看"报文真的过 MQTT"的那一段，设 `NCLINK_TEST_BROKER=t
 摊平成"不透明句柄 + 标量 + UTF-8 文本"，托管侧不依赖 C 结构体的内存布局。C# 走
 P/Invoke、Java 走 JNI（`nclink_jni` 把垫片一起编进去）、Python 走 ctypes；C# 绑定
 见 `bindings/csharp/README.md`。
+3.2.0 起垫片还多了连接选项那组入口：`nclshim_open_ex` / `nclshim_tls_available`
+（客户端 TLS）、`nclshim_server_create_ex`（设备端连 `ssl://` broker）、
+`nclshim_server_set_file_peer` 与 `nclshim_file_start_ftp_ex`（文件通道对端可配）。
 
 ### 2.4 CMake 选项
 
@@ -2108,6 +2127,8 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_client_add_sample(ncl_client *client, const ncl_node *config, unsigned timeout_ms);` — addSample(config) / removeSample(id) method calls.
 - `ncl_err ncl_client_remove_sample(ncl_client *client, const char *id, unsigned timeout_ms);`
 - `bool ncl_client_is_ready(ncl_client *client);` — True when the last operation completed within @p timeout_ms.
+- `void ncl_client_holder_options_default(ncl_client_holder_options *options);` — Convenience initialiser: uri + credentials only, every other field default.
+- `ncl_err ncl_client_holder_init_ex(const ncl_client_holder_options *options);` — Initialise the process wide MQTT client with explicit options (TLS included).
 - `ncl_err ncl_client_holder_init(const char *server_uri, const char *username, const char *password);` — Initialise the process wide MQTT client.
 - `ncl_client *ncl_client_holder_get(const char *sn);` — Fetch (creating on demand) the client for @p sn.
 - `bool ncl_client_holder_is_initialised(void);` — True once ncl_client_holder_init() succeeded.
@@ -2255,10 +2276,12 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_client_ll(ncl_client *client, const char *remote_dir, ncl_ptrvec *out);` — List @p remote_dir on the peer.
 - `void ncl_client_set_file_tool(ncl_client *client, ncl_file_client_tool *tool);` — Install the file channel of @p client, or remove it when @p tool is NULL.
 - `ncl_file_client_tool *ncl_client_file_tool(ncl_client *client);`
-- `ncl_err ncl_client_holder_start_ftp(void);` — Start the process wide FTP server on 127.0.0.1:2323 rooted at the current
+- `ncl_err ncl_client_holder_start_ftp_ex(unsigned port, const char *root, const char *user, const char *password);` — Start the process wide FTP server that receives the files a device pushes.
+- `ncl_err ncl_client_holder_start_ftp(void);`
 - `void ncl_client_holder_stop_ftp(void);` — Stop the process wide FTP server.
 - `ncl_err ncl_client_holder_restart(void);` — Rebuild the process wide client from conf/mqtt.cfg: the running connection is
 - `ncl_err ncl_server_register_file_tool(ncl_server *server);` — Register the built in "file" tool on @p server.
+- `ncl_err ncl_server_set_file_peer(ncl_server *server, const char *host, unsigned port, const char *user, const char *password);` — Override the FTP endpoint of the peer the file channel talks to.
 - `ncl_err ncl_server_start_ftp(ncl_server *server);` — Start the server side FTP endpoint: read bin/ftp.txt for the port and
 - `void ncl_server_stop_ftp(ncl_server *server);` — Stop the server side FTP endpoint.
 
@@ -2840,3 +2863,4 @@ Copyright (c) 2026 huienming
   temp/                   文件通道的临时交换目录
   <sn>/                   客户端侧文件镜像（相对路径的基准）
 ```
+

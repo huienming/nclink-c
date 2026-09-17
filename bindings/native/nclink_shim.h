@@ -214,6 +214,19 @@ NCLSHIM_API const void *nclshim_event_value(const void *msg);
 /** 进程级初始化：连 broker（用户名/密码可为 NULL）。 */
 NCLSHIM_API int nclshim_open(const char *uri, const char *user, const char *pass);
 
+/**
+ * 同 nclshim_open()，但可以带上 TLS 选项（只在"库编了 TLS"时有意义）：
+ * ca_file / client_cert / client_key / server_name 可为 NULL（用默认），
+ * verify_peer 传 -1 表示不覆盖（默认校验）。
+ */
+NCLSHIM_API int nclshim_open_ex(const char *uri, const char *user, const char *pass,
+                                const char *ca_file, const char *client_cert,
+                                const char *client_key, const char *server_name,
+                                int verify_peer);
+
+/** 这个垫片链的库有没有编 TLS（1 = ssl:// 可用）。 */
+NCLSHIM_API int nclshim_tls_available(void);
+
 /** 关掉连接与所有客户端。 */
 NCLSHIM_API void nclshim_close(void);
 
@@ -299,12 +312,21 @@ NCLSHIM_API int nclshim_client_remove_sample(const void *client, const char *id,
                                              unsigned timeout_ms);
 
 /**
- * 建一个设备端：模型默认走内置模型；broker_url 为空则**不接 MQTT**（离线使用
- * nclshim_server_dispatch() 驱动，或者自己给 publish_host 当传输）；
- * publish_host 非空的另一种用法是"自研传输"：每条出站报文都交给托管侧。
- *
- * 用户名/密码可为 NULL（匿名）。失败返回 NULL。
+ * nclshim_server_create() 的带 TLS 版本：多出来的四个 TLS 参数只在 broker_url 是
+ * ssl:// / tls:// 时用（ca_file 等可为 NULL；verify_peer 传 -1 = 不覆盖，库默认校验）。
  */
+NCLSHIM_API const void *nclshim_server_create_ex(const char *sn, const char *model_json,
+                                                 const char *broker_url,
+                                                 const char *username,
+                                                 const char *password,
+                                                 const char *ca_file,
+                                                 const char *client_cert,
+                                                 const char *client_key,
+                                                 const char *server_name,
+                                                 int verify_peer,
+                                                 void *publish_host);
+
+/** 老入口：不带 TLS（等价于 nclshim_server_create_ex(..., NULL, NULL, NULL, NULL, -1, ...)）。 */
 NCLSHIM_API const void *nclshim_server_create(const char *sn, const char *model_json,
                                               const char *broker_url,
                                               const char *username,
@@ -420,6 +442,22 @@ NCLSHIM_API int nclshim_http_route(const void *handle, const char *method,
 
 /** 起进程级 FTP 端点（幂等；nclshim_open 也会起）。 */
 NCLSHIM_API int nclshim_file_start_ftp(void);
+
+/**
+ * 同上，但可以换端口 / 根目录 / 账号：port=0、root/user/password 为 NULL 就是默认
+ * （2323、安装根、admin / 123456）。托管侧与 broker 不在同一台机器、或者 2323 被占
+ * 的时候用它。
+ */
+NCLSHIM_API int nclshim_file_start_ftp_ex(unsigned port, const char *root,
+                                          const char *user, const char *password);
+
+/**
+ * 覆盖设备端文件通道对端的 FTP 端点（默认按 conf/mqtt.cfg 推：broker 的主机名 +
+ * 2323 + admin/123456）。host 必填；port=0 / user / password 为 NULL 用默认。
+ */
+NCLSHIM_API int nclshim_server_set_file_peer(const void *handle, const char *host,
+                                             unsigned port, const char *user,
+                                             const char *password);
 
 NCLSHIM_API void nclshim_file_stop_ftp(void);
 

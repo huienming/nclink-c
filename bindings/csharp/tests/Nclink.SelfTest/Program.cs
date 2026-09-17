@@ -48,6 +48,7 @@ namespace Nclink.SelfTest
             Http();
             Files();
             Broker();
+            BrokerTls();
 
             Console.WriteLine();
             Console.WriteLine("{0} 项检查，{1} 失败", _checks, _failures);
@@ -611,6 +612,40 @@ namespace Nclink.SelfTest
         /// <summary>文件小工具（离线：本地文件，不需要 broker 与设备）。</summary>
         private static void Files()
         {
+            // 文件端点的参数化：换端口、换根目录都要真的在听
+            int port = 24123;
+            Nclink.StopFileServer();
+            try
+            {
+                Nclink.StartFileServer(port, Nclink.RootDirectory);
+                using (System.Net.Sockets.TcpClient probe = new System.Net.Sockets.TcpClient())
+                {
+                    probe.Connect("127.0.0.1", port);
+                    probe.ReceiveTimeout = 3000;
+                    byte[] buffer = new byte[64];
+                    int got = probe.GetStream().Read(buffer, 0, buffer.Length);
+                    string greeting = Encoding.ASCII.GetString(buffer, 0, got).Trim();
+                    Check("文件端点：自定义端口在听（" + port + "：" + greeting + "）",
+                          greeting.StartsWith("220"));
+                }
+            }
+            catch (Exception error)
+            {
+                Check("文件端点：自定义端口用例（" + error.Message + "）", false);
+            }
+            finally
+            {
+                Nclink.StopFileServer();
+                try
+                {
+                    Nclink.StartFileServer();       // 恢复默认（2323）
+                }
+                catch (NclinkException)
+                {
+                    /* 2323 被占就不管了：真 broker 那一段会自己判断 */
+                }
+            }
+
             string dir = Path.Combine(Path.GetTempPath(),
                                       "nclink-selftest-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
@@ -730,7 +765,8 @@ namespace Nclink.SelfTest
                 device.Subscribe();
                 device.InitSamples();
 
-                Nclink.Init(broker);
+                // 顺手过一遍带 TLS 选项的 init：给了选项也要能连普通的 tcp://
+                Nclink.Init(broker, null, null, new NclTlsOptions());
                 try
                 {
                     using (NclDeviceClient client = Nclink.GetDevice(sn))
@@ -814,10 +850,14 @@ namespace Nclink.SelfTest
                               device.SampleUploadCount > 0);
                         Check("真 broker：回调没出错", device.LastCallbackError == null
                                                        && client.LastCallbackError == null);
+                        Check("带 TLS 选项的 init 已连上（open_ex 走通；"
+                              + "TlsAvailable=" + Nclink.TlsAvailable + "）",
+                              Nclink.IsOpen);
 
                         /* ---- 文件通道：MQTT 只传令牌，字节走 FTP ---- */
                         if (fileServer)
                         {
+                            device.SetFilePeer("127.0.0.1", 2323);   // 显式指定对端
                             FileChannel(device, client);
                         }
                     }
@@ -827,6 +867,94 @@ namespace Nclink.SelfTest
                     Nclink.Shutdown();
                 }
             }
+        }
+
+        /// <summary>
+        /// 对**真 TLS broker** 的端到端：设备端与客户端都走 <c>ssl://</c>。
+        ///
+        /// 设 <c>NCLINK_TEST_TLS_BROKER=ssl://host:port</c> 与
+        /// <c>NCLINK_TEST_TLS_CA=&lt;pem&gt;</c> 才跑；垫片要带 TLS 编
+        /// （<c>build-shim.ps1 -Tls</c>）。与 Java / Python 的同类用例同形。
+        /// </summary>
+        private static void BrokerTls()
+        {
+            string broker = Environment.GetEnvironmentVariable("NCLINK_TEST_TLS_BROKER");
+            string ca = Environment.GetEnvironmentVariable("NCLINK_TEST_TLS_CA");
+            if (string.IsNullOrEmpty(broker) || string.IsNullOrEmpty(ca))
+            {
+                Console.WriteLine("跳过（设置 NCLINK_TEST_TLS_BROKER=ssl://host:port 与 "
+                                  + "NCLINK_TEST_TLS_CA=<pem> 才跑 TLS 端到端）");
+                return;
+            }
+            if (!Nclink.TlsAvailable)
+            {
+                Console.WriteLine("跳过 TLS 用例（这个 nclink_shim 没带 TLS："
+                                  + "build-shim.ps1 -Tls）");
+                return;
+            }
+
+            const string sn = "V2CSTLSE2E1";
+            string model =
+                "{\"name\":\"C# TLS E2E 机床\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\"," +
+                "\"devices\":[{\"id\":\"02\",\"type\":\"MACHINE\",\"name\":\"模拟机床\"," +
+                "\"dataItems\":[{\"name\":\"状态\",\"id\":\"030001\"," +
+                "\"type\":\"STATUS\"}]}]}";
+            NclTlsOptions tls = new NclTlsOptions
+            {
+                CaFile = ca,
+                ServerName = "127.0.0.1"
+            };
+
+            using (NclServer device = new NclServer(sn, model, broker, null, null, null, tls))
+            {
+                device.RegisterTool(
+                    "plc",
+                    new string[] { "getStatus" },
+                    null,
+                    delegate(string method, NclJson parameters) { return 42; });
+                device.Subscribe();
+
+                Nclink.Init(broker, null, null, tls);
+                try
+                {
+                    using (NclDeviceClient client = Nclink.GetDevice(sn))
+                    using (NclJson reply = client.MethodCall("/plc/getStatus"))
+                    {
+                        Check("真 TLS broker：设备端与客户端都过 ssl://（code="
+                              + reply.Get("code").AsString() + "）",
+                              reply.Get("code").AsString() == "OK"
+                              && reply.Get("data").AsLong() == 42);
+                    }
+                }
+                finally
+                {
+                    Nclink.Shutdown();
+                }
+            }
+
+            // 不给 CA：自签证书链必须被校验挡下来（同一台 broker、同一个地址）。
+            bool rejected = false;
+            try
+            {
+                Nclink.Init(broker, null, null,
+                            new NclTlsOptions { ServerName = "127.0.0.1" });
+            }
+            catch (NclinkException)
+            {
+                rejected = true;
+            }
+            finally
+            {
+                try
+                {
+                    Nclink.Shutdown();
+                }
+                catch (NclinkException)
+                {
+                    // 没连上时本来就没有东西要收
+                }
+            }
+            Check("真 TLS broker：不给 CA 时握手被拒", rejected);
         }
 
         /// <summary>深度优先找一个带 id 的子节点（find 不含节点自身）。</summary>

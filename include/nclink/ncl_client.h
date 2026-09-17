@@ -231,6 +231,34 @@ bool ncl_client_is_ready(ncl_client *client);
 /* ========================================================= client holder == */
 
 /**
+ * Options of the process wide MQTT connection.
+ *
+ * Everything except @c server_uri may be NULL/false, which keeps the default.
+ * The @c tls_* fields are only used for "ssl://" / "tls://" URLs and only when
+ * the library was built with NCLINK_WITH_TLS=ON (see ncl_socket_tls_available()).
+ */
+typedef struct {
+    const char *server_uri;
+    const char *username;
+    const char *password;
+    const char *tls_ca_file;      /**< PEM bundle; NULL = platform trust store */
+    const char *tls_client_cert;  /**< optional PEM client certificate          */
+    const char *tls_client_key;   /**< optional PEM key for the client cert     */
+    const char *tls_server_name;  /**< SNI/host check; NULL = the URL host      */
+    bool        tls_verify_peer;  /**< only read when tls_verify_peer_set       */
+    bool        tls_verify_peer_set;
+} ncl_client_holder_options;
+
+/** Convenience initialiser: uri + credentials only, every other field default. */
+void ncl_client_holder_options_default(ncl_client_holder_options *options);
+
+/**
+ * Initialise the process wide MQTT client with explicit options (TLS included).
+ * Same connection policy as ncl_client_holder_init().
+ */
+ncl_err ncl_client_holder_init_ex(const ncl_client_holder_options *options);
+
+/**
  * Initialise the process wide MQTT client.
  * The connection uses a random UUID client identifier, clean start, a 60 s keep
  * alive, a 10 s connect timeout and automatic reconnect.

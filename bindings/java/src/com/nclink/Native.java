@@ -49,6 +49,14 @@ final class Native {
         if (envDir != null && !envDir.isEmpty()) {
             dirs.add(new File(envDir, fileName()));
         }
+        // 显式给的 -Djava.library.path 优先于仓库里的默认位置：TLS 版在 bin-tls/，
+        // 两条路径同时存在时，光靠下面写死的 native/bin 永远选不到带 TLS 的那份。
+        String libPath = System.getProperty("java.library.path", "");
+        for (String entry : libPath.split(File.pathSeparator)) {
+            if (!entry.isEmpty()) {
+                dirs.add(new File(entry, fileName()));
+            }
+        }
         String cwd = System.getProperty("user.dir", ".");
         dirs.add(new File(cwd, fileName()));
         dirs.add(new File(new File(cwd, "bindings/java/native/bin"), fileName()));
@@ -238,6 +246,14 @@ final class Native {
 
     static native int open(String uri, String user, String password);
 
+    /** 同 open，但带上 TLS 选项（json 字段见 TlsOptions；只在编了 TLS 的库里有效）。 */
+    static native int openEx(String uri, String user, String password, String caFile,
+                             String clientCert, String clientKey, String serverName,
+                             boolean verifyPeer);
+
+    /** 当前的原生库有没有编 TLS。 */
+    static native int tlsAvailable();
+
     static native void close();
 
     static native int isOpen();
@@ -297,6 +313,14 @@ final class Native {
                                    String username, String password,
                                    Server publishSink, long[] outServer,
                                    long[] outHost);
+
+    /** 同 serverCreate，但设备端可以带 TLS 选项连 {@code ssl://} / {@code tls://} broker。 */
+    static native int serverCreateEx(String sn, String modelJson, String broker,
+                                     String username, String password,
+                                     String caFile, String clientCert, String clientKey,
+                                     String serverName, boolean verifyPeer,
+                                     Server publishSink, long[] outServer,
+                                     long[] outHost);
 
     static native void serverFree(long server);
 
@@ -374,6 +398,11 @@ final class Native {
     // ------------------------------------------------------------- file -- //
     /** 起进程级 FTP 端点（幂等；open 里已经起过）。 */
     static native int fileStartFtp();
+    /** 同上，可换端口 / 根目录 / 账号（0 / null 用默认）。 */
+    static native int fileStartFtpEx(int port, String root, String user, String password);
+    /** 覆盖设备端文件通道对端的 FTP 端点（host 必填）。 */
+    static native int serverSetFilePeer(long server, String host, int port, String user,
+                                        String password);
     static native void fileStopFtp();
     static native int clientFileWrite(long client, String localFilePath);
     static native String clientFileRead(long client, String remoteFilePath);

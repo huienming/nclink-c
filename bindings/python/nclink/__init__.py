@@ -55,14 +55,33 @@ __all__ = [
     "DeviceClient",
     "Server", "Operation", "HttpEndpoint",
     "FileInfo",
-    "LogLevel",
-    "init", "shutdown", "is_open", "get_device", "version",
+    "LogLevel", "TlsOptions",
+    "init", "shutdown", "is_open", "get_device", "version", "tls_available",
     "set_root", "root",
     "log_init", "log_shutdown", "set_log_level", "set_console_log",
     "start_file_server", "stop_file_server",
     "file_need_compression", "file_total_chunks", "file_checksum",
     "file_attribute",
 ]
+
+
+class TlsOptions:
+    """`ssl://` / `tls://` 连接的 TLS 选项（给 `init(tls=...)`）。
+
+    不设就是默认：校验证书链与主机名、用平台信任库。只有**带 TLS 编译的库 + 垫片**
+    才起作用，先用 `nclink.tls_available()` 问一下。
+    """
+
+    __slots__ = ("ca_file", "client_cert", "client_key", "server_name",
+                 "verify_peer")
+
+    def __init__(self, ca_file=None, client_cert=None, client_key=None,
+                 server_name=None, verify_peer=True):
+        self.ca_file = ca_file          # PEM 证书束；None = 平台信任库
+        self.client_cert = client_cert  # 双向 TLS 的客户端证书
+        self.client_key = client_key
+        self.server_name = server_name  # SNI / 主机名校验用；None = URL 里的主机名
+        self.verify_peer = verify_peer  # 默认校验；自签调试才关
 
 
 class LogLevel(IntEnum):
@@ -75,13 +94,30 @@ class LogLevel(IntEnum):
     FATAL = 4
 
 
-def init(uri, username=None, password=None):
-    """建进程级连接（内部连 broker 并起客户端管理器）。一个进程调一次。"""
+def init(uri, username=None, password=None, tls=None):
+    """建进程级连接（内部连 broker 并起客户端管理器）。一个进程调一次。
+
+    `tls` 给一个 `TlsOptions`（或同名字段的 dict）就能连 `ssl://`——要带 TLS 编译的
+    库与垫片，先用 `nclink.tls_available()` 问一下。
+    """
     if not uri:
         raise ValueError("uri 不能为空，例如 tcp://127.0.0.1:1883")
-    rc = lib.nclshim_open(encode(uri), encode(username), encode(password))
+    if isinstance(tls, dict):
+        tls = TlsOptions(**tls)
+    if tls is None:
+        rc = lib.nclshim_open(encode(uri), encode(username), encode(password))
+    else:
+        rc = lib.nclshim_open_ex(encode(uri), encode(username), encode(password),
+                                 encode(tls.ca_file), encode(tls.client_cert),
+                                 encode(tls.client_key), encode(tls.server_name),
+                                 1 if tls.verify_peer else 0)
     if rc != 0:
         raise NclinkError(rc, "init")
+
+
+def tls_available():
+    """当前的原生库有没有编 TLS（False 时 `ssl://` 会报 NOT_SUPPORTED）。"""
+    return bool(lib.nclshim_tls_available())
 
 
 def shutdown():
@@ -137,13 +173,20 @@ def set_console_log(enabled):
 
 # ------------------------------------------------------------ 文件通道 -- #
 
-def start_file_server():
-    """起进程级 FTP 端点（127.0.0.1:2323，admin / 123456，根 = 安装根）。
+def start_file_server(port=0, root=None, username=None, password=None):
+    """起进程级 FTP 端点（默认 127.0.0.1:2323，admin / 123456，根 = 安装根）。
 
     文件通道里**设备是 FTP 客户端**，本机得有个 FTP 服务端等着它来取/送；
     `init()` 时已经起过了，这里是给"先要文件后连 broker"的场合用的（幂等）。
+
+    `port=0` / `root=None` / 账号留空就是默认值；要换端口、换根目录、换账号（比如
+    2323 被占、或者对端不在这台机器上约定的端口）就传进来。
     """
-    rc = lib.nclshim_file_start_ftp()
+    if port or root or username or password:
+        rc = lib.nclshim_file_start_ftp_ex(int(port), encode(root), encode(username),
+                                           encode(password))
+    else:
+        rc = lib.nclshim_file_start_ftp()
     if rc != 0:
         raise NclinkError(rc, "start_file_server")
 

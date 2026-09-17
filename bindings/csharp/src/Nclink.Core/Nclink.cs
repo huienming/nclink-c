@@ -47,14 +47,42 @@ namespace Nclink
         public static void Init(string brokerUri, string username = null,
                                 string password = null)
         {
+            Init(brokerUri, username, password, null);
+        }
+
+        /// <summary>
+        /// 建进程级连接，附带 TLS 选项（<paramref name="tls"/> 为 null 就是默认）。
+        /// <c>ssl://</c> 要带 TLS 编译的库与垫片，见 <see cref="TlsAvailable"/>。
+        /// </summary>
+        public static void Init(string brokerUri, string username, string password,
+                                NclTlsOptions tls)
+        {
             if (brokerUri == null)
             {
                 throw new ArgumentNullException("brokerUri");
             }
+            if (tls == null)
+            {
+                NclinkException.Check(
+                    Native.Open(Native.Utf8Z(brokerUri), Native.Utf8Z(username),
+                                Native.Utf8Z(password)),
+                    "Init");
+                return;
+            }
             NclinkException.Check(
-                Native.Open(Native.Utf8Z(brokerUri), Native.Utf8Z(username),
-                            Native.Utf8Z(password)),
+                Native.OpenEx(Native.Utf8Z(brokerUri), Native.Utf8Z(username),
+                              Native.Utf8Z(password), Native.Utf8Z(tls.CaFile),
+                              Native.Utf8Z(tls.ClientCertificate),
+                              Native.Utf8Z(tls.ClientKey),
+                              Native.Utf8Z(tls.ServerName),
+                              tls.VerifyPeer ? 1 : 0),
                 "Init");
+        }
+
+        /// <summary>当前的原生库有没有编 TLS（false 时 <c>ssl://</c> 会报 NOT_SUPPORTED）。</summary>
+        public static bool TlsAvailable
+        {
+            get { return Native.TlsAvailable() != 0; }
         }
 
         /// <summary>取（必要时创建）某个 SN 的设备客户端。</summary>
@@ -135,11 +163,25 @@ namespace Nclink
         /// <summary>
         /// 起进程级 FTP 端点（127.0.0.1:2323，admin / 123456，根 = 安装根）：
         /// 文件通道里**设备是 FTP 客户端**，托管侧得有个 FTP 服务端等着它来取/送。
-        /// <see cref="Init"/> 时已经起过了，这里是给"先要文件后连 broker"的场合用的。
+        /// <see cref="Init(string, string, string)"/> 时已经起过了，这里是给"先要文件后连 broker"的场合用的。
         /// </summary>
         public static void StartFileServer()
         {
             NclinkException.Check(Native.FileStartFtp(), "StartFileServer");
+        }
+
+        /// <summary>
+        /// 同上，但可以换端口 / 根目录 / 账号（<paramref name="port"/> 为 0、其余为
+        /// null 就用默认）。托管侧与 broker 不在一台机器、或者 2323 被占时用它。
+        /// </summary>
+        public static void StartFileServer(int port, string rootDirectory = null,
+                                           string username = null,
+                                           string password = null)
+        {
+            NclinkException.Check(
+                Native.FileStartFtpEx(unchecked((uint)port), Native.Utf8Z(rootDirectory),
+                                      Native.Utf8Z(username), Native.Utf8Z(password)),
+                "StartFileServer");
         }
 
         /// <summary>停掉进程级 FTP 端点。</summary>

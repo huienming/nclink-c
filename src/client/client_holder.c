@@ -19,6 +19,7 @@
 
 #include "nclink/ncl_general.h"
 #include "nclink/ncl_logger.h"
+#include "nclink/ncl_socket.h"
 #include "nclink/ncl_thread.h"
 #include "nclink/ncl_topic.h"
 #include "nclink/ncl_file.h"
@@ -257,12 +258,26 @@ static void ncl_holder_on_disconnect(void *user, uint8_t reason_code,
 
 /* ============================================================== public API == */
 
-ncl_err ncl_client_holder_init(const char *server_uri, const char *username,
-                               const char *password)
+void ncl_client_holder_options_default(ncl_client_holder_options *options)
+{
+    if (options == NULL) {
+        return;
+    }
+    memset(options, 0, sizeof(*options));
+    options->tls_verify_peer = true;
+    /* 用 _default() 拿到的结构体就是"每个字段都显式给了值"（关校验要自己改成 false）。 */
+    options->tls_verify_peer_set = true;
+}
+
+ncl_err ncl_client_holder_init_ex(const ncl_client_holder_options *options_in)
 {
     ncl_mqtt_client_options options;
     ncl_client_holder *holder;
     char client_id[37];
+    const char *server_uri =
+        options_in != NULL ? options_in->server_uri : NULL;
+    const char *username = options_in != NULL ? options_in->username : NULL;
+    const char *password = options_in != NULL ? options_in->password : NULL;
 
     if (server_uri == NULL) {
         return NCL_ERR_INVALID_ARG;
@@ -277,6 +292,27 @@ ncl_err ncl_client_holder_init(const char *server_uri, const char *username,
     if (g_holder != NULL) {
         ncl_mutex_unlock(g_holder_mutex);
         return NCL_OK; /* already initialised */
+    }
+
+    /*
+     * ssl:// 需要带 TLS 编译的库：这里先挡住并给出明确的错误码，别让调用方在
+     * "连接失败"里猜（NCL_ERR_NOT_SUPPORTED = 功能没编进来）。
+     */
+    {
+        char *tls_host = NULL;
+        unsigned tls_port = 0;
+        bool tls_url = false;
+
+        if (ncl_socket_parse_url(server_uri, &tls_host, &tls_port, &tls_url) ==
+                NCL_OK &&
+            tls_url && !ncl_socket_tls_available()) {
+            free(tls_host);
+            ncl_log_error("TLS 未编译进本库（用 -DNCLINK_WITH_TLS=ON 重新构建）: %s",
+                          server_uri);
+            ncl_mutex_unlock(g_holder_mutex);
+            return NCL_ERR_NOT_SUPPORTED;
+        }
+        free(tls_host);
     }
 
     holder = (ncl_client_holder *)calloc(1, sizeof(ncl_client_holder));
@@ -307,6 +343,16 @@ ncl_err ncl_client_holder_init(const char *server_uri, const char *username,
     options.on_message = ncl_holder_on_message;
     options.on_disconnect = ncl_holder_on_disconnect;
     options.user = holder;
+    if (options_in != NULL) {
+        /* TLS 选项原样带下去（NULL / 默认值等于"不覆盖"）。 */
+        options.tls_ca_file = options_in->tls_ca_file;
+        options.tls_client_cert = options_in->tls_client_cert;
+        options.tls_client_key = options_in->tls_client_key;
+        options.tls_server_name = options_in->tls_server_name;
+        if (options_in->tls_verify_peer_set) {
+            options.tls_verify_peer = options_in->tls_verify_peer;
+        }
+    }
 
     holder->mqtt = ncl_mqtt_client_create(&options);
     if (holder->mqtt == NULL || holder->mutex == NULL) {
@@ -337,6 +383,18 @@ ncl_err ncl_client_holder_init(const char *server_uri, const char *username,
  * never fatal. */
     ncl_client_holder_start_ftp();
     return NCL_OK;
+}
+
+ncl_err ncl_client_holder_init(const char *server_uri, const char *username,
+                               const char *password)
+{
+    ncl_client_holder_options options;
+
+    memset(&options, 0, sizeof(options));
+    options.server_uri = server_uri;
+    options.username = username;
+    options.password = password;
+    return ncl_client_holder_init_ex(&options);
 }
 
 ncl_client *ncl_client_holder_get(const char *sn)

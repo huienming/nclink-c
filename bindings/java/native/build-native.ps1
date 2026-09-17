@@ -14,17 +14,37 @@
 param(
     [string]$CoreLib = "",
     [string]$OutDir = "",
-    [string]$JavaHome = ""
+    [string]$JavaHome = "",
+    [switch]$Tls,
+    [string]$OpenSslRoot = "C:\ProgramData\anaconda3\Library"
 )
 
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
 $root = (Resolve-Path (Join-Path $here "..\..\..")).Path
-$out = if ($OutDir -ne "") { $OutDir } else { Join-Path $here "bin" }
-$lib = if ($CoreLib -ne "") { $CoreLib } else { Join-Path $root "build\nclink_core.lib" }
+$out = if ($OutDir -ne "") { $OutDir }
+        elseif ($Tls) { Join-Path $here "bin-tls" }
+        else { Join-Path $here "bin" }
+$lib = if ($CoreLib -ne "") { $CoreLib }
+       elseif ($Tls) { Join-Path $root "build-tls\nclink_core.lib" }
+       else { Join-Path $root "build\nclink_core.lib" }
 
 if (-not (Test-Path -LiteralPath $lib)) {
+    if ($Tls) {
+        throw "missing TLS core library: $lib (run .\build.ps1 -Tls in the repo root first)"
+    }
     throw "missing native core library: $lib (run .\build.ps1 in the repo root first)"
+}
+
+# ssl:// needs the TLS build of the library plus OpenSSL's import libraries.
+$tlsLibs = ""
+if ($Tls) {
+    $sslLib = Join-Path $OpenSslRoot "lib\libssl.lib"
+    $cryptoLib = Join-Path $OpenSslRoot "lib\libcrypto.lib"
+    if (-not (Test-Path -LiteralPath $sslLib) -or -not (Test-Path -LiteralPath $cryptoLib)) {
+        throw "OpenSSL import libraries not found under $OpenSslRoot\lib (use -OpenSslRoot)"
+    }
+    $tlsLibs = '"{0}" "{1}" ' -f $sslLib, $cryptoLib
 }
 
 # jni.h / jni_md.h live in the JDK; find one the way javac would.
@@ -72,7 +92,7 @@ $dll = Join-Path $out "nclink_jni.dll"
 $cl = 'cl /nologo /LD /MD /O2 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS ' +
       ('/I "{0}\include" /I "{2}" /I "{1}\include" /I "{1}\include\win32" ' -f $root, $jdk, $native) +
       ('/Fe:"{0}" "{1}" "{2}" "{3}" ws2_32.lib ' -f $dll, $jni, $shim, $lib) +
-      'iphlpapi.lib crypt32.lib msvcrt.lib'
+      $tlsLibs + 'iphlpapi.lib crypt32.lib msvcrt.lib'
 $script = "@echo off`r`ncall `"$vcvars`" >nul`r`ncd /d `"$out`"`r`n$cl`r`n"
 
 $bat = Join-Path $env:TEMP ("ncl-jni-" + [guid]::NewGuid().ToString() + ".bat")
@@ -85,3 +105,17 @@ try {
 }
 
 Write-Host "java native library: $dll"
+
+if ($Tls) {
+    # The import libraries need the OpenSSL DLLs at run time: put them next to
+    # the JNI library so tests can load it without touching PATH.
+    foreach ($name in @("libssl-3-x64.dll", "libcrypto-3-x64.dll")) {
+        $from = Join-Path $OpenSslRoot ("bin\" + $name)
+        if (Test-Path -LiteralPath $from) {
+            Copy-Item -LiteralPath $from -Destination (Join-Path $out $name) -Force
+        } else {
+            Write-Host "  note: $name not found under $OpenSslRoot\bin (make sure it is on PATH)"
+        }
+    }
+    Write-Host "TLS native library: $dll (needs the OpenSSL DLLs next to it or on PATH)"
+}
