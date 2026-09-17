@@ -96,6 +96,9 @@ final class Native {
 
     static native void envSetRoot(String root);
 
+    /** 五个语言设备端示例共用的设备模型（JSON 文本；编译在垫片里）。 */
+    static native String deviceModel();
+
     static native String envRoot();
 
     static native int logInit(String dir);

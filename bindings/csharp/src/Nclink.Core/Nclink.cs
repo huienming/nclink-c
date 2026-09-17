@@ -134,6 +134,15 @@ namespace Nclink
             set { Native.EnvSetRoot(Native.Utf8Z(value)); }
         }
 
+        /// <summary>
+        /// 五个语言设备端示例共用的设备模型（JSON 文本；编译在垫片里，
+        /// 不需要任何外部模型文件）。
+        /// </summary>
+        public static string DeviceModel
+        {
+            get { return Native.Utf8(Native.DeviceModel()); }
+        }
+
         /// <summary>初始化日志；<paramref name="dir"/> 为空时用 &lt;root&gt;/log。</summary>
         public static bool LogInit(string dir = null)
         {

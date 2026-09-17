@@ -228,6 +228,12 @@ JNIEXPORT jstring JNICALL Java_com_nclink_Native_envRoot(JNIEnv *env, jclass cls
     return to_jstring(env, nclshim_env_root());
 }
 
+JNIEXPORT jstring JNICALL Java_com_nclink_Native_deviceModel(JNIEnv *env, jclass cls)
+{
+    (void)cls;
+    return to_jstring(env, nclshim_device_model());
+}
+
 JNIEXPORT jint JNICALL Java_com_nclink_Native_logInit(JNIEnv *env, jclass cls,
                                                       jstring dir)
 {

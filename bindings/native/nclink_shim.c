@@ -38,6 +38,18 @@
 
 #include "nclink_shim.h"
 
+/*
+ * 设备模型（与 C 示例共用同一份源码）：编译进垫片，于是 C# / Java / Python 的
+ * 设备端示例也**不需要任何外部模型文件**。
+ */
+#include "../../examples/device_model.c"
+
+/** 五个语言设备端示例共用的设备模型（JSON 文本；静态存储，不用释放）。 */
+NCLSHIM_API const char *nclshim_device_model(void)
+{
+    return ncl_demo_device_model();
+}
+
 /* ----------------------------------------------------------------- misc -- */
 
 /** 库版本号（编译期常量，不用释放）。 */

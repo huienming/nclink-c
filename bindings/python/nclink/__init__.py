@@ -57,7 +57,7 @@ __all__ = [
     "FileInfo",
     "LogLevel", "TlsOptions",
     "init", "shutdown", "is_open", "get_device", "version", "tls_available",
-    "set_root", "root",
+    "set_root", "root", "device_model",
     "log_init", "log_shutdown", "set_log_level", "set_console_log",
     "start_file_server", "stop_file_server",
     "file_need_compression", "file_total_chunks", "file_checksum",
@@ -139,6 +139,11 @@ def get_device(sn):
     if not handle:
         raise NclinkError(-6, "get_device", "取设备客户端失败: %s（先调 init？）" % sn)
     return DeviceClient(sn, handle)
+
+
+def device_model():
+    """五个语言设备端示例共用的设备模型（JSON 文本；编译在垫片里）。"""
+    return decode(lib.nclshim_device_model())
 
 
 def set_root(path):

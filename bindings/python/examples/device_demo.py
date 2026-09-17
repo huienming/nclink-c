@@ -212,24 +212,12 @@ def load_model(root):
     if os.path.exists(installed):
         with open(installed, "r", encoding="utf-8") as fp:
             return fp.read()
-    explicit = os.environ.get("NCL_DEVICE_MODEL")
-    here = os.path.abspath(os.getcwd())
-    while True:
-        candidate = explicit or os.path.join(here, "examples", "device_model.json")
-        if os.path.exists(candidate):
-            with open(candidate, "r", encoding="utf-8") as fp:
-                text = fp.read()
-            os.makedirs(os.path.dirname(installed), exist_ok=True)
-            with open(installed, "w", encoding="utf-8", newline="\n") as fp:
-                fp.write(text)
-            print("首次启动：写入设备模型（%s ← %s）" % (installed, candidate))
-            return text
-        parent = os.path.dirname(here)
-        if parent == here or explicit:
-            break
-        here = parent
-    raise SystemExit("找不到设备模型：%s 不存在，逐级往上也没找到 "
-                     "examples/device_model.json（可用 NCL_DEVICE_MODEL 指定）" % installed)
+    text = nclink.device_model()
+    os.makedirs(os.path.dirname(installed), exist_ok=True)
+    with open(installed, "w", encoding="utf-8", newline="\n") as fp:
+        fp.write(text)
+    print("首次启动：写入设备模型（%s，编译进垫片的那份）" % installed)
+    return text
 
 
 def main(argv):

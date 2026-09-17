@@ -30,8 +30,11 @@ namespace Nclink
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_free")]
         internal static extern void Free(IntPtr ptr);
 
-        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_env_set_root")]
-        internal static extern void EnvSetRoot(byte[] root);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_env_set_root")]
+    internal static extern void EnvSetRoot(byte[] root);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_device_model")]
+    internal static extern IntPtr DeviceModel();
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_env_root")]
         internal static extern IntPtr EnvRoot();

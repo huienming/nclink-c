@@ -38,6 +38,9 @@ package nclink
 extern void nclinkGoSampleThunk(ncl_client *client, char *topic,
                                 ncl_message *message, void *user);
 
+/* 设备模型与 C 示例共用同一份源码（device_model.c 里 include 它）。 */
+const char *ncl_demo_device_model(void);
+
 // Tiny shim: a Go function value can only be converted to a C function pointer
 // through a void* here, so the cast happens in C.
 static void ncl_set_sample_handler_shim(ncl_client *client, void *fn, void *user) {
@@ -95,6 +98,10 @@ func check(rc C.ncl_err, op string) error {
 
 // Version is the C library version string.
 func Version() string { return C.NCL_VERSION } // a string literal macro
+
+// DeviceModel is the device model the language demos share (JSON text). It is
+// compiled into the binding, so a demo needs no external model file.
+func DeviceModel() string { return C.GoString(C.ncl_demo_device_model()) }
 
 // TLSAvailable reports whether the linked library was built with TLS support
 // (-tags nclink_tls plus the TLS build of the core library). When it is false,

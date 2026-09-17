@@ -34,6 +34,9 @@ NCLSHIM_API const char *nclshim_err_name(int code);
 NCLSHIM_API void nclshim_free(void *ptr);
 
 /** 安装根目录（conf/、bin/、log/ 都在它下面）。 */
+/** 五个语言设备端示例共用的设备模型（JSON 文本；静态存储，不用释放）。 */
+NCLSHIM_API const char *nclshim_device_model(void);
+
 NCLSHIM_API void nclshim_env_set_root(const char *root);
 
 NCLSHIM_API const char *nclshim_env_root(void);

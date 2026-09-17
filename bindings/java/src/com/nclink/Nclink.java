@@ -96,6 +96,11 @@ public final class Nclink {
         Native.envSetRoot(path);
     }
 
+    /** 五个语言设备端示例共用的设备模型（JSON 文本；不需要任何外部模型文件）。 */
+    public static String deviceModel() {
+        return Native.deviceModel();
+    }
+
     /** 当前的安装根目录。 */
     public static String rootDirectory() {
         return Native.envRoot();
