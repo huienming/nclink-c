@@ -1,22 +1,24 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 huienming
 
-// C# 设备端示例（.NET Framework / .NET Core 都能跑）：这个进程就是一台机床。
+// 设备端示例：这个 .NET 进程就是一台机床。
 //
-//   Nclink.Demo.Device.exe [broker] [设备SN] [秒数] [HTTP端口]
-//   # 默认：tcp://127.0.0.1:1883、V2CS0000001、一直运行到 Ctrl+C、HTTP 9008
-//   # 秒数写 0 = 一直跑；HTTP 端口写 0 = 用系统分配的随机端口
-//   # broker 写 "-" = 不接 MQTT（离线：只用 REST 端点/自己驱动）
+//   Nclink.Demo.Device.exe [broker] [sn] [seconds] [http-port]
 //
-// 它注册工具方法、绑定模型里的路径、启动采样通道、每秒推一条事件，还起一个
-// REST 端点（OpenAPI + Swagger UI + 工具端点 + 配置端点）；然后用仓库里**任何一个
-// 客户端**都能读它，例如 C 的示例：
+//     broker    tcp://… / ssl://…；"-" = 离线（不接 MQTT，出站报文打控制台）；
+//               省略 = 读 <root>/conf/mqtt.cfg（没有就先写一份默认的）
+//     sn        省略或 "-" = <root>/bin/sn.txt（没有就生成 "V2" + 9 位十六进制）
+//     seconds   0 或省略 = 一直运行到 Ctrl+C
+//     http-port 省略 = 9008；0 = 系统分配的随机端口
+//     安装根目录：环境变量 NCL_DEVICE_ROOT（省略 = 当前目录）
 //
-//   build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2CS0000001 8
-//
-// 模型（含采样通道）直接写在下面的 MODEL 里：换模型就是换这段 JSON。
+// **五个语言的设备端示例是同一台设备**：模型编译在库里（Nclink.DeviceModel，
+// 与 C 示例共用 examples/device_model.c），29 个工具方法、20 条绑定，两个采样
+// 通道与事件节拍都一样。每个轴一个功率 /AXIS@<轴>/POWER@1 与三个加速度
+// /AXIS@<轴>/ACCELERATION@X|Y|Z —— 振动信号在三个方向上的分量。
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -27,196 +29,346 @@ namespace Nclink.Demo
 {
     internal static class Program
     {
-        /// <summary>模拟机床的模型：一个采样通道（1 s 采、1 s 传）+ 三个数据项。</summary>
-        private const string Model = @"{
-  ""name"": ""C# 模拟机床"",
-  ""id"": ""01"",
-  ""type"": ""NC_LINK_ROOT"",
-  ""devices"": [{
-    ""id"": ""02"",
-    ""type"": ""MACHINE"",
-    ""name"": ""模拟机床"",
-    ""version"": ""2.0"",
-    ""configs"": [{
-      ""name"": ""采样通道"",
-      ""id"": ""cs_channel"",
-      ""type"": ""SAMPLE_CHANNEL"",
-      ""sampleInterval"": 1000,
-      ""uploadInterval"": 1000,
-      ""ids"": [{""id"": ""/STATUS""}, {""id"": ""/PART_COUNT""},
-               {""id"": ""/CONTROLLER/WARNNING""}]
-    }],
-    ""dataItems"": [
-      {""name"": ""状态"", ""id"": ""030001"", ""type"": ""STATUS"",
-       ""settable"": false, ""description"": ""1=运行""},
-      {""name"": ""加工计件"", ""id"": ""030002"", ""type"": ""PART_COUNT"",
-       ""settable"": true, ""description"": ""加工计件,单位:件""},
-      {""name"": ""报警"", ""id"": ""030003"", ""type"": ""WARNNING"",
-       ""source"": ""CONTROLLER""}
-    ]
-  }]
-}";
-
-        private static volatile bool _stopping;
-
-        private static int Main(string[] args)
+        private static readonly string[] Axes = { "X", "Y", "Z", "C", "S" };
+        private static readonly string[] Dirs = { "X", "Y", "Z" };
+        private static readonly string[] Scalars =
         {
-            string brokerArg = args.Length > 0 ? args[0] : "tcp://127.0.0.1:1883";
-            string broker = brokerArg == "-" || brokerArg.Length == 0 ? null : brokerArg;
-            string sn = args.Length > 1 ? args[1] : "V2CS0000001";
-            int seconds = args.Length > 2
-                              ? int.Parse(args[2], CultureInfo.InvariantCulture)
-                              : 0;
-            int httpPort = args.Length > 3
-                               ? int.Parse(args[3], CultureInfo.InvariantCulture)
-                               : 9008;
+            "getValue", "setValue", "getCount", "getWarning", "getProgram",
+            "getToolNumber", "getFeedOverride", "getMachiningMode", "getSpeedS"
+        };
+        private static readonly string[] ScalarPaths =
+        {
+            "/STATUS", "/STATUS", "/PART_COUNT", "/CONTROLLER/WARNING",
+            "/CONTROLLER/PROGRAM", "/CONTROLLER/TOOL_NUMBER", "/FEED_OVERRIDE",
+            "/MACHINING_MODE", "/AXIS@S/SPEED"
+        };
+        private const string DefaultBroker = "tcp://127.0.0.1:1883";
 
-            Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e)
+        /// <summary>被工具方法读写的"机床状态"（真机里换成你的 PLC / 采集卡）。</summary>
+        private sealed class Machine
+        {
+            private readonly long[] _powerTick = new long[Axes.Length];
+            private readonly long[,] _vibrationTick =
+                new long[Axes.Length, Dirs.Length];
+            private int _status = 1;
+
+            public long PartCount { get; private set; }
+            public int Program { get; private set; }
+            public int ToolNumber { get; private set; }
+            public int FeedOverride { get; private set; }
+            public int SpindleSpeed { get; private set; }
+            public int Mode { get; private set; }
+
+            public Machine()
             {
-                e.Cancel = true;                // 走正常收尾（停采样、停 HTTP、断 MQTT）
-                _stopping = true;
-            };
+                Program = 1001;
+                ToolNumber = 1;
+                FeedOverride = 100;
+                SpindleSpeed = 3600;
+                Mode = 2;
+            }
 
-            // 被工具方法读写的"机床状态"（真实设备里换成你的 PLC / 采集卡）
-            long status = 1;
-            long partCount = 0;
-            long warning = 0;
+            public int Status { get { return Volatile.Read(ref _status); } }
 
-            Nclink.LogInit();
-            try
+            /// <summary>功率（W）：每轴一个基值 + 0~300 W 的缓升，25 格一个锯齿。</summary>
+            private double Power(string axis)
             {
-                // 离线（broker 为 null）时给一个"自研传输"：出站报文打到控制台。
-                // 不接 MQTT 又没有自研传输的话，报文没有去处 —— 推送会被拒。
-                NclPublishSink sink = broker == null ? (NclPublishSink)OnOfflinePublish
-                                                    : null;
-                using (NclServer device = new NclServer(sn, Model, broker, null, null,
-                                                        sink))
+                int slot = Array.IndexOf(Axes, axis);
+                lock (_powerTick)
                 {
-                    device.RegisterTool(
-                        "plc",
-                        new string[] { "getStatus", "getCount", "setCount",
-                                       "getWarning" },
-                        new NclToolBinding[]
-                        {
-                            new NclToolBinding("/STATUS", NclOperation.GetValue,
-                                               "getStatus"),
-                            new NclToolBinding("/PART_COUNT", NclOperation.GetValue,
-                                               "getCount"),
-                            new NclToolBinding("/PART_COUNT", NclOperation.SetValue,
-                                               "setCount"),
-                            new NclToolBinding("/CONTROLLER/WARNNING",
-                                               NclOperation.GetValue, "getWarning")
-                        },
-                        delegate(string method, NclJson parameters)
-                        {
-                            switch (method)
-                            {
-                            case "getStatus":
-                                return status;
-                            case "getCount":
-                                return partCount;
-                            case "getWarning":
-                                return warning;
-                            case "setCount":
-                                // 参数是 JSON：setValue 的形状是 {"value": ...}
-                                partCount = parameters.Get("value").AsLong();
-                                return partCount;
-                            default:
-                                return null;    // 没写的方法 = 没有值
-                            }
-                        });
-                    device.RegisterBuiltinTool();   // addSample / removeSample
-                    device.RegisterFileTool();      // /CONTROLLER/FILE：文件通道
-                    try
-                    {
-                        device.StartFtp();          // 设备自己的 FTP 端点（读 bin/ftp.txt）
-                    }
-                    catch (NclinkException)
-                    {
-                        Console.WriteLine("提示：bin/ftp.txt 还没有，跳过设备侧 FTP 端点" +
-                                          "（客户端传文件不受影响）。");
-                    }
-                    if (broker != null)
-                    {
-                        device.Subscribe();         // 订阅 6 个请求主题（要接 MQTT）
-                    }
-                    device.InitSamples();           // 启动模型里声明的采样通道
-
-                    // 注意别写成 using (...) { ... } 把端点关在块里：这里要让端点
-                    // 一直活到进程退出（device.Dispose() 也会替你收）。
-                    NclHttpEndpoint http = device.StartHttp(httpPort, true);
-                    http.Route("GET", "/api/hello", delegate(NclHttpRequest request)
-                    {
-                        return NclHttpReply.Json(
-                            "{\"sn\":\"" + device.Sn
-                            + "\",\"partCount\":" + partCount
-                               .ToString(CultureInfo.InvariantCulture) + "}");
-                    });
-                    Console.WriteLine("HTTP: {0}/api/schema（Swagger UI: {0}/swagger-ui）",
-                                      http.Url);
-
-                    Console.WriteLine(
-                        "设备端已就绪：SN={0} broker={1}，工具 {2} 个操作，采样通道 {3} 个",
-                        sn, broker ?? "(不接 MQTT)", device.OperationCount,
-                        device.SampleCount);
-                    Console.WriteLine("（用仓库里的任意客户端读它，例如 " +
-                                      "build\\examples\\ncl_client_demo.exe）");
-                    if (broker == null)
-                    {
-                        Console.WriteLine("离线模式：没有 MQTT，客户端读不到；" +
-                                          "REST 端点照常用。");
-                    }
-
-                    DateTime deadline = seconds > 0
-                                            ? DateTime.UtcNow.AddSeconds(seconds)
-                                            : DateTime.MaxValue;
-                    while (!_stopping && DateTime.UtcNow < deadline)
-                    {
-                        Thread.Sleep(1000);
-                        partCount++;                    // 模拟产量累加
-                        status = 1;
-                        warning = 0;
-                        device.PushEvent("010307",
-                            "{\"key\":\"PART_COUNT\",\"value\":" + partCount
-                                .ToString(CultureInfo.InvariantCulture)
-                            + ",\"oldValue\":" + (partCount - 1)
-                                .ToString(CultureInfo.InvariantCulture) + "}");
-                        if (partCount % 5 == 0)
-                        {
-                            Console.WriteLine("已上报采样 {0} 次，事件 {1} 条（计件 {2}）",
-                                              device.SampleUploadCount,
-                                              device.EventCount, partCount);
-                        }
-                    }
-
-                    Console.WriteLine("设备端已退出：采样上报 {0} 次，事件 {1} 条",
-                                      device.SampleUploadCount, device.EventCount);
+                    long tick = _powerTick[slot]++;
+                    return 800.0 + slot * 250.0 + ((tick + slot * 7) % 25) * 12.5;
                 }
-                return 0;
             }
-            catch (NclinkException error)
+
+            /// <summary>
+            /// 振动：一次查询给 4 个 0.25 ms 子采样（1 ms 槽位里的 4 kHz 波形）。
+            /// 返回 **JSON 文本**（绑定把 string 当 JSON 处理）：一批 4 个点，
+            /// 库会摊平成一列 —— 与其它语言的示例同一形状。
+            /// </summary>
+            private string Vibration(string axis, string direction)
             {
-                Console.WriteLine("NC-Link error: {0}", error.Message);
-                return 1;
+                int a = Array.IndexOf(Axes, axis);
+                int d = Array.IndexOf(Dirs, direction);
+                int slot = a * Dirs.Length + d;
+                double[] block = new double[4];
+                lock (_vibrationTick)
+                {
+                    long step = _vibrationTick[a, d];
+                    _vibrationTick[a, d] += 4;
+                    for (int k = 0; k < block.Length; k++)
+                    {
+                        block[k] = (((step + k + slot * 3) % 16) - 8) * 0.125;
+                    }
+                }
+                StringBuilder text = new StringBuilder("[");
+                for (int k = 0; k < block.Length; k++)
+                {
+                    if (k > 0)
+                    {
+                        text.Append(',');
+                    }
+                    text.Append(block[k].ToString(CultureInfo.InvariantCulture));
+                }
+                return text.Append(']').ToString();
             }
-            catch (IOException error)
+
+            public object Handle(string method, NclJson parameters)
             {
-                Console.WriteLine("IO error: {0}", error.Message);
-                return 1;
+                if (method == "setValue")
+                {
+                    Volatile.Write(ref _status,
+                                   Convert.ToInt32(parameters.Get("value").AsLong()));
+                    Console.WriteLine("STATUS 被设置为 " + _status);
+                    return true;
+                }
+                switch (method)
+                {
+                    case "getValue": return Status;
+                    case "getCount": return PartCount;
+                    case "getWarning": return 0;
+                    case "getProgram": return Program;
+                    case "getToolNumber": return ToolNumber;
+                    case "getFeedOverride": return FeedOverride;
+                    case "getMachiningMode": return Mode;
+                    case "getSpeedS": return SpindleSpeed;
+                }
+                if (method.StartsWith("getPower", StringComparison.Ordinal))
+                {
+                    return Power(method.Substring("getPower".Length));
+                }
+                if (method.StartsWith("getAcceleration", StringComparison.Ordinal))
+                {
+                    string axis = method.Substring("getAcceleration".Length, 1);
+                    string dir = method.Substring("getAcceleration".Length + 1);
+                    return Vibration(axis, dir);
+                }
+                throw new InvalidOperationException("没有方法 " + method);
             }
-            finally
+
+            public void Tick(long i)
             {
-                Nclink.LogShutdown();
+                PartCount++;
+                FeedOverride = 60 + (int)(i % 7) * 10;
+                SpindleSpeed = 3000 + (int)(i % 5) * 300;
+                if (i % 20 == 0)
+                {
+                    Program++;
+                    ToolNumber = 1 + Program % 8;
+                    Mode = Program % 2 == 0 ? 1 : 2;
+                }
             }
         }
 
-        /// <summary>离线模式的传输：每条出站报文（事件 / 采样）打到控制台。</summary>
-        private static void OnOfflinePublish(string topic, byte[] payload)
+        private static string ReadMqttCfg(string root)
         {
-            string text = Encoding.UTF8.GetString(payload);
-            Console.WriteLine("publish {0} {1}", topic,
-                              text.Length > 120 ? text.Substring(0, 120) + " ..."
-                                                : text);
+            string path = Path.Combine(root, "conf", "mqtt.cfg");
+            if (File.Exists(path))
+            {
+                foreach (string line in File.ReadAllLines(path))
+                {
+                    string trimmed = line.Trim();
+                    if (trimmed.StartsWith("url=", StringComparison.Ordinal))
+                    {
+                        string url = trimmed.Substring(4).Trim();
+                        return url.Length == 0 ? DefaultBroker : url;
+                    }
+                }
+            }
+            return DefaultBroker;
+        }
+
+        private static void Bootstrap(string root)
+        {
+            foreach (string sub in new[] { "conf", "bin", "log" })
+            {
+                Directory.CreateDirectory(Path.Combine(root, sub));
+            }
+            string cfg = Path.Combine(root, "conf", "mqtt.cfg");
+            if (!File.Exists(cfg))
+            {
+                File.WriteAllText(cfg,
+                                  "url=" + DefaultBroker
+                                  + "\r\nusername=\r\npassword=\r\n");
+                Console.WriteLine("首次启动：写入 MQTT 配置（" + cfg + "）");
+            }
+        }
+
+        /// <summary>&lt;root&gt;/bin/sn.txt；没有就按库的规则生成。</summary>
+        private static string ReadSn(string root)
+        {
+            string path = Path.Combine(root, "bin", "sn.txt");
+            if (File.Exists(path))
+            {
+                string text = File.ReadAllText(path).Trim();
+                if (text.Length > 0)
+                {
+                    return text;
+                }
+            }
+            Random random = new Random();
+            const string digits = "0123456789ABCDEF";
+            string sn;
+            do
+            {
+                StringBuilder text = new StringBuilder("V2");
+                for (int i = 0; i < 9; i++)
+                {
+                    text.Append(digits[random.Next(digits.Length)]);
+                }
+                sn = text.ToString();
+            }
+            while (sn.Replace("0", "").Replace("1", "").Replace("2", "")
+                     .Replace("3", "").Replace("4", "").Replace("5", "")
+                     .Replace("6", "").Replace("7", "").Replace("8", "")
+                     .Replace("9", "").Length == 0);
+            File.WriteAllText(path, sn);
+            Console.WriteLine("首次启动：生成 SN（" + path + "）");
+            return sn;
+        }
+
+        /// <summary>模型编译在库里：现场那份优先，没有就写一份下来。</summary>
+        private static string LoadModel(string root)
+        {
+            string installed = Path.Combine(root, "conf", "model", "nclink.json");
+            if (File.Exists(installed))
+            {
+                return File.ReadAllText(installed);
+            }
+            string text = Nclink.DeviceModel;
+            Directory.CreateDirectory(Path.GetDirectoryName(installed));
+            File.WriteAllText(installed, text);
+            Console.WriteLine("首次启动：写入设备模型（" + installed
+                              + "，编译在库里的那份）");
+            return text;
+        }
+
+        private static int Main(string[] args)
+        {
+            string brokerArg = args.Length > 0 ? args[0] : "";
+            string snArg = args.Length > 1 ? args[1] : "";
+            int seconds = args.Length > 2 ? int.Parse(args[2], CultureInfo.InvariantCulture)
+                                          : 0;
+            int httpPort = args.Length > 3 ? int.Parse(args[3], CultureInfo.InvariantCulture)
+                                           : 9008;
+            string root = Environment.GetEnvironmentVariable("NCL_DEVICE_ROOT");
+            if (string.IsNullOrEmpty(root))
+            {
+                root = ".";
+            }
+            bool offline = brokerArg == "-";
+
+            Bootstrap(root);
+            Nclink.RootDirectory = root;
+            Nclink.LogInit();
+            string sn = snArg.Length == 0 || snArg == "-" ? ReadSn(root) : snArg;
+            string broker = offline ? null
+                                    : (brokerArg.Length == 0 ? ReadMqttCfg(root)
+                                                             : brokerArg);
+            string model = LoadModel(root);
+
+            // 方法表与绑定表：9 个标量 + 5 个轴功率 + 15 个方向加速度。
+            List<string> methods = new List<string>();
+            List<NclToolBinding> bindings = new List<NclToolBinding>();
+            for (int i = 0; i < Scalars.Length; i++)
+            {
+                methods.Add(Scalars[i]);
+                bindings.Add(new NclToolBinding(
+                    ScalarPaths[i],
+                    Scalars[i] == "setValue" ? NclOperation.SetValue
+                                             : NclOperation.GetValue,
+                    Scalars[i]));
+            }
+            foreach (string axis in Axes)
+            {
+                methods.Add("getPower" + axis);
+                bindings.Add(new NclToolBinding("/AXIS@" + axis + "/POWER@1",
+                                                NclOperation.GetValue,
+                                                "getPower" + axis));
+            }
+            foreach (string axis in Axes)
+            {
+                foreach (string dir in Dirs)
+                {
+                    methods.Add("getAcceleration" + axis + dir);
+                    bindings.Add(new NclToolBinding(
+                        "/AXIS@" + axis + "/ACCELERATION@" + dir,
+                        NclOperation.GetValue, "getAcceleration" + axis + dir));
+                }
+            }
+
+            Machine machine = new Machine();
+            bool stopped = false;
+            Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e)
+            {
+                e.Cancel = true;
+                stopped = true;
+            };
+            NclPublishSink sink = null;
+            if (offline)
+            {
+                sink = delegate(string topic, byte[] payload)
+                {
+                    Console.WriteLine("out  " + topic + "  "
+                                      + Encoding.UTF8.GetString(payload));
+                };
+            }
+
+            using (NclServer device = new NclServer(sn, model, broker, null, null, sink))
+            {
+                device.RegisterTool("plc", methods.ToArray(), bindings.ToArray(),
+                                    machine.Handle);
+                device.RegisterBuiltinTool();
+                device.RegisterFileTool();
+                if (!offline)
+                {
+                    device.Subscribe();
+                }
+                device.InitSamples();
+                NclHttpEndpoint http = device.StartHttp(httpPort, true);
+                http.Route("GET", "/api/hello", delegate(NclHttpRequest request)
+                {
+                    return NclHttpReply.Json("{\"sn\":\"" + sn + "\",\"status\":"
+                                             + machine.Status + ",\"parts\":"
+                                             + machine.PartCount + "}");
+                });
+
+                Console.WriteLine("设备 SN: " + sn);
+                Console.WriteLine("MQTT: " + (offline
+                    ? "离线模式（出站报文打到控制台）" : broker));
+                Console.WriteLine("HTTP: " + http.Url
+                                  + "/swagger-ui（自定义路由 /api/hello）");
+                Console.WriteLine("工具 " + device.OperationCount + " 个操作，采样通道 "
+                                  + device.SampleCount + " 个");
+                Console.WriteLine("运行 " + (seconds > 0
+                    ? seconds + " 秒（Ctrl+C 可随时退出）" : "直到 Ctrl+C"));
+
+                long deadline = seconds > 0
+                    ? DateTime.Now.Ticks / TimeSpan.TicksPerMillisecond + seconds * 1000L
+                    : 0;
+                long i = 0;
+                while (!stopped
+                       && (deadline == 0
+                           || DateTime.Now.Ticks / TimeSpan.TicksPerMillisecond < deadline))
+                {
+                    Thread.Sleep(100);
+                    i++;
+                    machine.Tick(i);
+                    if (i % 10 == 0)
+                    {
+                        device.PushEvent("010307", "{\"key\":\"PART_COUNT\",\"value\":"
+                            + machine.PartCount + ",\"oldValue\":"
+                            + (machine.PartCount - 1) + "}");
+                        Console.WriteLine("事件 PART_COUNT=" + machine.PartCount
+                            + "；采样上报 " + device.SampleUploadCount + " 次，状态 "
+                            + machine.Status + "，刀号 " + machine.ToolNumber);
+                    }
+                }
+                Console.WriteLine("设备端退出统计：采样上报 " + device.SampleUploadCount
+                                  + " 次，事件 " + device.EventCount + " 条");
+            }
+            Nclink.LogShutdown();
+            return 0;
         }
     }
 }
