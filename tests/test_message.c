@@ -23,6 +23,9 @@ static void check_wire(ncl_message *msg, const char *expected, const char *what)
     NCL_TEST_CASE(what);
     NCL_CHECK(msg != NULL);
     NCL_CHECK(text != NULL);
+    if (text != NULL && expected != NULL && strcmp(text, expected) != 0) {
+        printf("  got: %s\n  want: %s\n", text, expected);
+    }
     NCL_CHECK_EQ_STR(text, expected);
 
     /* The serialised form must parse back into an equivalent message. */
@@ -217,7 +220,7 @@ static void test_method_call(void)
     ncl_json_arr_push(keys, ncl_json_new_string("/bin/yyy/1111.txt"));
     ncl_json_obj_set(params, "keys", keys);
     ncl_message_set_params(m, params);
-    check_wire(m, "{\"@id\":\"m1\",\"method\":\"/file/read\",\"params\":"
+    check_wire(m, "{\"@id\":\"m1\",\"method\":\"/file/read\",\"args\":"
                  "{\"keys\":[\"/bin/yyy/1111.txt\"]},\"check\":false}",
                "MethodCallRequest (check defaults to false and is emitted)");
 
@@ -233,6 +236,77 @@ static void test_method_call(void)
     check_wire(m, "{\"@id\":\"m1\",\"code\":\"OK\",\"method\":\"/file/read\","
                  "\"data\":{\"ok\":true}}",
                "MethodCallResponse");
+}
+
+/* 异步方法调用：请求带 async，应答带 handler；状态与结果各一对。 */
+static void test_async_method_call(void)
+{
+    ncl_message *m;
+
+    m = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+    ncl_message_set_message_id(m, "m2");
+    ncl_message_set_method(m, "/plc/slow");
+    ncl_message_set_async(m, true);
+    NCL_CHECK(ncl_message_async(m));
+    check_wire(m, "{\"@id\":\"m2\",\"method\":\"/plc/slow\",\"async\":true,"
+                  "\"check\":false}",
+               "MethodCallRequest (async)");
+
+    /* 上游拼错的 "aysnc" 也要认（老设备发来的）。 */
+    {
+        ncl_json *doc = ncl_json_parse_cstr(
+            "{\"@id\":\"m3\",\"method\":\"/plc/slow\",\"aysnc\":true}", NULL);
+        ncl_message *parsed = ncl_message_from_json(NCL_MSG_METHOD_CALL_REQUEST,
+                                                   doc);
+        NCL_CHECK(parsed != NULL && ncl_message_async(parsed));
+        ncl_message_free(parsed);
+        ncl_json_free(doc);
+    }
+
+    m = ncl_message_new(NCL_MSG_METHOD_CALL_RESPONSE);
+    ncl_message_set_message_id(m, "m2");
+    ncl_message_set_code(m, NCL_KW_CODE_OK);
+    ncl_message_set_method(m, "/plc/slow");
+    ncl_message_set_handler(m, "h-1");
+    check_wire(m, "{\"@id\":\"m2\",\"code\":\"OK\",\"method\":\"/plc/slow\","
+                  "\"handler\":\"h-1\"}",
+               "MethodCallResponse carries the handler");
+
+    m = ncl_message_new(NCL_MSG_METHOD_STATUS_REQUEST);
+    ncl_message_set_message_id(m, "s1");
+    ncl_message_set_request_id(m, "V1");
+    ncl_message_set_handler(m, "h-1");
+    check_wire(m, "{\"@id\":\"s1\",\"id\":\"V1\",\"handler\":\"h-1\"}",
+               "MethodStatusRequest");
+
+    m = ncl_message_new(NCL_MSG_METHOD_STATUS_RESPONSE);
+    ncl_message_set_message_id(m, "s1");
+    ncl_message_set_request_id(m, "V1");
+    ncl_message_set_handler(m, "h-1");
+    ncl_message_set_process(m, 40);
+    ncl_message_set_status(m, NCL_KW_STATUS_EXECUTING);
+    ncl_message_set_code(m, NCL_KW_CODE_OK);
+    check_wire(m, "{\"@id\":\"s1\",\"id\":\"V1\",\"handler\":\"h-1\","
+                  "\"process\":40,\"status\":\"executing\",\"code\":\"OK\"}",
+               "MethodStatusResponse");
+
+    m = ncl_message_new(NCL_MSG_METHOD_RESULT_REQUEST);
+    ncl_message_set_message_id(m, "r1");
+    ncl_message_set_request_id(m, "V1");
+    ncl_message_set_handler(m, "h-1");
+    check_wire(m, "{\"@id\":\"r1\",\"id\":\"V1\",\"handler\":\"h-1\"}",
+               "MethodResultRequest");
+
+    m = ncl_message_new(NCL_MSG_METHOD_RESULT_RESPONSE);
+    ncl_message_set_message_id(m, "r1");
+    ncl_message_set_request_id(m, "V1");
+    ncl_message_set_handler(m, "h-1");
+    ncl_message_set_code(m, NCL_KW_CODE_OK);
+    ncl_message_set_return(m, ncl_json_new_int(7));
+    ncl_message_set_result(m, NCL_KW_RESULT_FINISHED);
+    check_wire(m, "{\"@id\":\"r1\",\"id\":\"V1\",\"handler\":\"h-1\","
+                  "\"code\":\"OK\",\"return\":7,\"result\":\"finished\"}",
+               "MethodResultResponse");
 }
 
 /*
@@ -558,6 +632,7 @@ NCL_TEST_MAIN_BEGIN()
     test_set();
     test_sample_and_event();
     test_method_call();
+    test_async_method_call();
     test_probe_with_model();
     test_validation_and_finalise();
     test_parse_by_topic();

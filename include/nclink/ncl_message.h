@@ -48,7 +48,12 @@ typedef enum {
     NCL_MSG_SAMPLE,
     NCL_MSG_EVENT,
     NCL_MSG_METHOD_CALL_REQUEST,
-    NCL_MSG_METHOD_CALL_RESPONSE
+    NCL_MSG_METHOD_CALL_RESPONSE,
+    /* Asynchronous method call: status / result pairs (Method/Status|Result). */
+    NCL_MSG_METHOD_STATUS_REQUEST,
+    NCL_MSG_METHOD_STATUS_RESPONSE,
+    NCL_MSG_METHOD_RESULT_REQUEST,
+    NCL_MSG_METHOD_RESULT_RESPONSE
 } ncl_msg_type;
 
 const char *ncl_msg_type_name(ncl_msg_type type);
@@ -227,6 +232,10 @@ struct ncl_message {
             bool      check;
             bool      has_check;
             char     *token;
+            /* "async": run the method on a worker thread and answer with a
+             * handler instead of waiting for the outcome. */
+            bool      async;
+            bool      has_async;
         } method_call_request;
         struct {
             char     *code;
@@ -237,7 +246,35 @@ struct ncl_message {
             char     *token;
             ncl_json *data;
             char     *reason;
+            char     *handler; /**< async: handle of the running call */
         } method_call_response;
+        /* Method/Status/Request: {"id":..,"handler":..} */
+        struct {
+            char *id;
+            char *handler;
+        } method_status_request;
+        /* Method/Status/Response: process / status / code */
+        struct {
+            char     *id;
+            char     *handler;
+            long long process;
+            bool      has_process;
+            char     *status;
+            char     *code;
+        } method_status_response;
+        /* Method/Result/Request: {"id":..,"handler":..} */
+        struct {
+            char *id;
+            char *handler;
+        } method_result_request;
+        /* Method/Result/Response: code / return / result */
+        struct {
+            char     *id;
+            char     *handler;
+            char     *code;
+            ncl_json *returns; /**< "return": the method's value */
+            char     *result;  /**< finished / cancel / error */
+        } method_result_response;
     } as;
 };
 
@@ -273,6 +310,32 @@ ncl_err ncl_message_set_check(ncl_message *msg, bool check);
 ncl_err ncl_message_set_data(ncl_message *msg, ncl_json *data);
 ncl_err ncl_message_set_event(ncl_message *msg, ncl_json *event);
 ncl_err ncl_message_set_sample_id(ncl_message *msg, const char *id);
+
+/*
+ * Asynchronous method call (Method/Call with "async": true, then the
+ * Method/Status|Result pairs). The handler is the device side handle of one
+ * running call: it is minted by the server and used by the client to address
+ * that particular call's thread.
+ */
+ncl_err     ncl_message_set_handler(ncl_message *msg, const char *handler);
+ncl_err     ncl_message_set_request_id(ncl_message *msg, const char *id);
+ncl_err     ncl_message_set_async(ncl_message *msg, bool async);
+ncl_err     ncl_message_set_status(ncl_message *msg, const char *status);
+ncl_err     ncl_message_set_process(ncl_message *msg, long long process);
+ncl_err     ncl_message_set_result(ncl_message *msg, const char *result);
+/** Method/Result/Response "return"; takes ownership of @p value. */
+ncl_err     ncl_message_set_return(ncl_message *msg, ncl_json *value);
+
+const char *ncl_message_handler(const ncl_message *msg);
+const char *ncl_message_request_id(const ncl_message *msg);
+bool        ncl_message_async(const ncl_message *msg);
+bool        ncl_message_has_async(const ncl_message *msg);
+const char *ncl_message_status(const ncl_message *msg);
+/** True when "process" was present; copies it into @p out. */
+bool        ncl_message_process(const ncl_message *msg, long long *out);
+const char *ncl_message_result(const ncl_message *msg);
+/** Borrowed "return" of a Method/Result/Response. */
+ncl_json   *ncl_message_get_return(const ncl_message *msg);
 /**
  * Event.time in milliseconds since the epoch. Passing 0 fills it with the
  * current time.

@@ -68,6 +68,10 @@ ncl_message *ncl_message_new(ncl_msg_type type)
         msg->as.method_call_request.has_check = true;
         msg->as.method_call_request.check = false;
         break;
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        /* "process" is a non-null field upstream: always serialise it. */
+        msg->as.method_status_response.has_process = true;
+        break;
     default:
         break;
     }
@@ -134,6 +138,27 @@ void ncl_message_free(ncl_message *msg)
         ncl_json_free(msg->as.method_call_request.params);
         ncl_mem_free(msg->as.method_call_request.token);
         break;
+    case NCL_MSG_METHOD_STATUS_REQUEST:
+        ncl_mem_free(msg->as.method_status_request.id);
+        ncl_mem_free(msg->as.method_status_request.handler);
+        break;
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        ncl_mem_free(msg->as.method_status_response.id);
+        ncl_mem_free(msg->as.method_status_response.handler);
+        ncl_mem_free(msg->as.method_status_response.status);
+        ncl_mem_free(msg->as.method_status_response.code);
+        break;
+    case NCL_MSG_METHOD_RESULT_REQUEST:
+        ncl_mem_free(msg->as.method_result_request.id);
+        ncl_mem_free(msg->as.method_result_request.handler);
+        break;
+    case NCL_MSG_METHOD_RESULT_RESPONSE:
+        ncl_mem_free(msg->as.method_result_response.id);
+        ncl_mem_free(msg->as.method_result_response.handler);
+        ncl_mem_free(msg->as.method_result_response.code);
+        ncl_json_free(msg->as.method_result_response.returns);
+        ncl_mem_free(msg->as.method_result_response.result);
+        break;
     case NCL_MSG_METHOD_CALL_RESPONSE:
         ncl_mem_free(msg->as.method_call_response.code);
         ncl_mem_free(msg->as.method_call_response.method);
@@ -141,6 +166,7 @@ void ncl_message_free(ncl_message *msg)
         ncl_mem_free(msg->as.method_call_response.token);
         ncl_json_free(msg->as.method_call_response.data);
         ncl_mem_free(msg->as.method_call_response.reason);
+        ncl_mem_free(msg->as.method_call_response.handler);
         break;
     default:
         break;
@@ -216,6 +242,10 @@ ncl_err ncl_message_set_code(ncl_message *msg, const char *code)
         return ncl_msg_set_str(&msg->as.probe_set_response.code, code);
     case NCL_MSG_METHOD_CALL_RESPONSE:
         return ncl_msg_set_str(&msg->as.method_call_response.code, code);
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        return ncl_msg_set_str(&msg->as.method_status_response.code, code);
+    case NCL_MSG_METHOD_RESULT_RESPONSE:
+        return ncl_msg_set_str(&msg->as.method_result_response.code, code);
     default:
         return NCL_ERR_INVALID_TYPE;
     }
@@ -409,6 +439,192 @@ ncl_err ncl_message_set_sample_id(ncl_message *msg, const char *id)
         return NCL_ERR_INVALID_TYPE;
     }
     return ncl_msg_set_str(&msg->as.sample.id, id);
+}
+
+/* ------------------------------------------- asynchronous method call --- */
+
+/** The "id" field of the status/result messages. */
+static char **ncl_method_object_id_slot(ncl_message *msg)
+{
+    switch (msg->type) {
+    case NCL_MSG_METHOD_STATUS_REQUEST:
+        return &msg->as.method_status_request.id;
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        return &msg->as.method_status_response.id;
+    case NCL_MSG_METHOD_RESULT_REQUEST:
+        return &msg->as.method_result_request.id;
+    case NCL_MSG_METHOD_RESULT_RESPONSE:
+        return &msg->as.method_result_response.id;
+    default:
+        return NULL;
+    }
+}
+
+/** The "handler" field: status/result messages and the call response. */
+static char **ncl_method_handler_slot(ncl_message *msg)
+{
+    switch (msg->type) {
+    case NCL_MSG_METHOD_STATUS_REQUEST:
+        return &msg->as.method_status_request.handler;
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        return &msg->as.method_status_response.handler;
+    case NCL_MSG_METHOD_RESULT_REQUEST:
+        return &msg->as.method_result_request.handler;
+    case NCL_MSG_METHOD_RESULT_RESPONSE:
+        return &msg->as.method_result_response.handler;
+    case NCL_MSG_METHOD_CALL_RESPONSE:
+        return &msg->as.method_call_response.handler;
+    default:
+        return NULL;
+    }
+}
+
+ncl_err ncl_message_set_handler(ncl_message *msg, const char *handler)
+{
+    char **slot = msg != NULL ? ncl_method_handler_slot(msg) : NULL;
+
+    return slot != NULL ? ncl_msg_set_str(slot, handler)
+                        : NCL_ERR_INVALID_TYPE;
+}
+
+const char *ncl_message_handler(const ncl_message *msg)
+{
+    if (msg == NULL) {
+        return NULL;
+    }
+    switch (msg->type) {
+    case NCL_MSG_METHOD_STATUS_REQUEST:
+        return msg->as.method_status_request.handler;
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        return msg->as.method_status_response.handler;
+    case NCL_MSG_METHOD_RESULT_REQUEST:
+        return msg->as.method_result_request.handler;
+    case NCL_MSG_METHOD_RESULT_RESPONSE:
+        return msg->as.method_result_response.handler;
+    case NCL_MSG_METHOD_CALL_RESPONSE:
+        return msg->as.method_call_response.handler;
+    default:
+        return NULL;
+    }
+}
+
+ncl_err ncl_message_set_request_id(ncl_message *msg, const char *id)
+{
+    char **slot = msg != NULL ? ncl_method_object_id_slot(msg) : NULL;
+
+    return slot != NULL ? ncl_msg_set_str(slot, id) : NCL_ERR_INVALID_TYPE;
+}
+
+const char *ncl_message_request_id(const ncl_message *msg)
+{
+    if (msg == NULL) {
+        return NULL;
+    }
+    switch (msg->type) {
+    case NCL_MSG_METHOD_STATUS_REQUEST:
+        return msg->as.method_status_request.id;
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        return msg->as.method_status_response.id;
+    case NCL_MSG_METHOD_RESULT_REQUEST:
+        return msg->as.method_result_request.id;
+    case NCL_MSG_METHOD_RESULT_RESPONSE:
+        return msg->as.method_result_response.id;
+    default:
+        return NULL;
+    }
+}
+
+ncl_err ncl_message_set_async(ncl_message *msg, bool async)
+{
+    if (msg == NULL || msg->type != NCL_MSG_METHOD_CALL_REQUEST) {
+        return NCL_ERR_INVALID_TYPE;
+    }
+    msg->as.method_call_request.async = async;
+    msg->as.method_call_request.has_async = true;
+    return NCL_OK;
+}
+
+bool ncl_message_async(const ncl_message *msg)
+{
+    return msg != NULL && msg->type == NCL_MSG_METHOD_CALL_REQUEST &&
+           msg->as.method_call_request.has_async &&
+           msg->as.method_call_request.async;
+}
+
+bool ncl_message_has_async(const ncl_message *msg)
+{
+    return msg != NULL && msg->type == NCL_MSG_METHOD_CALL_REQUEST &&
+           msg->as.method_call_request.has_async;
+}
+
+ncl_err ncl_message_set_status(ncl_message *msg, const char *status)
+{
+    if (msg == NULL || msg->type != NCL_MSG_METHOD_STATUS_RESPONSE) {
+        return NCL_ERR_INVALID_TYPE;
+    }
+    return ncl_msg_set_str(&msg->as.method_status_response.status, status);
+}
+
+const char *ncl_message_status(const ncl_message *msg)
+{
+    return msg != NULL && msg->type == NCL_MSG_METHOD_STATUS_RESPONSE
+               ? msg->as.method_status_response.status
+               : NULL;
+}
+
+ncl_err ncl_message_set_process(ncl_message *msg, long long process)
+{
+    if (msg == NULL || msg->type != NCL_MSG_METHOD_STATUS_RESPONSE) {
+        return NCL_ERR_INVALID_TYPE;
+    }
+    msg->as.method_status_response.process = process;
+    msg->as.method_status_response.has_process = true;
+    return NCL_OK;
+}
+
+bool ncl_message_process(const ncl_message *msg, long long *out)
+{
+    if (msg == NULL || msg->type != NCL_MSG_METHOD_STATUS_RESPONSE ||
+        !msg->as.method_status_response.has_process) {
+        return false;
+    }
+    if (out != NULL) {
+        *out = msg->as.method_status_response.process;
+    }
+    return true;
+}
+
+ncl_err ncl_message_set_result(ncl_message *msg, const char *result)
+{
+    if (msg == NULL || msg->type != NCL_MSG_METHOD_RESULT_RESPONSE) {
+        return NCL_ERR_INVALID_TYPE;
+    }
+    return ncl_msg_set_str(&msg->as.method_result_response.result, result);
+}
+
+const char *ncl_message_result(const ncl_message *msg)
+{
+    return msg != NULL && msg->type == NCL_MSG_METHOD_RESULT_RESPONSE
+               ? msg->as.method_result_response.result
+               : NULL;
+}
+
+ncl_err ncl_message_set_return(ncl_message *msg, ncl_json *value)
+{
+    if (msg == NULL || msg->type != NCL_MSG_METHOD_RESULT_RESPONSE) {
+        ncl_json_free(value);
+        return NCL_ERR_INVALID_TYPE;
+    }
+    ncl_json_free(msg->as.method_result_response.returns);
+    msg->as.method_result_response.returns = value;
+    return NCL_OK;
+}
+
+ncl_json *ncl_message_get_return(const ncl_message *msg)
+{
+    return msg != NULL && msg->type == NCL_MSG_METHOD_RESULT_RESPONSE
+               ? msg->as.method_result_response.returns
+               : NULL;
 }
 
 ncl_err ncl_message_set_event_time_ms(ncl_message *msg, int64_t millis)
@@ -678,6 +894,21 @@ bool ncl_message_is_valid(const ncl_message *msg)
     case NCL_MSG_METHOD_CALL_RESPONSE:
         return !ncl_str_is_blank(msg->as.method_call_response.method) &&
                msg->as.method_call_response.code != NULL;
+
+    /* Asynchronous method call: the handle identifies the running call. */
+    case NCL_MSG_METHOD_STATUS_REQUEST:
+    case NCL_MSG_METHOD_RESULT_REQUEST:
+        return !ncl_str_is_blank(msg->as.method_status_request.id) &&
+               !ncl_str_is_blank(msg->as.method_status_request.handler);
+
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        return !ncl_str_is_blank(msg->as.method_status_response.id) &&
+               !ncl_str_is_blank(msg->as.method_status_response.handler) &&
+               !ncl_str_is_blank(msg->as.method_status_response.status);
+
+    case NCL_MSG_METHOD_RESULT_RESPONSE:
+        return !ncl_str_is_blank(msg->as.method_result_response.id) &&
+               !ncl_str_is_blank(msg->as.method_result_response.result);
 
     default:
         return false;
@@ -1330,8 +1561,14 @@ ncl_json *ncl_message_to_json(const ncl_message *msg)
     case NCL_MSG_METHOD_CALL_REQUEST:
         ncl_json_set_if(obj, "method", msg->as.method_call_request.method);
         if (msg->as.method_call_request.params != NULL) {
-            ncl_json_obj_set(obj, "params",
+            /* The wire key is "args" (GB/T 41970-2022 / 上游 Java 的
+             * @JsonProperty("args")); C 端结构体字段仍叫 params。 */
+            ncl_json_obj_set(obj, "args",
                              ncl_json_clone(msg->as.method_call_request.params));
+        }
+        if (msg->as.method_call_request.has_async) {
+            ncl_json_obj_set_bool(obj, "async",
+                                  msg->as.method_call_request.async);
         }
         if (msg->as.method_call_request.has_check) {
             ncl_json_obj_set_bool(obj, "check", msg->as.method_call_request.check);
@@ -1355,6 +1592,39 @@ ncl_json *ncl_message_to_json(const ncl_message *msg)
                              ncl_json_clone(msg->as.method_call_response.data));
         }
         ncl_json_set_if(obj, "reason", msg->as.method_call_response.reason);
+        ncl_json_set_if(obj, "handler", msg->as.method_call_response.handler);
+        break;
+
+    case NCL_MSG_METHOD_STATUS_REQUEST:
+        ncl_json_set_if(obj, "id", msg->as.method_status_request.id);
+        ncl_json_set_if(obj, "handler", msg->as.method_status_request.handler);
+        break;
+
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        ncl_json_set_if(obj, "id", msg->as.method_status_response.id);
+        ncl_json_set_if(obj, "handler", msg->as.method_status_response.handler);
+        if (msg->as.method_status_response.has_process) {
+            ncl_json_obj_set_int(obj, "process",
+                                 msg->as.method_status_response.process);
+        }
+        ncl_json_set_if(obj, "status", msg->as.method_status_response.status);
+        ncl_json_set_if(obj, "code", msg->as.method_status_response.code);
+        break;
+
+    case NCL_MSG_METHOD_RESULT_REQUEST:
+        ncl_json_set_if(obj, "id", msg->as.method_result_request.id);
+        ncl_json_set_if(obj, "handler", msg->as.method_result_request.handler);
+        break;
+
+    case NCL_MSG_METHOD_RESULT_RESPONSE:
+        ncl_json_set_if(obj, "id", msg->as.method_result_response.id);
+        ncl_json_set_if(obj, "handler", msg->as.method_result_response.handler);
+        ncl_json_set_if(obj, "code", msg->as.method_result_response.code);
+        if (msg->as.method_result_response.returns != NULL) {
+            ncl_json_obj_set(obj, "return",
+                             ncl_json_clone(msg->as.method_result_response.returns));
+        }
+        ncl_json_set_if(obj, "result", msg->as.method_result_response.result);
         break;
 
     default:
@@ -1649,7 +1919,27 @@ ncl_message *ncl_message_from_json(ncl_msg_type type, const ncl_json *json)
         break;
     case NCL_MSG_METHOD_CALL_REQUEST:
         msg->as.method_call_request.method = ncl_msg_read_string(json, "method");
-        ncl_item_read_params_into(json, &msg->as.method_call_request.params);
+        /* "args" 是线格式；"params" 是 3.4.0 之前的 C 端写法，读的时候兼容。 */
+        {
+            ncl_json *args = ncl_json_obj_get(json, "args");
+            if (args == NULL) {
+                args = ncl_json_obj_get(json, "params");
+            }
+            if (args != NULL) {
+                msg->as.method_call_request.params = ncl_json_clone(args);
+            }
+        }
+        {
+            /* "async"，并兼容上游拼错的 "aysnc"。 */
+            ncl_json *flag = ncl_json_obj_get(json, "async");
+            if (flag == NULL) {
+                flag = ncl_json_obj_get(json, "aysnc");
+            }
+            if (flag != NULL) {
+                msg->as.method_call_request.has_async = ncl_json_as_bool(
+                    flag, &msg->as.method_call_request.async);
+            }
+        }
         if (ncl_json_obj_has(json, "check")) {
             msg->as.method_call_request.has_check =
                 ncl_json_as_bool(ncl_json_obj_get(json, "check"),
@@ -1674,6 +1964,45 @@ ncl_message *ncl_message_from_json(ncl_msg_type type, const ncl_json *json)
             }
         }
         msg->as.method_call_response.reason = ncl_msg_read_string(json, "reason");
+        msg->as.method_call_response.handler =
+            ncl_msg_read_string(json, "handler");
+        break;
+    case NCL_MSG_METHOD_STATUS_REQUEST:
+        msg->as.method_status_request.id = ncl_msg_read_string(json, "id");
+        msg->as.method_status_request.handler =
+            ncl_msg_read_string(json, "handler");
+        break;
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        msg->as.method_status_response.id = ncl_msg_read_string(json, "id");
+        msg->as.method_status_response.handler =
+            ncl_msg_read_string(json, "handler");
+        if (ncl_json_obj_has(json, "process")) {
+            msg->as.method_status_response.process =
+                ncl_json_obj_get_int(json, "process", 0);
+            msg->as.method_status_response.has_process = true;
+        }
+        msg->as.method_status_response.status =
+            ncl_msg_read_string(json, "status");
+        msg->as.method_status_response.code = ncl_msg_read_string(json, "code");
+        break;
+    case NCL_MSG_METHOD_RESULT_REQUEST:
+        msg->as.method_result_request.id = ncl_msg_read_string(json, "id");
+        msg->as.method_result_request.handler =
+            ncl_msg_read_string(json, "handler");
+        break;
+    case NCL_MSG_METHOD_RESULT_RESPONSE:
+        msg->as.method_result_response.id = ncl_msg_read_string(json, "id");
+        msg->as.method_result_response.handler =
+            ncl_msg_read_string(json, "handler");
+        msg->as.method_result_response.code = ncl_msg_read_string(json, "code");
+        {
+            ncl_json *value = ncl_json_obj_get(json, "return");
+            if (value != NULL) {
+                msg->as.method_result_response.returns = ncl_json_clone(value);
+            }
+        }
+        msg->as.method_result_response.result =
+            ncl_msg_read_string(json, "result");
         break;
     default:
         ncl_message_free(msg);

@@ -32,6 +32,17 @@ extern "C" {
 #define NCL_KW_CODE_NG "NG"
 #define NCL_KW_CODE_PENDING "PENDING"
 
+/* "status" of a Method/Status/Response (asynchronous method call). */
+#define NCL_KW_STATUS_EXECUTING "executing"
+#define NCL_KW_STATUS_WAITING   "waiting"
+#define NCL_KW_STATUS_STOPPED   "stopped"
+#define NCL_KW_STATUS_SLEEP     "sleep"
+
+/* "result" of a Method/Result/Response (asynchronous method call). */
+#define NCL_KW_RESULT_FINISHED "finished"
+#define NCL_KW_RESULT_CANCEL   "cancel"
+#define NCL_KW_RESULT_ERROR    "error"
+
 /** Data type keywords. */
 #define NCL_DATA_TYPE_LIST "LIST"
 #define NCL_DATA_TYPE_HASH "HASH"

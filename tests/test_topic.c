@@ -38,6 +38,20 @@ static void test_builders(void)
     NCL_CHECK_EQ_STR(t, "Pong/V42");
     ncl_free_safe(t);
 
+    NCL_TEST_CASE("asynchronous method call topics");
+    t = ncl_topic_method_status_request("V42", NULL);
+    NCL_CHECK_EQ_STR(t, "Method/Status/Request/V42");
+    ncl_free_safe(t);
+    t = ncl_topic_method_status_response("V42", NULL);
+    NCL_CHECK_EQ_STR(t, "Method/Status/Response/V42");
+    ncl_free_safe(t);
+    t = ncl_topic_method_result_request("V42", "client-9");
+    NCL_CHECK_EQ_STR(t, "Method/Result/Request/V42/client-9");
+    ncl_free_safe(t);
+    t = ncl_topic_method_result_response("V42", NULL);
+    NCL_CHECK_EQ_STR(t, "Method/Result/Response/V42");
+    ncl_free_safe(t);
+
 }
 
 static void test_extract_sn(void)

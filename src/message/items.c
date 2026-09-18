@@ -30,6 +30,10 @@ const char *ncl_msg_type_name(ncl_msg_type type)
     case NCL_MSG_EVENT: return "Event";
     case NCL_MSG_METHOD_CALL_REQUEST: return "MethodCallRequest";
     case NCL_MSG_METHOD_CALL_RESPONSE: return "MethodCallResponse";
+    case NCL_MSG_METHOD_STATUS_REQUEST: return "MethodStatusRequest";
+    case NCL_MSG_METHOD_STATUS_RESPONSE: return "MethodStatusResponse";
+    case NCL_MSG_METHOD_RESULT_REQUEST: return "MethodResultRequest";
+    case NCL_MSG_METHOD_RESULT_RESPONSE: return "MethodResultResponse";
     default: return "Unknown";
     }
 }
@@ -69,6 +73,20 @@ ncl_msg_type ncl_msg_type_from_topic(const char *topic)
     }
     if (ncl_str_starts_with(topic, NCL_TOPIC_METHOD_CALL_REQUEST_PREFIX)) {
         return NCL_MSG_METHOD_CALL_REQUEST;
+    }
+    /* The status/result pairs share the "Method/" stem, so they are matched
+     * before the call topics' shorter prefixes are considered. */
+    if (ncl_str_starts_with(topic, NCL_TOPIC_METHOD_STATUS_RESPONSE_PREFIX)) {
+        return NCL_MSG_METHOD_STATUS_RESPONSE;
+    }
+    if (ncl_str_starts_with(topic, NCL_TOPIC_METHOD_STATUS_REQUEST_PREFIX)) {
+        return NCL_MSG_METHOD_STATUS_REQUEST;
+    }
+    if (ncl_str_starts_with(topic, NCL_TOPIC_METHOD_RESULT_RESPONSE_PREFIX)) {
+        return NCL_MSG_METHOD_RESULT_RESPONSE;
+    }
+    if (ncl_str_starts_with(topic, NCL_TOPIC_METHOD_RESULT_REQUEST_PREFIX)) {
+        return NCL_MSG_METHOD_RESULT_REQUEST;
     }
     if (ncl_str_starts_with(topic, NCL_TOPIC_PING_PREFIX)) {
         return NCL_MSG_PING;

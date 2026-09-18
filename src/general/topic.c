@@ -102,6 +102,30 @@ char *ncl_topic_event(const char *device_id, const char *client_id)
     return ncl_topic_build(NCL_TOPIC_EVENT_PREFIX, device_id, client_id);
 }
 
+char *ncl_topic_method_status_request(const char *device_id, const char *client_id)
+{
+    return ncl_topic_build(NCL_TOPIC_METHOD_STATUS_REQUEST_PREFIX, device_id,
+                           client_id);
+}
+
+char *ncl_topic_method_status_response(const char *device_id, const char *client_id)
+{
+    return ncl_topic_build(NCL_TOPIC_METHOD_STATUS_RESPONSE_PREFIX, device_id,
+                           client_id);
+}
+
+char *ncl_topic_method_result_request(const char *device_id, const char *client_id)
+{
+    return ncl_topic_build(NCL_TOPIC_METHOD_RESULT_REQUEST_PREFIX, device_id,
+                           client_id);
+}
+
+char *ncl_topic_method_result_response(const char *device_id, const char *client_id)
+{
+    return ncl_topic_build(NCL_TOPIC_METHOD_RESULT_RESPONSE_PREFIX, device_id,
+                           client_id);
+}
+
 char *ncl_topic_register_request(void)
 {
     return ncl_strdup(NCL_TOPIC_REGISTER_REQUEST);
