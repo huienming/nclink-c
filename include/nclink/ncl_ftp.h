@@ -148,6 +148,32 @@ ncl_err ncl_ftp_client_store_file(ncl_ftp_client *client, const char *remote,
                                   const char *local_path);
 
 /**
+ * Upload @p local_path as @p remote, **resuming**: whatever the peer already
+ * holds of that file (SIZE) is taken as the prefix and only the rest is sent
+ * (STOR when the peer has nothing, APPE when it has part of it). The file is
+ * streamed in 256 KiB pieces, so memory does not scale with the file size, and
+ * a transfer that dies half way is resumed instead of restarted.
+ *
+ * A peer that does not answer SIZE (no such file) starts from zero; a peer that
+ * has more bytes than the local file is treated as stale and overwritten from
+ * zero. Returns NCL_OK only when the peer ends up holding the whole file.
+ */
+ncl_err ncl_ftp_client_upload(ncl_ftp_client *client, const char *remote,
+                              const char *local_path);
+
+/**
+ * Download @p remote into @p local_path, **resuming**: the local file's current
+ * size is the restart offset (REST) and the bytes are appended to it, so a
+ * transfer that dies half way continues where it stopped. Streamed to disk.
+ */
+ncl_err ncl_ftp_client_download(ncl_ftp_client *client, const char *remote,
+                                const char *local_path);
+
+/** Bytes this client has put on / taken off its data connections so far. */
+long long ncl_ftp_client_bytes_sent(const ncl_ftp_client *client);
+long long ncl_ftp_client_bytes_received(const ncl_ftp_client *client);
+
+/**
  * RETR into @p out. The buffer is reset first; use ncl_ftp_client_retrieve_file
  * for large payloads.
  */
@@ -240,6 +266,10 @@ ncl_err ncl_ftp_server_remove_account(ncl_ftp_server *server, const char *user);
 
 /** Number of accounts added with ncl_ftp_server_add_account(). */
 size_t ncl_ftp_server_account_count(ncl_ftp_server *server);
+
+/** Data bytes the endpoint has sent / received since it started. */
+long long ncl_ftp_server_bytes_sent(ncl_ftp_server *server);
+long long ncl_ftp_server_bytes_received(ncl_ftp_server *server);
 
 /** Stop accepting, close every session and join all threads. Idempotent. */
 void ncl_ftp_server_stop(ncl_ftp_server *server);

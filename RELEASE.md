@@ -127,7 +127,7 @@ tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认�
 
 | 项目 | 结果 |
 |------|------|
-| Windows（MSVC 14.44.35207，Release） | x64 全量 **25/25**（`file` 套件 **239 项断言**，含 5 分片 / 每片 256 KB 的多分片上传与往返）；x86 / 静态内存 / TLS / 静态内存+TLS / x86 静态内存 各 **25/25** |
+| Windows（MSVC 14.44.35207，Release） | x64 全量 **25/25**（`file` 套件 **271 项断言**：握手、`conf/ftp.txt`、64 MiB 大文件、两种续传起点、数据连接中途掐断后的续传重试）；x86 / 静态内存 / TLS / 静态内存+TLS / x86 静态内存 各 **25/25** |
 | Linux（gcc 13.4，容器内） | 默认堆 / TLS / 静态内存 / 静态内存+TLS 四套各 **25/25**（`docker run --rm -v <repo>:/work -w /work gcc:13 sh build-linux.sh <目录>`） |
 | mingw-w64（gcc 16.2.0，UCRT + posix threads） | 库 / 示例 / 测试 **25/25**（`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw`）；TLS 变体（Strawberry Perl 的 OpenSSL 头/导入库）同样 **25/25**，`test_tls` 通过 |
 | 内存检查 | Linux ASan + LeakSanitizer（`tools/asan-linux.sh --docker`，6 个套件）**0 发现**；ThreadSanitizer（分配器并发用例）**0 数据竞争** |
@@ -135,7 +135,8 @@ tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认�
 | 托管绑定对真 broker（EMQX 5.x，`NCLINK_TEST_BROKER`） | C# **135 项**、Java **15 项**、Python 46 项，**0 失败**——含文件通道握手全流程（上传 / 列目录 / 下载 / 建目录 / 带文件参数的方法调用 / close 撤销） |
 | Go 绑定 | Linux（golang:1.22 容器）与 Windows（cgo + mingw gcc 16.2.0）`go test ./...` 均通过；`-tags nclink_tls`（链 `libnclink_core_tls.a`）两侧同样通过 |
 | 文件通道握手 | 新增用例覆盖：无通道时文件方法被拒（`NoFileChannelException`）、握手后可用、同租约重复握手幂等、换租约需 `force`、`closeFileChannel` 撤销临时账号后登录失败、重复 close 幂等；`conf/ftp.txt` 往返 / 坏文件容忍 / 端点跟随文件里的端口与账号 / 函数参数优先于文件 |
-| 文件传输分片 | 5 分片（每片 256 KB，约 1 MiB）的设备→对端上传与通道往返各一条用例，落盘字节逐个比对；覆盖分片、并行分片（5 片）与整片校验三条只在 >1 片时才走的路径 |
+| 文件传输（流式 / 续传 / 效率） | 传输改成流式（256 KiB 读、64 KiB 写，内存不随文件大小增长）+ 可续传（上传按对端 SIZE 用 APPE、下载按本地大小用 REST；单次调用内 3 次重试都从断点继续）。用例：64 MiB 大文件、对端已有前半、本地已有前半、数据连接第 3 MiB 被掐断。吞吐实测见 **TRANSFER_PERF.md**（同机上传 128~512 MiB/s、下载 106~140 MiB/s；跨容器上传 786~901 MiB/s、下载 136~155 MiB/s；续传行线上字节恰好一半且逐字节一致） |
+| 跨主机（容器 ↔ 容器） | 客户端与设备端各占一个容器（同桥接网络 + EMQX 控制面），设备按握手里的 `ncl-client:2323` **被动模式**回拨，16 / 64 / 256 / 512 MiB 上传下载与续传全部逐字节一致；Windows 客户端 ←→ 容器设备、以及两台容器之间都已跑到 |
 | 地址推导 | broker 在本机（回环）时改取本机非回环 IPv4；无 broker 语境回退 `127.0.0.1` |
 
 ### 3.1.1 3.3.0 的验证

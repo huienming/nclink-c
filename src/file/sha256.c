@@ -191,3 +191,58 @@ ncl_err ncl_sha256_hex(const void *data, size_t len, char **out_hex)
     *out_hex = hex;
     return NCL_OK;
 }
+
+/* ------------------------------------------------------------ streaming --- */
+
+struct ncl_sha256 {
+    sha256_ctx inner;
+};
+
+ncl_sha256 *ncl_sha256_new(void)
+{
+    ncl_sha256 *ctx = (ncl_sha256 *)ncl_mem_calloc(1, sizeof(*ctx));
+
+    if (ctx != NULL) {
+        sha256_init(&ctx->inner);
+    }
+    return ctx;
+}
+
+ncl_err ncl_sha256_update(ncl_sha256 *ctx, const void *data, size_t len)
+{
+    if (ctx == NULL || (data == NULL && len > 0)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (len > 0) {
+        sha256_update(&ctx->inner, (const unsigned char *)data, len);
+    }
+    return NCL_OK;
+}
+
+char *ncl_sha256_finish(ncl_sha256 *ctx)
+{
+    unsigned char digest[32];
+    static const char digits[] = "0123456789abcdef";
+    char *hex;
+    size_t i;
+
+    if (ctx == NULL) {
+        return NULL;
+    }
+    hex = (char *)ncl_mem_alloc(65);
+    if (hex == NULL) {
+        return NULL;
+    }
+    sha256_final(&ctx->inner, digest);
+    for (i = 0; i < 32; i++) {
+        hex[i * 2] = digits[digest[i] >> 4];
+        hex[i * 2 + 1] = digits[digest[i] & 0x0F];
+    }
+    hex[64] = '\0';
+    return hex;
+}
+
+void ncl_sha256_free(ncl_sha256 *ctx)
+{
+    ncl_mem_free(ctx);
+}

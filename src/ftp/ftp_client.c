@@ -38,7 +38,21 @@ struct ncl_ftp_client {
     char           port_host[64];
     unsigned       port_port;
     bool           have_port;
+
+    /* Streamed transfers: what has been moved, and the test seam that makes a
+     * transfer die half way so the resume path can be exercised. */
+    long long      bytes_sent;
+    long long      bytes_received;
+    long long      abort_after; /**< 0 = no abort */
 };
+
+/** One piece of a streamed transfer: 256 KiB, the protocol's chunk size. */
+#define NCL_FTP_STREAM_CHUNK (1024u * 256u)
+/** How often a streamed transfer is retried (each retry resumes). */
+#define NCL_FTP_TRANSFER_ATTEMPTS 3
+
+/** Test seam: abort the current transfer after this many bytes (0 = off). */
+#define NCL_FTP_ABORT_ENV "NCL_TEST_FTP_ABORT_AFTER"
 
 /* ------------------------------------------------------------------ utils -- */
 
@@ -784,6 +798,282 @@ ncl_err ncl_ftp_client_retrieve(ncl_ftp_client *c, const char *remote,
     }
     ncl_ftp_client_close_data(c);
     return rc;
+}
+
+/* ------------------------------------------------------ streamed transfers -- */
+
+/* Offsets beyond 2 GB need the 64-bit seek of each platform. */
+#if defined(NCL_OS_WINDOWS)
+#  define stream_seek(fp, off) _fseeki64((fp), (off), SEEK_SET)
+#else
+#  define stream_seek(fp, off) fseeko((fp), (off), SEEK_SET)
+#endif
+
+/** The abort-after setting of this process; 0 when the seam is not armed. */
+static long long stream_abort_after(void)
+{
+    const char *text = getenv(NCL_FTP_ABORT_ENV);
+
+    if (text == NULL || text[0] == '\0') {
+        return 0;
+    }
+    return strtoll(text, NULL, 10);
+}
+
+/** Open @p path for reading, skipping the first @p skip bytes. */
+static FILE *stream_open_reader(const char *path, long long skip)
+{
+    FILE *fp;
+
+    if (path == NULL) {
+        return NULL;
+    }
+    fp = fopen(path, "rb");
+    if (fp == NULL) {
+        return NULL;
+    }
+    if (skip > 0 && stream_seek(fp, skip) != 0) {
+        fclose(fp);
+        return NULL;
+    }
+    return fp;
+}
+
+/** Open @p path for appending (creating it when it is absent). */
+static FILE *stream_open_appender(const char *path)
+{
+    return path != NULL ? fopen(path, "ab") : NULL;
+}
+
+ncl_err ncl_ftp_client_upload(ncl_ftp_client *c, const char *remote,
+                              const char *local_path)
+{
+    char buffer[NCL_FTP_STREAM_CHUNK];
+    long long total;
+    int attempt;
+    ncl_err rc = NCL_ERR_IO;
+
+    if (c == NULL || remote == NULL || local_path == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (c->ctrl == NULL) {
+        return NCL_ERR_CLOSED;
+    }
+    total = ncl_file_size(local_path);
+    if (total <= 0) {
+        ncl_log_error("ftp upload: cannot read %s", local_path);
+        return NCL_ERR_IO;
+    }
+    c->abort_after = stream_abort_after();
+
+    for (attempt = 0; attempt < NCL_FTP_TRANSFER_ATTEMPTS; attempt++) {
+        ncl_socket *conn = NULL;
+        FILE *fp;
+        long long sent;
+        long long have = 0;
+
+        if (ncl_ftp_client_size(c, remote, &have) != NCL_OK || have > total) {
+            have = 0; /* nothing there yet, or a stale file: start over */
+        }
+        if (have == total) {
+            return NCL_OK; /* the peer already holds the whole file */
+        }
+        fp = stream_open_reader(local_path, have);
+        if (fp == NULL) {
+            return NCL_ERR_IO;
+        }
+        rc = ncl_ftp_client_data_command(c, have > 0 ? "APPE" : "STOR", remote,
+                                         &conn);
+        sent = have;
+        while (rc == NCL_OK) {
+            size_t got = fread(buffer, 1, sizeof(buffer), fp);
+            size_t send = got;
+
+            if (got == 0) {
+                break;
+            }
+            if (c->abort_after > 0 && sent + (long long)got >= c->abort_after) {
+                /* The resume test wants a link that dies half way; the retry
+                 * below then continues from wherever the peer got to. */
+                send = (size_t)(c->abort_after - sent);
+                c->abort_after = 0;
+                rc = NCL_ERR_CONNECT;
+            }
+            if (send > 0) {
+                ncl_err send_rc = ncl_socket_send(conn, buffer, send);
+                if (send_rc != NCL_OK) {
+                    rc = send_rc;
+                    break;
+                }
+                sent += (long long)send;
+                c->bytes_sent += (long long)send;
+            }
+            if (rc != NCL_OK) {
+                break;
+            }
+        }
+        fclose(fp);
+        if (conn != NULL) {
+            ncl_socket_close(conn);
+        }
+        /*
+         * Always take the completion reply, even when the local side already
+         * gave up: the server answers 226 (it saw EOF and kept what it got) or
+         * 4xx/5xx, and that line has to leave the control connection before the
+         * resume sends anything else.
+         */
+        {
+            ncl_err reply_rc = ncl_ftp_client_expect(c, 2, NULL);
+
+            if (rc == NCL_OK) {
+                rc = reply_rc;
+            }
+        }
+        ncl_ftp_client_close_data(c);
+        if (rc == NCL_OK) {
+            long long landed = 0;
+
+            if (ncl_ftp_client_size(c, remote, &landed) != NCL_OK) {
+                landed = 0;
+            }
+            if (landed >= total) {
+                return NCL_OK;
+            }
+            ncl_log_warn("ftp upload short (%lld/%lld bytes), resuming", landed,
+                         total);
+            rc = NCL_ERR_IO;
+        } else {
+            ncl_log_warn("ftp upload interrupted (%s), resuming",
+                         ncl_err_name(rc));
+        }
+    }
+    return rc;
+}
+
+ncl_err ncl_ftp_client_download(ncl_ftp_client *c, const char *remote,
+                                const char *local_path)
+{
+    char buffer[NCL_FTP_STREAM_CHUNK];
+    long long total = 0;
+    int attempt;
+    ncl_err rc = NCL_ERR_IO;
+
+    if (c == NULL || remote == NULL || local_path == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (c->ctrl == NULL) {
+        return NCL_ERR_CLOSED;
+    }
+    if (ncl_ftp_client_size(c, remote, &total) != NCL_OK) {
+        ncl_log_error("ftp download: no such file %s", remote);
+        return NCL_ERR_NOT_FOUND;
+    }
+    c->abort_after = stream_abort_after();
+
+    for (attempt = 0; attempt < NCL_FTP_TRANSFER_ATTEMPTS; attempt++) {
+        ncl_socket *conn = NULL;
+        FILE *fp;
+        long long have = ncl_file_size(local_path);
+
+        if (have < 0) {
+            have = 0;
+        }
+        if (have > total) {
+            remove(local_path); /* stale: longer than the peer's file */
+            have = 0;
+        }
+        if (have == total) {
+            return NCL_OK; /* already there */
+        }
+        if (have > 0) {
+            ncl_strbuf text;
+
+            ncl_strbuf_init(&text);
+            rc = ncl_ftp_client_command(c, "REST %lld", have);
+            if (rc == NCL_OK) {
+                rc = ncl_ftp_client_expect(c, 3, &text);
+            }
+            ncl_strbuf_free(&text);
+            if (rc != NCL_OK) {
+                /* No REST: only a full download can be right. */
+                ncl_log_warn("ftp REST %lld refused, restarting", have);
+                remove(local_path);
+                have = 0;
+            }
+        }
+        fp = stream_open_appender(local_path);
+        if (fp == NULL) {
+            return NCL_ERR_IO;
+        }
+        rc = ncl_ftp_client_data_command(c, "RETR", remote, &conn);
+        while (rc == NCL_OK) {
+            int got = ncl_socket_recv(conn, buffer, sizeof(buffer),
+                                      c->io_timeout_ms);
+
+            if (got == NCL_SOCKET_TIMEOUT) {
+                continue;
+            }
+            if (got < 0) {
+                rc = NCL_ERR_IO;
+                break;
+            }
+            if (got == 0) {
+                break;
+            }
+            if (c->abort_after > 0 &&
+                have + (long long)got >= c->abort_after) {
+                /* Partial write, then a dead link: the retry resumes. */
+                size_t keep = (size_t)(c->abort_after - have);
+
+                c->abort_after = 0;
+                if (keep > 0 && fwrite(buffer, 1, keep, fp) == keep) {
+                    c->bytes_received += (long long)keep;
+                }
+                rc = NCL_ERR_CONNECT;
+                break;
+            }
+            if (fwrite(buffer, 1, (size_t)got, fp) != (size_t)got) {
+                rc = NCL_ERR_IO;
+                break;
+            }
+            have += got;
+            c->bytes_received += got;
+        }
+        fclose(fp);
+        if (conn != NULL) {
+            ncl_socket_close(conn);
+        }
+        {
+            ncl_err reply_rc = ncl_ftp_client_expect(c, 2, NULL);
+
+            if (rc == NCL_OK) {
+                rc = reply_rc;
+            }
+        }
+        ncl_ftp_client_close_data(c);
+        if (rc == NCL_OK) {
+            if (ncl_file_size(local_path) >= total) {
+                return NCL_OK;
+            }
+            ncl_log_warn("ftp download short (%lld/%lld bytes), resuming",
+                         ncl_file_size(local_path), total);
+            rc = NCL_ERR_IO;
+        } else {
+            ncl_log_warn("ftp download interrupted (%s), resuming",
+                         ncl_err_name(rc));
+        }
+    }
+    return rc;
+}
+
+long long ncl_ftp_client_bytes_sent(const ncl_ftp_client *client)
+{
+    return client != NULL ? client->bytes_sent : 0;
+}
+
+long long ncl_ftp_client_bytes_received(const ncl_ftp_client *client)
+{
+    return client != NULL ? client->bytes_received : 0;
 }
 
 static ncl_err ncl_ftp_client_listing(ncl_ftp_client *c, const char *verb,

@@ -115,6 +115,7 @@ ncl_err ncl_file_channel_config_read(ncl_file_channel_config *out)
     out->port = config_port(json, "port");
     out->advertise_port = config_port(json, "advertisePort");
     out->force = ncl_json_obj_get_bool(json, "force", false);
+    out->passive = ncl_json_obj_get_bool(json, "passive", false);
     ncl_json_free(json);
 
     /* An account without a password is legal (empty password), not "half set". */
@@ -165,6 +166,9 @@ ncl_err ncl_file_channel_config_write(const ncl_file_channel_config *config)
     }
     if (config->force) {
         ncl_json_obj_set_bool(json, "force", true);
+    }
+    if (config->passive) {
+        ncl_json_obj_set_bool(json, "passive", true);
     }
     text = ncl_json_write_string(json);
     ncl_json_free(json);
@@ -244,6 +248,13 @@ void ncl_client_holder_stop_ftp(void)
         ncl_ftp_server_free(g_holder_ftp);
         g_holder_ftp = NULL;
     }
+}
+
+ncl_ftp_server *ncl_client_holder_ftp_endpoint(void)
+{
+    return g_holder_ftp != NULL && ncl_ftp_server_is_running(g_holder_ftp)
+               ? g_holder_ftp
+               : NULL;
 }
 
 /* ========================================================== handshake ===== */
@@ -469,6 +480,9 @@ ncl_err ncl_client_open_file_channel(ncl_client *client,
     if (config.force) {
         opts.force = true;
     }
+    if (config.passive) {
+        opts.passive = true;
+    }
     timeout = opts.timeout_ms != 0 ? opts.timeout_ms
                                    : NCL_CLIENT_OPERATION_TIMEOUT;
     channel_default_id(client, requested_id, sizeof(requested_id));
@@ -573,6 +587,9 @@ ncl_err ncl_client_open_file_channel(ncl_client *client,
     }
     if (opts.force) {
         ncl_json_obj_set_bool(params, "force", true);
+    }
+    if (opts.passive) {
+        ncl_json_obj_set_bool(params, "passive", true);
     }
     rc = channel_call(client, NCL_FILE_CHANNEL_OPEN_METHOD, params, timeout,
                       &response);

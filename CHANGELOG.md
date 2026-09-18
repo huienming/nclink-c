@@ -56,10 +56,38 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   C# / Java / Python 的 `DeviceClient` 加 `OpenFileChannel` / `CloseFileChannel` /
   `FileChannelIsOpen`，并且上传/下载/列目录/建目录/删文件/带文件参数的方法调用这些
   便利方法会**按需自动握一次手**（C API 保持显式，不做隐式网络动作）。
+- **文件传输改成流式 + 可续传**（`ncl_ftp_client_upload()` /
+  `ncl_ftp_client_download()`，设备端 file 工具直接用这两个）：
+  - **流式**：上传按 256 KiB 从本地文件读着发（对端没有就 `STOR`）、下载按 64 KiB 收着写盘，
+    内存不随文件大小增长 —— 512 MiB 的文件只需要 256 KiB + 64 KiB 两个缓冲，
+    **20 MiB 静态池构建**也能传 64 MiB 文件（旧实现是整文件读进内存，那份构建跑不了）。
+    服务端同样改成流式收写（`REST` 对 `STOR` 生效 = 从该偏移覆盖写，收完按实际长度截断）。
+  - **续传**：上传先问对端 `SIZE`，已有前缀就 `APPE` 续；下载按本地已有大小 `REST` 续。
+    单次调用内失败重试 3 次、每次从断点继续；测试里用
+    `NCL_TEST_FTP_ABORT_AFTER` 把数据连接在第 3 MiB 掐断，断言传输仍成功、校验一致、
+    线上字节数 ≥ 文件大小且 < 2×（即"续传"而不是"重传"）。
+  - **计数**：`ncl_ftp_client_bytes_sent/received()`、
+    `ncl_ftp_server_bytes_sent/received()`、`ncl_server_file_tool_bytes_sent/received()`
+    （工具级，跨重连不归零）。
+- **被动模式可按通道要求**：`ncl_file_channel_options.passive` / `conf/ftp.txt` 的
+  `"passive": true` → 握手里带 `passive` 参数 → 设备改用 PASV 传输。设备在 NAT /
+  容器 / 防火墙后面时必需（主动模式要 FTP 服务端反向连回设备）。
+  设备侧也可直接 `ncl_server_file_tool_set_passive()`。
+- **流式 SHA-256**（`ncl_sha256_new/update/finish/free()`）与流式文件复制
+  （`ncl_file_open_read/read_chunk/close_read`、`ncl_file_open_write/write_chunk/close_write`、
+  `ncl_path_same_file()`）；`ncl_file_checksum()` / `ncl_file_copy()` 内部也改成流式，
+  于是"校验一个 512 MiB 文件"不再需要 512 MiB 内存。
+- **`examples/ncl_file_bench.c`**：文件通道吞吐 / 跨主机测试台（`device` / `client`
+  两个角色，可指定 host/port/passive），进度与结论见 **TRANSFER_PERF.md**
+  （同机 16 MiB~512 MiB 上传 128~512 MiB/s、下载 106~140 MiB/s；跨容器
+  上传 786~901 MiB/s、下载 136~155 MiB/s；续传行只传一半且逐字节一致）。
 
 ### 修复
 - **`ncl_client_ll()` 以前把设备回的 NG 当成功**：空目录和被拒绝都返回 `NCL_OK`，
   调用方分不出来。现在应答项 `code != OK` 记日志并返回 `NCL_ERR`。
+- **设备没取到文件时上传会报成功**：设备的 file 工具在拿不到文件时按协议回
+  `code=OK` + `value=false`，客户端工具只看 code，于是"传输失败"被当成"上传成功"。
+  现在客户端会检查那个布尔值并报失败。
 
 ### 文档
 - 手册 5.10 重写成"握手 → 传输 → 收租约"三段，并补了 `conf/ftp.txt` 一节；5.9 补 FTP
@@ -71,7 +99,7 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 | 项 | 结果 |
 |----|------|
-| Windows x64（MSVC 14.44.35207，Release） | **25/25**；`file` 套件 **239 项断言**（新增握手 6 个用例：无通道被拒 / 握手 / 同租约复用 / 换租约需 force / close 撤销账号 / 幂等，`conf/ftp.txt` 往返 / 坏文件容忍 / 端点跟随文件 / 参数优先于文件，以及两条 **5 分片（每片 256 KB）** 的多分片用例：设备→对端 FTP 上传、经通道的往返） |
+| Windows x64（MSVC 14.44.35207，Release） | **25/25**；`file` 套件 **271 项断言**（新增：握手 6 个用例、`conf/ftp.txt` 4 个用例、**64 MiB 大文件**、**对端已有前半/本地已有前半**两种续传、**数据连接第 3 MiB 被掐断**后的续传重试） |
 | Windows 其他变体 | x86、静态内存、TLS、静态内存+TLS、x86 静态内存各 **25/25** |
 | Linux（gcc 13.4 / Debian bookworm，容器内） | 默认堆 / TLS / 静态内存 / 静态内存+TLS 各 **25/25** |
 | mingw-w64（gcc 16.2.0，UCRT + posix threads） | 非 TLS 与 TLS 各 **25/25**（含 `test_cpp`） |

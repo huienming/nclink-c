@@ -223,6 +223,8 @@ typedef struct ncl_ftp_session {
     char                    username[64];
     char                    root[NCL_FTP_PATH_MAX]; /**< login root          */
     bool                    allow_write;            /**< of the login        */
+    long long               bytes_sent;             /**< data connection     */
+    long long               bytes_received;
     char                    rnfr[NCL_FTP_PATH_MAX];
     bool                    have_rnfr;
     bool                    type_binary;
@@ -244,6 +246,8 @@ struct ncl_ftp_server {
     char        *password;
     bool         allow_write;
     ncl_ptrvec   accounts; /**< ncl_ftp_account*, the added logins */
+    long long    bytes_sent;     /**< data bytes served/appended by sessions */
+    long long    bytes_received;
     unsigned     port;
     unsigned     idle_timeout_ms;
     unsigned     data_timeout_ms;
@@ -424,30 +428,6 @@ static ncl_socket *session_open_data(ncl_ftp_session *s, bool *permanent)
         *permanent = true;
     }
     return NULL;
-}
-
-/** Read the whole data connection into @p out and close it. */
-static ncl_err session_read_data(ncl_ftp_session *s, ncl_socket *conn,
-                                 ncl_strbuf *out)
-{
-    char chunk[8192];
-
-    for (;;) {
-        int got = ncl_socket_recv(conn, chunk, sizeof(chunk),
-                                  s->server->data_timeout_ms);
-        if (got == NCL_SOCKET_TIMEOUT) {
-            continue;
-        }
-        if (got < 0) {
-            return NCL_ERR_IO;
-        }
-        if (got == 0) {
-            return NCL_OK;
-        }
-        if (ncl_strbuf_append(out, chunk, (size_t)got) != NCL_OK) {
-            return NCL_ERR_NOMEM;
-        }
-    }
 }
 
 /* ------------------------------------------------------------- commands -- */
@@ -652,6 +632,98 @@ static void session_handle_list(ncl_ftp_session *s, const char *arg,
     session_reply(s, 226, "Directory send OK.");
 }
 
+/**
+ * Send @p path over @p conn starting at @p offset (the REST restart point).
+ * Streamed in 64 KiB pieces, so the file never sits in memory and a >2 GB file
+ * works on 32-bit builds too.
+ */
+static ncl_err session_send_file_range(ncl_ftp_session *s, const char *path,
+                                       ncl_socket *conn, long long offset)
+{
+    char chunk[64 * 1024];
+    ncl_file_stream *reader = NULL;
+    ncl_err rc = NCL_OK;
+
+    if (ncl_file_open_read(path, offset, &reader) != NCL_OK) {
+        return NCL_ERR_IO;
+    }
+    for (;;) {
+        size_t got = ncl_file_read_chunk(reader, chunk, sizeof(chunk));
+
+        if (got == 0) {
+            break;
+        }
+        rc = ncl_socket_send(conn, chunk, got);
+        if (rc != NCL_OK) {
+            break;
+        }
+        ncl_mutex_lock(s->server->lock);
+        s->server->bytes_sent += (long long)got;
+        ncl_mutex_unlock(s->server->lock);
+    }
+    ncl_file_close_read(reader);
+    return rc;
+}
+
+/**
+ * Receive the data connection into @p local. STOR replaces the file, APPE
+ * appends, and a pending REST offset overwrites from there (resume).
+ */
+static ncl_err session_store_file(ncl_ftp_session *s, const char *local,
+                                  bool append)
+{
+    char chunk[64 * 1024];
+    ncl_socket *conn;
+    ncl_file_stream *writer = NULL;
+    bool permanent = false;
+    long long offset = s->rest;
+    ncl_err rc;
+
+    s->rest = 0;
+    if (!append && offset <= 0) {
+        offset = 0;
+    }
+    if (ncl_file_open_write(local, offset, append, &writer) != NCL_OK) {
+        return NCL_ERR_IO;
+    }
+    session_reply(s, 150, "Ok to send data.");
+    conn = session_open_data(s, &permanent);
+    if (conn == NULL) {
+        ncl_file_close_write(writer);
+        return permanent ? NCL_ERR_CONNECT : NCL_ERR_IO;
+    }
+    for (;;) {
+        int got = ncl_socket_recv(conn, chunk, sizeof(chunk),
+                                  s->server->data_timeout_ms);
+
+        if (got == NCL_SOCKET_TIMEOUT) {
+            continue;
+        }
+        if (got < 0) {
+            rc = NCL_ERR_IO;
+            break;
+        }
+        if (got == 0) {
+            rc = NCL_OK;
+            break;
+        }
+        if (ncl_file_write_chunk(writer, chunk, (size_t)got) != NCL_OK) {
+            rc = NCL_ERR_IO;
+            break;
+        }
+        ncl_mutex_lock(s->server->lock);
+        s->server->bytes_received += got;
+        ncl_mutex_unlock(s->server->lock);
+    }
+    ncl_socket_close(conn);
+    if (rc == NCL_OK && ncl_file_close_write(writer) != NCL_OK) {
+        rc = NCL_ERR_IO;
+    } else if (rc != NCL_OK) {
+        ncl_file_close_write(writer);
+    }
+    return rc;
+}
+
 /** RETR */
 static void session_handle_retr(ncl_ftp_session *s, const char *arg)
 {
@@ -659,8 +731,6 @@ static void session_handle_retr(ncl_ftp_session *s, const char *arg)
     ncl_fs_info info;
     ncl_socket *conn;
     bool permanent = false;
-    void *data = NULL;
-    size_t len = 0;
     ncl_err rc;
 
     if (!session_require_login(s) || arg == NULL || arg[0] == '\0') {
@@ -672,28 +742,23 @@ static void session_handle_retr(ncl_ftp_session *s, const char *arg)
         session_reply(s, 550, "Failed to open file.");
         return;
     }
-    rc = ncl_file_read_all(local, (char **)&data, &len);
-    if (rc != NCL_OK) {
-        session_reply(s, 550, "Failed to open file.");
-        return;
-    }
-    session_replyf(s, 150, "Opening BINARY mode data connection for %s (%lld bytes).",
+    session_replyf(s, 150,
+                   "Opening BINARY mode data connection for %s (%lld bytes).",
                    arg, info.size);
     conn = session_open_data(s, &permanent);
     if (conn == NULL) {
         if (permanent) {
             session_reply(s, 425, "Use PORT or PASV first.");
         }
-        ncl_mem_free(data);
         return;
     }
-    if (len > 0) {
-        ncl_socket_send(conn, (const char *)data + (size_t)s->rest,
-                        len > (size_t)s->rest ? len - (size_t)s->rest : 0);
-    }
+    rc = session_send_file_range(s, local, conn, s->rest);
     s->rest = 0;
     ncl_socket_close(conn);
-    ncl_mem_free(data);
+    if (rc != NCL_OK) {
+        session_reply(s, 550, "Failed to read file.");
+        return;
+    }
     session_reply(s, 226, "Transfer complete.");
 }
 
@@ -703,9 +768,6 @@ static void session_handle_stor(ncl_ftp_session *s, const char *arg,
 {
     char local[NCL_FTP_PATH_MAX];
     ncl_fs_info info;
-    ncl_socket *conn;
-    bool permanent = false;
-    ncl_strbuf payload;
     ncl_err rc;
     char parent[NCL_FTP_PATH_MAX];
     char *slash;
@@ -733,33 +795,16 @@ static void session_handle_stor(ncl_ftp_session *s, const char *arg,
         fs_mkdir_p(parent);
     }
 
-    session_reply(s, 150, "Ok to send data.");
-    conn = session_open_data(s, &permanent);
-    if (conn == NULL) {
-        if (permanent) {
-            session_reply(s, 425, "Use PORT or PASV first.");
-        }
-        return;
-    }
-    ncl_strbuf_init(&payload);
-    rc = session_read_data(s, conn, &payload);
-    ncl_socket_close(conn);
-    if (rc != NCL_OK) {
-        ncl_strbuf_free(&payload);
-        session_reply(s, 550, "Failed to receive data.");
-        return;
-    }
-    if (append && fs_stat(local, &info) && !info.is_dir) {
-        rc = ncl_file_append(local, payload.data, payload.len);
+    /* Streamed to disk: no whole-file buffer, and a pending REST offset means
+     * "overwrite from there", which is what a resumed upload needs. */
+    rc = session_store_file(s, local, append);
+    if (rc == NCL_OK) {
+        session_reply(s, 226, "Transfer complete.");
+    } else if (rc == NCL_ERR_CONNECT) {
+        session_reply(s, 425, "Use PORT or PASV first.");
     } else {
-        rc = ncl_file_write_all(local, payload.data, payload.len);
-    }
-    ncl_strbuf_free(&payload);
-    if (rc != NCL_OK) {
         session_reply(s, 550, "Failed to write file.");
-        return;
     }
-    session_reply(s, 226, "Transfer complete.");
 }
 
 static void session_handle_dele(ncl_ftp_session *s, const char *arg)
@@ -1321,6 +1366,32 @@ size_t ncl_ftp_server_account_count(ncl_ftp_server *srv)
     count = srv->accounts.len;
     ncl_mutex_unlock(srv->lock);
     return count;
+}
+
+long long ncl_ftp_server_bytes_sent(ncl_ftp_server *srv)
+{
+    long long total = 0;
+
+    if (srv == NULL) {
+        return 0;
+    }
+    ncl_mutex_lock(srv->lock);
+    total = srv->bytes_sent;
+    ncl_mutex_unlock(srv->lock);
+    return total;
+}
+
+long long ncl_ftp_server_bytes_received(ncl_ftp_server *srv)
+{
+    long long total = 0;
+
+    if (srv == NULL) {
+        return 0;
+    }
+    ncl_mutex_lock(srv->lock);
+    total = srv->bytes_received;
+    ncl_mutex_unlock(srv->lock);
+    return total;
 }
 
 ncl_err ncl_ftp_server_start(ncl_ftp_server *srv)

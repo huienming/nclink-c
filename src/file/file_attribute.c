@@ -168,10 +168,10 @@ int ncl_file_total_chunks(long long size)
 
 ncl_err ncl_file_checksum(const char *path, char **out_hex)
 {
-    ncl_strbuf sb;
     FILE *fp;
     char chunk[8192];
-    ncl_err rc;
+    ncl_err rc = NCL_OK;
+    ncl_sha256 *ctx;
 
     if (path == NULL || out_hex == NULL) {
         return NCL_ERR_INVALID_ARG;
@@ -181,21 +181,27 @@ ncl_err ncl_file_checksum(const char *path, char **out_hex)
     if (fp == NULL) {
         return NCL_ERR_IO;
     }
-    ncl_strbuf_init(&sb);
+    /* Streaming: the digest is fed piece by piece, so a multi-gigabyte file
+     * costs one 8 KiB buffer instead of its own size in memory. */
+    ctx = ncl_sha256_new();
+    if (ctx == NULL) {
+        fclose(fp);
+        return NCL_ERR_NOMEM;
+    }
     for (;;) {
         size_t got = fread(chunk, 1, sizeof(chunk), fp);
-        if (got > 0 && ncl_strbuf_append(&sb, chunk, got) != NCL_OK) {
-            fclose(fp);
-            ncl_strbuf_free(&sb);
-            return NCL_ERR_NOMEM;
-        }
-        if (got < sizeof(chunk)) {
+
+        if (got == 0) {
             break;
         }
+        (void)ncl_sha256_update(ctx, chunk, got);
     }
     fclose(fp);
-    rc = ncl_sha256_hex(sb.data, sb.len, out_hex);
-    ncl_strbuf_free(&sb);
+    *out_hex = ncl_sha256_finish(ctx);
+    ncl_sha256_free(ctx);
+    if (*out_hex == NULL) {
+        rc = NCL_ERR_NOMEM;
+    }
     return rc;
 }
 

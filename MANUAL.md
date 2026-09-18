@@ -2227,6 +2227,13 @@ ncl_server_start_ftp(server);            /* 可选：设备自己也服务 FTP�
 又没给 `force` 则被拒绝（`NG`，理由里带当前租约名），保护正在用这条通道的对端。
 设备侧查状态：`ncl_server_file_channel_is_open()` / `ncl_server_file_channel_id()`。
 
+字节怎么走：**流式 + 可续传**。上传按 256 KiB 从本地文件读着发（对端已有前缀就
+`APPE` 续、没有就 `STOR`），下载按本地已有大小 `REST` 续、64 KiB 一块写盘；单次
+调用内最多重试 3 次，每次从断点继续。所以内存不随文件大小增长（512 MiB 的文件也只要
+256 KiB + 64 KiB 两个缓冲，20 MiB 静态池构建同样能传），网络断在半路也不会重传。
+计数在 `ncl_ftp_client_bytes_*()` / `ncl_ftp_server_bytes_*()` /
+`ncl_server_file_tool_bytes_*()`（工具级，跨重连不归零）。
+
 协议路径约定：
 
 | 侧 | 路径基准 |
@@ -2309,6 +2316,7 @@ WARNING）。每次 `ncl_client_open_file_channel()` 与 `ncl_client_holder_star
   "password": "secret",    // 与 userName 成对；缺省 = 随机口令（关闭通道时撤销）
   "path": "V200583BC87",   // 设备侧远端前缀；缺省 = 设备自己的 SN（客户端镜像是
                            //   <root>/<sn>/，要改它得连着端点根目录布局一起改）
+  "passive": true,         // 让设备用 PASV 传输（设备在 NAT/容器/防火墙后面时必需）
   "force": true            // 交出去时顶替已占用的通道；缺省 false（被拒绝）
 }
 ```
@@ -2317,6 +2325,11 @@ WARNING）。每次 `ncl_client_open_file_channel()` 与 `ncl_client_holder_star
 `ncl_file_channel_config_free()`（结构体 `ncl_file_channel_config`）。配了
 `userName`/`password` 时这对账号就是"端点自己的账号"，关闭通道只断会话、不撤销账号；
 不配则由库按通道临时生成一对，`ncl_client_close_file_channel()` 会撤销它。
+
+跨网段 / 设备在 NAT 后面时加 `"passive": true`（或 C API 的
+`ncl_file_channel_options.passive`）：设备改被动模式主动外连，否则主动模式要求
+上位机的 FTP 服务端反向连回设备，通常不可达。吞吐实测与复现方式见
+[TRANSFER_PERF.md](TRANSFER_PERF.md)。
 
 #### 方法调用里的文件参数
 
@@ -2753,6 +2766,13 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_file_append(const char *path, const void *data, size_t len);` — Append @p data to @p path, creating it (and its parents) when missing.
 - `ncl_err ncl_file_copy(const char *src, const char *dst);` — Copy @p src to @p dst, creating the parent directory of @p dst.
 - `long long ncl_file_size(const char *path);` — Size of @p path in bytes, or -1 when it cannot be read.
+- `bool ncl_path_same_file(const char *a, const char *b);` — True when @p a and @p b name the same file on disk (absolute paths compared,
+- `ncl_err ncl_file_open_read(const char *path, long long offset, ncl_file_stream **out);`
+- `size_t ncl_file_read_chunk(ncl_file_stream *stream, void *buf, size_t len);` — Next piece (<= @p len bytes); 0 at end of file.
+- `void ncl_file_close_read(ncl_file_stream *stream);`
+- `ncl_err ncl_file_open_write(const char *path, long long offset, bool append, ncl_file_stream **out);`
+- `ncl_err ncl_file_write_chunk(ncl_file_stream *stream, const void *buf, size_t len);`
+- `ncl_err ncl_file_close_write(ncl_file_stream *stream);`
 - `int64_t ncl_file_mtime_ms(const char *path);` — Last modification time of @p path in epoch milliseconds, 0 when unknown.
 - `bool ncl_path_is_dir(const char *path);` — True when @p path exists and names a directory.
 - `ncl_err ncl_path_remove(const char *path);` — Remove @p path; directories are removed recursively.
@@ -2767,6 +2787,10 @@ Copyright (c) 2026 huienming
 - `ncl_file_attribute *ncl_file_attribute_from_json(const ncl_json *json);`
 - `ncl_json *ncl_file_attributes_to_json(const ncl_ptrvec *attributes);` — Serialise a list of attributes into a JSON array.
 - `ncl_err ncl_sha256_hex(const void *data, size_t len, char **out_hex);` — SHA-256 of @p len bytes at @p data, lower case hex into a heap string.
+- `ncl_sha256 *ncl_sha256_new(void);`
+- `ncl_err ncl_sha256_update(ncl_sha256 *ctx, const void *data, size_t len);`
+- `char *ncl_sha256_finish(ncl_sha256 *ctx);` — Hex digest (heap, ncl_free_safe()); NULL when the context is unusable.
+- `void ncl_sha256_free(ncl_sha256 *ctx);`
 - `bool ncl_file_need_compression(const char *file_name);` — True when the extension of @p file_name is compressed on transfer.
 - `int ncl_file_total_chunks(long long size);` — ceil(size / NCL_FILE_CHUNK_SIZE), 0 for a size of 0.
 - `ncl_err ncl_file_checksum(const char *path, char **out_hex);` — SHA-256 over the contents of @p path.
@@ -2777,6 +2801,10 @@ Copyright (c) 2026 huienming
 - `void ncl_ftp_info_free(ncl_ftp_response *info);`
 - `ncl_server_file_tool *ncl_server_file_tool_create(const char *ip, unsigned port, const char *user, const char *password, const char *sn);`
 - `void ncl_server_file_tool_free(ncl_server_file_tool *tool);`
+- `void ncl_server_file_tool_set_passive(ncl_server_file_tool *tool, bool passive);` — Use passive mode (PASV) instead of the default active mode (PORT) for the FTP
+- `bool ncl_server_file_tool_is_passive(const ncl_server_file_tool *tool);` — True when the tool transfers in passive mode.
+- `long long ncl_server_file_tool_bytes_sent(const ncl_server_file_tool *tool);` — Bytes this tool has put on / taken off the wire so far (data connections
+- `long long ncl_server_file_tool_bytes_received(const ncl_server_file_tool *tool);`
 - `bool ncl_server_file_tool_detect(ncl_server_file_tool *tool);` — Validate the link with NOOP first, reconnecting when it is gone.
 - `void ncl_server_file_tool_disconnect(ncl_server_file_tool *tool);` — Log out and drop the control connection.
 - `bool ncl_server_file_tool_write(ncl_server_file_tool *tool, const char *local_path, const char *remote_dir);` — Upload @p local_path into "/<sn><remoteDir>/".
@@ -2801,6 +2829,7 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_client_holder_start_ftp_ex(unsigned port, const char *root, const char *user, const char *password);` — Start the process wide FTP server that receives the files a device pushes.
 - `ncl_err ncl_client_holder_start_ftp(void);`
 - `void ncl_client_holder_stop_ftp(void);` — Stop the process wide FTP server.
+- `ncl_ftp_server *ncl_client_holder_ftp_endpoint(void);` — The process wide FTP endpoint (borrowed, NULL when it is not running).
 - `ncl_err ncl_client_holder_restart(void);` — Rebuild the process wide client from conf/mqtt.cfg: the running connection is
 - `const char *ncl_client_holder_server_uri(void);` — Broker URL the process wide client was initialised with; NULL before
 - `ncl_err ncl_file_channel_config_read(ncl_file_channel_config *out);` — Read `conf/ftp.txt` into @p out (memset first, then the file's values).
@@ -2846,6 +2875,10 @@ Copyright (c) 2026 huienming
 - `bool ncl_ftp_client_is_dir(ncl_ftp_client *client, const char *path);` — True when @p path names a directory on the server (CWD probe).
 - `ncl_err ncl_ftp_client_store(ncl_ftp_client *client, const char *remote, const void *data, size_t len);` — STOR: upload @p len bytes to @p remote.
 - `ncl_err ncl_ftp_client_store_file(ncl_ftp_client *client, const char *remote, const char *local_path);` — Upload @p local_path with STOR as @p remote_name.
+- `ncl_err ncl_ftp_client_upload(ncl_ftp_client *client, const char *remote, const char *local_path);` — Upload @p local_path as @p remote, **resuming**: whatever the peer already
+- `ncl_err ncl_ftp_client_download(ncl_ftp_client *client, const char *remote, const char *local_path);` — Download @p remote into @p local_path, **resuming**: the local file's current
+- `long long ncl_ftp_client_bytes_sent(const ncl_ftp_client *client);` — Bytes this client has put on / taken off its data connections so far.
+- `long long ncl_ftp_client_bytes_received(const ncl_ftp_client *client);`
 - `ncl_err ncl_ftp_client_retrieve(ncl_ftp_client *client, const char *remote, ncl_strbuf *out);` — RETR into @p out.
 - `ncl_err ncl_ftp_client_retrieve_file(ncl_ftp_client *client, const char *remote, const char *local_path);` — Download @p remote_path with RETR into @p local_path.
 - `ncl_err ncl_ftp_client_list(ncl_ftp_client *client, const char *path, ncl_ptrvec *out);` — LIST @p path into @p out, an ncl_ptrvec of ncl_ftp_entry*.
@@ -2857,6 +2890,8 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_ftp_server_add_account(ncl_ftp_server *server, const ncl_ftp_account *account);` — Register @p account (or update it in place when the user name is already
 - `ncl_err ncl_ftp_server_remove_account(ncl_ftp_server *server, const char *user);` — Drop @p user and close its live sessions.
 - `size_t ncl_ftp_server_account_count(ncl_ftp_server *server);` — Number of accounts added with ncl_ftp_server_add_account().
+- `long long ncl_ftp_server_bytes_sent(ncl_ftp_server *server);` — Data bytes the endpoint has sent / received since it started.
+- `long long ncl_ftp_server_bytes_received(ncl_ftp_server *server);`
 - `void ncl_ftp_server_stop(ncl_ftp_server *server);` — Stop accepting, close every session and join all threads.
 - `bool ncl_ftp_server_is_running(ncl_ftp_server *server);`
 - `unsigned ncl_ftp_server_port(const ncl_ftp_server *server);`

@@ -69,6 +69,103 @@ static bool read_file(const char *path, char *buffer, size_t len,
     return true;
 }
 
+/** Write @p size bytes of a deterministic pattern to @p path (streamed). */
+static bool write_pattern_file(const char *path, long long size, unsigned seed)
+{
+    enum { STEP = 256 * 1024 };
+    static char block[STEP];
+    FILE *fp;
+    long long written = 0;
+    size_t i;
+
+    for (i = 0; i < sizeof(block); i++) {
+        block[i] = (char)((i * 31 + seed) & 0xFF);
+    }
+    fp = fopen(path, "wb");
+    if (fp == NULL) {
+        return false;
+    }
+    while (written < size) {
+        long long left = size - written;
+        size_t chunk = left < (long long)sizeof(block) ? (size_t)left
+                                                      : sizeof(block);
+        if (fwrite(block, 1, chunk, fp) != chunk) {
+            fclose(fp);
+            return false;
+        }
+        written += (long long)chunk;
+    }
+    return fclose(fp) == 0;
+}
+
+/** Copy the first @p size bytes of @p src to @p dst: the wreck of a transfer
+ *  that died half way, which is exactly what a resume has to finish. */
+static bool copy_prefix(const char *src, const char *dst, long long size)
+{
+    enum { STEP = 256 * 1024 };
+    static char block[STEP];
+    FILE *in;
+    FILE *out;
+    long long done = 0;
+
+    in = fopen(src, "rb");
+    out = in != NULL ? fopen(dst, "wb") : NULL;
+    if (in == NULL || out == NULL) {
+        if (in != NULL) {
+            fclose(in);
+        }
+        if (out != NULL) {
+            fclose(out);
+        }
+        return false;
+    }
+    while (done < size) {
+        long long left = size - done;
+        size_t want = left < (long long)sizeof(block) ? (size_t)left
+                                                     : sizeof(block);
+        size_t got = fread(block, 1, want, in);
+        if (got == 0 || fwrite(block, 1, got, out) != got) {
+            fclose(in);
+            fclose(out);
+            return false;
+        }
+        done += (long long)got;
+    }
+    fclose(in);
+    return fclose(out) == 0;
+}
+
+/** True when both files carry the same SHA-256. */
+static bool same_checksum(const char *a, const char *b)
+{
+    char *hex_a = NULL;
+    char *hex_b = NULL;
+    bool same = false;
+
+    if (ncl_file_checksum(a, &hex_a) == NCL_OK &&
+        ncl_file_checksum(b, &hex_b) == NCL_OK && hex_a != NULL &&
+        hex_b != NULL) {
+        same = strcmp(hex_a, hex_b) == 0;
+    }
+    ncl_free_safe(hex_a);
+    ncl_free_safe(hex_b);
+    return same;
+}
+
+/** Arm/disarm the FTP link that dies half way (see ncl_ftp_client_upload). */
+static void arm_link_abort(long long bytes)
+{
+#if defined(NCL_OS_WINDOWS)
+    char text[32];
+    snprintf(text, sizeof(text), "%lld", bytes);
+    _putenv_s("NCL_TEST_FTP_ABORT_AFTER", text);
+#else
+    char text[32];
+    snprintf(text, sizeof(text), "%lld", bytes);
+    setenv("NCL_TEST_FTP_ABORT_AFTER", text, 1);
+#endif
+}
+
 /* ==================================================== unit level checks === */
 
 static void test_checksum(void)
@@ -359,6 +456,101 @@ static void test_server_file_tool(void)
         NCL_CHECK_EQ_INT(len, sizeof(big_payload));
         NCL_CHECK(memcmp(big_back, big_payload, sizeof(big_payload)) == 0);
         NCL_CHECK_EQ_INT(ncl_path_remove("uploadFile/data/big.bin"), NCL_OK);
+    }
+
+    NCL_TEST_CASE("a 64 MiB file uploads with a bounded buffer");
+    {
+        enum { HUGE = 64 * 1024 * 1024 };
+        long long before = ncl_server_file_tool_bytes_sent(tool);
+
+        NCL_CHECK(write_pattern_file("uploadFile/data/huge.bin", HUGE, 77));
+        NCL_CHECK(ncl_server_file_tool_write(tool, "uploadFile/data/huge.bin",
+                                            "/data"));
+        snprintf(path, sizeof(path), "%s%cdata%chuge.bin", TEST_SN, NCL_PATH_SEP,
+                 NCL_PATH_SEP);
+        NCL_CHECK(ncl_path_exists(path));
+        NCL_CHECK_EQ_INT(ncl_file_size(path), (long long)HUGE);
+        NCL_CHECK(same_checksum("uploadFile/data/huge.bin", path));
+        /* The whole file went over the wire exactly once. */
+        NCL_CHECK_EQ_INT(ncl_server_file_tool_bytes_sent(tool) - before,
+                         (long long)HUGE);
+        NCL_CHECK_EQ_INT(ncl_path_remove("uploadFile/data/huge.bin"), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_path_remove(path), NCL_OK);
+    }
+
+    NCL_TEST_CASE("an upload resumes from what the peer already has");
+    {
+        enum { HALF = 16 * 1024 * 1024 };
+        long long before;
+
+        NCL_CHECK(write_pattern_file("uploadFile/data/resume.bin", HALF * 2, 91));
+        /* The peer holds the first half: a transfer that died, or a previous
+         * run. The tool must send only the remainder. */
+        snprintf(path, sizeof(path), "%s%cdata%cresume.bin", TEST_SN, NCL_PATH_SEP,
+                 NCL_PATH_SEP);
+        NCL_CHECK(copy_prefix("uploadFile/data/resume.bin", path, HALF));
+        before = ncl_server_file_tool_bytes_sent(tool);
+        NCL_CHECK(ncl_server_file_tool_write(tool, "uploadFile/data/resume.bin",
+                                            "/data"));
+        NCL_CHECK_EQ_INT(ncl_server_file_tool_bytes_sent(tool) - before,
+                         (long long)HALF);
+        NCL_CHECK(same_checksum("uploadFile/data/resume.bin", path));
+        NCL_CHECK_EQ_INT(ncl_path_remove("uploadFile/data/resume.bin"), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_path_remove(path), NCL_OK);
+    }
+
+    NCL_TEST_CASE("a link that dies half way is resumed, not restarted");
+    {
+        enum { SIZE = 8 * 1024 * 1024 };
+        enum { CUT = 3 * 1024 * 1024 };
+        long long before;
+        long long sent;
+
+        NCL_CHECK(write_pattern_file("uploadFile/data/cut.bin", SIZE, 13));
+        snprintf(path, sizeof(path), "%s%cdata%ccut.bin", TEST_SN, NCL_PATH_SEP,
+                 NCL_PATH_SEP);
+        NCL_CHECK_EQ_INT(ncl_path_remove(path), NCL_OK);
+        before = ncl_server_file_tool_bytes_sent(tool);
+        arm_link_abort(CUT); /* the data connection dies after 3 MiB */
+        NCL_CHECK(ncl_server_file_tool_write(tool, "uploadFile/data/cut.bin",
+                                            "/data"));
+        arm_link_abort(0);
+        NCL_CHECK(same_checksum("uploadFile/data/cut.bin", path));
+        /* The whole file went over the wire at least once, and far less than
+         * twice: the retry continued at the cut instead of starting over. */
+        sent = ncl_server_file_tool_bytes_sent(tool) - before;
+        NCL_CHECK(sent >= (long long)SIZE);
+        NCL_CHECK(sent < (long long)SIZE * 2);
+        NCL_CHECK_EQ_INT(ncl_path_remove("uploadFile/data/cut.bin"), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_path_remove(path), NCL_OK);
+    }
+
+    NCL_TEST_CASE("a download resumes from the local partial file");
+    {
+        enum { SIZE = 12 * 1024 * 1024 };
+        enum { SEED = 5 * 1024 * 1024 };
+        long long before;
+
+        snprintf(path, sizeof(path), "%s%cdata%cpull.bin", TEST_SN, NCL_PATH_SEP,
+                 NCL_PATH_SEP);
+        NCL_CHECK(write_pattern_file(path, SIZE, 55));
+        NCL_CHECK(write_pattern_file("uploadFile/data/pull.bin", SIZE, 7));
+        NCL_CHECK_EQ_INT(ncl_path_remove("uploadFile/data/pull.bin"), NCL_OK);
+        /* The local mirror keeps the first 5 MiB of the file: the download has
+         * to REST there instead of starting over. */
+        NCL_CHECK(copy_prefix(path, "uploadFile/data/pull.bin", SEED));
+        before = ncl_server_file_tool_bytes_received(tool);
+        {
+            char *local = ncl_server_file_tool_read(tool, "/data/pull.bin");
+
+            NCL_CHECK(local != NULL);
+            ncl_free_safe(local);
+        }
+        NCL_CHECK_EQ_INT(ncl_server_file_tool_bytes_received(tool) - before,
+                         (long long)(SIZE - SEED));
+        NCL_CHECK(same_checksum(path, "uploadFile/data/pull.bin"));
+        NCL_CHECK_EQ_INT(ncl_path_remove(path), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_path_remove("uploadFile/data/pull.bin"), NCL_OK);
     }
 
     NCL_TEST_CASE("mkdir creates local and remote folders");

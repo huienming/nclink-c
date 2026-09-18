@@ -29,6 +29,11 @@ struct ncl_server_file_tool {
     char          *user;
     char          *password;
     char          *sn;
+    bool           passive; /**< PASV instead of the default PORT */
+    /* Cumulative traffic of this tool. The FTP client is replaced whenever the
+     * link is re-established, so the totals live here, not on the client. */
+    long long      bytes_sent;
+    long long      bytes_received;
 };
 
 /* --------------------------------------------------------------- helpers -- */
@@ -183,6 +188,34 @@ void ncl_server_file_tool_free(ncl_server_file_tool *tool)
     ncl_mem_free(tool);
 }
 
+void ncl_server_file_tool_set_passive(ncl_server_file_tool *tool, bool passive)
+{
+    if (tool == NULL) {
+        return;
+    }
+    ncl_mutex_lock(tool->lock);
+    tool->passive = passive;
+    if (tool->client != NULL) {
+        ncl_ftp_client_set_passive(tool->client, passive);
+    }
+    ncl_mutex_unlock(tool->lock);
+}
+
+bool ncl_server_file_tool_is_passive(const ncl_server_file_tool *tool)
+{
+    return tool != NULL && tool->passive;
+}
+
+long long ncl_server_file_tool_bytes_sent(const ncl_server_file_tool *tool)
+{
+    return tool != NULL ? tool->bytes_sent : 0;
+}
+
+long long ncl_server_file_tool_bytes_received(const ncl_server_file_tool *tool)
+{
+    return tool != NULL ? tool->bytes_received : 0;
+}
+
 /** A live session is validated with NOOP. */
 bool ncl_server_file_tool_detect(ncl_server_file_tool *tool)
 {
@@ -204,6 +237,7 @@ bool ncl_server_file_tool_detect(ncl_server_file_tool *tool)
         tool->client = ncl_ftp_client_create(tool->ip, tool->port, tool->user,
                                              tool->password);
         if (tool->client != NULL) {
+            ncl_ftp_client_set_passive(tool->client, tool->passive);
             ok = ncl_ftp_client_detect(tool->client);
             if (!ok) {
                 ncl_ftp_client_free(tool->client);
@@ -280,8 +314,14 @@ bool ncl_server_file_tool_write(ncl_server_file_tool *tool,
                 if (slash != NULL) {
                     name = slash + 1;
                 }
-                ok = ncl_ftp_client_store_file(tool->client, name,
-                                               local_path) == NCL_OK;
+                /* Resumable + streamed: a transfer that dies half way continues
+                 * from the byte the peer already has instead of restarting. */
+                long long sent_before = ncl_ftp_client_bytes_sent(tool->client);
+
+                ok = ncl_ftp_client_upload(tool->client, name, local_path) ==
+                     NCL_OK;
+                tool->bytes_sent +=
+                    ncl_ftp_client_bytes_sent(tool->client) - sent_before;
                 if (ok) {
                     ncl_log_info("file upload successful: %s", name);
                 } else {
@@ -328,8 +368,16 @@ char *ncl_server_file_tool_read(ncl_server_file_tool *tool,
             continue;
         }
         ncl_mutex_lock(tool->lock);
-        ok = tool->client != NULL &&
-             ncl_ftp_client_retrieve_file(tool->client, remote, local) == NCL_OK;
+        if (tool->client != NULL) {
+            long long got_before =
+                ncl_ftp_client_bytes_received(tool->client);
+
+            ok = ncl_ftp_client_download(tool->client, remote, local) == NCL_OK;
+            tool->bytes_received +=
+                ncl_ftp_client_bytes_received(tool->client) - got_before;
+        } else {
+            ok = false;
+        }
         if (tool->client != NULL) {
             code = ncl_ftp_client_reply_code(tool->client);
             snprintf(text, sizeof(text), "%s",

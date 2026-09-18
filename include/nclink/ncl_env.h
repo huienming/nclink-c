@@ -102,6 +102,34 @@ ncl_err ncl_file_copy(const char *src, const char *dst);
 /** Size of @p path in bytes, or -1 when it cannot be read. */
 long long ncl_file_size(const char *path);
 
+/**
+ * True when @p a and @p b name the same file on disk (absolute paths compared,
+ * case-insensitively on Windows). Used to make a copy onto itself a no-op.
+ */
+bool ncl_path_same_file(const char *a, const char *b);
+
+/**
+ * Streamed file access, for transfers that must not hold the whole file in
+ * memory (and must work with a bounded static pool): open, read/write pieces,
+ * close. A reader starts at @p offset; a writer either truncates and starts at
+ * @p offset (append = false) or appends (append = true), which is what a
+ * resumed transfer needs. Closing a writer truncates the file to what was
+ * actually written, so a short resume does not leave the old tail behind.
+ */
+typedef struct ncl_file_stream ncl_file_stream;
+
+ncl_err ncl_file_open_read(const char *path, long long offset,
+                           ncl_file_stream **out);
+/** Next piece (<= @p len bytes); 0 at end of file. */
+size_t ncl_file_read_chunk(ncl_file_stream *stream, void *buf, size_t len);
+void ncl_file_close_read(ncl_file_stream *stream);
+
+ncl_err ncl_file_open_write(const char *path, long long offset, bool append,
+                            ncl_file_stream **out);
+ncl_err ncl_file_write_chunk(ncl_file_stream *stream, const void *buf,
+                             size_t len);
+ncl_err ncl_file_close_write(ncl_file_stream *stream);
+
 /** Last modification time of @p path in epoch milliseconds, 0 when unknown. */
 int64_t ncl_file_mtime_ms(const char *path);
 

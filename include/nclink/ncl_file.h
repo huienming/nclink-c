@@ -96,6 +96,18 @@ ncl_json *ncl_file_attributes_to_json(const ncl_ptrvec *attributes);
 /** SHA-256 of @p len bytes at @p data, lower case hex into a heap string. */
 ncl_err ncl_sha256_hex(const void *data, size_t len, char **out_hex);
 
+/**
+ * Streaming SHA-256, for files too big to hand over as one buffer: create,
+ * feed pieces, take the hex digest (heap, caller frees), release.
+ */
+typedef struct ncl_sha256 ncl_sha256;
+
+ncl_sha256 *ncl_sha256_new(void);
+ncl_err ncl_sha256_update(ncl_sha256 *ctx, const void *data, size_t len);
+/** Hex digest (heap, ncl_free_safe()); NULL when the context is unusable. */
+char *ncl_sha256_finish(ncl_sha256 *ctx);
+void ncl_sha256_free(ncl_sha256 *ctx);
+
 /* ====================================================== file utilities ==== */
 
 /** True when the extension of @p file_name is compressed on transfer. */
@@ -156,6 +168,27 @@ ncl_server_file_tool *ncl_server_file_tool_create(const char *ip, unsigned port,
                                                   const char *password,
                                                   const char *sn);
 void ncl_server_file_tool_free(ncl_server_file_tool *tool);
+
+/**
+ * Use passive mode (PASV) instead of the default active mode (PORT) for the FTP
+ * transfers of this tool. Peers behind NAT, a container or a firewall cannot be
+ * dialled back by the file server, so passive is what a cross-network channel
+ * needs; on a LAN the default is fine. Takes effect on the next transfer.
+ */
+void ncl_server_file_tool_set_passive(ncl_server_file_tool *tool,
+                                      bool passive);
+
+/** True when the tool transfers in passive mode. */
+bool ncl_server_file_tool_is_passive(const ncl_server_file_tool *tool);
+
+/**
+ * Bytes this tool has put on / taken off the wire so far (data connections
+ * only). A resumed transfer sends only the remainder, so these counters are
+ * what tells a resumed transfer from a full one - and what a throughput report
+ * quotes.
+ */
+long long ncl_server_file_tool_bytes_sent(const ncl_server_file_tool *tool);
+long long ncl_server_file_tool_bytes_received(const ncl_server_file_tool *tool);
 
 /** Validate the link with NOOP first, reconnecting when it is gone. */
 bool ncl_server_file_tool_detect(ncl_server_file_tool *tool);
@@ -273,6 +306,13 @@ ncl_err ncl_client_holder_start_ftp(void);
 void ncl_client_holder_stop_ftp(void);
 
 /**
+ * The process wide FTP endpoint (borrowed, NULL when it is not running). Handy
+ * for monitoring: ncl_ftp_server_bytes_sent/received() then report what the
+ * file channel of this process has moved.
+ */
+ncl_ftp_server *ncl_client_holder_ftp_endpoint(void);
+
+/**
  * Rebuild the process wide client from conf/mqtt.cfg: the running connection is
  * dropped and a new one is established with the values now on disk. Use this
  * after changing the broker at runtime. Returns NCL_OK when a connection is
@@ -304,6 +344,7 @@ const char *ncl_client_holder_server_uri(void);
  *   "userName": "nclink",    // endpoint account, also handed to the device;
  *   "password": "secret",    //   absent = the library mints a per-channel account
  *   "path": "V200583BC87",   // remote prefix the device works under; absent = its own SN
+ *   "passive": true,         // device transfers in PASV mode (peer behind NAT)
  *   "force": true }          // replace a channel that another peer holds
  * ```
  *
@@ -319,6 +360,7 @@ typedef struct {
     char    *host;           /**< address the device dials; NULL = derive it      */
     char    *path;           /**< remote prefix; NULL = the device's own SN       */
     bool     force;          /**< replace a channel that is already open          */
+    bool     passive;        /**< ask the device for passive-mode transfers       */
 } ncl_file_channel_config;
 
 /**
@@ -378,6 +420,13 @@ typedef struct {
      * transferring right now.
      */
     bool        force;
+    /**
+     * Ask the device to transfer in passive mode (PASV). A controller behind
+     * NAT, in a container or behind a firewall cannot be dialled back by the
+     * device's file server, so its channels need this; on a LAN the active
+     * default is fine.
+     */
+    bool        passive;
     /** Method call timeout; 0 = NCL_CLIENT_OPERATION_TIMEOUT. */
     unsigned    timeout_ms;
 } ncl_file_channel_options;

@@ -84,7 +84,7 @@ for ex in examples/*.c; do
     name=$(basename "$ex" .c)
     # 设备端示例要把模型一起编进去（模型是它的一部分）
     extra=""
-    if [ "$name" = "ncl_device_demo" ]; then
+    if [ "$name" = "ncl_device_demo" ] || [ "$name" = "ncl_file_bench" ]; then
         extra="examples/device_model.c"
     fi
     $CC $CFLAGS "$ex" $extra -o "$OUT/bin/$name" "$OUT/libnclink_core.a" $LDLIBS

@@ -317,10 +317,34 @@ bool ncl_file_client_tool_write(ncl_file_client_tool *tool,
             return false;
         }
         status = set_status_of(response);
-        ncl_message_free(response);
         if (status == 0) {
+            /*
+             * code=OK is not enough: the device's file tool answers OK with
+             * value=false when it could not fetch the file (no peer, FTP down),
+             * and reporting that as a successful upload hides a lost transfer.
+             */
+            const ncl_set_response_item *item =
+                response != NULL && response->as.set_response.items.len > 0
+                    ? (const ncl_set_response_item *)
+                          response->as.set_response.items.items[0]
+                    : NULL;
+            bool transferred = true;
+
+            if (item != NULL && item->result != NULL &&
+                ncl_json_type_of(item->result) == NCL_JSON_BOOL) {
+                bool value = true;
+
+                (void)ncl_json_as_bool(item->result, &value);
+                transferred = value;
+            }
+            ncl_message_free(response);
+            if (!transferred) {
+                ncl_log_error("设备没有取到文件: %s", remote_file_path);
+                return false;
+            }
             return true;
         }
+        ncl_message_free(response);
         if (status != 2) {
             return false;
         }

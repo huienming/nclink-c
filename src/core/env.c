@@ -16,6 +16,8 @@
 #  include <sys/stat.h>
 #  include <sys/types.h>
 #  include <unistd.h>
+#else
+#  include <io.h> /* _chsize_s / _fileno */
 #endif
 
 #include "nclink/ncl_logger.h"
@@ -402,10 +404,155 @@ ncl_err ncl_file_append(const char *path, const void *data, size_t len)
     return written == len ? NCL_OK : NCL_ERR_IO;
 }
 
+/* ------------------------------------------------------ streamed files --- */
+
+struct ncl_file_stream {
+    FILE      *handle;
+    long long  written; /**< writer: bytes written through this stream */
+};
+
+/* Offsets beyond 2 GB need the 64-bit seek of each platform. */
+#if defined(NCL_OS_WINDOWS)
+#  define stream_seek(fp, off) _fseeki64((fp), (off), SEEK_SET)
+#else
+#  define stream_seek(fp, off) fseeko((fp), (off), SEEK_SET)
+#endif
+
+/** Cut @p path down to @p size bytes (a short resume must not keep a tail). */
+static int stream_truncate(FILE *fp, long long size)
+{
+#if defined(NCL_OS_WINDOWS)
+    return _chsize_s(_fileno(fp), size) == 0 ? 0 : -1;
+#else
+    fflush(fp);
+    return ftruncate(fileno(fp), (off_t)size);
+#endif
+}
+
+ncl_err ncl_file_open_read(const char *path, long long offset,
+                           ncl_file_stream **out)
+{
+    ncl_file_stream *stream;
+
+    if (path == NULL || out == NULL || offset < 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *out = NULL;
+    stream = (ncl_file_stream *)ncl_mem_calloc(1, sizeof(*stream));
+    if (stream == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    stream->handle = fopen(path, "rb");
+    if (stream->handle == NULL ||
+        (offset > 0 && stream_seek(stream->handle, offset) != 0)) {
+        if (stream->handle != NULL) {
+            fclose(stream->handle);
+        }
+        ncl_mem_free(stream);
+        return NCL_ERR_IO;
+    }
+    *out = stream;
+    return NCL_OK;
+}
+
+size_t ncl_file_read_chunk(ncl_file_stream *stream, void *buf, size_t len)
+{
+    if (stream == NULL || stream->handle == NULL || buf == NULL || len == 0) {
+        return 0;
+    }
+    return fread(buf, 1, len, stream->handle);
+}
+
+void ncl_file_close_read(ncl_file_stream *stream)
+{
+    if (stream == NULL) {
+        return;
+    }
+    if (stream->handle != NULL) {
+        fclose(stream->handle);
+    }
+    ncl_mem_free(stream);
+}
+
+ncl_err ncl_file_open_write(const char *path, long long offset, bool append,
+                            ncl_file_stream **out)
+{
+    ncl_file_stream *stream;
+
+    if (path == NULL || out == NULL || offset < 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *out = NULL;
+    stream = (ncl_file_stream *)ncl_mem_calloc(1, sizeof(*stream));
+    if (stream == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    if (append) {
+        long long existing = ncl_file_size(path);
+
+        stream->handle = fopen(path, "ab");
+        /* The close-time truncate must not cut back what was already there. */
+        stream->written = existing > 0 ? existing : 0;
+    } else if (offset > 0) {
+        /* Resume: keep the first @p offset bytes and overwrite from there. */
+        stream->handle = fopen(path, "r+b");
+        if (stream->handle == NULL) {
+            stream->handle = fopen(path, "w+b");
+        }
+        if (stream->handle != NULL && stream_seek(stream->handle, offset) != 0) {
+            fclose(stream->handle);
+            stream->handle = NULL;
+        }
+    } else {
+        stream->handle = fopen(path, "wb");
+    }
+    if (stream->handle == NULL) {
+        ncl_mem_free(stream);
+        return NCL_ERR_IO;
+    }
+    if (!append && offset > 0) {
+        stream->written = offset;
+    }
+    *out = stream;
+    return NCL_OK;
+}
+
+ncl_err ncl_file_write_chunk(ncl_file_stream *stream, const void *buf,
+                             size_t len)
+{
+    if (stream == NULL || stream->handle == NULL || (buf == NULL && len > 0)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (len > 0 && fwrite(buf, 1, len, stream->handle) != len) {
+        return NCL_ERR_IO;
+    }
+    stream->written += (long long)len;
+    return NCL_OK;
+}
+
+ncl_err ncl_file_close_write(ncl_file_stream *stream)
+{
+    ncl_err rc = NCL_OK;
+
+    if (stream == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (stream->handle != NULL) {
+        if (fflush(stream->handle) != 0 ||
+            stream_truncate(stream->handle, stream->written) != 0 ||
+            fclose(stream->handle) != 0) {
+            rc = NCL_ERR_IO;
+        }
+    }
+    ncl_mem_free(stream);
+    return rc;
+}
+
 ncl_err ncl_file_copy(const char *src, const char *dst)
 {
-    char *data = NULL;
-    size_t len = 0;
+    char chunk[64 * 1024];
+    ncl_file_stream *reader = NULL;
+    ncl_file_stream *writer = NULL;
     char parent[NCL_PATH_MAX_BUF];
     char *slash;
     ncl_err rc;
@@ -413,9 +560,10 @@ ncl_err ncl_file_copy(const char *src, const char *dst)
     if (src == NULL || dst == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    rc = ncl_file_read_all(src, &data, &len);
-    if (rc != NCL_OK) {
-        return rc;
+    /* Copying a file onto itself is a no-op: the streamed version below would
+     * truncate the destination before the reader ever saw a byte. */
+    if (ncl_path_same_file(src, dst)) {
+        return ncl_path_exists(dst) ? NCL_OK : NCL_ERR_NOT_FOUND;
     }
     snprintf(parent, sizeof(parent), "%s", dst);
     slash = strrchr(parent, NCL_PATH_SEP);
@@ -428,8 +576,28 @@ ncl_err ncl_file_copy(const char *src, const char *dst)
             ncl_mkdir_p(parent);
         }
     }
-    rc = ncl_file_write_all(dst, data, len);
-    ncl_mem_free(data);
+    /* Streamed in 64 KiB pieces: copying a big file costs a fixed buffer. */
+    rc = ncl_file_open_read(src, 0, &reader);
+    if (rc == NCL_OK) {
+        rc = ncl_file_open_write(dst, 0, false, &writer);
+    }
+    while (rc == NCL_OK) {
+        size_t got = ncl_file_read_chunk(reader, chunk, sizeof(chunk));
+
+        if (got == 0) {
+            break;
+        }
+        rc = ncl_file_write_chunk(writer, chunk, got);
+    }
+    if (reader != NULL) {
+        ncl_file_close_read(reader);
+    }
+    if (writer != NULL) {
+        ncl_err close_rc = ncl_file_close_write(writer);
+        if (rc == NCL_OK) {
+            rc = close_rc;
+        }
+    }
     return rc;
 }
 
@@ -448,6 +616,58 @@ bool ncl_path_is_dir(const char *path)
     {
         struct stat st;
         return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+    }
+#endif
+}
+
+bool ncl_path_same_file(const char *a, const char *b)
+{
+    if (a == NULL || b == NULL) {
+        return false;
+    }
+    /* Identity, not path text: the same file reached through a different
+     * spelling ("./x" vs "x", "a/../x", a symlink) still counts. */
+#if defined(NCL_OS_WINDOWS)
+    {
+        DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+        HANDLE handle_a = CreateFileA(a, 0, share, NULL, OPEN_EXISTING,
+                                      FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        HANDLE handle_b = CreateFileA(b, 0, share, NULL, OPEN_EXISTING,
+                                      FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        BY_HANDLE_FILE_INFORMATION info_a;
+        BY_HANDLE_FILE_INFORMATION info_b;
+        bool same;
+
+        if (handle_a != INVALID_HANDLE_VALUE &&
+            handle_b != INVALID_HANDLE_VALUE &&
+            GetFileInformationByHandle(handle_a, &info_a) &&
+            GetFileInformationByHandle(handle_b, &info_b)) {
+            same = info_a.dwVolumeSerialNumber == info_b.dwVolumeSerialNumber &&
+                   info_a.nFileIndexHigh == info_b.nFileIndexHigh &&
+                   info_a.nFileIndexLow == info_b.nFileIndexLow;
+        } else {
+            /* Not on disk: the text is all we have. */
+            same = _stricmp(a, b) == 0;
+        }
+        if (handle_a != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_a);
+        }
+        if (handle_b != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_b);
+        }
+        return same;
+    }
+#else
+    {
+        struct stat info_a;
+        struct stat info_b;
+
+        if (stat(a, &info_a) == 0 && stat(b, &info_b) == 0) {
+            return info_a.st_dev == info_b.st_dev &&
+                   info_a.st_ino == info_b.st_ino;
+        }
+        /* Not on disk: the text is all we have. */
+        return strcmp(a, b) == 0;
     }
 #endif
 }

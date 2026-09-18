@@ -40,6 +40,7 @@ typedef struct {
     char                 *channel_id;
     int64_t               channel_opened_ms;
     int64_t               channel_used_ms;
+    bool                  passive; /**< 对端要求的传输模式（PASV） */
 } ncl_file_tool_state;
 
 /* Defined with the state wiring further down; the channel handshake (which
@@ -48,6 +49,7 @@ static void file_state_open_remote_prefix(ncl_file_tool_state *state,
                                           const char *host, unsigned port,
                                           const char *user, const char *password,
                                           const char *prefix);
+static void file_state_set_passive(ncl_file_tool_state *state, bool passive);
 static ncl_err file_state_require_peer(ncl_file_tool_state *state,
                                        char **reason);
 
@@ -225,6 +227,17 @@ static ncl_err file_tool_open_channel(void *instance, const ncl_json *params,
             *reason = ncl_strdup("文件通道建立失败");
         }
         return NCL_ERR_NOMEM;
+    }
+    {
+        /* The peer knows whether it can be dialled back (NAT, container,
+         * firewall): it asks for passive when it cannot. */
+        ncl_json *passive_json = ncl_params_get(params, "passive");
+        bool passive = false;
+
+        if (passive_json != NULL) {
+            (void)ncl_json_as_bool(passive_json, &passive);
+        }
+        file_state_set_passive(state, passive);
     }
     ncl_mem_free(state->channel_id);
     state->channel_id = ncl_strdup(channel_id);
@@ -601,6 +614,21 @@ static void file_state_open_remote_prefix(ncl_file_tool_state *state,
         user != NULL && user[0] != '\0' ? user : NCL_FTP_DEFAULT_USER,
         password != NULL && password[0] != '\0' ? password : NCL_FTP_DEFAULT_PASSWORD,
         prefix != NULL ? prefix : state->sn);
+    if (state->remote != NULL) {
+        ncl_server_file_tool_set_passive(state->remote, state->passive);
+    }
+}
+
+/** Remember the transfer mode the peer asked for and apply it right away. */
+static void file_state_set_passive(ncl_file_tool_state *state, bool passive)
+{
+    if (state == NULL) {
+        return;
+    }
+    state->passive = passive;
+    if (state->remote != NULL) {
+        ncl_server_file_tool_set_passive(state->remote, passive);
+    }
 }
 
 /** ncl_server_file_tool_create() with the device's own SN as the prefix. */
