@@ -296,6 +296,15 @@ namespace Nclink
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_method_call")]
         internal static extern int ClientMethodCall(IntPtr client, byte[] method, byte[] paramsJson, int check, uint timeoutMs, out IntPtr responseJson);
 
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_method_call_async")]
+        internal static extern int ClientMethodCallAsync(IntPtr client, byte[] method, byte[] paramsJson, uint timeoutMs, out IntPtr responseJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_method_status")]
+        internal static extern int ClientMethodStatus(IntPtr client, byte[] objectId, byte[] handler, uint timeoutMs, out IntPtr responseJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_method_result")]
+        internal static extern int ClientMethodResult(IntPtr client, byte[] objectId, byte[] handler, uint timeoutMs, out IntPtr responseJson);
+
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_ping")]
         internal static extern int ClientPing(IntPtr client, uint timeoutMs);
 
@@ -390,6 +399,18 @@ namespace Nclink
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_check_method_call")]
         internal static extern int ServerCheckMethodCall(IntPtr handle, byte[] method, byte[] paramsJson, out IntPtr responseJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_invoke_method_call_async")]
+        internal static extern int ServerInvokeMethodCallAsync(IntPtr handle, byte[] method, byte[] paramsJson, out IntPtr responseJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_invoke_method_status")]
+        internal static extern int ServerInvokeMethodStatus(IntPtr handle, byte[] objectId, byte[] handler, out IntPtr responseJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_invoke_method_result")]
+        internal static extern int ServerInvokeMethodResult(IntPtr handle, byte[] objectId, byte[] handler, out IntPtr responseJson);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_report_method_progress")]
+        internal static extern int ServerReportMethodProgress(IntPtr handle, byte[] handler, long process, byte[] status);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_init_samples")]
         internal static extern int ServerInitSamples(IntPtr handle);

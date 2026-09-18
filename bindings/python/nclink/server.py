@@ -363,6 +363,46 @@ class Server:
         """只按 schema 校验参数、不执行工具，返回应答报文。"""
         return self._call(method, params, True)
 
+    def invoke_method_call_async(self, method, params=None):
+        """离线发起一次异步方法调用：应答 code=OK + handler（方法在池里跑），
+        随后用 method_status()/method_result() 按句柄查。"""
+        text = None if params is None else _json_stdlib.dumps(params, ensure_ascii=False)
+        out = ctypes.c_void_p()
+        rc = lib.nclshim_server_invoke_method_call_async(
+            self._require_open(), encode(method), encode(text), ctypes.byref(out))
+        if rc != 0:
+            raise NclinkError(rc, "invoke_method_call_async")
+        return _parse_response("Method/Call/Response/%s" % self._sn, take_text(out))
+
+    def invoke_method_status(self, object_id, handler):
+        """按句柄查状态（离线；真机上由 Method/Status/Request 触发）。"""
+        out = ctypes.c_void_p()
+        rc = lib.nclshim_server_invoke_method_status(
+            self._require_open(), encode(object_id), encode(handler),
+            ctypes.byref(out))
+        if rc != 0:
+            raise NclinkError(rc, "invoke_method_status")
+        return _parse_response("Method/Status/Response/%s" % self._sn,
+                               take_text(out))
+
+    def invoke_method_result(self, object_id, handler):
+        """按句柄查结果（离线；真机上由 Method/Result/Request 触发）。"""
+        out = ctypes.c_void_p()
+        rc = lib.nclshim_server_invoke_method_result(
+            self._require_open(), encode(object_id), encode(handler),
+            ctypes.byref(out))
+        if rc != 0:
+            raise NclinkError(rc, "invoke_method_result")
+        return _parse_response("Method/Result/Response/%s" % self._sn,
+                               take_text(out))
+
+    def report_method_progress(self, handler, process, status=None):
+        """给正在跑的异步调用上报进度（可选）。"""
+        rc = lib.nclshim_server_report_method_progress(
+            self._require_open(), encode(handler), int(process), encode(status))
+        if rc != 0:
+            raise NclinkError(rc, "report_method_progress")
+
     def _call(self, method, params, check):
         text = None if params is None else _json_stdlib.dumps(params, ensure_ascii=False)
         out = ctypes.c_void_p()

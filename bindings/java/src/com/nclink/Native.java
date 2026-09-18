@@ -287,6 +287,27 @@ final class Native {
 
     static native int clientPing(long client, int timeoutMs);
 
+    static native int clientMethodCallAsync(long client, String method, String paramsJson,
+                                            int timeoutMs, String[] out);
+
+    static native int clientMethodStatus(long client, String objectId, String handler,
+                                         int timeoutMs, String[] out);
+
+    static native int clientMethodResult(long client, String objectId, String handler,
+                                         int timeoutMs, String[] out);
+
+    static native int serverInvokeMethodCallAsync(long server, String method,
+                                                  String paramsJson, String[] out);
+
+    static native int serverInvokeMethodStatus(long server, String objectId,
+                                               String handler, String[] out);
+
+    static native int serverInvokeMethodResult(long server, String objectId,
+                                               String handler, String[] out);
+
+    static native int serverReportMethodProgress(long server, String handler, long process,
+                                                 String status);
+
     static native String clientGetId(long client, String path);
 
     static native String clientGetPath(long client, String id);

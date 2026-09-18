@@ -901,6 +901,133 @@ JNIEXPORT jint JNICALL Java_com_nclink_Native_clientPing(JNIEnv *env, jclass cls
     return (jint)nclshim_client_ping(HANDLE(client), (unsigned)timeout_ms);
 }
 
+/* ---- 异步方法调用（Method/Status、Method/Result 两对） ---- */
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientMethodCallAsync(
+    JNIEnv *env, jclass cls, jlong client, jstring method, jstring params,
+    jint timeout_ms, jobjectArray out)
+{
+    char *raw_method = from_jstring(env, method);
+    char *raw_params = from_jstring(env, params);
+    char *reply = NULL;
+    int rc;
+
+    (void)cls;
+    rc = nclshim_client_method_call_async(HANDLE(client), raw_method, raw_params,
+                                         (unsigned)timeout_ms, &reply);
+    set_string(env, out, 0, reply);
+    free(raw_method);
+    free(raw_params);
+    return (jint)rc;
+}
+
+static jint jni_method_query(JNIEnv *env, jlong client, jstring object_id,
+                             jstring handler, jint timeout_ms, jobjectArray out,
+                             int want_result)
+{
+    char *raw_id = from_jstring(env, object_id);
+    char *raw_handler = from_jstring(env, handler);
+    char *reply = NULL;
+    int rc;
+
+    rc = want_result ? nclshim_client_method_result(HANDLE(client), raw_id,
+                                                    raw_handler,
+                                                    (unsigned)timeout_ms, &reply)
+                     : nclshim_client_method_status(HANDLE(client), raw_id,
+                                                    raw_handler,
+                                                    (unsigned)timeout_ms, &reply);
+    set_string(env, out, 0, reply);
+    free(raw_id);
+    free(raw_handler);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientMethodStatus(
+    JNIEnv *env, jclass cls, jlong client, jstring object_id, jstring handler,
+    jint timeout_ms, jobjectArray out)
+{
+    (void)cls;
+    return jni_method_query(env, client, object_id, handler, timeout_ms, out, 0);
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientMethodResult(
+    JNIEnv *env, jclass cls, jlong client, jstring object_id, jstring handler,
+    jint timeout_ms, jobjectArray out)
+{
+    (void)cls;
+    return jni_method_query(env, client, object_id, handler, timeout_ms, out, 1);
+}
+
+static jint jni_server_method_query(JNIEnv *env, jlong server, jstring object_id,
+                                    jstring handler, jobjectArray out,
+                                    int want_result)
+{
+    char *raw_id = from_jstring(env, object_id);
+    char *raw_handler = from_jstring(env, handler);
+    char *reply = NULL;
+    int rc;
+
+    rc = want_result
+             ? nclshim_server_invoke_method_result(HANDLE(server), raw_id,
+                                                   raw_handler, &reply)
+             : nclshim_server_invoke_method_status(HANDLE(server), raw_id,
+                                                   raw_handler, &reply);
+    set_string(env, out, 0, reply);
+    free(raw_id);
+    free(raw_handler);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverInvokeMethodCallAsync(
+    JNIEnv *env, jclass cls, jlong server, jstring method, jstring params,
+    jobjectArray out)
+{
+    char *raw_method = from_jstring(env, method);
+    char *raw_params = from_jstring(env, params);
+    char *reply = NULL;
+    int rc;
+
+    (void)cls;
+    rc = nclshim_server_invoke_method_call_async(HANDLE(server), raw_method,
+                                                 raw_params, &reply);
+    set_string(env, out, 0, reply);
+    free(raw_method);
+    free(raw_params);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverInvokeMethodStatus(
+    JNIEnv *env, jclass cls, jlong server, jstring object_id, jstring handler,
+    jobjectArray out)
+{
+    (void)cls;
+    return jni_server_method_query(env, server, object_id, handler, out, 0);
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverInvokeMethodResult(
+    JNIEnv *env, jclass cls, jlong server, jstring object_id, jstring handler,
+    jobjectArray out)
+{
+    (void)cls;
+    return jni_server_method_query(env, server, object_id, handler, out, 1);
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverReportMethodProgress(
+    JNIEnv *env, jclass cls, jlong server, jstring handler, jlong process,
+    jstring status)
+{
+    char *raw_handler = from_jstring(env, handler);
+    char *raw_status = from_jstring(env, status);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_server_report_method_progress(HANDLE(server), raw_handler,
+                                               (long long)process, raw_status);
+    free(raw_handler);
+    free(raw_status);
+    return (jint)rc;
+}
+
 JNIEXPORT jstring JNICALL Java_com_nclink_Native_clientGetId(JNIEnv *env, jclass cls,
                                                              jlong client,
                                                              jstring path)

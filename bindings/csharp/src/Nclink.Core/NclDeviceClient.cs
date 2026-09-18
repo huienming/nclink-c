@@ -193,6 +193,56 @@ namespace Nclink
             return NclJson.TakeText(response);
         }
 
+        /// <summary>
+        /// 异步方法调用：立刻回一个应答（code=OK + handler），方法在设备端线程池里跑。
+        /// 用 <see cref="MethodStatus"/> / <see cref="MethodResult"/> 拿那个 handler 查。
+        /// </summary>
+        public NclJson MethodCallAsync(string method, string paramsJson = null,
+                                       uint timeoutMs = 5000)
+        {
+            ThrowIfDisposed();
+            IntPtr response;
+            NclinkException.Check(
+                Native.ClientMethodCallAsync(_client, Native.Utf8Z(method),
+                                             paramsJson != null
+                                                 ? Native.Utf8Z(paramsJson)
+                                                 : null,
+                                             timeoutMs, out response),
+                "MethodCallAsync");
+            return NclJson.TakeText(response);
+        }
+
+        /// <summary>按句柄查异步调用的状态（process / status / code）。</summary>
+        public NclJson MethodStatus(string objectId, string handler,
+                                    uint timeoutMs = 5000)
+        {
+            ThrowIfDisposed();
+            IntPtr response;
+            NclinkException.Check(
+                Native.ClientMethodStatus(_client, Native.Utf8Z(objectId),
+                                          Native.Utf8Z(handler), timeoutMs,
+                                          out response),
+                "MethodStatus");
+            return NclJson.TakeText(response);
+        }
+
+        /// <summary>
+        /// 按句柄查异步调用的结果：未完成 code=PENDING（无 result），完成后
+        /// code + return + result（finished / error），并释放该句柄。
+        /// </summary>
+        public NclJson MethodResult(string objectId, string handler,
+                                    uint timeoutMs = 5000)
+        {
+            ThrowIfDisposed();
+            IntPtr response;
+            NclinkException.Check(
+                Native.ClientMethodResult(_client, Native.Utf8Z(objectId),
+                                          Native.Utf8Z(handler), timeoutMs,
+                                          out response),
+                "MethodResult");
+            return NclJson.TakeText(response);
+        }
+
         /// <summary>ping。</summary>
         public void Ping(uint timeoutMs = 5000)
         {

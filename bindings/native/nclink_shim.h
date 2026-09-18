@@ -287,6 +287,26 @@ NCLSHIM_API int nclshim_client_method_call(const void *client, const char *metho
 /** ping。 */
 NCLSHIM_API int nclshim_client_ping(const void *client, unsigned timeout_ms);
 
+NCLSHIM_API int nclshim_client_method_call_async(const void *client,
+                                                 const char *method,
+                                                 const char *params_json,
+                                                 unsigned timeout_ms,
+                                                 char **out_json);
+
+/** 异步调用进度（process 0..100，status 取 executing/waiting/stopped/sleep）。 */
+NCLSHIM_API int nclshim_client_method_status(const void *client,
+                                             const char *object_id,
+                                             const char *handler,
+                                             unsigned timeout_ms,
+                                             char **out_json);
+
+/** 异步调用结果：未完成 code=PENDING，完成后带 return/result 并释放句柄。 */
+NCLSHIM_API int nclshim_client_method_result(const void *client,
+                                             const char *object_id,
+                                             const char *handler,
+                                             unsigned timeout_ms,
+                                             char **out_json);
+
 /** 路径 ↔ 节点 id 互查（都是 malloc，调用方释放）。 */
 NCLSHIM_API char *nclshim_client_get_id(const void *client, const char *path);
 
@@ -397,6 +417,28 @@ NCLSHIM_API int nclshim_server_check_method_call(const void *handle,
                                                  const char *method,
                                                  const char *params_json,
                                                  char **out_json);
+
+/** 发起一次异步调用；应答里 code=OK + handler（方法在池里跑）。 */
+NCLSHIM_API int nclshim_server_invoke_method_call_async(const void *handle,
+                                                        const char *method,
+                                                        const char *params_json,
+                                                        char **out_json);
+
+NCLSHIM_API int nclshim_server_invoke_method_status(const void *handle,
+                                                    const char *object_id,
+                                                    const char *handler,
+                                                    char **out_json);
+
+NCLSHIM_API int nclshim_server_invoke_method_result(const void *handle,
+                                                    const char *object_id,
+                                                    const char *handler,
+                                                    char **out_json);
+
+/** 异步方法调用上报进度（可选；不报就是 executing/stopped + process=0）。 */
+NCLSHIM_API int nclshim_server_report_method_progress(const void *handle,
+                                                      const char *handler,
+                                                      long long process,
+                                                      const char *status);
 
 NCLSHIM_API int nclshim_server_init_samples(const void *handle);
 

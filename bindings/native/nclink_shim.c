@@ -35,6 +35,7 @@
 #include "nclink/ncl_mqtt.h"
 #include "nclink/ncl_rest.h"
 #include "nclink/ncl_server.h"
+#include "nclink/ncl_topic.h"
 
 #include "nclink_shim.h"
 
@@ -820,6 +821,104 @@ NCLSHIM_API int nclshim_client_ping(const void *client, unsigned timeout_ms)
     rc = ncl_client_ping((ncl_client *)client, timeout_ms, &response);
     ncl_message_free(response);
     return (int)rc;
+}
+
+/*
+ * 异步方法调用（Method/Status、Method/Result 两对）：
+ *   async 调用立刻拿应答（code=OK + handler），方法在设备端线程池里跑；
+ *   拿 handler 去问 method_status / method_result。
+ */
+
+NCLSHIM_API int nclshim_client_method_call_async(const void *client,
+                                                 const char *method,
+                                                 const char *params_json,
+                                                 unsigned timeout_ms,
+                                                 char **out_json)
+{
+    ncl_message *request;
+    ncl_message *response = NULL;
+    ncl_err rc;
+
+    if (out_json != NULL) {
+        *out_json = NULL;
+    }
+    if (client == NULL || method == NULL || out_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+    if (request == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    ncl_message_set_method(request, method);
+    if (params_json != NULL && params_json[0] != '\0') {
+        ncl_json *params = ncl_json_parse_cstr(params_json, NULL);
+
+        if (params == NULL) {
+            ncl_message_free(request);
+            return NCL_ERR_PARSE;
+        }
+        ncl_message_set_params(request, params); /* 转移所有权 */
+    }
+    rc = ncl_client_method_call_async((ncl_client *)client, request, timeout_ms,
+                                      &response);
+    if (rc != NCL_OK || response == NULL) {
+        ncl_message_free(response);
+        return rc != NCL_OK ? (int)rc : NCL_ERR;
+    }
+    *out_json = ncl_message_write_string(response);
+    ncl_message_free(response);
+    return *out_json != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
+/** object_id 是报文里的 "id"（设备 id），handler 是异步调用拿到的句柄。 */
+static int nclshim_client_method_query(const void *client, int want_result,
+                                       const char *object_id,
+                                       const char *handler, unsigned timeout_ms,
+                                       char **out_json)
+{
+    ncl_message *response = NULL;
+    ncl_err rc;
+
+    if (out_json != NULL) {
+        *out_json = NULL;
+    }
+    if (client == NULL || handler == NULL || out_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    rc = want_result
+             ? ncl_client_method_result((ncl_client *)client, object_id, handler,
+                                        timeout_ms, &response)
+             : ncl_client_method_status((ncl_client *)client, object_id, handler,
+                                        timeout_ms, &response);
+    if (rc != NCL_OK || response == NULL) {
+        ncl_message_free(response);
+        return rc != NCL_OK ? (int)rc : NCL_ERR;
+    }
+    *out_json = ncl_message_write_string(response);
+    ncl_message_free(response);
+    return *out_json != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
+/** 异步调用进度（process 0..100，status 取 executing/waiting/stopped/sleep）。 */
+NCLSHIM_API int nclshim_client_method_status(const void *client,
+                                             const char *object_id,
+                                             const char *handler,
+                                             unsigned timeout_ms,
+                                             char **out_json)
+{
+    return nclshim_client_method_query(client, 0, object_id, handler, timeout_ms,
+                                       out_json);
+}
+
+/** 异步调用结果：未完成 code=PENDING，完成后带 return/result 并释放句柄。 */
+NCLSHIM_API int nclshim_client_method_result(const void *client,
+                                             const char *object_id,
+                                             const char *handler,
+                                             unsigned timeout_ms,
+                                             char **out_json)
+{
+    return nclshim_client_method_query(client, 1, object_id, handler, timeout_ms,
+                                       out_json);
 }
 
 /** 路径 ↔ 节点 id 互查（都是 malloc，调用方释放）。 */
@@ -1628,6 +1727,127 @@ NCLSHIM_API int nclshim_server_check_method_call(const void *handle,
                                                  char **out_json)
 {
     return nclshim_server_call_method(handle, method, params_json, 1, out_json);
+}
+
+/*
+ * 离线驱动异步方法调用：设备端自己走一遍 async 调用与两条查询（不需要 broker），
+ * 便于托管侧自检。真机上这三步分别由 Method/Call|Status|Result 请求触发。
+ */
+
+/** 发起一次异步调用；应答里 code=OK + handler（方法在池里跑）。 */
+NCLSHIM_API int nclshim_server_invoke_method_call_async(const void *handle,
+                                                        const char *method,
+                                                        const char *params_json,
+                                                        char **out_json)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+    ncl_message *request;
+    ncl_message *response;
+
+    if (out_json != NULL) {
+        *out_json = NULL;
+    }
+    if (ctx == NULL || method == NULL || out_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+    if (request == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    ncl_message_set_method(request, method);
+    ncl_message_set_async(request, true);
+    if (params_json != NULL && params_json[0] != '\0') {
+        ncl_json *params = ncl_json_parse_cstr(params_json, NULL);
+
+        if (params == NULL) {
+            ncl_message_free(request);
+            return NCL_ERR_PARSE;
+        }
+        ncl_message_set_params(request, params); /* 转移所有权 */
+    }
+    response = ncl_server_invoke_method_call(ctx->server, request);
+    ncl_message_free(request);
+    if (response == NULL) {
+        return NCL_ERR;
+    }
+    *out_json = ncl_message_write_string(response);
+    ncl_message_free(response);
+    return *out_json != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
+/** 按句柄查状态/结果：内部就是设备端对那两条请求的应答。 */
+static int nclshim_server_method_query(const void *handle, int want_result,
+                                       const char *object_id,
+                                       const char *handler, char **out_json)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+    ncl_message *request;
+    ncl_message *response;
+    char *topic;
+    int rc = NCL_OK;
+
+    if (out_json != NULL) {
+        *out_json = NULL;
+    }
+    if (ctx == NULL || handler == NULL || out_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    request = ncl_message_new(want_result ? NCL_MSG_METHOD_RESULT_REQUEST
+                                          : NCL_MSG_METHOD_STATUS_REQUEST);
+    if (request == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    ncl_message_set_request_id(request, object_id);
+    ncl_message_set_handler(request, handler);
+    topic = want_result
+                ? ncl_topic_method_result_request(ncl_server_sn(ctx->server), NULL)
+                : ncl_topic_method_status_request(ncl_server_sn(ctx->server), NULL);
+    if (topic == NULL) {
+        ncl_message_free(request);
+        return NCL_ERR_NOMEM;
+    }
+    response = ncl_server_dispatch(ctx->server, topic, request);
+    ncl_mem_free(topic);
+    ncl_message_free(request);
+    if (response == NULL) {
+        return NCL_ERR;
+    }
+    *out_json = ncl_message_write_string(response);
+    ncl_message_free(response);
+    if (*out_json == NULL) {
+        rc = NCL_ERR_NOMEM;
+    }
+    return rc;
+}
+
+NCLSHIM_API int nclshim_server_invoke_method_status(const void *handle,
+                                                    const char *object_id,
+                                                    const char *handler,
+                                                    char **out_json)
+{
+    return nclshim_server_method_query(handle, 0, object_id, handler, out_json);
+}
+
+NCLSHIM_API int nclshim_server_invoke_method_result(const void *handle,
+                                                    const char *object_id,
+                                                    const char *handler,
+                                                    char **out_json)
+{
+    return nclshim_server_method_query(handle, 1, object_id, handler, out_json);
+}
+
+/** 异步方法调用上报进度（可选；不报就是 executing/stopped + process=0）。 */
+NCLSHIM_API int nclshim_server_report_method_progress(const void *handle,
+                                                      const char *handler,
+                                                      long long process,
+                                                      const char *status)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+
+    return ctx != NULL
+               ? (int)ncl_server_report_method_progress(ctx->server, handler,
+                                                        process, status)
+               : NCL_ERR_INVALID_ARG;
 }
 
 NCLSHIM_API int nclshim_server_init_samples(const void *handle)

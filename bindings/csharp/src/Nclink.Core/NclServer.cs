@@ -492,6 +492,61 @@ namespace Nclink
             return CallMethod(method, paramsJson, true);
         }
 
+        /// <summary>
+        /// 离线发起异步方法调用：应答 code=OK + handler，方法在库的线程池里跑；
+        /// 随后用 <see cref="InvokeMethodStatus"/> / <see cref="InvokeMethodResult"/> 按句柄查。
+        /// </summary>
+        public NclJson InvokeMethodCallAsync(string method, string paramsJson = null)
+        {
+            IntPtr response;
+            NclinkException.Check(
+                Native.ServerInvokeMethodCallAsync(RequireOpen(),
+                                                   Native.Utf8Z(method),
+                                                   paramsJson != null
+                                                       ? Native.Utf8Z(paramsJson)
+                                                       : null,
+                                                   out response),
+                "InvokeMethodCallAsync");
+            return NclJson.TakeText(response);
+        }
+
+        /// <summary>按句柄查异步调用的状态（离线驱动；真机上由 Method/Status/Request 触发）。</summary>
+        public NclJson InvokeMethodStatus(string objectId, string handler)
+        {
+            IntPtr response;
+            NclinkException.Check(
+                Native.ServerInvokeMethodStatus(RequireOpen(),
+                                                Native.Utf8Z(objectId),
+                                                Native.Utf8Z(handler),
+                                                out response),
+                "InvokeMethodStatus");
+            return NclJson.TakeText(response);
+        }
+
+        /// <summary>按句柄查异步调用的结果（离线驱动；真机上由 Method/Result/Request 触发）。</summary>
+        public NclJson InvokeMethodResult(string objectId, string handler)
+        {
+            IntPtr response;
+            NclinkException.Check(
+                Native.ServerInvokeMethodResult(RequireOpen(),
+                                                Native.Utf8Z(objectId),
+                                                Native.Utf8Z(handler),
+                                                out response),
+                "InvokeMethodResult");
+            return NclJson.TakeText(response);
+        }
+
+        /// <summary>给正在跑的异步调用上报进度（可选）。</summary>
+        public void ReportMethodProgress(string handler, long process,
+                                         string status = null)
+        {
+            NclinkException.Check(
+                Native.ServerReportMethodProgress(RequireOpen(),
+                                                  Native.Utf8Z(handler), process,
+                                                  Native.Utf8Z(status)),
+                "ReportMethodProgress");
+        }
+
         /// <summary>只按 schema 校验参数、不执行工具（不经过 MQTT），返回应答报文。</summary>
         public NclJson CheckMethodCall(string method, NclJson parameters)
         {

@@ -172,6 +172,53 @@ class DeviceClient:
         if rc != 0:
             raise NclinkError(rc, "ping")
 
+    # -------------------------------------------------------- 异步方法调用 -- #
+
+    def method_call_async(self, method, params=None, timeout_ms=5000):
+        """异步方法调用：立刻回一个应答 `Json`（`code=OK` + `handler`），
+        方法在设备端线程池里跑。拿 `handler` 去 `method_status()` /
+        `method_result()` 查进度与结果。
+        """
+        out = ctypes.c_void_p()
+        rc = lib.nclshim_client_method_call_async(
+            self._check_open(), encode(method),
+            None if params is None else encode(_as_json_text(params)),
+            int(timeout_ms), ctypes.byref(out))
+        if rc != 0:
+            raise NclinkError(rc, "method_call_async")
+        text = take_text(out.value)
+        if text is None:
+            raise NclinkError(-1, "method_call_async", "没有应答")
+        return Json.parse(text)
+
+    def method_status(self, object_id, handler, timeout_ms=5000):
+        """按句柄查异步调用的状态：`process` / `status`(executing|waiting|
+        stopped|sleep) / `code`。"""
+        out = ctypes.c_void_p()
+        rc = lib.nclshim_client_method_status(self._check_open(),
+                                              encode(object_id), encode(handler),
+                                              int(timeout_ms), ctypes.byref(out))
+        if rc != 0:
+            raise NclinkError(rc, "method_status")
+        text = take_text(out.value)
+        if text is None:
+            raise NclinkError(-1, "method_status", "没有应答")
+        return Json.parse(text)
+
+    def method_result(self, object_id, handler, timeout_ms=5000):
+        """按句柄查异步调用的结果：没跑完是 `code=PENDING`（没有 `result`），
+        跑完是 `code` + `return` + `result`(finished|error)，同时句柄被释放。"""
+        out = ctypes.c_void_p()
+        rc = lib.nclshim_client_method_result(self._check_open(),
+                                              encode(object_id), encode(handler),
+                                              int(timeout_ms), ctypes.byref(out))
+        if rc != 0:
+            raise NclinkError(rc, "method_result")
+        text = take_text(out.value)
+        if text is None:
+            raise NclinkError(-1, "method_result", "没有应答")
+        return Json.parse(text)
+
     # ------------------------------------------------------ 文件通道 -- #
 
     def open_file_channel(self, host=None, port=0, username=None,

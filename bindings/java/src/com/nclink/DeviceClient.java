@@ -197,6 +197,48 @@ public final class DeviceClient implements AutoCloseable {
         ping(5000);
     }
 
+    // -------------------------------------------------- 异步方法调用 -- //
+
+    /**
+     * 异步方法调用：立刻回一个应答（{@code code=OK} + {@code handler}），方法在设备端
+     * 线程池里跑。用 {@link #methodStatus} / {@link #methodResult} 拿那个句柄查。
+     */
+    public Json methodCallAsync(String method, String paramsJson, int timeoutMs) {
+        String[] out = new String[1];
+        NclinkException.check(
+                Native.clientMethodCallAsync(requireOpen(), method, paramsJson,
+                                             timeoutMs, out),
+                "methodCallAsync");
+        return Json.parse(out[0]);
+    }
+
+    public Json methodCallAsync(String method) {
+        return methodCallAsync(method, null, 5000);
+    }
+
+    /** 按句柄查异步调用的状态（process / status / code）。 */
+    public Json methodStatus(String objectId, String handler, int timeoutMs) {
+        String[] out = new String[1];
+        NclinkException.check(
+                Native.clientMethodStatus(requireOpen(), objectId, handler,
+                                          timeoutMs, out),
+                "methodStatus");
+        return Json.parse(out[0]);
+    }
+
+    /**
+     * 按句柄查异步调用的结果：未完成 {@code code=PENDING}（没有 result），完成后
+     * {@code code} + {@code return} + {@code result}（finished / error）并释放句柄。
+     */
+    public Json methodResult(String objectId, String handler, int timeoutMs) {
+        String[] out = new String[1];
+        NclinkException.check(
+                Native.clientMethodResult(requireOpen(), objectId, handler,
+                                          timeoutMs, out),
+                "methodResult");
+        return Json.parse(out[0]);
+    }
+
     // ------------------------------------------------------ 文件通道 -- //
 
     /**

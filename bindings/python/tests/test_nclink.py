@@ -289,6 +289,65 @@ class ServerTest(unittest.TestCase):
         body = device.check_method_call("getValue", None).to_python()
         self.assertEqual(body["code"], "OK")
 
+    def test_async_method_call(self):
+        """异步方法调用：立刻拿句柄 → 查状态 → 查结果（轮询到完成）。"""
+        import time
+
+        device = nclink.Server(sn="V2TEST00001")
+        self.addCleanup(device.close)
+        device.register_tool(
+            "slow",
+            methods={"work": None, "boom": None},
+            handlers={"work": lambda params: (time.sleep(0.15), {"done": True})[1],
+                      "boom": self._boom})
+
+        ack = device.invoke_method_call_async("slow/work").to_python()
+        self.assertEqual(ack["code"], "OK")
+        handler = ack.get("handler")
+        self.assertTrue(handler, ack)
+
+        status = device.invoke_method_status("V2TEST00001", handler).to_python()
+        self.assertEqual(status["code"], "OK")
+        self.assertIn(status["status"], ("executing", "waiting", "stopped", "sleep"))
+        self.assertEqual(status["handler"], handler)
+
+        deadline = time.time() + 5
+        body = None
+        while time.time() < deadline:
+            body = device.invoke_method_result("V2TEST00001", handler).to_python()
+            if body["code"] != "PENDING":
+                break
+            time.sleep(0.02)
+        self.assertEqual(body["code"], "OK", body)
+        self.assertEqual(body["result"], "finished")
+        self.assertEqual(body["return"], {"done": True})
+
+        # 句柄取走后释放
+        body = device.invoke_method_result("V2TEST00001", handler).to_python()
+        self.assertEqual(body["code"], "NG")
+
+        # 失败的方法：NG + error
+        ack = device.invoke_method_call_async("slow/boom").to_python()
+        handler = ack.get("handler")
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            body = device.invoke_method_result("V2TEST00001", handler).to_python()
+            if body["code"] != "PENDING":
+                break
+            time.sleep(0.02)
+        self.assertEqual(body["code"], "NG", body)
+        self.assertEqual(body["result"], "error")
+
+        # 同步调用不带句柄
+        body = device.invoke_method_call("slow/work").to_python()
+        self.assertEqual(body["code"], "OK")
+        self.assertIsNone(body.get("handler"))
+        self.assertEqual(body["data"], {"done": True})
+
+    @staticmethod
+    def _boom(params):
+        raise RuntimeError("炸了")
+
     def test_schema_checked_method(self):
         device = nclink.Server(sn="V2TEST00001")
         self.addCleanup(device.close)

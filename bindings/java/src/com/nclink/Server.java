@@ -312,6 +312,47 @@ public final class Server implements AutoCloseable {
         return parseResponse("Method/Call/Response/" + sn(), out[0]);
     }
 
+    /**
+     * 离线发起异步方法调用：应答 {@code code=OK} + {@code handler}，方法在库的线程池里
+     * 跑；随后用 {@link #invokeMethodStatus} / {@link #invokeMethodResult} 按句柄查。
+     */
+    public Object invokeMethodCallAsync(String method, String paramsJson) {
+        String[] out = new String[1];
+        NclinkException.check(
+                Native.serverInvokeMethodCallAsync(requireOpen(), method,
+                                                   paramsJson, out),
+                "invokeMethodCallAsync");
+        return parseResponse("Method/Call/Response/" + sn(), out[0]);
+    }
+
+    /** 按句柄查状态（离线驱动；真机上由 Method/Status/Request 触发）。 */
+    public Object invokeMethodStatus(String objectId, String handler) {
+        String[] out = new String[1];
+        NclinkException.check(
+                Native.serverInvokeMethodStatus(requireOpen(), objectId, handler,
+                                                out),
+                "invokeMethodStatus");
+        return parseResponse("Method/Status/Response/" + sn(), out[0]);
+    }
+
+    /** 按句柄查结果（离线驱动；真机上由 Method/Result/Request 触发）。 */
+    public Object invokeMethodResult(String objectId, String handler) {
+        String[] out = new String[1];
+        NclinkException.check(
+                Native.serverInvokeMethodResult(requireOpen(), objectId, handler,
+                                                out),
+                "invokeMethodResult");
+        return parseResponse("Method/Result/Response/" + sn(), out[0]);
+    }
+
+    /** 给正在跑的异步调用上报进度（可选）。 */
+    public void reportMethodProgress(String handler, long process, String status) {
+        NclinkException.check(
+                Native.serverReportMethodProgress(requireOpen(), handler, process,
+                                                  status),
+                "reportMethodProgress");
+    }
+
     /** 只按 schema 校验参数、不执行工具。 */
     public Object checkMethodCall(String method) {
         return checkMethodCall(method, null);

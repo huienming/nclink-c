@@ -80,6 +80,17 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   C# / Java / Python 的 `DeviceClient` 加 `OpenFileChannel` / `CloseFileChannel` /
   `FileChannelIsOpen`，并且上传/下载/列目录/建目录/删文件/带文件参数的方法调用这些
   便利方法会**按需自动握一次手**（C API 保持显式，不做隐式网络动作）。
+- **托管绑定同步跟上异步方法调用**：垫片新增
+  `nclshim_client_method_call_async` / `..._method_status` / `..._method_result`、
+  `nclshim_server_report_method_progress`，以及三个离线驱动入口
+  （`nclshim_server_invoke_method_call_async/_status/_result`，供自检不接 broker 用）。
+  Python 的 `DeviceClient.method_call_async/method_status/method_result`、
+  `Server.invoke_method_call_async/invoke_method_status/invoke_method_result/
+  report_method_progress`，C# 的 `NclDeviceClient.MethodCallAsync/MethodStatus/
+  MethodResult`、`NclServer.InvokeMethodCallAsync/InvokeMethodStatus/InvokeMethodResult/
+  ReportMethodProgress`，Java 的 `DeviceClient.methodCallAsync/methodStatus/methodResult`、
+  `Server.invokeMethodCallAsync/invokeMethodStatus/invokeMethodResult/reportMethodProgress`。
+  Python 自检加了异步端到端用例（47 项）、C# 106 项、Java 107 项均 0 失败。
 - **文件传输改成流式 + 可续传**（`ncl_ftp_client_upload()` /
   `ncl_ftp_client_download()`，设备端 file 工具直接用这两个）：
   - **流式**：上传按 256 KiB 从本地文件读着发（对端没有就 `STOR`）、下载按 64 KiB 收着写盘，
