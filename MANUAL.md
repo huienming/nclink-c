@@ -357,17 +357,31 @@ add_subdirectory(nclink-c)                       # 或自行 add_library(... STA
 target_link_libraries(your_app PRIVATE nclink::core)
 ```
 
-有三件事必须留意：
+有七件事必须留意：前三条是"能编出来、能跑起来"，后四条是"嵌进别人的进程之后"才会
+遇到的（更细的一版在 4.9.5）。
 
 1. **字符集**：源码与字符串字面量都是 UTF-8（日志与设备描述含中文），
    MSVC 必须加 `/utf-8`。否则在非 UTF-8 代码页上会出现 C4819，甚至中文字符串
    把结尾引号“吞掉”导致 C2001。CMake 工程已对全部目标统一设置。
-2. **平台库**：Windows 需要 `ws2_32`（套接字）、`iphlpapi`（网卡枚举，供
-   `ncl_net_ip_map_json()` 使用）。MSVC 下源码自带 `#pragma comment(lib, ...)`，
-   `ncl_net_ip_map_json()` 使用）与 `winmm`（1 ms 级等待的 `timeBeginPeriod`，见 4.5）；
-   MinGW/其它工具链需显式 `-lws2_32 -liphlpapi -lwinmm`；POSIX 需要 `-pthread`。
+2. **平台库**：Windows 需要 `ws2_32`（套接字）、`iphlpapi`（供 `ncl_net_ip_map_json()`
+   枚举网卡）与 `winmm`（1 ms 级等待的 `timeBeginPeriod`，见 4.5）；MSVC 下源码自带
+   `#pragma comment(lib, ...)`，MinGW/其它工具链需显式 `-lws2_32 -liphlpapi -lwinmm`；
+   POSIX 需要 `-pthread`。
 3. **收尾**：进程退出前可调用一次 `ncl_socket_system_release()` 显式释放网络栈。
    不调用也可以——库默认让网络栈存活到进程结束，以免误伤同进程内其它套接字。
+4. **谁释放谁的指针（两个堆）**：库交出来的 `char *` 与对象只能用 `ncl_free_safe()` /
+   `ncl_*_free()` 释放，**不要**用 libc 或宿主自己的 `free()`；反过来，宿主的指针也
+   别喂进库。静态内存版（4.9）里这两处是两个堆：喂错指针默认只是**静默丢弃**（计进
+   `foreign_frees`，表现是泄漏），编 `NCL_MEM_STRICT` 才会当场 `abort()`。
+5. **一个进程一份库**：客户端 holder、环境根/路径表、logger、线程池、套接字表都是
+   进程级全局，所以一个进程只有一个客户端、一个设备端。宿主里出现两份库（宿主链一份、
+   某个 DLL 又链一份）就会得到两套全局状态、两个池，指针互不认。
+6. **安装根别靠当前目录**：`ncl_env_set_root()` 默认是进程的 cwd，库会在它下面建/读
+   `bin/sn.txt`、`conf/mqtt.cfg`、`log/out.txt`（10 MB 轮转）、`uploadFile/`、`temp/`。
+   GUI 程序与 Windows 服务的 cwd 常常是 `system32` 或只读目录，启动时显式指定一次。
+7. **池按量到的峰值开**：静态池版的容量是编译期常量，耗尽就是 `NCL_ERR_NOMEM`
+   （不回退堆）。用真实流量 + `-MemReport` 量 `peak_footprint_bytes`，留 2~3 倍余量；
+   量法与验收清单见 4.9.5。
 
 Windows 用 MSVC 时还要注意 ABI 一致：发布包里的 `nclink_core.lib` 有 **x64 与 x86（32 位）**
 两份，都是 **Release + /MD（动态 CRT）**，你的工程要用同样的架构与运行库设置；包内示例
@@ -1417,6 +1431,74 @@ cd build-static-64k\tests; .\ncl_test_mem_mt.exe
 
 7034 轮并发轮次、每轮都以"池回到一整块空闲 + 账目恒等式成立"收尾，全部通过；期间主线程
 持续调用 `ncl_mem_check()`，**没有报出任何一次不一致**。
+
+### 4.9.5 集成约束：把静态池版的库嵌进别人的进程
+
+库自己"不再调用 `malloc`"只是第一步。宿主是别人的程序——它有自己的内存策略、自己的
+全局状态、自己的日志——下面这些才是真正的边界，每一条都对应一个可检查的信号。
+
+**① 两个堆，两条释放路径。** 库交出的指针只能由 `ncl_free_safe()` / `ncl_*_free()`
+释放，宿主的指针也别喂进库。静态池版里这两处完全不同：
+
+- 池外的指针进 `ncl_mem_free()`：计一次 `foreign_frees`，然后**静默丢弃**。这是默认
+  行为，表现是"内存慢慢少了"，不是崩溃——所以混用不会被自动发现；编 `NCL_MEM_STRICT`
+  时才会打印地址并 `abort()`（集成测试期应该一直开着）。
+- 认不出的指针**不会**被转交给 libc 的 `free()`，所以混用不会立刻踩坏堆，代价就是
+  上一条说的"安静"：运行期只能靠 `foreign_frees` / `bad_links` 两个计数器盯着。
+- `ncl_mem_realloc()` 拿到外来指针时返回 `NULL` 并计一次 `foreign_frees`——宿主别把
+  这一种 `NULL` 误读成"池满了"。
+- 对齐：静态池保证 16 字节（`NCL_MEM_ALIGNMENT`；池在数组里运行时对齐，32 位同样是
+  16）；堆构建给的是运行库的保证（x64 16、Win32 小块 8）。
+- `ncl_mem_realloc()` 跨区/跨尺寸类时会**搬家**（类内放得下就不搬），别在库对象内部
+  留借用指针跨 realloc。
+
+**② 库用不了宿主的池。** 分配接缝是编译期的两种实现（转发运行库 / 静态池），没有
+"注册自定义分配器"这类接口。宿主自己有池时，进程里就是**两个独立的池**：RAM 叠加、
+互不共享、空闲也不归还谁。要做"整进程一个池"，唯一的路是把 `src/core/ncl_mem.c` 换成
+自己的实现——它是唯一知道内存从哪来的文件，对外只有 4 个分配函数加
+`ncl_mem_get_stats()` / `ncl_mem_check()` / `ncl_mem_mode()`。
+
+**③ 静态版覆盖的是库的分配，不是整个进程。** 仍然走系统堆/系统资源的路径：线程栈
+（`CreateThread` / `pthread_create`）、`getaddrinfo()` 与 DNS 解析（libc 内部会 malloc）、
+**OpenSSL（`ssl://` 整条路）**、C 运行库与 stdio 内部。目标若是"整进程零堆"，这几条得
+逐条有结论；TLS 通常是第一个破功的。
+
+**④ 容量：客户端比设备端难估。** 客户端的池峰值是异步的——MQTT 收包线程、线程池、
+采样通道、文件通道同时活着，比设备端那条"模型 + 采样 + 应答"的路径离散得多。
+
+- 量法：真实流量跑一遍 `-MemReport`，读 `peak_footprint_bytes`（**载荷 + 块头**；
+  `in_use_bytes` 不含块头，偏乐观）与 `largest_request_bytes`，池取峰值的 2~3 倍。
+  默认 20 MiB 只是"先跑通"的口径，不是必须。
+- 形状：池是非搬迁分配器，**单个请求不能跨空洞**——`file` / `ftp` 要一次 16 KiB 连续
+  块，是最大的硬需求；`largest_request_bytes` 是池的绝对下限。长跑实测最坏空洞约为池的
+  1/128~1/50（见 4.9.3），所以别只按"总空闲够"估。
+- 拒绝：`failure_free_bytes` 明显大于 `failure_largest_free_bytes` 说明是被打散了，
+  两个都小才是池真的小。
+- 失败路径：用一个**故意很小**的池（4 KiB / 64 KiB）跑宿主的真实调用序列，把
+  `NCL_ERR_NOMEM` 压出来，确认宿主有用户可见的失败语义（重试 / 降级）而不是崩。
+
+**⑤ 锁与自检的代价。** 池用一把全局锁（Windows `CRITICAL_SECTION`、POSIX 静态
+`pthread_mutex`）串行化所有分配释放；临界区很短，但多线程高频收发值得量一次争用。
+`NCL_MEM_SINGLE_THREAD` 只在"库被单上下文驱动"时能开——客户端有多线程，**不能**开。
+运行期自检用 `ncl_mem_get_stats()`（拷贝一份计数器快照，很轻，任意线程可调）；
+`ncl_mem_check()` 要遍历整池、是 O(池大小)，只当现场诊断开关，别放进周期任务或回调。
+
+**⑥ 进程级单例、路径与退出顺序。** 见 2.5 的第 5、6 条：一个进程一份库、安装根显式
+指定。另外：日志默认还往控制台打（宿主有自己的日志系统时接管或关掉）；退出前显式收尾
+（停采样 / 停 FTP、HTTP / 断开 MQTT，可选 `ncl_socket_system_release()`），别依赖宿主
+的 `ExitProcess` 或 DLL 卸载顺序——池在 `.bss` 里没有析构，残留对象不会有人报出来。
+
+**验收清单**（把下面这些变成宿主 CI 里的断言）：
+
+| 项 | 怎么做 | 通过标准 |
+|----|--------|----------|
+| 池容量 | 真实流量 + `-MemReport`，读 `peak_footprint_bytes` / `largest_request_bytes` | 池 ≥ 峰值 × 2~3，且大于最大单次请求 + 常驻集 |
+| 指针混用 | 集成测试期编 `NCL_MEM_STRICT` | 不再 abort，`foreign_frees == 0` |
+| 健康计数器 | 运行期周期性 `ncl_mem_get_stats()`（水位看门狗） | `foreign_frees` / `bad_links` / `failures` 恒 0，水位超阈值告警 |
+| 失败路径 | 故意很小的池跑真实调用序列 | NOMEM 有用户可见语义，不崩、不卡死 |
+| 长跑 | 连断 + 文件 + 采样跑够时长（4.9.3 的量级） | 结束后 `in_use` 归零、`free_blocks` 回到 1 |
+| 链接 | 只链一份库；`/MD`、`/utf-8`、架构一致；显式 `ncl_env_set_root()` | 零警告，运行期路径落在预期目录 |
+| 零堆（若为目标） | 列清线程栈 / DNS / OpenSSL / CRT 四条 | 每条有结论：替换、接受或不用 |
 
 ---
 

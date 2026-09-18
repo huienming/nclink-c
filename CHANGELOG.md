@@ -123,6 +123,18 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   `tests/test_http.c` 新增用例覆盖"恰好释放一次／重复登记被拒／参数校验"；验收标准是
   `tools/asan-linux.sh` 归零，现已达成：`asan-linux: 0 suite(s) with sanitizer findings`。
 
+### 文档
+
+- 手册补上"被别的程序集成"这一面：**2.5「集成到自己的工程」从三条扩到七条**——两个堆的
+  释放边界、一个进程一份库（客户端 holder / 环境根 / logger / 线程池都是进程级全局）、
+  安装根别靠 cwd（库里会建 `bin/sn.txt`、`conf/mqtt.cfg`、`log/out.txt`、`uploadFile/`）、
+  池按量到的峰值开；顺带修掉 2.5 第 2 条里重复的 `ncl_net_ip_map_json()` 片段。
+- **新增 4.9.5「集成约束」**：外来指针静默丢弃（默认）vs `NCL_MEM_STRICT` abort、
+  库无法共用宿主的池（替换 `src/core/ncl_mem.c` 是唯一出路）、静态版仍走系统堆的路径
+  （线程栈 / DNS / OpenSSL / CRT）、容量量法（`peak_footprint_bytes`、16 KiB 连续块、
+  `failure_*` 快照、小池压 NOMEM）、一把全局锁与 `ncl_mem_check()` 的代价、进程级单例与
+  退出顺序，末尾附一张"验收清单"表，可直接搬进宿主 CI。
+
 ## 3.2.0
 
 三种托管绑定补齐 HTTP/REST、设备端与文件通道，并加上 TLS 选项；顺带修掉
