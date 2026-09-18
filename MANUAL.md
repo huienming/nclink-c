@@ -3268,10 +3268,7 @@ Copyright (c) 2026 huienming
 | `NCL_TOPIC_METHOD_CALL_REQUEST_PREFIX` | "Method/Call/Request/" |
 | `NCL_TOPIC_METHOD_CALL_RESPONSE_PREFIX` | "Method/Call/Response/" |
 | `NCL_TOPIC_EVENT_PREFIX` | "Event/" |
-| `NCL_TOPIC_EDGE_GET_REQUEST_PREFIX` | "Edge/Get/Request/" |
-| `NCL_TOPIC_EDGE_GET_RESPONSE_PREFIX` | "Edge/Get/Response/" |
-| `NCL_TOPIC_EDGE_REGISTER_PREFIX` | "Edge/Register/" |
-| `NCL_TOPIC_EDGE_MESSAGE_PREFIX` | "Edge/Message/" |
+
 
 ## 附录 D · 安装根目录布局
 
