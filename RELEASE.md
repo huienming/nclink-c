@@ -32,6 +32,7 @@ bindings/java/                         Java 绑定源码（JNI，Java 8 字节�
 bindings/python/                       Python 绑定源码（ctypes，只用标准库；客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项）
 bindings/native/                       三种托管绑定共用的原生垫片（C#/Java/Python）
 MANUAL.md / MANUAL.docx                使用手册（Word 版由 md 生成，内容一致）
+TRANSFER_PERF.md                       文件通道传输效率报告（同机与跨容器的吞吐实测）
 README.md                              工程概览与测试清单
 CHANGELOG.md                           版本变更记录
 RELEASE.md                             本文件

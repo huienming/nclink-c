@@ -244,7 +244,7 @@ if (Test-Path -LiteralPath $mingwTlsLib) {
 
 # docs
 foreach ($doc in @("README.md", "MANUAL.md", "MANUAL.docx", "RELEASE.md",
-                   "CHANGELOG.md", "LICENSE")) {
+                   "CHANGELOG.md", "TRANSFER_PERF.md", "LICENSE")) {
     Copy-Item -LiteralPath (Join-Path $root $doc) -Destination (Join-Path $pkg $doc) -Force
 }
 if ($WithSource) {
