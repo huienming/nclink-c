@@ -198,7 +198,10 @@ MSVC 的 `nclink_core.lib` 链不上；装 mingw 后用
 `CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw` 编一份即可（`build-linux.sh`
 在 mingw 目标下会自动补上 `-lws2_32 -liphlpapi -lwinmm`）；发布包的
 `lib/windows-amd64-mingw/` 里已经带了一份 mingw 编的 x64 库，可以直接暂存或链过去。
-TLS 用 `-tags nclink_tls`。
+TLS 用 `-tags nclink_tls`（那份库也在同一个目录里，`libnclink_core_tls.a`）；Windows 上
+它和 Linux 的 TLS 版一样**动态依赖 OpenSSL**——链接要 OpenSSL 3 的导入库（`-lssl -lcrypto`，
+例如 Strawberry Perl 的 `c/lib`，`CGO_LDFLAGS=-L<dir>` 指过去），运行时要有
+`libssl-3-x64*.dll` / `libcrypto-3-x64*.dll`。
 
 ### 2.4.3 Java 绑定（JNI）
 

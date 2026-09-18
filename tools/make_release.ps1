@@ -60,6 +60,7 @@ $msvcTlsLib = Join-Path $root "build-tls\nclink_core.lib"
 $gccLib = Join-Path $root "build-linux\libnclink_core.a"
 $gccTlsLib = Join-Path $root "build-linux-tls\libnclink_core.a"
 $mingwLib = Join-Path $root "build-mingw\libnclink_core.a"
+$mingwTlsLib = Join-Path $root "build-mingw-tls\libnclink_core.a"
 $msvcStaticLib = Join-Path $root "build-staticmem\nclink_core.lib"
 $x86StaticLib = Join-Path $root "build-x86-staticmem\nclink_core.lib"
 $gccStaticLib = Join-Path $root "build-linux-staticmem\libnclink_core.a"
@@ -230,6 +231,15 @@ if (Test-Path -LiteralPath $mingwLib) {
     Copy-Item -LiteralPath $mingwLib -Destination (Join-Path $pkg "lib\windows-amd64-mingw\libnclink_core.a") -Force
 } else {
     Write-Host "  note: build-mingw/libnclink_core.a not found, the Go binding needs it staged separately"
+}
+# The TLS flavour of the same library, for cgo -tags nclink_tls. Its OpenSSL
+# dependency stays dynamic (import libraries + DLLs), exactly like the Linux
+# TLS build - the static OpenSSL the MSVC variant links is not available for
+# the Windows Go toolchain.
+if (Test-Path -LiteralPath $mingwTlsLib) {
+    Copy-Item -LiteralPath $mingwTlsLib -Destination (Join-Path $pkg "lib\windows-amd64-mingw\libnclink_core_tls.a") -Force
+} else {
+    Write-Host "  note: build-mingw-tls/libnclink_core.a not found, the Windows Go TLS variant is not packaged"
 }
 
 # docs

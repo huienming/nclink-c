@@ -152,9 +152,15 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   25/25 通过**；**Go 绑定的 `go test ./...` 在 Windows 上用 cgo + mingw 也跑通**
   （此前只有 Linux gcc 那一遍的记录）。
 - 发布包与文档跟上：`build-mingw/libnclink_core.a` 现在随包提供
-  （`lib/windows-amd64-mingw/`）；RELEASE 里"未带 mingw 库"的两处改成实况（仍然不带的是
-  Windows 的 `-tags nclink_tls` 变体，那需要另编一份带 TLS 的 mingw 库）；手册 2.2 补了
+  （`lib/windows-amd64-mingw/`）；RELEASE 里"未带 mingw 库"的两处改成实况；手册 2.2 补了
   mingw 这条已验证链路，2.4.2 的 Go 链接说明也点明系统库由脚本自动补。
+- **mingw 的 TLS 变体也补齐了**：`build-mingw-tls/libnclink_core.a`（`NCL_WITH_TLS=1`，
+  OpenSSL 3.6.1 来自 Strawberry Perl 的头文件与导入库）在 mingw 侧同样 **25/25**，
+  Go 绑定的 `go test -tags nclink_tls ./...` 在 **Windows 上也跑通**。该变体与 Linux 的
+  TLS 版口径一致：**动态依赖 OpenSSL**（链接要导入库、运行要 `libssl-3-x64*.dll` /
+  `libcrypto-3-x64*.dll`），因为 MSVC 那份用的静态 OpenSSL 在 Windows 的 Go 工具链下
+  用不了。包内 `lib/windows-amd64-mingw/` 现在同时放非 TLS 与 TLS 两份 `.a`，
+  RELEASE 的限制条目改成"依赖 OpenSSL 3 导入库与 DLL"这条实况。
 
 ## 3.2.0
 

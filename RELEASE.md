@@ -11,7 +11,7 @@ include/nclink/*.h                     公共头文件（全部对外 API）
 lib/windows-x64-msvc/nclink_core.lib   Windows x64 静态库（MSVC，Release）
 lib/windows-x86-msvc/nclink_core.lib   Windows x86（32 位）静态库（MSVC，Release）
 lib/windows-x64-msvc-tls/…             x64 + TLS（ssl://，OpenSSL 静态链接，无 DLL 依赖）
-lib/windows-amd64-mingw/libnclink_core.a  Windows x64 静态库（mingw-w64 16.2.0 编，供 Go/cgo 链接）
+lib/windows-amd64-mingw/*.a            Windows x64 静态库（mingw-w64 16.2.0 编，供 Go/cgo 链接；含非 TLS 与 `libnclink_core_tls.a`）
 lib/linux-x86_64-gcc/libnclink_core.a  Linux x86_64 静态库（gcc，-O2）
 lib/linux-x86_64-gcc-tls/…             同上，但启用了 TLS（ssl://，链接 -lssl -lcrypto）
 lib/windows-x64-msvc-staticmem/* 静态内存版（无堆）x64 静态库，池默认 20 MiB
@@ -111,13 +111,13 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | x86（32 位） | 库 / 示例 / 测试全部通过；产物 PE 头 Machine = 0x014c（i386），与 x64 同一套源码、同一套编译选项 |
 | TLS | Windows（MSVC + OpenSSL 3.0.18 静态链接）与 Linux（gcc + OpenSSL 3.0.20）四套 TLS 构建都编过并 **25/25** 通过；**x86 暂未出 TLS 版** |
 | 托管绑定自检 | C# 106 项（`bindings/csharp/tests/Nclink.SelfTest`，net472 与 net8.0 各跑一遍）、Java 107 项、Python 46 项，全部 0 失败；覆盖客户端、设备端（工具注册 / 采样通道 / 事件 / 离线 dispatch / 自研传输）、HTTP/REST 端点（OpenAPI、swagger-ui、工具端点、配置端点、自定义路由）与文件小工具（压缩判断、分片数、SHA-256、属性），都不需要 broker |
-| Go 绑定自检 | `cd bindings/go && go test ./...`（cgo）：**Windows（mingw-w64 gcc 16.2.0）与 Linux（gcc 12/13）两侧都跑通**，客户端 + 设备端（工具注册与路径绑定、离线 dispatch、采样通道、事件、内建工具、文件工具、HTTP 端点与自定义路由、关闭语义、注册上限），离线跑，不需要 broker；Linux 上 `-tags nclink_tls` 那份也跑通（链 `libnclink_core_tls.a` + OpenSSL，`nclink.TLSAvailable()` 为 true） |
+| Go 绑定自检 | `cd bindings/go && go test ./...`（cgo）：**Windows（mingw-w64 gcc 16.2.0）与 Linux（gcc 12/13）两侧都跑通**，客户端 + 设备端（工具注册与路径绑定、离线 dispatch、采样通道、事件、内建工具、文件工具、HTTP 端点与自定义路由、关闭语义、注册上限），离线跑，不需要 broker；`-tags nclink_tls` 那份在 **Windows 与 Linux 两侧也都跑通**（链 `libnclink_core_tls.a` + OpenSSL，`nclink.TLSAvailable()` 为 true） |
 | 绑定对真 broker | `NCLINK_TEST_BROKER=tcp://host:port` 打开的可选用例（设备端 + 客户端同进程，报文真的过 MQTT）：C# 132 项、Java 12 项、Python 46 项，对 **Mosquitto 2** 与 **EMQX 5.8.9** 各跑一遍都 0 失败（probe、路径绑定读写、methodCall、采样、事件、文件通道上传下载与带文件参数的方法调用） |
 | 文件通道 | 托管绑定：上传 / 列目录 / 下载 / 建目录 / 删文件 / 带文件参数的方法调用（含"工具返回文件"的反向）、自定义 FTP 端口与显式指定对端，都实测通过；跨语言也过一遍：C 客户端示例对 **C# 设备端示例** 的 `上传 /demo.txt` → `文件回读路径` → `远端文件 demo.txt (14 字节)` 全通 |
 | 绑定 + TLS | 三份托管绑定都过一遍（`build-shim.ps1 -Tls` / Java 的 `build-native.ps1 -Tls`）+ Mosquitto 的 8883 TLS 监听：`ssl://` 设备端与客户端都用 CA 连通（C# 134 项、Java 13 项、Python 46 项，对 Mosquitto 2 与 EMQX 5.8.9 都 0 失败），不给 CA 时握手被拒（证书校验），`verify_peer=false` 放行；库没编 TLS 时 `ssl://` 返回明确的 `NCL_ERR_NOT_SUPPORTED` |
 | 跨语言互读 | C# 设备端 ← C 客户端 / Python 客户端（Mosquitto 与 EMQX）、C# 客户端 ← Java 设备端（`GET`、采样、事件；`SET /STATUS` 按对端模型拒绝）、C# 与 Java 设备端的 REST 端点实测（`/api/schema`、`/swagger-ui`、工具端点、自定义路由） |
 | HTTP/REST 端点实跑 | C# 设备端示例（离线 + REST）与 Java / Python 设备端示例都挂上了端点：`GET /api/schema`、`GET /swagger-ui`、`POST /api/<工具>/<方法>`、`GET /api/cfg/*` 与自定义路由实测通过 |
-| Go 绑定用的 mingw 库 | 随包提供 `lib/windows-amd64-mingw/libnclink_core.a`（gcc 16.2.0 编的 x64 非 TLS 库），Windows 上 `go test ./...` 实测通过；`-tags nclink_tls`（Windows）要另编一份带 TLS 的 mingw 库，包内不含 |
+| Go 绑定用的 mingw 库 | 随包提供 `lib/windows-amd64-mingw/` 两份（gcc 16.2.0 编的 x64 库：`libnclink_core.a` 与 `libnclink_core_tls.a`），Windows 上 `go test ./...` 与 `go test -tags nclink_tls ./...` 都实测通过 |
 
 测试套件：json、common、topic、model、message、codec、thread、mqtt、mqtt_client、
 client、server、http、rest、config、ftp、file、schema、event、license、broker、
@@ -256,7 +256,7 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 | FTP | 实现 RFC 959/2389 子集（覆盖 NC-Link 文件通道用到的命令与两种数据连接模式） |
 | POSIX 分支 | 已在 gcc 13.4 + glibc 验证；musl、FreeBSD 等未验证 |
 | x86 的 TLS | 32 位只出非 TLS 版：要用 `ssl://` 得自编 32 位 OpenSSL 静态库，再 `-Arch x86 -Tls -OpenSslRoot <dir>` |
-| Go 绑定的 TLS 变体（Windows） | 包内的 mingw 库是非 TLS 版；Windows 上 `-tags nclink_tls` 需要 mingw 编的 `libnclink_core_tls.a`（`CC=<mingw>/gcc NCL_WITH_TLS=1 sh build-linux.sh build-mingw-tls`），包内不含 |
+| Go 绑定的 TLS 变体（Windows） | 包内给了 `libnclink_core_tls.a`，但它和 Linux 的 TLS 版一样是**动态依赖 OpenSSL**：链接时需要 OpenSSL 3 的导入库（`-lssl -lcrypto`，例如 Strawberry Perl 的 `c/lib`），运行时需要 `libssl-3-x64*.dll` / `libcrypto-3-x64*.dll`；MSVC 那份 TLS 库用的静态 OpenSSL 在 Windows 的 Go 工具链下用不了 |
 | 静态内存版的池大小 | 编译期常量：包内两份静态内存库都按默认 **20 MiB** 编译（换尺寸要重编，见第 1 节）；池不支持运行时扩容 |
 | 静态内存版与绑定 | 五份绑定按默认（堆）版验证；静态内存版与绑定混用未实测 |
 | 静态内存 + TLS | 池只覆盖库自身的分配：OpenSSL（`ssl://`）仍用系统堆，所以「整个进程零堆」在这份变体里不成立 |
