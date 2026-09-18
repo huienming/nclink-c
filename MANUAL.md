@@ -98,8 +98,10 @@ ctest --test-dir build --output-on-failure
 
 内存门禁：`./tools/asan-linux.sh`（`--docker` 可在 Windows/macOS 上一键跑）用
 AddressSanitizer + LeakSanitizer 覆盖分配器、协议层与传输层；MSVC 的 ASan 不带泄漏
-检测，所以 Linux 这一遍是唯一能报泄漏的。目前 `test_rest` 仍报 16 字节（2 次
-`ncl_rest_attach()` 的上下文），见 CHANGELOG"未发布"里的待办。
+检测，所以 Linux 这一遍是唯一能报泄漏的。3.3.0 期间它抓到并修掉的两处（MQTT 重连漏
+join 已结束的收包线程、`ncl_rest_attach()` 的上下文无人释放，后者由新增的
+`ncl_http_server_own_context()` 按上下文登记一次随服务器释放）复跑已归零：
+`asan-linux: 0 suite(s) with sanitizer findings`（见 CHANGELOG 3.3.0）。
 
 源码是 C11，套接字层有 Winsock / BSD 两套实现，两个平台都已在真机编过并跑通
 全部测试（Windows 见 2.2，Linux 见下）。
@@ -3196,4 +3198,3 @@ Copyright (c) 2026 huienming
   temp/                   文件通道的临时交换目录
   <sn>/                   客户端侧文件镜像（相对路径的基准）
 ```
-
