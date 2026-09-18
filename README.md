@@ -151,14 +151,23 @@ Windows 需要 OpenSSL 3 的**静态库**（`OPENSSL_ROOT_DIR`、vcpkg 或自编
 .\build.ps1                                    # 1. Windows 静态库 + 示例 exe + 测试
 .\build.ps1 -Tls -BuildDir build-tls           #    （可选）Windows TLS 版
 .\build.ps1 -Arch x86 -BuildDir build-x86  #    （可选）Windows 32 位
+```powershell
+.\build.ps1 -StaticMem -BuildDir build-staticmem            # 静态内存版（无堆）
+.\build.ps1 -Arch x86 -StaticMem -BuildDir build-x86-staticmem
+docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh build-linux-staticmem"
+```
 # 2. Linux 静态库与示例（任选其一；TLS 版加 NCL_WITH_TLS=1 与 libssl-dev）
 docker run --rm -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh build-linux"
 ./build-linux.sh            # 或直接在 Linux 机器上
+# 3'. （可选）静态内存版（无堆）：打包时会一并收进 lib/*-staticmem/ 与 examples/bin/*-staticmem/
+.\build.ps1 -StaticMem -BuildDir build-staticmem
+.\build.ps1 -Arch x86 -StaticMem -BuildDir build-x86-staticmem
+docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh build-linux-staticmem"
 # 3. 组装（会带上 build/ 与 build-linux/bin 里编好的示例可执行文件）
-.\tools\make_release.ps1 -Version 3.2.0
+.\tools\make_release.ps1 -Version 3.3.0
 ```
 
-产物：`dist/nclink-core-c-<版本>/`（头文件 + Windows x64/x86 与 Linux 静态库 + 文档 +
+产物：`dist/nclink-core-c-<版本>/`（头文件 + Windows x64/x86 与 Linux 静态库 + **静态内存版** + 文档 +
 示例源码与**编好的示例可执行文件** + 语言绑定 + `SHA256SUMS.txt`）与同名 `.zip`；
 包内说明见 [RELEASE.md](RELEASE.md)。
 

@@ -16,7 +16,7 @@
 # character can swallow the following line.
 #
 #   .\tools\make_release.ps1                        # headers + libs + docs + examples
-#   .\tools\make_release.ps1 -Version 3.2.0
+#   .\tools\make_release.ps1 -Version 3.3.0
 #   .\tools\make_release.ps1 -WithSource            # also ship src/tests/tools
 #
 # Libraries and example executables are collected from the locations below;
@@ -28,9 +28,20 @@
 #   build-linux-tls/libnclink_core.a lib/linux-x86_64-gcc-tls/
 #   build-mingw/libnclink_core.a     lib/windows-amd64-mingw/
 #
+# The static memory variant (-StaticMem) ships next to the default heap build,
+# in a directory of its own so nothing that already links the default path
+# changes meaning:
+#   build-staticmem/nclink_core.lib          lib/windows-x64-msvc-staticmem/
+#   build-x86-staticmem/nclink_core.lib      lib/windows-x86-msvc-staticmem/
+#   build-linux-staticmem/libnclink_core.a   lib/linux-x86_64-gcc-staticmem/
+# plus the matching example binaries under examples/bin/<platform>-staticmem/.
+# The static memory library carries a fixed pool inside its .bss (20 MiB with
+# the default NCLINK_MEM_POOL_BYTES), so it is a separate artifact rather than a
+# build option on the same file.
+#
 [CmdletBinding()]
 param(
-    [string]$Version = "3.2.0",
+    [string]$Version = "3.3.0",
     [string]$Name = "",
     [switch]$NoZip,
     [switch]$WithSource
@@ -47,6 +58,18 @@ $msvcTlsLib = Join-Path $root "build-tls\nclink_core.lib"
 $gccLib = Join-Path $root "build-linux\libnclink_core.a"
 $gccTlsLib = Join-Path $root "build-linux-tls\libnclink_core.a"
 $mingwLib = Join-Path $root "build-mingw\libnclink_core.a"
+$msvcStaticLib = Join-Path $root "build-staticmem\nclink_core.lib"
+$x86StaticLib = Join-Path $root "build-x86-staticmem\nclink_core.lib"
+$gccStaticLib = Join-Path $root "build-linux-staticmem\libnclink_core.a"
+
+# The two platforms the package must carry; the static memory variant ships as
+# well because it cannot be produced from the heap library afterwards.
+$requiredStatic = @($msvcStaticLib, $gccStaticLib)
+foreach ($required in $requiredStatic) {
+    if (-not (Test-Path -LiteralPath $required)) {
+        throw "missing static memory library:  (build with -StaticMem first)"
+    }
+}
 
 foreach ($required in @($msvcLib, $gccLib)) {
     if (-not (Test-Path -LiteralPath $required)) {
@@ -90,6 +113,9 @@ $exeSources = @(
     @{ From = "build\examples";  Dst = "examples\bin\windows-x64-msvc"; Filter = "ncl_*.exe" },
     @{ From = "build-x86\examples"; Dst = "examples\bin\windows-x86-msvc"; Filter = "ncl_*.exe" },
     @{ From = "build-linux\bin"; Dst = "examples\bin\linux-x86_64-gcc"; Filter = "ncl_*" }
+    @{ From = "build-staticmem\examples"; Dst = "examples\bin\windows-x64-msvc-staticmem"; Filter = "ncl_*.exe" },
+    @{ From = "build-x86-staticmem\examples"; Dst = "examples\bin\windows-x86-msvc-staticmem"; Filter = "ncl_*.exe" },
+    @{ From = "build-linux-staticmem\bin"; Dst = "examples\bin\linux-x86_64-gcc-staticmem"; Filter = "ncl_*" }
 )
 foreach ($exe in $exeSources) {
     $from = Join-Path $root $exe.From
@@ -137,6 +163,23 @@ if (Test-Path -LiteralPath $msvcTlsLib) {
     Write-Host "  note: build-tls/nclink_core.lib not found, the Windows TLS variant is not packaged"
 }
 Copy-Item -LiteralPath $gccLib -Destination (Join-Path $pkg "lib\linux-x86_64-gcc\libnclink_core.a") -Force
+
+# The static memory variant of both mandatory platforms. It goes to its own
+# directory: the file name is identical, and a consumer has to opt in.
+foreach ($pair in @(
+        @{ Src = $msvcStaticLib; Dst = "lib\windows-x64-msvc-staticmem\nclink_core.lib" },
+        @{ Src = $gccStaticLib; Dst = "lib\linux-x86_64-gcc-staticmem\libnclink_core.a" })) {
+    $dest = Join-Path $pkg $pair.Dst
+    New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+    Copy-Item -LiteralPath $pair.Src -Destination $dest -Force
+    Write-Host ("  + {0}" -f $pair.Dst)
+}
+if (Test-Path -LiteralPath $x86StaticLib) {
+    New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x86-msvc-staticmem") -Force | Out-Null
+    Copy-Item -LiteralPath $x86StaticLib -Destination (Join-Path $pkg "lib\windows-x86-msvc-staticmem\nclink_core.lib") -Force
+} else {
+    Write-Host "  note: build-x86-staticmem not found, the 32-bit static memory library is not packaged"
+}
 
 # Optional: the Linux library built with TLS support (ssl:// over OpenSSL).
 if (Test-Path -LiteralPath $gccTlsLib) {
@@ -241,4 +284,9 @@ if (-not $NoZip) {
     if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
     Compress-Archive -Path $pkg -DestinationPath $zip -CompressionLevel Optimal
     Write-Host ("  zip {0} ({1:N1} KB)" -f $zip, ((Get-Item -LiteralPath $zip).Length / 1KB))
+    # The companion checksum file some pipelines expect next to the archive.
+    $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
+    Set-Content -LiteralPath ($zip + ".sha256") -Encoding ASCII `
+        -Value ("{0}  {1}" -f $zipHash, (Split-Path -Leaf $zip))
+    Write-Host ("  sha256 {0}" -f $zipHash)
 }

@@ -55,7 +55,7 @@
 
 ```
 include/nclink/     公共头文件（-I 只需要指向 include）
-lib/<平台>/         预编译静态库（发布包：windows-x64-msvc / linux-x86_64-gcc）
+lib/<平台>/         预编译静态库（发布包：windows-x64-msvc / linux-x86_64-gcc，另有 -staticmem 静态内存版）
 examples/           两个可运行示例：设备端 / 客户端
 MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 
@@ -1146,6 +1146,8 @@ C 没有 GC，规则统一为「谁申请谁负责，转移要显式」：
 NCL_STATIC_MEM=1 ./build-linux.sh build-linux-static          # 默认 20 MiB
 NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 ./build-linux.sh build-linux-static-64k
 ```
+
+> 发布包里的 `lib/*-staticmem/` 就是按**默认 20 MiB** 编好的静态内存版（同一个包里默认堆版与它并存，目录名区分），细节见包内 RELEASE.md。
 
 **默认池是 20 MiB**（`NCLINK_MEM_POOL_BYTES` / `NCL_MEM_POOL_BYTES`），对全量测试
 与文件搬运都留了余量，先跑通再按下面的实测数据往下压。池放在 `.bss` 里，不占可执行

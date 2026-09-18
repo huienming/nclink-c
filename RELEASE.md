@@ -1,6 +1,6 @@
 # NC-Link C 实现 · 发布包说明
 
-版本 **3.2.0**（实现 GB/T 41970-2022 协议 3.0.0）
+版本 **3.3.0**（实现 GB/T 41970-2022 协议 3.0.0）
 本包为 **零第三方依赖** 的 C11 静态库，交付内容为**头文件 + 两个平台的预编译库 +
 使用手册 + 示例程序**；不含实现源码（需要源码请见第 5 节）。
 
@@ -14,12 +14,16 @@ lib/windows-x64-msvc-tls/…             x64 + TLS（ssl://，OpenSSL 静态链�
 lib/windows-amd64-mingw/libnclink_core.a  Windows x64 静态库（mingw-w64，供 Go/cgo 链接；**可选**，没有 mingw 工具链时不打包）
 lib/linux-x86_64-gcc/libnclink_core.a  Linux x86_64 静态库（gcc，-O2）
 lib/linux-x86_64-gcc-tls/…             同上，但启用了 TLS（ssl://，链接 -lssl -lcrypto）
+lib/windows-x64-msvc-staticmem/* 静态内存版（无堆）x64 静态库，池默认 20 MiB
+lib/windows-x86-msvc-staticmem/* 同上，32 位
+lib/linux-x86_64-gcc-staticmem/* 静态内存版 Linux 静态库
 examples/*.c, *.cpp, CMakeLists.txt    两个示例程序的源码（设备端 / 客户端）
 examples/device_model.c, device_model.h  设备模型（编译进设备端示例与各语言绑定的垫片：
                                       五个语言的设备端示例共用同一份，不依赖外部文件）
 examples/bin/windows-x64-msvc/*.exe    **编好的示例可执行文件**（x64、MSVC Release）
 examples/bin/windows-x86-msvc/*.exe    同上，32 位
 examples/bin/linux-x86_64-gcc/*        Linux 版示例可执行文件（gcc 13 + glibc）
+examples/bin/*-staticmem/               链接静态内存版构建的示例可执行文件（x64 / x86 / Linux）
 bindings/go/                           Go 绑定源码（cgo，链接上面的静态库；客户端 + 设备端，含 nclink_thunks.c）
 bindings/csharp/                       C# 绑定源码（客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项；netstandard2.0 / .NET 8 / .NET Framework 4.7.2 三目标，含设备端示例与自检）
 bindings/java/                         Java 绑定源码（JNI，Java 8 字节码，无第三方依赖；客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项）
@@ -35,6 +39,32 @@ SHA256SUMS.txt                         包内每个文件的 SHA-256
 
 实现源码（`src/`）与 22 个测试套件（`tests/`）不在本包内，见第 5 节；
 手册第 3 章另有一份最小可用示例代码，可直接抄进你的工程。
+
+
+**同一个包里有两种构建**，按平台各放一份，目录名区分、文件名相同：
+
+```
+lib/windows-x64-msvc/nclink_core.lib            默认：库内分配走 C 运行库堆（与 3.2.0 相同）
+lib/windows-x64-msvc-staticmem/nclink_core.lib  **静态内存版**：库内分配走 .bss 里的固定池，不调用 malloc
+lib/windows-x86-msvc-staticmem/                 同上（32 位）
+lib/linux-x86_64-gcc/libnclink_core.a           默认：堆
+lib/linux-x86_64-gcc-staticmem/libnclink_core.a **静态内存版**
+```
+
+- **静态内存版是"库的分配全静态"**：库内 471 处分配/释放都走同一个接缝，池是一个静态数组
+  （`NCL_MEM_POOL_BYTES`，本包按 **默认 20 MiB** 编译）。它**不调用 `malloc`**，池耗尽时
+  返回 `NCL_ERR_NOMEM` 而不是回退到堆；C 运行库自身、线程栈、`getaddrinfo()` 与 OpenSSL
+  仍由系统分配（要"整个进程零堆"需要把这些也换掉，见手册 4.9）。
+- **池大小是编译期常量**：本包固定 20 MiB（进程里多 20 MiB 的 .bss，不占文件体积、不占栈）。
+  换尺寸只要重编，不用改代码：
+  `.\build.ps1 -StaticMem -MemPoolBytes 65536`（Linux：`NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 ./build-linux.sh`）。
+  现场调参用 `-MemReport`（退出时打印峰值/每类用量/拒绝快照）。
+- **所有权约定**：静态内存版交出来的指针只能用 `ncl_free_safe()` / `ncl_*_free()` 释放，
+  **不要用 libc 的 `free()`**（两个堆）。默认（堆）版没有这个约束。
+- **示例可执行文件也给了两份**：`examples/bin/<平台>-staticmem/` 就是链接静态内存版构建出来的，
+  直接跑就能看到池版本的行为。
+- 本包的五份语言绑定按**默认（堆）版**验证；静态内存版与绑定混用未做实测，绑定的宿主进程若
+  需要静态内存，建议自行重编并跑一遍绑定的自检套件。
 
 ## 2. 平台与 ABI
 
@@ -87,6 +117,19 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 client、server、http、rest、config、ftp、file、schema、event、license、broker、
 tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认跳过）。
 
+### 3.1 3.3.0 的验证（本次发布前实测）
+
+| 项目 | 结果 |
+|------|------|
+| Windows（MSVC，x64 / x86） | 全量 **25 个套件通过**（默认堆、静态内存、x64+TLS、32 位四种构建） |
+| Linux（gcc 13，容器内） | 全量 **25 个套件通过**（默认堆、静态内存、TLS 三种构建） |
+| 静态池尺寸边界 | 64 KiB 池 **25/25**；32 KiB 池 23/25（ftp/file 需要大块连续空间） |
+| 蒙特卡洛（单线程） | 1 小时、7 个池尺寸并行：**260389 轮 / 约 52.1 亿次操作 / 0 失败** |
+| 蒙特卡洛（多线程） | 8 线程 × 3 个池尺寸、10 分钟：**约 5.63 亿次操作 / 8030 万次跨线程交接 / 0 失败** |
+| AddressSanitizer + LeakSanitizer | 库与分配器套件（含并发用例）**0 发现** |
+| ThreadSanitizer | 并发分配器用例 **0 数据竞争** |
+| 包内库自检 | 用**包里的库**编程序实测：默认版 `ncl_mem_mode()=="heap"`；静态内存版 `"static-pool"`、池 20971520 字节、分配/释放与统计正常 |
+| 真 broker 互操作 | Mosquitto 2.1.2 与 EMQX 5.8.9 各 **44 项检查全过**（含静态内存版二进制） |
 ## 4. 在你的工程里使用
 
 ### 4.1 Windows（MSVC）
@@ -103,10 +146,14 @@ cl /nologo /W4 /utf-8 /MD /Iinclude ^
 
 `/utf-8` 不可省（库的日志与设备描述是 UTF-8，而且你自己的源码里往往也有中文）。
 
+**静态内存版**：把路径换成 `lib\windows-x64-msvc-staticmem\nclink_core.lib`（或`lib/linux-x86_64-gcc-staticmem/libnclink_core.a`）即可，编译选项与用法完全一样；额外要遵守两条：库交出来的指针只能用 `ncl_free_safe()` / `ncl_*_free()` 释放，池大小是编译期常量（本包 20 MiB，换尺寸见第 1 节）。
+
 ### 4.2 Linux（gcc/clang）
 
 ```sh
 gcc -std=c11 -O2 -Wall -Iinclude your_app.c lib/linux-x86_64-gcc/libnclink_core.a -lpthread
+
+# 静态内存版：换成 lib/linux-x86_64-gcc-staticmem/libnclink_core.a
 ```
 
 ### 4.3 CMake 工程
@@ -204,6 +251,8 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 | POSIX 分支 | 已在 gcc 13.4 + glibc 验证；musl、FreeBSD 等未验证 |
 | x86 的 TLS | 32 位只出非 TLS 版：要用 `ssl://` 得自编 32 位 OpenSSL 静态库，再 `-Arch x86 -Tls -OpenSslRoot <dir>` |
 | Go 绑定的 mingw 库 | 包内未含 `lib/windows-amd64-mingw/`（本次机器上没有 mingw）；Windows 上跑 Go 绑定前按 `tools/stage-go-libs.sh` 自编 |
+| 静态内存版的池大小 | 编译期常量：包内两份静态内存库都按默认 **20 MiB** 编译（换尺寸要重编，见第 1 节）；池不支持运行时扩容 |
+| 静态内存版与绑定 | 五份绑定按默认（堆）版验证；静态内存版与绑定混用未实测 |
 
 ## 7. 校验
 
