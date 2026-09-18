@@ -789,6 +789,58 @@ ncl_err ncl_socket_peer_ip(const ncl_socket *s, char *buf, size_t buf_len)
     return ncl_socket_name_of(s, true, buf, buf_len);
 }
 
+ncl_err ncl_socket_local_ip_toward(const char *host, unsigned port, char *buf,
+                                   size_t buf_len)
+{
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    struct sockaddr_storage local;
+    socklen_t local_len = (socklen_t)sizeof(local);
+    ncl_sock_handle handle;
+    char service[16];
+    ncl_err rc = NCL_ERR_CONNECT;
+
+    if (host == NULL || host[0] == '\0' || buf == NULL || buf_len == 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    buf[0] = '\0';
+    if (ncl_socket_system_init() != NCL_OK) {
+        return NCL_ERR;
+    }
+    snprintf(service, sizeof(service), "%u", port != 0 ? port : 1u);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    if (getaddrinfo(host, service, &hints, &res) != 0 || res == NULL) {
+        if (res != NULL) {
+            freeaddrinfo(res);
+        }
+        return NCL_ERR_CONNECT;
+    }
+    handle = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (handle == NCL_INVALID_SOCK) {
+        freeaddrinfo(res);
+        return NCL_ERR_CONNECT;
+    }
+    /* connect() on UDP only installs a route; nothing is transmitted. */
+    if (connect(handle, res->ai_addr, (int)res->ai_addrlen) == 0 &&
+        getsockname(handle, (struct sockaddr *)&local, &local_len) == 0 &&
+        local.ss_family == AF_INET) {
+        if (getnameinfo((const struct sockaddr *)&local, local_len, buf,
+                        (socklen_t)buf_len, NULL, 0, NI_NUMERICHOST) == 0) {
+            rc = NCL_OK;
+        }
+    }
+    freeaddrinfo(res);
+#if defined(NCL_OS_WINDOWS)
+    closesocket(handle);
+#else
+    close(handle);
+#endif
+    return rc;
+}
+
 /* ------------------------------------------------------- interface listing - */
 
 static ncl_strbuf *g_ip_map;   /* scratch used by ncl_net_local_ipv4() */

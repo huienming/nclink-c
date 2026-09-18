@@ -175,9 +175,27 @@ ncl_err ncl_ftp_client_nlst(ncl_ftp_client *client, const char *path,
 
 typedef struct ncl_ftp_server ncl_ftp_server;
 
+/**
+ * One login of the FTP server.
+ *
+ * A server always accepts the account it was created with
+ * (ncl_ftp_server_options.user / password / root) plus every account added
+ * with ncl_ftp_server_add_account(), plus "anonymous" (which is served with the
+ * server defaults, as before). Accounts exist so that a file channel can hand
+ * the peer a credential of its own: revoking that one account does not touch
+ * the other peers logged in to the same endpoint.
+ */
 typedef struct {
-    /** Listening port; 0 picks NCL_FTP_SERVER_PORT, use ncl_ftp_server_port()
-     *  afterwards to discover an ephemeral one. */
+    const char *user;        /**< login name (required)                      */
+    const char *password;    /**< password (required, may be empty)          */
+    const char *root;        /**< login root; NULL = the root of the server  */
+    bool        allow_write; /**< STOR/APPE/DELE/RMD/MKD for this account    */
+} ncl_ftp_account;
+
+typedef struct {
+    /** Listening port. ncl_ftp_server_create() defaults to
+     *  NCL_FTP_SERVER_PORT; pass 0 to let the OS pick one, then read it back
+     *  with ncl_ftp_server_port(). */
     unsigned    port;
     /** Login root. NULL means ncl_env_root(). */
     const char *root;
@@ -205,6 +223,23 @@ void ncl_ftp_server_free(ncl_ftp_server *server);
 /** Bind and start accepting sessions. Returns NCL_ERR_CONNECT when the port is
  *  taken or binding fails. */
 ncl_err ncl_ftp_server_start(ncl_ftp_server *server);
+
+/**
+ * Register @p account (or update it in place when the user name is already
+ * taken). The strings are copied. Sessions that are already logged in keep the
+ * settings they logged in with; the next login sees the new ones.
+ */
+ncl_err ncl_ftp_server_add_account(ncl_ftp_server *server,
+                                   const ncl_ftp_account *account);
+
+/**
+ * Drop @p user and close its live sessions. The account the server was created
+ * with and "anonymous" cannot be removed.
+ */
+ncl_err ncl_ftp_server_remove_account(ncl_ftp_server *server, const char *user);
+
+/** Number of accounts added with ncl_ftp_server_add_account(). */
+size_t ncl_ftp_server_account_count(ncl_ftp_server *server);
 
 /** Stop accepting, close every session and join all threads. Idempotent. */
 void ncl_ftp_server_stop(ncl_ftp_server *server);

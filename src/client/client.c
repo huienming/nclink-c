@@ -15,6 +15,8 @@
 #include "nclink/ncl_topic.h"
 #include "nclink/ncl_env.h"
 
+#include "file/file_internal.h"
+
 struct ncl_client {
     char *sn;
     ncl_message_channel *channel; /**< borrowed */
@@ -39,6 +41,11 @@ struct ncl_client {
 
     /** File channel, when one is installed. */
     ncl_file_client_tool *file_tool;
+
+    /** File channel lease the handshake opened, plus the login the library
+     *  minted for it (both owned; written by file_channel.c). */
+    char *file_channel_id;
+    char *file_channel_login;
 
     ncl_client_event_fn event_handler;
     void               *event_user;
@@ -133,6 +140,8 @@ void ncl_client_free(ncl_client *client)
     ncl_mem_free(client->edge_response);
     ncl_mem_free(client->event_topic);
     ncl_mem_free(client->sample_topic);
+    ncl_mem_free(client->file_channel_id);
+    ncl_mem_free(client->file_channel_login);
     ncl_cache_free(client->message_map);
     ncl_cond_destroy(client->cond);
     ncl_mutex_destroy(client->mutex);
@@ -142,6 +151,46 @@ void ncl_client_free(ncl_client *client)
 const char *ncl_client_sn(const ncl_client *client)
 {
     return client != NULL ? client->sn : NULL;
+}
+
+const char *ncl_client_file_channel_lease(const ncl_client *client)
+{
+    return client != NULL ? client->file_channel_id : NULL;
+}
+
+const char *ncl_client_file_channel_login(const ncl_client *client)
+{
+    return client != NULL ? client->file_channel_login : NULL;
+}
+
+ncl_err ncl_client_set_file_channel_lease(ncl_client *client,
+                                          const char *channel_id,
+                                          const char *login)
+{
+    char *new_id = NULL;
+    char *new_login = NULL;
+
+    if (client == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (channel_id != NULL) {
+        new_id = ncl_strdup(channel_id);
+        if (new_id == NULL) {
+            return NCL_ERR_NOMEM;
+        }
+        if (login != NULL) {
+            new_login = ncl_strdup(login);
+            if (new_login == NULL) {
+                ncl_mem_free(new_id);
+                return NCL_ERR_NOMEM;
+            }
+        }
+    }
+    ncl_mem_free(client->file_channel_id);
+    ncl_mem_free(client->file_channel_login);
+    client->file_channel_id = new_id;
+    client->file_channel_login = new_login;
+    return NCL_OK;
 }
 
 ncl_err ncl_client_subscribe(ncl_client *client)

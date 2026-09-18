@@ -24,7 +24,7 @@ extern "C" {
  * Library version. The NC-Link specification revision implemented by this
  * library is still 3.0.0 (GB/T 41970-2022).
  */
-#define NCL_VERSION "3.3.0"
+#define NCL_VERSION "3.4.0"
 
 /* ------------------------------------------------------------------ error -- */
 typedef int ncl_err;
@@ -45,6 +45,7 @@ typedef int ncl_err;
 #define NCL_ERR_RANGE        (-11) /**< index outside bounds       */
 #define NCL_ERR_CONNECT      (-12) /**< transport connect failed   */
 #define NCL_ERR_CLOSED       (-13) /**< object already closed      */
+#define NCL_ERR_NO_CHANNEL   (-14) /**< no file transfer channel is open */
 
 /* Domain validation errors, one per NC-Link validity rule. */
 #define NCL_ERR_INVALID_CODE        (-100) /**< InvalidCodeException        */

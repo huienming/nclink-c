@@ -444,11 +444,20 @@ int main(int argc, char **argv)
     ncl_client_set_event_handler(client, on_event, NULL);
     ncl_client_subscribe_events(client, 2);
 
-    /* 8. 文件传输：写一个本地文件到设备，再读回来并列举目录。 */
+    /* 8. 文件传输：先把文件通道开起来（告诉设备往哪儿拨 FTP），再写一个本地
+     *    文件到设备、读回来并列举目录。通道没开时设备端会回 NoFileChannelException。 */
     {
         const char *text = "hello NC-Link\n";
         char staged[NCL_PATH_MAX_BUF];
         ncl_err rc;
+
+        /* 通道是租约：默认把本进程的 FTP 端点（ncl_env_root()，临时账号）交给
+         * 设备，host 取"到 broker 的本机地址"。对端不在这台机器上时用
+         * ncl_file_channel_options 里的 host / port 覆盖。 */
+        rc = ncl_client_open_file_channel(client, NULL);
+        if (rc != NCL_OK) {
+            ncl_log_error("打开文件通道失败: %s", ncl_err_name(rc));
+        }
 
         /* 约定：文件通道里的路径是相对于 <cwd>/<sn>/ 的，所以先把本地文件
          * 放到那个目录，再用同样的相对路径调用 write()。 */
@@ -495,7 +504,9 @@ int main(int argc, char **argv)
     ncl_client_unsubscribe_samples(client);
     ncl_log_info("共收到 %d 条事件、%d 条采样上报", g_events, g_samples);
 
-    /* 10. 释放：先撤掉文件通道与事件回调，再关掉整个 holder。 */
+    /* 10. 释放：先收回文件通道的租约（设备随即停用它的 FTP 连接），再关掉
+     *     整个 holder（holder 会一并停掉进程级 FTP 端点）。 */
+    ncl_client_close_file_channel(client);
     ncl_client_holder_shutdown();
     ncl_mqtt_config_free(&config);
     ncl_log_info("客户端已退出");

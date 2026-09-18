@@ -874,7 +874,9 @@ int main(int argc, char **argv)
         goto cleanup;
     }
     ncl_server_register_builtin_tool(server);   /* /nclinkServer/addSample 等 */
-    ncl_server_register_file_tool(server);      /* /CONTROLLER/FILE */
+    /* /CONTROLLER/FILE：文件方法（write/read/ll/...）要等对端用
+     * file/openFileChannel 开通道，或用 ncl_server_set_file_peer() 指定静态对端。 */
+    ncl_server_register_file_tool(server);
     if (!offline) {
         ncl_server_subscribe(server);           /* 离线没有请求主题可订 */
     }

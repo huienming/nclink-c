@@ -57,6 +57,8 @@ extern "C" {
 #define NCL_FILE_UPLOAD_DIR "/uploadFile"
 /** Key of the marker object that stands in for a file value. */
 #define NCL_FILE_MARKER "@file"
+/** Longest channel id a file channel handshake accepts. */
+#define NCL_FILE_CHANNEL_ID_MAX 96
 
 /* ====================================================== file attribute ==== */
 
@@ -278,22 +280,170 @@ void ncl_client_holder_stop_ftp(void);
  */
 ncl_err ncl_client_holder_restart(void);
 
+/** Broker URL the process wide client was initialised with; NULL before
+ *  ncl_client_holder_init*() succeeds. */
+const char *ncl_client_holder_server_uri(void);
+
+/* ========================================= client side file channel ======= */
+
+/**
+ * Settings of the client side FTP endpoint and of the channel it advertises,
+ * read from `<root>/conf/ftp.txt`.
+ *
+ * Everything in it is optional, and the file itself is: a missing file, a
+ * missing key or an empty value leaves that setting at its default, so a stale
+ * or half-written file can never make the library advertise a broken endpoint.
+ * It is read on every ncl_client_open_file_channel() and every
+ * ncl_client_holder_start_ftp*(), so an edit takes effect without a restart.
+ *
+ * ```json
+ * { "host": "10.0.0.7",      // address a device dials; absent = derived from the broker
+ *   "port": 2323,            // endpoint port; absent/0 = NCL_FTP_CLIENT_HOLDER_PORT
+ *   "advertisePort": 4023,   // port handed to the device; absent/0 = "port" (port mapping)
+ *   "root": "D:/share",      // endpoint login root; absent = ncl_env_root()
+ *   "userName": "nclink",    // endpoint account, also handed to the device;
+ *   "password": "secret",    //   absent = the library mints a per-channel account
+ *   "path": "V200583BC87",   // remote prefix the device works under; absent = its own SN
+ *   "force": true }          // replace a channel that another peer holds
+ * ```
+ *
+ * Callers override any of it through the ncl_file_channel_options they pass;
+ * the order is options > conf/ftp.txt > derived defaults.
+ */
+typedef struct {
+    unsigned port;           /**< endpoint port; 0 = the holder default (2323)   */
+    unsigned advertise_port; /**< port handed to the device; 0 = @p port          */
+    char    *root;           /**< endpoint login root; NULL = ncl_env_root()      */
+    char    *user;           /**< endpoint account / login handed to the device   */
+    char    *password;       /**< password of @p user; never NULL when user is    */
+    char    *host;           /**< address the device dials; NULL = derive it      */
+    char    *path;           /**< remote prefix; NULL = the device's own SN       */
+    bool     force;          /**< replace a channel that is already open          */
+} ncl_file_channel_config;
+
+/**
+ * Read `conf/ftp.txt` into @p out (memset first, then the file's values).
+ * Always leaves @p out usable: an absent or unparseable file yields the
+ * defaults and a warning, not an error. Release the strings with
+ * ncl_file_channel_config_free().
+ */
+ncl_err ncl_file_channel_config_read(ncl_file_channel_config *out);
+
+/** Write @p config to `conf/ftp.txt` (keys with a value only). */
+ncl_err ncl_file_channel_config_write(const ncl_file_channel_config *config);
+
+/** Release the strings of @p config and zero it. */
+void ncl_file_channel_config_free(ncl_file_channel_config *config);
+
+/**
+ * Where a channel tells the device to dial (file/openFileChannel).
+ *
+ * Every field is optional: NULL / 0 / false keep the default, so
+ * ncl_client_open_file_channel(client, NULL) is the whole story for a device
+ * that can reach this machine. The library then advertises the process wide FTP
+ * endpoint and mints a login of its own for the channel, so a revoked channel
+ * cannot be used to touch the other peers of the endpoint.
+ */
+typedef struct {
+    /**
+     * Address the device dials. NULL asks the routing table for the local
+     * address that reaches the broker (ncl_socket_local_ip_toward()); when that
+     * is a loopback address (broker on this machine) the first non-loopback
+     * IPv4 of the machine is used instead, and 127.0.0.1 is the last resort.
+     * Set it explicitly when the device reaches this machine through another
+     * address or a port mapping.
+     */
+    const char *host;
+    /** Port on @p host; 0 = the process wide FTP endpoint's port. */
+    unsigned    port;
+    /**
+     * Login handed to the device. NULL = the library adds an account to the
+     * endpoint (random password) and revokes it when the channel closes. Set it
+     * together with @p password to advertise an FTP server of your own.
+     */
+    const char *user;
+    /** Password for @p user; NULL = generated with the account. */
+    const char *password;
+    /**
+     * Lease name. NULL = derived from the serial number and the process id.
+     * Opening twice with the same name reuses the channel (the device keeps the
+     * endpoint it already has) instead of replacing it.
+     */
+    const char *channel_id;
+    /** Remote prefix the device works under; NULL = the device's own SN. */
+    const char *path;
+    /**
+     * Replace a channel that another lease holds. False is the polite default:
+     * the device refuses the handshake instead of dropping a peer that may be
+     * transferring right now.
+     */
+    bool        force;
+    /** Method call timeout; 0 = NCL_CLIENT_OPERATION_TIMEOUT. */
+    unsigned    timeout_ms;
+} ncl_file_channel_options;
+
+/** Zero @p options and install the documented defaults. */
+void ncl_file_channel_options_default(ncl_file_channel_options *options);
+
+/**
+ * Open (or refresh) the file channel of @p client: make sure the process wide
+ * FTP endpoint is running, then hand the device its endpoint with
+ * file/openFileChannel. @p options may be NULL (every default).
+ *
+ * The channel is a lease on the device: it stays until
+ * ncl_client_close_file_channel(), another peer replaces it (force), or the
+ * device restarts. Returns NCL_ERR_NO_CHANNEL when the device refuses the
+ * handshake (the log carries its reason).
+ */
+ncl_err ncl_client_open_file_channel(ncl_client *client,
+                                     const ncl_file_channel_options *options);
+
+/**
+ * Drop the channel of @p client: file/closeFileChannel, then revoke the login
+ * the library minted for it (which closes the device's live FTP session).
+ * Idempotent: no channel is not an error. The process wide FTP endpoint itself
+ * stays up until ncl_client_holder_stop_ftp() / shutdown.
+ */
+ncl_err ncl_client_close_file_channel(ncl_client *client);
+
+/** True when @p client holds a file channel. */
+bool ncl_client_file_channel_is_open(ncl_client *client);
+
+/** Copy the lease name of the channel into @p out; false when there is none. */
+bool ncl_client_file_channel_id(ncl_client *client, char *out, size_t out_len);
+
 /* ================================================= server integration ==== */
 
-/** Register the built in "file" tool on @p server. */
+/**
+ * Register the built in "file" tool on @p server.
+ *
+ * The tool exposes write / read / ll / mkdir / delete plus the channel
+ * handshake (file/openFileChannel, file/closeFileChannel). Registering it does
+ * not open a channel and does not start an FTP endpoint: until a peer opens a
+ * channel (or ncl_server_set_file_peer() names one), the file methods answer
+ * NCL_ERR_NO_CHANNEL.
+ */
 ncl_err ncl_server_register_file_tool(ncl_server *server);
 
 /**
- * Override the FTP endpoint of the peer the file channel talks to.
+ * Point the device at a fixed FTP endpoint (the "static peer"), for hosts that
+ * do not want the channel handshake.
  *
- * By default the device derives it from conf/mqtt.cfg: the host of the broker
- * URL, port 2323, user admin / password 123456 — which only works when the peer
- * runs on the broker host. Call this before the first file transfer to point at
- * the real endpoint (host is required; port 0, user or password NULL keep the
- * defaults). It replaces the FTP connection that is already open.
+ * This is the manual alternative to file/openFileChannel: the peer must be
+ * running an FTP server of its own (ncl_client_holder_start_ftp*()) and its
+ * layout has to match "/<sn>/...". Nothing is derived from conf/mqtt.cfg — that
+ * implicit path was removed in 3.4.0. host is required; port 0, user or
+ * password NULL keep the defaults. It replaces the FTP connection that is
+ * already open, and a later openFileChannel takes precedence over it.
  */
 ncl_err ncl_server_set_file_peer(ncl_server *server, const char *host, unsigned port,
                                  const char *user, const char *password);
+
+/** True when a channel is open (handshake) or a static peer is configured. */
+bool ncl_server_file_channel_is_open(ncl_server *server);
+
+/** Copy the open channel's id into @p out; false when no channel is open. */
+bool ncl_server_file_channel_id(ncl_server *server, char *out, size_t out_len);
 
 /**
  * Start the server side FTP endpoint: read bin/ftp.txt for the port and

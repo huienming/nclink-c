@@ -397,20 +397,36 @@ ncl_err ncl_file_client_tool_ll(ncl_file_client_tool *tool,
         const ncl_query_response_item *response_item =
             (const ncl_query_response_item *)
                 response->as.query_response.items.items[0];
-        ncl_json *values = response_item != NULL ? response_item->values : NULL;
-        ncl_json *first = values != NULL ? ncl_json_arr_get(values, 0) : NULL;
+        bool accepted = response_item != NULL &&
+                        (response_item->code == NULL ||
+                         ncl_check_is_code_ok(response_item->code));
 
-        if (first != NULL && ncl_json_type_of(first) == NCL_JSON_ARRAY) {
-            size_t i;
-            for (i = 0; i < ncl_json_arr_len(first); i++) {
-                ncl_file_attribute *attribute =
-                    ncl_file_attribute_from_json(ncl_json_arr_get(first, i));
-                if (attribute != NULL) {
-                    ncl_ptrvec_push(out, attribute);
+        if (!accepted) {
+            /* An empty list and a refused list look the same otherwise, and
+             * "the device has no peer for me" has to be visible. */
+            ncl_log_error("查询文件列表被拒绝: %s",
+                          response_item != NULL &&
+                                  response_item->reason != NULL
+                              ? response_item->reason
+                              : "?");
+        } else {
+            ncl_json *values =
+                response_item != NULL ? response_item->values : NULL;
+            ncl_json *first =
+                values != NULL ? ncl_json_arr_get(values, 0) : NULL;
+
+            if (first != NULL && ncl_json_type_of(first) == NCL_JSON_ARRAY) {
+                size_t i;
+                for (i = 0; i < ncl_json_arr_len(first); i++) {
+                    ncl_file_attribute *attribute =
+                        ncl_file_attribute_from_json(ncl_json_arr_get(first, i));
+                    if (attribute != NULL) {
+                        ncl_ptrvec_push(out, attribute);
+                    }
                 }
             }
+            rc = NCL_OK;
         }
-        rc = NCL_OK;
     } else {
         ncl_log_error("查询文件列表失败");
     }

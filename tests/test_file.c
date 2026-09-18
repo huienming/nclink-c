@@ -519,6 +519,58 @@ static void test_end_to_end(void)
         ncl_ftp_client_free(probe);
     }
 
+    /* ---- the handshake: without it the device has nobody to talk to ---- */
+    NCL_TEST_CASE("a file method without a channel is refused");
+    NCL_CHECK(!ncl_client_file_channel_is_open(client));
+    NCL_CHECK(!ncl_server_file_channel_is_open(server));
+    NCL_CHECK(ncl_client_write(client, "/data/report.txt") != NCL_OK);
+    {
+        ncl_ptrvec none;
+        ncl_ptrvec_init(&none, ncl_file_attribute_release);
+        NCL_CHECK(ncl_client_ll(client, "/", &none) != NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_ptrvec_len(&none), 0);
+        ncl_ptrvec_free(&none);
+    }
+
+    NCL_TEST_CASE("openFileChannel hands the device the endpoint");
+    {
+        char id[NCL_FILE_CHANNEL_ID_MAX];
+
+        NCL_CHECK_EQ_INT(ncl_client_open_file_channel(client, NULL), NCL_OK);
+        NCL_CHECK(ncl_client_file_channel_is_open(client));
+        NCL_CHECK(ncl_client_file_channel_id(client, id, sizeof(id)));
+        NCL_CHECK(id[0] != '\0');
+        /* The device answered by dialling it: it is the FTP peer now. */
+        NCL_CHECK(ncl_server_file_channel_is_open(server));
+    }
+
+    NCL_TEST_CASE("the same lease is reused, another one needs force");
+    {
+        ncl_file_channel_options options;
+        char lease[NCL_FILE_CHANNEL_ID_MAX];
+        char id[NCL_FILE_CHANNEL_ID_MAX];
+
+        NCL_CHECK(ncl_client_file_channel_id(client, lease, sizeof(lease)));
+        ncl_file_channel_options_default(&options);
+        options.channel_id = lease;
+        NCL_CHECK_EQ_INT(ncl_client_open_file_channel(client, &options), NCL_OK);
+        NCL_CHECK(ncl_client_file_channel_id(client, id, sizeof(id)));
+        NCL_CHECK_EQ_STR(id, lease);
+
+        /* A second lease is refused, and the open one survives the refusal. */
+        options.channel_id = "another-lease";
+        NCL_CHECK_EQ_INT(ncl_client_open_file_channel(client, &options),
+                         NCL_ERR_NO_CHANNEL);
+        NCL_CHECK(ncl_client_file_channel_id(client, id, sizeof(id)));
+        NCL_CHECK_EQ_STR(id, lease);
+        NCL_CHECK(ncl_server_file_channel_is_open(server));
+
+        options.force = true;
+        NCL_CHECK_EQ_INT(ncl_client_open_file_channel(client, &options), NCL_OK);
+        NCL_CHECK(ncl_client_file_channel_id(client, id, sizeof(id)));
+        NCL_CHECK_EQ_STR(id, "another-lease");
+    }
+
     make_payload(payload, sizeof(payload), 23);
     NCL_CHECK_EQ_INT(ncl_mkdir_p(TEST_SN "/data"), NCL_OK);
     snprintf(local, sizeof(local), "%s%cdata%creport.txt", TEST_SN,
@@ -639,6 +691,41 @@ static void test_end_to_end(void)
         }
     }
 
+    NCL_TEST_CASE("closeFileChannel revokes the login of the channel");
+    {
+        ncl_file_channel_options options;
+        ncl_ftp_client *probe;
+
+        /* Credentials of our own, so the test can log in with them. */
+        ncl_file_channel_options_default(&options);
+        options.user = "chan-user";
+        options.password = "chan-pass";
+        options.port = NCL_FTP_CLIENT_HOLDER_PORT;
+        options.force = true;
+        NCL_CHECK_EQ_INT(ncl_client_open_file_channel(client, &options), NCL_OK);
+        probe = ncl_ftp_client_create("127.0.0.1", NCL_FTP_CLIENT_HOLDER_PORT,
+                                      "chan-user", "chan-pass");
+        NCL_CHECK(probe != NULL);
+        if (probe != NULL) {
+            NCL_CHECK(ncl_ftp_client_detect(probe));
+            ncl_ftp_client_free(probe);
+        }
+
+        NCL_CHECK_EQ_INT(ncl_client_close_file_channel(client), NCL_OK);
+        NCL_CHECK(!ncl_client_file_channel_is_open(client));
+        NCL_CHECK(!ncl_server_file_channel_is_open(server));
+        probe = ncl_ftp_client_create("127.0.0.1", NCL_FTP_CLIENT_HOLDER_PORT,
+                                      "chan-user", "chan-pass");
+        NCL_CHECK(probe != NULL);
+        if (probe != NULL) {
+            NCL_CHECK(!ncl_ftp_client_detect(probe));
+            ncl_ftp_client_free(probe);
+        }
+        /* Closing twice is not an error, and the device is on its own again. */
+        NCL_CHECK_EQ_INT(ncl_client_close_file_channel(client), NCL_OK);
+        NCL_CHECK(ncl_client_write(client, "/data/report.txt") != NCL_OK);
+    }
+
     NCL_TEST_CASE("the device side FTP endpoint serves the installation root");
     NCL_CHECK_EQ_INT(ncl_server_start_ftp(server), NCL_OK);
     {
@@ -669,6 +756,143 @@ static void test_end_to_end(void)
     NCL_CHECK(link.published > 4);
 }
 
+/**
+ * conf/ftp.txt drives the client side endpoint and the handshake: the file's
+ * port and account make the endpoint listen there, its host and account go into
+ * openFileChannel, and a caller's own options still win over all of it.
+ */
+static void test_channel_config(void)
+{
+    direct_channel link;
+    ncl_server_options server_options;
+    ncl_server *server;
+    ncl_client *client;
+    ncl_file_channel_config config;
+    ncl_file_channel_config read_back;
+    ncl_file_channel_options options;
+    ncl_ftp_client *probe;
+    ncl_file_client_tool *tool;
+    char payload[256];
+    char local[512];
+
+    NCL_TEST_CASE("conf/ftp.txt round trips");
+    memset(&config, 0, sizeof(config));
+    config.host = (char *)"127.0.0.1";
+    config.port = 12388;
+    config.user = (char *)"cfg-user";
+    config.password = (char *)"cfg-pass";
+    config.force = true;
+    NCL_CHECK_EQ_INT(ncl_file_channel_config_write(&config), NCL_OK);
+    memset(&read_back, 0, sizeof(read_back));
+    NCL_CHECK_EQ_INT(ncl_file_channel_config_read(&read_back), NCL_OK);
+    NCL_CHECK_EQ_STR(read_back.host, "127.0.0.1");
+    NCL_CHECK_EQ_INT((int)read_back.port, 12388);
+    /* advertisePort is absent, so it follows port. */
+    NCL_CHECK_EQ_INT((int)read_back.advertise_port, 12388);
+    NCL_CHECK_EQ_STR(read_back.user, "cfg-user");
+    NCL_CHECK_EQ_STR(read_back.password, "cfg-pass");
+    NCL_CHECK(read_back.force);
+    NCL_CHECK(read_back.path == NULL);
+    NCL_CHECK(read_back.root == NULL);
+    ncl_file_channel_config_free(&read_back);
+
+    NCL_TEST_CASE("a broken conf/ftp.txt is ignored, not fatal");
+    NCL_CHECK_EQ_INT(ncl_file_write_all("conf/ftp.txt", "{ not json", 10),
+                     NCL_OK);
+    memset(&read_back, 0, sizeof(read_back));
+    NCL_CHECK_EQ_INT(ncl_file_channel_config_read(&read_back), NCL_OK);
+    NCL_CHECK(read_back.host == NULL && read_back.user == NULL &&
+              read_back.port == 0 && !read_back.force);
+    ncl_file_channel_config_free(&read_back);
+    NCL_CHECK_EQ_INT(ncl_file_channel_config_write(&config), NCL_OK);
+
+    NCL_TEST_CASE("the process wide endpoint follows conf/ftp.txt");
+    ncl_client_holder_stop_ftp();
+    NCL_CHECK_EQ_INT(ncl_client_holder_start_ftp(), NCL_OK);
+    probe = ncl_ftp_client_create("127.0.0.1", 12388, "cfg-user", "cfg-pass");
+    NCL_CHECK(probe != NULL);
+    if (probe != NULL) {
+        NCL_CHECK(ncl_ftp_client_detect(probe));
+        ncl_ftp_client_free(probe);
+    }
+
+    NCL_TEST_CASE("the handshake takes host and account from conf/ftp.txt");
+    memset(&link, 0, sizeof(link));
+    link.channel.publish = direct_publish;
+    link.channel.subscribe = direct_subscribe;
+    link.channel.unsubscribe = direct_unsubscribe;
+    memset(&server_options, 0, sizeof(server_options));
+    server_options.sn = TEST_SN;
+    server_options.model_json = kModelJson;
+    server = ncl_server_create(&server_options);
+    NCL_CHECK(server != NULL);
+    if (server == NULL) {
+        return;
+    }
+    link.server = server;
+    NCL_CHECK_EQ_INT(ncl_server_register_file_tool(server), NCL_OK);
+    client = ncl_client_create(TEST_SN, &link.channel);
+    NCL_CHECK(client != NULL);
+    if (client == NULL) {
+        ncl_server_free(server);
+        return;
+    }
+    link.client = client;
+    tool = ncl_file_client_tool_create(client);
+    NCL_CHECK(tool != NULL);
+    NCL_CHECK(ncl_file_client_tool_detect(tool));
+    ncl_client_set_file_tool(client, tool);
+    NCL_CHECK_EQ_INT(ncl_client_subscribe(client), NCL_OK);
+
+    /* NULL options: the file decides the address, the port and the account. */
+    NCL_CHECK_EQ_INT(ncl_client_open_file_channel(client, NULL), NCL_OK);
+    NCL_CHECK(ncl_server_file_channel_is_open(server));
+
+    /* A real transfer proves the device dialled 12388 with the file's account. */
+    make_payload(payload, sizeof(payload), 41);
+    NCL_CHECK_EQ_INT(ncl_mkdir_p(TEST_SN "/cfgdata"), NCL_OK);
+    snprintf(local, sizeof(local), "%s%ccfgdata%creport.bin", TEST_SN,
+             NCL_PATH_SEP, NCL_PATH_SEP);
+    NCL_CHECK_EQ_INT(ncl_file_write_all(local, payload, sizeof(payload)),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_client_write(client, "/cfgdata/report.bin"), NCL_OK);
+    NCL_CHECK(ncl_path_exists("uploadFile/cfgdata/report.bin"));
+
+    NCL_TEST_CASE("explicit options win over conf/ftp.txt");
+    ncl_file_channel_options_default(&options);
+    options.host = "127.0.0.1";
+    options.port = 12388;
+    options.user = "opt-user";
+    options.password = "opt-pass";
+    options.force = true;
+    NCL_CHECK_EQ_INT(ncl_client_open_file_channel(client, &options), NCL_OK);
+    probe = ncl_ftp_client_create("127.0.0.1", 12388, "opt-user", "opt-pass");
+    NCL_CHECK(probe != NULL);
+    if (probe != NULL) {
+        /* The caller's account was registered on our endpoint for the channel. */
+        NCL_CHECK(ncl_ftp_client_detect(probe));
+        ncl_ftp_client_free(probe);
+    }
+
+    NCL_TEST_CASE("close drops the channel and conf/ftp.txt stays optional");
+    NCL_CHECK_EQ_INT(ncl_client_close_file_channel(client), NCL_OK);
+    NCL_CHECK(!ncl_server_file_channel_is_open(server));
+    NCL_CHECK_EQ_INT(ncl_path_remove("conf/ftp.txt"), NCL_OK);
+    memset(&read_back, 0, sizeof(read_back));
+    NCL_CHECK_EQ_INT(ncl_file_channel_config_read(&read_back), NCL_OK);
+    NCL_CHECK(read_back.host == NULL && read_back.port == 0);
+    ncl_file_channel_config_free(&read_back);
+
+    {
+        ncl_file_client_tool *installed = ncl_client_file_tool(client);
+        ncl_client_set_file_tool(client, NULL);
+        ncl_file_client_tool_free(installed);
+    }
+    ncl_client_free(client);
+    ncl_server_free(server);
+    ncl_client_holder_stop_ftp();
+}
+
 /* ==================================================================== main */
 
 NCL_TEST_MAIN_BEGIN()
@@ -688,6 +912,7 @@ NCL_TEST_MAIN_BEGIN()
     test_ftp_info();
     test_server_file_tool();
     test_end_to_end();
+    test_channel_config();
 
     NCL_TEST_CASE("clean up");
     ncl_client_holder_stop_ftp();

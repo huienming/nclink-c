@@ -2,8 +2,11 @@
 /* Copyright (c) 2026 huienming */
 
 /*
- * NC-Link core - the "file" tool bound to /CONTROLLER/FILE, plus the two FTP
- * endpoints (device side and process wide client side).
+ * NC-Link core - the "file" tool bound to /CONTROLLER/FILE on the device side,
+ * plus the FTP endpoint the device itself can serve (ncl_server_start_ftp).
+ *
+ * The peer side of the channel - the process wide FTP endpoint and the
+ * openFileChannel / closeFileChannel handshake - lives in file_channel.c.
  */
 #include "file_internal.h"
 
@@ -30,7 +33,23 @@ typedef struct {
     unsigned              peer_port;
     char                 *peer_user;
     char                 *peer_password;
+    /*
+     * 文件通道（客户端用 file/openFileChannel 握手开的租约）。channel_id 非空
+     * 才代表"这条对端是握手开的"；静态对端（ncl_server_set_file_peer）没有 id。
+     */
+    char                 *channel_id;
+    int64_t               channel_opened_ms;
+    int64_t               channel_used_ms;
 } ncl_file_tool_state;
+
+/* Defined with the state wiring further down; the channel handshake (which
+ * comes first in this file) already needs them. */
+static void file_state_open_remote_prefix(ncl_file_tool_state *state,
+                                          const char *host, unsigned port,
+                                          const char *user, const char *password,
+                                          const char *prefix);
+static ncl_err file_state_require_peer(ncl_file_tool_state *state,
+                                       char **reason);
 
 /* --------------------------------------------------------------- helpers -- */
 
@@ -119,6 +138,153 @@ static ncl_json *file_marker(const char *path)
     return marker;
 }
 
+/* -------------------------------------------------------- file channel -- */
+
+/** Result of openFileChannel: the channel id plus whether it already existed. */
+static ncl_json *channel_result(const char *channel_id, bool reused)
+{
+    ncl_json *result = ncl_json_new_object();
+
+    if (result == NULL) {
+        return NULL;
+    }
+    ncl_json_obj_set_string(result, "channelId",
+                            channel_id != NULL ? channel_id : "");
+    ncl_json_obj_set(result, "reused", ncl_json_new_bool(reused));
+    return result;
+}
+
+/**
+ * "openFileChannel": the peer tells the device where to dial for bulk data.
+ *
+ * Params: host (required), port (required), user (required), password,
+ * channelId (required, the lease the peer keeps), path (optional remote prefix,
+ * default = this device's SN), force (replace a channel that is already open).
+ *
+ * Opening twice with the same channelId is a no-op that reports reused=true, so
+ * a peer may retry after a broker reconnect without disturbing a transfer that
+ * is in flight. A *different* channelId is refused unless force is set, because
+ * replacing the endpoint would abort whatever the current peer is doing.
+ */
+static ncl_err file_tool_open_channel(void *instance, const ncl_json *params,
+                                      ncl_json **result, char **reason)
+{
+    ncl_file_tool_state *state = (ncl_file_tool_state *)instance;
+    const char *host = ncl_params_string(params, "host");
+    const char *user = ncl_params_string(params, "user");
+    const char *password = ncl_params_string(params, "password");
+    const char *channel_id = ncl_params_string(params, "channelId");
+    const char *path = ncl_params_string(params, "path");
+    const char *prefix = NULL;
+    long long port = 0;
+    ncl_json *force_json = ncl_params_get(params, "force");
+    bool force = false;
+    bool reused = false;
+
+    if (state == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (force_json != NULL) {
+        (void)ncl_json_as_bool(force_json, &force);
+    }
+    if (ncl_str_is_blank(host) || ncl_str_is_blank(user) ||
+        ncl_str_is_blank(channel_id) ||
+        !ncl_params_int(params, "port", &port) || port <= 0 || port > 65535) {
+        if (reason != NULL) {
+            *reason = ncl_strdup("文件通道参数不完整（host/port/user/channelId）");
+        }
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (!ncl_str_is_blank(path)) {
+        prefix = path[0] == '/' ? path + 1 : path;
+    }
+
+    if (state->remote != NULL && state->channel_id != NULL) {
+        if (strcmp(state->channel_id, channel_id) == 0) {
+            /* Same lease: refresh the idle clock, do not touch the FTP client. */
+            state->channel_used_ms = ncl_time_monotonic_millis();
+            *result = channel_result(state->channel_id, true);
+            return *result != NULL ? NCL_OK : NCL_ERR_NOMEM;
+        }
+        if (!force) {
+            if (reason != NULL) {
+                char text[160];
+                snprintf(text, sizeof(text),
+                         "文件通道已被占用（channelId=%s），force=true 才能顶替",
+                         state->channel_id);
+                *reason = ncl_strdup(text);
+            }
+            return NCL_ERR_EXISTS;
+        }
+    }
+
+    file_state_open_remote_prefix(state, host, (unsigned)port, user, password,
+                                  prefix);
+    if (state->remote == NULL) {
+        if (reason != NULL) {
+            *reason = ncl_strdup("文件通道建立失败");
+        }
+        return NCL_ERR_NOMEM;
+    }
+    ncl_mem_free(state->channel_id);
+    state->channel_id = ncl_strdup(channel_id);
+    if (state->channel_id == NULL) {
+        ncl_server_file_tool_free(state->remote);
+        state->remote = NULL;
+        return NCL_ERR_NOMEM;
+    }
+    state->channel_opened_ms = ncl_time_monotonic_millis();
+    state->channel_used_ms = state->channel_opened_ms;
+    ncl_log_info("文件通道已打开: channelId=%s, 对端 %s:%lld, 前缀 /%s",
+                 state->channel_id, host, port,
+                 prefix != NULL ? prefix : (state->sn != NULL ? state->sn : ""));
+    *result = channel_result(state->channel_id, reused);
+    return *result != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
+/**
+ * "closeFileChannel": drop the FTP client of the channel. A channelId that does
+ * not match the open one is refused; no channel at all is not an error (the
+ * call is idempotent, which is what a peer wants when it is tearing down).
+ */
+static ncl_err file_tool_close_channel(void *instance, const ncl_json *params,
+                                       ncl_json **result, char **reason)
+{
+    ncl_file_tool_state *state = (ncl_file_tool_state *)instance;
+    const char *channel_id = ncl_params_string(params, "channelId");
+    ncl_json *closed;
+
+    if (state == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (state->channel_id == NULL) {
+        /* Nothing handshake opened: a static peer is not ours to close. */
+        *result = ncl_json_new_bool(false);
+        return *result != NULL ? NCL_OK : NCL_ERR_NOMEM;
+    }
+    if (!ncl_str_is_blank(channel_id) &&
+        strcmp(state->channel_id, channel_id) != 0) {
+        if (reason != NULL) {
+            char text[160];
+            snprintf(text, sizeof(text),
+                     "channelId 不匹配（当前 %s）", state->channel_id);
+            *reason = ncl_strdup(text);
+        }
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_log_info("文件通道已撤销: channelId=%s", state->channel_id);
+    ncl_mem_free(state->channel_id);
+    state->channel_id = NULL;
+    if (state->remote != NULL) {
+        /* In-flight operations fail from here on: that is the revocation. */
+        ncl_server_file_tool_free(state->remote);
+        state->remote = NULL;
+    }
+    closed = ncl_json_new_bool(true);
+    *result = closed;
+    return closed != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
 /* ----------------------------------------------------------- tool methods -- */
 
 /**
@@ -137,7 +303,12 @@ static ncl_err file_tool_write(void *instance, const ncl_json *params,
     char target[NCL_PATH_MAX_BUF];
     char *char_p;
 
-    (void)reason;
+    {
+        ncl_err peer_rc = file_state_require_peer(state, reason);
+        if (peer_rc != NCL_OK) {
+            return peer_rc;
+        }
+    }
     key = ncl_params_string(params, "key");
     if (key == NULL || ncl_str_is_blank(key)) {
         if (reason != NULL) {
@@ -189,7 +360,12 @@ static ncl_err file_tool_read(void *instance, const ncl_json *params,
     char path[NCL_PATH_MAX_BUF];
     char parent[NCL_PATH_MAX_BUF];
 
-    (void)reason;
+    {
+        ncl_err peer_rc = file_state_require_peer(state, reason);
+        if (peer_rc != NCL_OK) {
+            return peer_rc;
+        }
+    }
     if (!ncl_str_is_blank(localname)) {
         upload_path(path, sizeof(path), localname);
         *result = file_marker(path);
@@ -235,7 +411,12 @@ static ncl_err file_tool_ll(void *instance, const ncl_json *params,
     ncl_json *array = ncl_json_new_array();
     size_t i;
 
-    (void)reason;
+    {
+        ncl_err peer_rc = file_state_require_peer(state, reason);
+        if (peer_rc != NCL_OK) {
+            return peer_rc;
+        }
+    }
     if (array == NULL) {
         return NCL_ERR_NOMEM;
     }
@@ -270,7 +451,12 @@ static ncl_err file_tool_mkdir(void *instance, const ncl_json *params,
     ncl_file_tool_state *state = (ncl_file_tool_state *)instance;
     const char *key = ncl_params_string(params, "key");
 
-    (void)reason;
+    {
+        ncl_err peer_rc = file_state_require_peer(state, reason);
+        if (peer_rc != NCL_OK) {
+            return peer_rc;
+        }
+    }
     if (key == NULL) {
         *result = bool_result(false);
         return NCL_OK;
@@ -285,7 +471,12 @@ static ncl_err file_tool_delete(void *instance, const ncl_json *params,
     ncl_file_tool_state *state = (ncl_file_tool_state *)instance;
     const char *key = ncl_params_string(params, "key");
 
-    (void)reason;
+    {
+        ncl_err peer_rc = file_state_require_peer(state, reason);
+        if (peer_rc != NCL_OK) {
+            return peer_rc;
+        }
+    }
     if (key == NULL) {
         *result = bool_result(false);
         return NCL_OK;
@@ -324,12 +515,29 @@ static ncl_err file_tool_delete(void *instance, const ncl_json *params,
     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\","       \
     "\"minLength\":1}},\"required\":[\"key\"]}"
 
+#define FILE_CHANNEL_OPEN_SCHEMA                                               \
+    "{\"type\":\"object\",\"properties\":{"                                    \
+    "\"host\":{\"type\":\"string\",\"minLength\":1},"                          \
+    "\"port\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":65535},"         \
+    "\"user\":{\"type\":\"string\",\"minLength\":1},"                          \
+    "\"password\":{\"type\":\"string\"},"                                      \
+    "\"channelId\":{\"type\":\"string\",\"minLength\":1},"                     \
+    "\"path\":{\"type\":\"string\"},"                                          \
+    "\"force\":{\"type\":\"boolean\"}},"                                       \
+    "\"required\":[\"host\",\"port\",\"user\",\"channelId\"]}"
+
+#define FILE_CHANNEL_CLOSE_SCHEMA                                              \
+    "{\"type\":\"object\",\"properties\":{"                                    \
+    "\"channelId\":{\"type\":\"string\"}}}"
+
 static const ncl_tool_method k_file_methods[] = {
     {"write", file_tool_write, FILE_WRITE_SCHEMA},
     {"read", file_tool_read, FILE_READ_SCHEMA},
     {"ll", file_tool_ll, FILE_LL_SCHEMA},
     {"mkdir", file_tool_mkdir, FILE_KEY_SCHEMA},
-    {"delete", file_tool_delete, FILE_KEY_SCHEMA}};
+    {"delete", file_tool_delete, FILE_KEY_SCHEMA},
+    {"openFileChannel", file_tool_open_channel, FILE_CHANNEL_OPEN_SCHEMA},
+    {"closeFileChannel", file_tool_close_channel, FILE_CHANNEL_CLOSE_SCHEMA}};
 
 /* Every file tool method lives on CONTROLLER/FILE under a different operation,
  * which is exactly the "<operation>#<path>" binding key. */
@@ -340,7 +548,11 @@ static const ncl_tool_binding k_file_bindings[] = {
     {FILE_NODE_PATH, NCL_OP_GET_VALUE, "read", "file"},
     {FILE_NODE_PATH, NCL_OP_GET_ATTRIBUTES, "ll", "file"},
     {FILE_NODE_PATH, NCL_OP_ADD, "mkdir", "file"},
-    {FILE_NODE_PATH, NCL_OP_DELETE, "delete", "file"}};
+    {FILE_NODE_PATH, NCL_OP_DELETE, "delete", "file"},
+    /* The channel handshake is a function call on the file tool; the binding is
+     * what makes it reachable by name through the method call dispatcher. */
+    {FILE_NODE_PATH, NCL_OP_FUNC_CALL, "openFileChannel", "file"},
+    {FILE_NODE_PATH, NCL_OP_FUNC_CALL, "closeFileChannel", "file"}};
 
 /* ----------------------------------------------------------- state wiring -- */
 
@@ -363,13 +575,18 @@ static void file_state_destroy(void *data)
     ncl_mem_free(state->peer_host);
     ncl_mem_free(state->peer_user);
     ncl_mem_free(state->peer_password);
+    ncl_mem_free(state->channel_id);
     ncl_mem_free(state);
 }
 
-/** 用当前生效的对端参数建（或换）FTP 客户端。 */
-static void file_state_open_remote(ncl_file_tool_state *state, const char *host,
-                                   unsigned port, const char *user,
-                                   const char *password)
+/**
+ * 用当前生效的对端参数建（或换）FTP 客户端。@p prefix 是远端目录的前缀
+ * （协议里的 SN），NULL 表示用本机 SN。
+ */
+static void file_state_open_remote_prefix(ncl_file_tool_state *state,
+                                          const char *host, unsigned port,
+                                          const char *user, const char *password,
+                                          const char *prefix)
 {
     if (state == NULL) {
         return;
@@ -383,13 +600,40 @@ static void file_state_open_remote(ncl_file_tool_state *state, const char *host,
         port != 0 ? port : (unsigned)NCL_FTP_CLIENT_HOLDER_PORT,
         user != NULL && user[0] != '\0' ? user : NCL_FTP_DEFAULT_USER,
         password != NULL && password[0] != '\0' ? password : NCL_FTP_DEFAULT_PASSWORD,
-        state->sn);
+        prefix != NULL ? prefix : state->sn);
+}
+
+/** ncl_server_file_tool_create() with the device's own SN as the prefix. */
+static void file_state_open_remote(ncl_file_tool_state *state, const char *host,
+                                   unsigned port, const char *user,
+                                   const char *password)
+{
+    file_state_open_remote_prefix(state, host, port, user, password, NULL);
 }
 
 /**
- * Fetch (creating on demand) the file state of @p server. 对端默认按
- * "conf/mqtt.cfg 里 broker 的主机名 + 客户端侧 FTP 端口"推；先用
- * ncl_server_set_file_peer() 显式指定过就按指定的来。
+ * The file methods need a peer. An open channel (or a statically configured
+ * peer) is what makes state->remote non-NULL; without it there is nothing to
+ * talk to and the caller has to open a channel first.
+ */
+static ncl_err file_state_require_peer(ncl_file_tool_state *state, char **reason)
+{
+    if (state != NULL && state->remote != NULL) {
+        state->channel_used_ms = ncl_time_monotonic_millis();
+        return NCL_OK;
+    }
+    if (reason != NULL) {
+        *reason = ncl_strdup("文件通道未打开");
+    }
+    return NCL_ERR_NO_CHANNEL;
+}
+
+/**
+ * Fetch (creating on demand) the file state of @p server.
+ *
+ * 对端只有两种来源：ncl_server_set_file_peer() 显式指定的静态对端，或客户端
+ * 用 file/openFileChannel 握手开的文件通道。**不再**从 conf/mqtt.cfg 猜 broker
+ * 主机 + 2323 + admin/123456 —— 那条隐式路径在 3.4.0 删掉了。
  */
 static ncl_file_tool_state *file_state_of(ncl_server *server)
 {
@@ -417,25 +661,6 @@ static ncl_file_tool_state *file_state_of(ncl_server *server)
     if (state->peer_host != NULL) {
         file_state_open_remote(state, state->peer_host, state->peer_port,
                                state->peer_user, state->peer_password);
-    } else {
-        ncl_mqtt_config config;
-        char *host = NULL;
-        unsigned port = 0;
-        bool tls = false;
-
-        memset(&config, 0, sizeof(config));
-        if (ncl_mqtt_config_read(&config) == NCL_OK && config.url != NULL &&
-            ncl_socket_parse_url(config.url, &host, &port, &tls) == NCL_OK) {
-            /* Host part of the broker URL. */
-            file_state_open_remote(state, host, NCL_FTP_CLIENT_HOLDER_PORT, NULL,
-                                   NULL);
-        }
-        ncl_mem_free(host);
-        ncl_mqtt_config_free(&config);
-    }
-    if (state->remote == NULL) {
-        file_state_open_remote(state, "127.0.0.1", NCL_FTP_CLIENT_HOLDER_PORT, NULL,
-                               NULL);
     }
     if (ncl_server_set_user_data(server, state, file_state_destroy) != NCL_OK) {
         file_state_destroy(state);
@@ -452,7 +677,7 @@ ncl_err ncl_server_register_file_tool(ncl_server *server)
         return NCL_ERR_INVALID_ARG;
     }
     state = file_state_of(server);
-    if (state == NULL || state->remote == NULL) {
+    if (state == NULL) {
         return NCL_ERR_NOMEM;
     }
     return ncl_server_register_tool(server, "file", state, k_file_methods,
@@ -508,6 +733,34 @@ ncl_err ncl_server_set_file_peer(ncl_server *server, const char *host, unsigned 
     file_state_open_remote(state, state->peer_host, state->peer_port,
                            state->peer_user, state->peer_password);
     return state->remote != NULL ? NCL_OK : NCL_ERR_CONNECT;
+}
+
+bool ncl_server_file_channel_is_open(ncl_server *server)
+{
+    ncl_file_tool_state *state;
+
+    if (server == NULL) {
+        return false;
+    }
+    state = (ncl_file_tool_state *)ncl_server_user_data(server);
+    return state != NULL && state->remote != NULL;
+}
+
+bool ncl_server_file_channel_id(ncl_server *server, char *out, size_t out_len)
+{
+    ncl_file_tool_state *state;
+
+    if (server == NULL) {
+        return false;
+    }
+    state = (ncl_file_tool_state *)ncl_server_user_data(server);
+    if (state == NULL || state->channel_id == NULL) {
+        return false;
+    }
+    if (out != NULL && out_len > 0) {
+        snprintf(out, out_len, "%s", state->channel_id);
+    }
+    return true;
 }
 
 /* ---------------------------------------------------------- FTP endpoint -- */
@@ -568,53 +821,6 @@ void ncl_server_stop_ftp(ncl_server *server)
     if (state != NULL && state->ftp != NULL) {
         ncl_ftp_server_free(state->ftp);
         state->ftp = NULL;
-    }
-}
-
-/* ---------------------------------------------- process wide FTP endpoint -- */
-
-static ncl_ftp_server *g_holder_ftp;
-
-ncl_err ncl_client_holder_start_ftp_ex(unsigned port, const char *root,
-                                      const char *user, const char *password)
-{
-    ncl_ftp_server_options options;
-
-    if (g_holder_ftp != NULL && ncl_ftp_server_is_running(g_holder_ftp)) {
-        return NCL_OK;
-    }
-    memset(&options, 0, sizeof(options));
-    options.port = port != 0 ? port : (unsigned)NCL_FTP_CLIENT_HOLDER_PORT;
-    options.root = root != NULL && root[0] != '\0' ? root : ncl_env_root();
-    options.user = user != NULL && user[0] != '\0' ? user : NCL_FTP_DEFAULT_USER;
-    options.password = password != NULL && password[0] != '\0'
-                           ? password
-                           : NCL_FTP_DEFAULT_PASSWORD;
-    options.allow_write = true;
-    g_holder_ftp = ncl_ftp_server_create_ex(&options);
-    if (g_holder_ftp == NULL) {
-        return NCL_ERR_NOMEM;
-    }
-    if (ncl_ftp_server_start(g_holder_ftp) != NCL_OK) {
-        ncl_ftp_server_free(g_holder_ftp);
-        g_holder_ftp = NULL;
-        return NCL_ERR_CONNECT;
-    }
-    ncl_log_info("FTP服务器已启动,端口:%d", options.port);
-
-    return NCL_OK;
-}
-
-ncl_err ncl_client_holder_start_ftp(void)
-{
-    return ncl_client_holder_start_ftp_ex(0, NULL, NULL, NULL);
-}
-
-void ncl_client_holder_stop_ftp(void)
-{
-    if (g_holder_ftp != NULL) {
-        ncl_ftp_server_free(g_holder_ftp);
-        g_holder_ftp = NULL;
     }
 }
 

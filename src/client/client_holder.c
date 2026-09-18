@@ -37,6 +37,7 @@ typedef struct {
     ncl_mutex       *mutex;
     ncl_mqtt_client *mqtt;
     bool             initialised;
+    char            *server_uri; /**< broker URL this client was built with */
 
     ncl_client_slot *slots;
     size_t           slot_count;
@@ -324,6 +325,7 @@ ncl_err ncl_client_holder_init_ex(const ncl_client_holder_options *options_in)
     holder->channel.publish = ncl_holder_publish;
     holder->channel.subscribe = ncl_holder_subscribe;
     holder->channel.unsubscribe = ncl_holder_unsubscribe;
+    holder->server_uri = ncl_strdup(server_uri);
 
     /* Client identifier: a random UUID per connection. */
     if (ncl_uuid4(client_id, sizeof(client_id)) != NCL_OK) {
@@ -355,9 +357,11 @@ ncl_err ncl_client_holder_init_ex(const ncl_client_holder_options *options_in)
     }
 
     holder->mqtt = ncl_mqtt_client_create(&options);
-    if (holder->mqtt == NULL || holder->mutex == NULL) {
+    if (holder->mqtt == NULL || holder->mutex == NULL ||
+        holder->server_uri == NULL) {
         ncl_mqtt_client_destroy(holder->mqtt);
         ncl_mutex_destroy(holder->mutex);
+        ncl_mem_free(holder->server_uri);
         ncl_mem_free(holder);
         ncl_mutex_unlock(g_holder_mutex);
         return NCL_ERR;
@@ -370,6 +374,7 @@ ncl_err ncl_client_holder_init_ex(const ncl_client_holder_options *options_in)
                           ncl_mqtt_client_last_error(holder->mqtt));
             ncl_mqtt_client_destroy(holder->mqtt);
             ncl_mutex_destroy(holder->mutex);
+            ncl_mem_free(holder->server_uri);
             ncl_mem_free(holder);
             ncl_mutex_unlock(g_holder_mutex);
             return rc;
@@ -379,9 +384,11 @@ ncl_err ncl_client_holder_init_ex(const ncl_client_holder_options *options_in)
     holder->initialised = true;
     g_holder = holder;
     ncl_mutex_unlock(g_holder_mutex);
-    /* The FTP endpoint listens on port 2323; a port clash is reported but is
- * never fatal. */
-    ncl_client_holder_start_ftp();
+    /*
+     * No FTP endpoint is started here: bulk transfer now begins with
+     * ncl_client_open_file_channel(), which starts the listener on demand (or
+     * reuses the one started by ncl_client_holder_start_ftp*()).
+     */
     return NCL_OK;
 }
 
@@ -441,6 +448,21 @@ ncl_mqtt_client *ncl_client_holder_mqtt(void)
     return mqtt;
 }
 
+const char *ncl_client_holder_server_uri(void)
+{
+    const char *uri = NULL;
+
+    if (g_holder_mutex == NULL) {
+        return NULL;
+    }
+    ncl_mutex_lock(g_holder_mutex);
+    if (g_holder != NULL) {
+        uri = g_holder->server_uri;
+    }
+    ncl_mutex_unlock(g_holder_mutex);
+    return uri;
+}
+
 size_t ncl_client_holder_client_count(void)
 {
     size_t count = 0;
@@ -492,6 +514,8 @@ void ncl_client_holder_shutdown(void)
             ncl_mqtt_client_destroy(holder->mqtt);
             holder->mqtt = NULL; /* channel calls become no-ops */
         }
+        ncl_mem_free(holder->server_uri);
+        holder->server_uri = NULL;
         ncl_mutex_destroy(holder->mutex);
         ncl_mem_free(holder);
         ncl_log_info("客户端管理器已关闭");

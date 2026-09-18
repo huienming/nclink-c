@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(nclink-core-c
-        VERSION 3.3.0
+        VERSION 3.4.0
         DESCRIPTION "NC-Link core middleware - C implementation (GB/T 41970-2022)"
         LANGUAGES C)
 

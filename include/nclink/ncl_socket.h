@@ -96,6 +96,15 @@ ncl_err ncl_socket_local_ip(const ncl_socket *s, char *buf, size_t buf_len);
 ncl_err ncl_socket_peer_ip(const ncl_socket *s, char *buf, size_t buf_len);
 
 /**
+ * Local IPv4 address the routing table would use to reach @p host:@p port -
+ * the address a peer on that network can dial back. A connected UDP socket is
+ * used, so no packet leaves the machine. Returns NCL_ERR_CONNECT when @p host
+ * cannot be resolved or has no route.
+ */
+ncl_err ncl_socket_local_ip_toward(const char *host, unsigned port, char *buf,
+                                   size_t buf_len);
+
+/**
  * First non-loopback IPv4 address of an up interface: the address a peer on the
  * LAN should use. Returns NULL when there is none.
  */

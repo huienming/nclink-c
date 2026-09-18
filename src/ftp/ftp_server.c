@@ -221,6 +221,8 @@ typedef struct ncl_ftp_session {
     char                    cwd[NCL_FTP_PATH_MAX];
     bool                    logged_in;
     char                    username[64];
+    char                    root[NCL_FTP_PATH_MAX]; /**< login root          */
+    bool                    allow_write;            /**< of the login        */
     char                    rnfr[NCL_FTP_PATH_MAX];
     bool                    have_rnfr;
     bool                    type_binary;
@@ -241,6 +243,7 @@ struct ncl_ftp_server {
     char        *user;
     char        *password;
     bool         allow_write;
+    ncl_ptrvec   accounts; /**< ncl_ftp_account*, the added logins */
     unsigned     port;
     unsigned     idle_timeout_ms;
     unsigned     data_timeout_ms;
@@ -257,6 +260,42 @@ struct ncl_ftp_server {
 
 /* --------------------------------------------------------------- helpers -- */
 
+/** Owning copy of an ncl_ftp_account (the public struct is an input shape). */
+typedef struct {
+    char *user;
+    char *password;
+    char *root;
+    bool  allow_write;
+} ftp_account;
+
+static void ftp_account_destroy(void *data)
+{
+    ftp_account *account = (ftp_account *)data;
+
+    if (account == NULL) {
+        return;
+    }
+    ncl_mem_free(account->user);
+    ncl_mem_free(account->password);
+    ncl_mem_free(account->root);
+    ncl_mem_free(account);
+}
+
+/** Added account whose login name is @p user, or NULL. Caller holds the lock. */
+static ftp_account *server_find_account_locked(ncl_ftp_server *srv,
+                                               const char *user)
+{
+    size_t i;
+
+    for (i = 0; i < srv->accounts.len; i++) {
+        ftp_account *account = (ftp_account *)srv->accounts.items[i];
+        if (account->user != NULL && ncl_streq_ignore_case(account->user, user)) {
+            return account;
+        }
+    }
+    return NULL;
+}
+
 static void session_close_pasv(ncl_ftp_session *s)
 {
     if (s->pasv != NULL) {
@@ -271,7 +310,7 @@ static void session_local_path(const ncl_ftp_session *s, const char *virt,
 {
     size_t used = 0;
     const char *cursor;
-    const char *root = s->server->root;
+    const char *root = s->root;
     size_t root_len = strlen(root);
 
     while (root_len > 1 && (root[root_len - 1] == '/' ||
@@ -442,7 +481,7 @@ static bool session_require_login(ncl_ftp_session *s)
 
 static bool session_require_write(ncl_ftp_session *s)
 {
-    if (s->server->allow_write) {
+    if (s->allow_write) {
         return true;
     }
     session_reply(s, 550, "Permission denied.");
@@ -845,20 +884,55 @@ static void session_dispatch(ncl_ftp_session *s, const char *verb,
     ncl_mutex_unlock(s->server->lock);
 
     if (ncl_streq_ignore_case(verb, "USER")) {
+        bool known;
+
         snprintf(s->username, sizeof(s->username), "%s", arg != NULL ? arg : "");
         s->logged_in = false;
-        if (ncl_streq_ignore_case(s->username, s->server->user) ||
-            strcmp(s->username, "anonymous") == 0) {
+        ncl_mutex_lock(s->server->lock);
+        known = ncl_streq_ignore_case(s->username, s->server->user) ||
+                strcmp(s->username, "anonymous") == 0 ||
+                server_find_account_locked(s->server, s->username) != NULL;
+        ncl_mutex_unlock(s->server->lock);
+        if (known) {
             session_reply(s, 331, "Please specify the password.");
         } else {
             session_reply(s, 530, "Invalid user name.");
         }
     } else if (ncl_streq_ignore_case(verb, "PASS")) {
+        char root[NCL_FTP_PATH_MAX];
+        bool allow_write = false;
+        bool ok = false;
+        const char *password = arg != NULL ? arg : "";
+
+        root[0] = '\0';
+        ncl_mutex_lock(s->server->lock);
         if (ncl_streq_ignore_case(s->username, s->server->user) &&
-            strcmp(arg != NULL ? arg : "", s->server->password) == 0) {
-            s->logged_in = true;
-            session_reply(s, 230, "Login successful.");
+            strcmp(password, s->server->password) == 0) {
+            allow_write = s->server->allow_write;
+            ok = true;
         } else if (strcmp(s->username, "anonymous") == 0) {
+            allow_write = s->server->allow_write;
+            ok = true;
+        } else {
+            ftp_account *account =
+                server_find_account_locked(s->server, s->username);
+            if (account != NULL && strcmp(password, account->password) == 0) {
+                if (account->root != NULL) {
+                    snprintf(root, sizeof(root), "%s", account->root);
+                }
+                allow_write = account->allow_write;
+                ok = true;
+            }
+        }
+        if (ok && root[0] == '\0') {
+            snprintf(root, sizeof(root), "%s",
+                     s->server->root != NULL ? s->server->root : ".");
+        }
+        ncl_mutex_unlock(s->server->lock);
+
+        if (ok) {
+            snprintf(s->root, sizeof(s->root), "%s", root);
+            s->allow_write = allow_write;
             s->logged_in = true;
             session_reply(s, 230, "Login successful.");
         } else {
@@ -1089,6 +1163,9 @@ static void server_accept_thread(void *arg)
         session->server = srv;
         session->ctrl = ctrl;
         session->type_binary = true;
+        session->allow_write = srv->allow_write;
+        snprintf(session->root, sizeof(session->root), "%s",
+                 srv->root != NULL ? srv->root : ".");
         snprintf(session->cwd, sizeof(session->cwd), "/");
         ncl_ftp_reader_init(&session->reader, ctrl);
 
@@ -1144,12 +1221,106 @@ ncl_ftp_server *ncl_ftp_server_create_ex(const ncl_ftp_server_options *options)
     srv->data_timeout_ms = 30000u;
     srv->lock = ncl_mutex_create();
     ncl_ptrvec_init(&srv->sessions, NULL);
+    ncl_ptrvec_init(&srv->accounts, ftp_account_destroy);
     if (srv->root == NULL || srv->user == NULL || srv->password == NULL ||
         srv->lock == NULL) {
         ncl_ftp_server_free(srv);
         return NULL;
     }
     return srv;
+}
+
+ncl_err ncl_ftp_server_add_account(ncl_ftp_server *srv,
+                                   const ncl_ftp_account *account)
+{
+    ftp_account *copy;
+
+    if (srv == NULL || account == NULL || ncl_str_is_blank(account->user) ||
+        account->password == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    copy = (ftp_account *)ncl_mem_calloc(1, sizeof(*copy));
+    if (copy == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    copy->user = ncl_strdup(account->user);
+    copy->password = ncl_strdup(account->password);
+    copy->root = account->root != NULL ? ncl_strdup(account->root) : NULL;
+    copy->allow_write = account->allow_write;
+    if (copy->user == NULL || copy->password == NULL ||
+        (account->root != NULL && copy->root == NULL)) {
+        ftp_account_destroy(copy);
+        return NCL_ERR_NOMEM;
+    }
+
+    ncl_mutex_lock(srv->lock);
+    {
+        ftp_account *existing = server_find_account_locked(srv, copy->user);
+        if (existing != NULL) {
+            /* Same login name: update in place, so the list does not grow. */
+            ncl_mem_free(existing->password);
+            existing->password = copy->password;
+            ncl_mem_free(existing->root);
+            existing->root = copy->root;
+            existing->allow_write = copy->allow_write;
+            ncl_mem_free(copy->user);
+            ncl_mem_free(copy);
+        } else if (ncl_ptrvec_push(&srv->accounts, copy) != NCL_OK) {
+            ncl_mutex_unlock(srv->lock);
+            ftp_account_destroy(copy);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    ncl_mutex_unlock(srv->lock);
+    return NCL_OK;
+}
+
+ncl_err ncl_ftp_server_remove_account(ncl_ftp_server *srv, const char *user)
+{
+    bool found = false;
+    size_t i;
+
+    if (srv == NULL || ncl_str_is_blank(user)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(srv->lock);
+    for (i = 0; i < srv->accounts.len; i++) {
+        ftp_account *account = (ftp_account *)srv->accounts.items[i];
+        if (account->user == NULL ||
+            !ncl_streq_ignore_case(account->user, user)) {
+            continue;
+        }
+        ftp_account_destroy(account);
+        for (; i + 1 < srv->accounts.len; i++) {
+            srv->accounts.items[i] = srv->accounts.items[i + 1];
+        }
+        srv->accounts.len--;
+        found = true;
+        break;
+    }
+    /* A revoked credential must not keep its control connection alive. */
+    for (i = 0; i < srv->sessions.len; i++) {
+        ncl_ftp_session *s = (ncl_ftp_session *)srv->sessions.items[i];
+        if (s->logged_in && ncl_streq_ignore_case(s->username, user) &&
+            s->ctrl != NULL) {
+            ncl_socket_shutdown(s->ctrl);
+        }
+    }
+    ncl_mutex_unlock(srv->lock);
+    return found ? NCL_OK : NCL_ERR_NOT_FOUND;
+}
+
+size_t ncl_ftp_server_account_count(ncl_ftp_server *srv)
+{
+    size_t count;
+
+    if (srv == NULL) {
+        return 0;
+    }
+    ncl_mutex_lock(srv->lock);
+    count = srv->accounts.len;
+    ncl_mutex_unlock(srv->lock);
+    return count;
 }
 
 ncl_err ncl_ftp_server_start(ncl_ftp_server *srv)
@@ -1229,6 +1400,7 @@ void ncl_ftp_server_free(ncl_ftp_server *srv)
     }
     ncl_ftp_server_stop(srv);
     ncl_ptrvec_free(&srv->sessions);
+    ncl_ptrvec_free(&srv->accounts);
     ncl_mem_free(srv->root);
     ncl_mem_free(srv->user);
     ncl_mem_free(srv->password);
