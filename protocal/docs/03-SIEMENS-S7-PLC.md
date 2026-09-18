@@ -1,0 +1,166 @@
+# 03 · 西门子 S7 PLC（S7comm over ISO-TSAP）实现规格书
+
+> **证据**：🟢 python-snap7 / pycomm3 源码（COTP + S7comm 完整实现）
+> **定位**：S7-200/300/400/1200/1500 全系标准协议（840D 的 PLC 层同源）
+
+---
+
+## 1. 速查
+
+| 项 | 值 |
+|---|---|
+| 端口 | **TCP 102**（ISO-TSAP） |
+| 协议栈 | `TCP → TPKT(ISO 8073) → COTP → S7comm` |
+| 字节序 | **大端**（S7comm 内部） |
+| 机架/槽位 | S7-300/400：rack=0, slot=2；S7-1200/1500：rack=0, slot=1 |
+| 字节序协商 | PDU 大小协商：`COTP_PARAM_PDU_SIZE = 0xC0` |
+|参考实现| `python-snap7`（**官方 C++ 库封装**）· `pycomm3`（纯 Python） |
+| 完整函数表 | snap7 全表（原始素材未随本目录提供） |
+
+---
+
+## 2. 连接建立（三步握手）
+
+```
+① TCP connect(ip, 102)
+② COTP Connection Request (CR, 0xE0):
+   ISO-TSAP 参数：CALLING_TSAP=0x0100, CALLED_TSAP=0x0302(rack0/slot2) 或 0x0301(slot1)
+   协商 PDU 大小（S_512=0x09 / S_1024=0x0A / S_2048=0x0B …）
+③ COTP Connection Confirm (CC, 0xD0) ← 设备返回
+④ S7comm 通信建立：Job = Setup Communication (0xF0 0x00)
+   参数：MaxAmQCalling / MaxAmQCalled / PDU Length（协商结果，常见 480 / 960）
+```
+
+**COTP 报文类型**（`snap7/connection.py`）：
+| 值 | 名称 |
+|---|---|
+| `0xE0` | `COTP_CR` 连接请求 |
+| `0xD0` | `COTP_CC` 连接确认 |
+| `0x80` | `COTP_DR` 断开请求 |
+| `0xF0` | `COTP_DT` 数据传输 |
+
+**PDU 尺寸协商值**：`S_128=0x07, S_256=0x08, S_512=0x09, S_1024=0x0A, S_2048=0x0B, S_4096=0x0C, S_8192=0x0D`
+
+---
+
+## 3. 帧格式
+
+### 3.1 TPKT（ISO-on-TCP，4 字节）
+
+```
+0  1  版本（0x03）
+1  1  保留（0x00）
+2  2  总长度（大端，含 TPKT 头）—— **注意：按总长发送，接收侧要按此分包**
+```
+
+### 3.2 S7comm 头（10 字节）
+
+```
+0   1  协议 ID（0x32）
+1   1  ROSCTR：0x01=Job 0x02=Ack 0x03=Ack-Data 0x07=UserData
+2   2  冗余标识（0x0000）
+4   2  PDU 引用（自增，响应回显）
+6   2  参数长度（大端）
+8   2  数据长度（大端）
+10  N  参数区
+..  M  数据区
+```
+
+### 3.3 常用功能码（参数区首字节）
+
+| 功能 | 码 | 说明 |
+|---|---|---|
+| Read Var | `0x04` | **读**（可一次多地址） |
+| Write Var | `0x05` | **写** |
+| Setup Communication | `0xF0` | 建链 |
+| Read SZL | `0x1C` | 系统状态列表（型号/序列号） |
+| PLC Stop | `0x29` | **停机（危险）** |
+| Request Download / Download Block / Download Ended | `0x1A`/`0x1B`/`0x1C` | 程序下载 |
+| Start Upload / Upload / End Upload | `0x1D`/`0x1E`/`0x1F` | 程序上传 |
+
+### 3.4 数据项（Item）格式（Read/Write Var 内）
+
+```
+0x12          变量规格（VARIABLE_SPECIFICATION）
+0x0A          后续长度
+0x10          Syntax ID = S7ANY
+0x02          传输尺寸：01=BIT 02=BYTE 03=CHAR 04=WORD 05=INT 06=DWORD 07=DINT 08=REAL
+2 bytes       长度（位访问时为位数）
+2 bytes       DB 号（非 DB 区填 0）
+1 byte        区域：0x81=I 输入 0x82=Q 输出 0x83=M 标志 0x84=DB 0x1C=计数器 0x1D=定时器
+3 bytes       地址（位×8 + 字节偏移）
+```
+
+---
+
+## 4. 地址格式与数据类型
+
+| 地址 | 区域码 | 示例 |
+|---|---|---|
+| I / E（输入） | `0x81` | `I0.0`, `IB10`, `IW20`, `ID30` |
+| Q / A（输出） | `0x82` | `Q0.0`, `QB10` |
+| M（标志） | `0x83` | `M0.0`, `MB10`, `MW20`, `MD30` |
+| DB（数据块） | `0x84` | `DB1.DBX0.0`, `DB1.DBB10`, `DB1.DBW20`, `DB1.DBD30` |
+| T（定时器） | `0x1D` | `T1` |
+| C（计数器） | `0x1C` | `C1` |
+
+**数据类型**：BIT · BYTE · WORD(16) · DWORD(32) · INT/DINT（有符号）· REAL(32 浮点，IEEE754 大端) · STRING（S7 格式：2 字节头 + 字符）
+
+**地址换算**：位地址 = `字节偏移 × 8 + 位号`（Read Var 的地址字段是位地址）
+
+---
+
+## 5. 读写流程
+
+```
+读 DB1.DBD0（REAL）:
+  TPKT(03 00 00 1F) + S7(32 01 00 00 <pduRef> 00 0E 00 00)
+  + 04 01                      # Read Var, 1 item
+  + 12 0A 10 08 00 04 00 01 84 00 00 00    # S7ANY, REAL, len=4, DB=1, area=0x84, addr=0×8
+
+写 M10.0 = 1:
+  同结构，功能码 05，数据区：00 04 00 01 00 03 00 01 01  (bit, 1 byte, 0x01=ON)
+```
+
+**批量读**：一次 Read Var 可带多个 Item（受 PDU 尺寸限制，500 字节 PDU 约能放 20-30 个 Item）。
+
+---
+
+## 6. 错误码（S7 返回错误类）
+
+| 错误类 | 码 | 含义 |
+|---|---|---|
+| 0x81 | Application relationship | 连接问题 |
+| 0x82 | Object definition | 对象不存在 |
+| 0x83 | No resources | 资源不足 |
+| 0x84 | Error on service processing | **服务处理错误（含地址越界）** |
+| 0x85 | Error on supplies | — |
+| 0x87 | Access error | **访问错误（权限/不存在）** |
+| 错误码 | 0x05 | Address out of range（地址越界） |
+| | 0x06 | Data type not supported |
+| | 0x0A | Object does not exist（**最常见：DB 不存在/地址错**） |
+
+**S7-1200/1500 特例**：默认**禁止 PUT/GET**（需在 TIA Portal 里勾选"允许来自远程对象的 PUT/GET 通信访问"）；且 DB 需要关闭"优化块访问"才能按绝对地址读。
+
+---
+
+## 7. 实现坑
+
+1. **S7-1200/1500 的 PUT/GET 开关**（见上）—— 90% 的"连得上读不到"都是这个。
+2. **优化块访问（Optimized block access）**：DB 开了优化就不能按 DB1.DBD 绝对地址读，必须用符号名（需 S7comm-plus / 或改设置）。
+3. **PDU 尺寸决定单次读取上限**：协商后 PDU=480 时单 Item 数据 ≤ ~222 字节；超了要分片。
+4. **TPKT 长度包含自身 4 字节**，S7 头里的参数/数据长度**不含** TPKT 头 —— 三个长度别混。
+5. **PDU 引用必须回显匹配**，否则乱序响应会错位（并发请求时尤其重要）。
+6. **S7-300 的槽位是 2, S7-1200/1500 是 1**（TSAP 0x0302 vs 0x0301）。
+7. **REAL 是大端 IEEE754**，跨平台解析注意；STRING 有 2 字节头（最大长度/当前长度）。
+
+---
+
+## 8. 参考实现
+
+| 来源 | 说明 |
+|---|---|
+| `supp/python_snap7-3.1.2` | 完整实现：`connection.py`（COTP/TPKT 分帧）· `client.py`（业务，135 个 `Cli_*` 函数）· `error.py`（错误码表） |
+| `supp/pycomm3-1.2.16` | 纯 Python 实现（含 CIP，可对照） |
+| 商业库对照 | `SiemensS7Net`（含 S7-200/300/400/1200/1500 语义差异处理） |
+| 参考实现侧 | `/Siemens/S7/*` 驱动（端口 102） |
