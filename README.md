@@ -82,10 +82,10 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### Linux（已验证：gcc 13.4，22/22 测试通过）
+### Linux（已验证：gcc 13.4，25/25 测试通过）
 
-容器内 gcc 13 复验：全量 **24/24**（含新的 `mem`、`mem_mc`），静态池 64 KiB / 20 MiB
-同样 **24/24**，且蒙特卡洛统计与 MSVC 逐位一致；对 Mosquitto 2.1.2 与 EMQX 5.8.9 的
+容器内 gcc 13 复验：全量 **25/25**（含新的 `mem`、`mem_mc`、`mem_mt`），静态池 64 KiB / 20 MiB
+同样 **25/25**，且蒙特卡洛统计与 MSVC 逐位一致；对 Mosquitto 2.1.2 与 EMQX 5.8.9 的
 真 broker 互操作各 44 项检查全过。内存门禁：`./tools/asan-linux.sh --docker`
 （ASan + LeakSanitizer）。
 
@@ -190,7 +190,7 @@ docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh
 库内的 471 处分配已经全部走 `ncl_mem_*()` 这一层，池耗尽返回 `NCL_ERR_NOMEM` 而不是
 回退到堆；池用**最佳适配 + 释放时双向合并**，所以同一套流量反复跑不会留下永久空洞
 （`tests/test_mem.c` 有逐轮断言的用例，`tests/test_mem_mc.c` 是蒙特卡洛压测）。实测全量
-测试 **64 KiB 池 24/24 通过、零拒绝**
+测试 **64 KiB 池 25/25 通过、零拒绝**
 （设备端常见的 model + message + client/server + mqtt 组合只需 32 KiB 上下，文件搬运
 是唯一的大户）。池大小、峰值、碎片诊断（拒绝时的空闲快照）与线程模型见手册 4.9。
 

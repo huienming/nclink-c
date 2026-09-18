@@ -91,7 +91,13 @@ const char *ncl_err_name(ncl_err err);
 /** Allocate @p size bytes, or NULL when the allocator is exhausted. */
 void *ncl_mem_alloc(size_t size);
 
-/** Every pointer handed out by ncl_mem_*() is aligned to at least this. */
+/**
+ * Alignment of a block in the static pool: every pointer the pool hands out is
+ * a multiple of this. The heap build forwards to the C runtime, so there the
+ * guarantee is whatever that allocator gives (16 bytes on x64, 8 bytes for a
+ * small block on Win32) - the same thing a caller compiled against malloc()
+ * would already assume.
+ */
 #define NCL_MEM_ALIGNMENT 16u
 
 /** Allocate @p count * @p size zeroed bytes, or NULL (with overflow check). */

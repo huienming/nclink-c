@@ -60,7 +60,7 @@ examples/           两个可运行示例：设备端 / 客户端
 MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 
 src/<模块>/         实现，共 13 个模块目录        ← 以下仅源码仓库有
-tests/              24 个测试套件（含 mem 分配器不变量、mem_mc 蒙特卡洛压测，以及可选的
+tests/              25 个测试套件（含 mem 分配器不变量、mem_mc 蒙特卡洛、mem_mt 并发压测，以及可选的
                     broker 互操作与 TLS 套件）+ 协议黄金样本
 tools/              许可头检查、broker 互操作、文档生成与发布打包脚本
 build.ps1           Windows 一键：配置 + 编译 + ctest
@@ -89,10 +89,10 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### 2.3 Linux（已验证：gcc 13.4，22/22 测试通过）
+### 2.3 Linux（已验证：gcc 13.4，25/25 测试通过）
 
-补充验证（gcc 13，容器内，2026-09-17）：`./build-linux.sh` 全量 **24/24 通过**；
-静态池版 `NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536` 与默认 20 MiB 也都是 **24/24**，
+补充验证（gcc 13，容器内，2026-09-17）：`./build-linux.sh` 全量 **25/25 通过**；
+静态池版 `NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536` 与默认 20 MiB 也都是 **25/25**，
 且 `mem_mc` 的统计与 Windows/MSVC 逐位一致（确定性序列）。真 broker 互操作
 （`tests/test_broker`）对 **Mosquitto 2.1.2** 与 **EMQX 5.8.9** 各 **44 项检查全过**。
 
@@ -1178,8 +1178,8 @@ ncl_mem: static-pool peak 25632 of 65536 bytes, live 269 blocks, 3236 allocation
 | event | 14416 | 768 | model | 10368 | 1024 |
 | client | 13344 | 2600 | config | 6592 | 2760 |
 
-- 实测边界：**64 KiB 池全量 24/24 通过、零拒绝**；32 KiB 时 21/24（message、ftp、file
-  三条被拒，且拒绝快照显示是"总空闲都不够"，即尺寸问题；加上尺寸类后是 **22/24**，
+- 实测边界：**64 KiB 池全量 25/25 通过、零拒绝**；32 KiB 时 22/25（message、ftp、file
+  三条被拒，且拒绝快照显示是"总空闲都不够"，即尺寸问题；加上尺寸类后是 **23/25**，
   `message` 通过，见 4.9.2）。设备端常见组合
   （model + message + client/server + mqtt）在 32 KiB 上下就够，文件搬运是唯一的大户；
   默认的 20 MiB 是"先跑通"的余量口径。
@@ -1308,8 +1308,8 @@ ncl_mem: static-pool peak 25632 of 65536 bytes, live 269 blocks, 3236 allocation
 | file | 57584 | 48272 | 16.2% | ftp | 44384 | 43520 | 1.9% |
 
 设备端那几条主力路径都在 **29%～32%**，与设计预期一致；`ftp` 收益小是因为它几乎全是
-16 KiB 的大块（本来就不进尺寸类）。**池大小的边界也跟着变了**：32 KiB 池从 21/24 变成
-**22/24**（`message` 现在能过了，只剩 ftp/file 需要大块连续空间），64 KiB 仍是 24/24。
+16 KiB 的大块（本来就不进尺寸类）。**池大小的边界也跟着变了**：32 KiB 池从 22/25 变成
+**23/25**（`message` 现在能过了，只剩 ftp/file 需要大块连续空间），64 KiB 仍是 25/25。
 
 度量口径提醒：`in_use_bytes` 只算载荷，**不含块头**，因此它天然偏向通用区；要比较
 "池到底省没省"，看 `footprint_bytes` / `peak_footprint_bytes`（载荷 + 每块 32 字节
