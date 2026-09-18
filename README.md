@@ -27,7 +27,7 @@ nclink-c/
 │   ├── ncl_codec.h        # 十六进制 / zlib 编解码
 │   ├── ncl_mqtt.h         # MQTT 5.0 报文编解码
 │   ├── ncl_socket.h       # 跨平台 TCP 套接字
-│   ├── ncl_client.h       # NC-Link 客户端 API（单设备客户端 / 进程级管理器）
+│   ├── ncl_client.h       # NC-Link 客户端 API
 │   ├── ncl_server.h       # NC-Link 服务端（工具注册、请求分发、采样管理）
 │   ├── ncl_http.h         # HTTP/1.1 服务端（路由、请求解析、应答）
 │   ├── ncl_rest.h         # REST 层：应答封装、/api/schema、Swagger 页面
