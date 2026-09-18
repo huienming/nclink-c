@@ -778,18 +778,44 @@ SN 是设备身份，也是所有主题的地址。两种来源必须分清：
 | `Query/Request/<sn>` / `Query/Response/<sn>` | 客户端 → 设备 | 读值 |
 | `Set/Request/<sn>` / `Set/Response/<sn>` | 客户端 → 设备 | 写值 |
 | `Probe/Query/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 探测（回传模型/版本） |
-| `Method/Call/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 方法调用 |
+| `Method/Call/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 方法调用（`async: true` 时异步） |
+| `Method/Status/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 异步调用的进度（按 `handler`） |
+| `Method/Result/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 异步调用的结果（按 `handler`） |
 | `Sample/<sn>/<通道id>` | 设备 → 订阅方 | 采样上报 |
 | `Event/<sn>` | 设备 → 订阅方 | 事件推送 |
 | `Ping/<sn>` / `Pong/<sn>` | 双向 | 心跳 |
 
-设备端 `ncl_server_subscribe()` 会订阅 6 个请求主题；客户端
-`ncl_client_subscribe()` 订阅 6 个响应主题，事件主题需要单独
+设备端 `ncl_server_subscribe()` 会订阅 8 个请求主题（含 Status/Result 两对）；客户端
+`ncl_client_subscribe()` 订阅 8 个响应主题，事件主题需要单独
 `ncl_client_subscribe_events()`。
+
+**异步方法调用**：方法执行时间可能很长，所以请求可以带 `async`（报文键就叫 `async`；
+历史版本里这个键拼成 `aysnc`，解析时两个都认）：
+
+```c
+/* 客户端：发一个异步调用，立刻拿句柄 */
+ncl_message *request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+ncl_message_set_method(request, "/plc/grind");
+ncl_client_method_call_async(client, request, 5000, &ack);   /* ack: code=OK + handler */
+char handler[64];
+snprintf(handler, sizeof(handler), "%s", ncl_message_handler(ack));   /* 借用指针 */
+
+/* 进度：跑着 status=executing、完成 stopped，process 由宿主可选上报 */
+ncl_client_method_status(client, sn, handler, 5000, &status);
+
+/* 结果：未完成回 code=PENDING（不带 result），完成后回 code + return + result
+ * （finished / error），并且这个句柄同时被释放 */
+ncl_client_method_result(client, sn, handler, 5000, &result);
+```
+
+设备端不用做任何异步的事：工具方法就是普通函数，`ncl_server` 把它丢进共享线程池、
+生成句柄、登记状态与结果，并负责回答上面两条查询；想报进度再调
+`ncl_server_report_method_progress(server, handler, process, status)`（可选）。
+句柄表在 `ncl_server_free()` 时安全回收（正在跑的交给 worker 自己释放）。
 
 ### 4.2 消息与消息项
 
-一个 `ncl_message` 对应一种 NC-Link 报文（18 种），字段用 `ncl_message_set_*`
+一个 `ncl_message` 对应一种 NC-Link 报文（22 种），字段用 `ncl_message_set_*`
 写入、`ncl_message_write_string()` 序列化，字段顺序按规范固定。
 
 ```c
@@ -2646,6 +2672,9 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_client_probe(ncl_client *client, unsigned timeout_ms, ncl_message **out);` — Probe query: the response is matched by its response topic.
 - `ncl_err ncl_client_probe_set(ncl_client *client, ncl_message *request, unsigned timeout_ms, ncl_message **out);`
 - `ncl_err ncl_client_method_call(ncl_client *client, ncl_message *request, unsigned timeout_ms, ncl_message **out);`
+- `ncl_err ncl_client_method_call_async(ncl_client *client, ncl_message *request, unsigned timeout_ms, ncl_message **out);` — Set "async" on @p request and issue it (takes ownership of the request).
+- `ncl_err ncl_client_method_status(ncl_client *client, const char *object_id, const char *handler, unsigned timeout_ms, ncl_message **out);` — Method/Status query: @p object_id is the "id" field (the device id) and
+- `ncl_err ncl_client_method_result(ncl_client *client, const char *object_id, const char *handler, unsigned timeout_ms, ncl_message **out);` — Method/Result query: while the call runs the response is code=PENDING with no
 - `ncl_err ncl_client_get_value(ncl_client *client, const char *path, unsigned timeout_ms, ncl_json **out);` — Read a single value: *out receives a clone of values[0].
 - `ncl_err ncl_client_get_value_range(ncl_client *client, const char *path, int start, int end, unsigned timeout_ms, ncl_json **out);` — Read the values in the index range [start, end].
 - `ncl_err ncl_client_get_length(ncl_client *client, const char *path, unsigned timeout_ms, long long *out_length);` — getLength(path, timeout).
@@ -3060,6 +3089,21 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_message_set_data(ncl_message *msg, ncl_json *data);`
 - `ncl_err ncl_message_set_event(ncl_message *msg, ncl_json *event);`
 - `ncl_err ncl_message_set_sample_id(ncl_message *msg, const char *id);`
+- `ncl_err ncl_message_set_handler(ncl_message *msg, const char *handler);`
+- `ncl_err ncl_message_set_request_id(ncl_message *msg, const char *id);`
+- `ncl_err ncl_message_set_async(ncl_message *msg, bool async);`
+- `ncl_err ncl_message_set_status(ncl_message *msg, const char *status);`
+- `ncl_err ncl_message_set_process(ncl_message *msg, long long process);`
+- `ncl_err ncl_message_set_result(ncl_message *msg, const char *result);`
+- `ncl_err ncl_message_set_return(ncl_message *msg, ncl_json *value);` — Method/Result/Response "return"; takes ownership of @p value.
+- `const char *ncl_message_handler(const ncl_message *msg);`
+- `const char *ncl_message_request_id(const ncl_message *msg);`
+- `bool ncl_message_async(const ncl_message *msg);`
+- `bool ncl_message_has_async(const ncl_message *msg);`
+- `const char *ncl_message_status(const ncl_message *msg);`
+- `bool ncl_message_process(const ncl_message *msg, long long *out);` — True when "process" was present; copies it into @p out.
+- `const char *ncl_message_result(const ncl_message *msg);`
+- `ncl_json *ncl_message_get_return(const ncl_message *msg);` — Borrowed "return" of a Method/Result/Response.
 - `ncl_err ncl_message_set_event_time_ms(ncl_message *msg, int64_t millis);` — Event.time in milliseconds since the epoch.
 - `ncl_err ncl_message_set_begin_time(ncl_message *msg, const char *begin_time);`
 - `ncl_err ncl_message_set_sample_interval(ncl_message *msg, long long interval);`
@@ -3270,6 +3314,8 @@ Copyright (c) 2026 huienming
 - `ncl_message *ncl_server_dispatch(ncl_server *server, const char *topic, const ncl_message *request);` — Dispatch a parsed request to the matching invoke_* function.
 - `ncl_err ncl_server_subscribe(ncl_server *server);` — Subscribe to the six request topics of this serial number.
 - `void ncl_server_on_message(ncl_server *server, const char *topic, ncl_message *request);` — Handle one inbound message: process it and publish the response.
+- `ncl_err ncl_server_report_method_progress(ncl_server *server, const char *handler, long long process, const char *status);` — Report progress of the running call @p handler (process 0..100, status one of
+- `size_t ncl_server_pending_method_count(ncl_server *server);` — Calls with a handler that have not been collected through the result pair.
 - `ncl_err ncl_server_publish(ncl_server *server, const char *topic, const ncl_message *response);` — Publish a response message on @p topic.
 - `void ncl_server_set_publish_sink(ncl_server *server, ncl_server_publish_fn fn, void *user);` — Install (or clear) the outbound transport hook after creation.
 - `ncl_err ncl_server_add_sample(ncl_server *server, const ncl_node *config);` — Register a sample channel and start its sampling/upload task.
@@ -3346,6 +3392,10 @@ Copyright (c) 2026 huienming
 - `char *ncl_topic_probe_version(const char *device_id, const char *client_id);`
 - `char *ncl_topic_method_call_request(const char *device_id, const char *client_id);`
 - `char *ncl_topic_method_call_response(const char *device_id, const char *client_id);`
+- `char *ncl_topic_method_status_request(const char *device_id, const char *client_id);`
+- `char *ncl_topic_method_status_response(const char *device_id, const char *client_id);`
+- `char *ncl_topic_method_result_request(const char *device_id, const char *client_id);`
+- `char *ncl_topic_method_result_response(const char *device_id, const char *client_id);`
 - `char *ncl_topic_event(const char *device_id, const char *client_id);`
 - `char *ncl_topic_register_request(void);`
 - `char *ncl_topic_extract_sn(const char *topic);` — Extract the device serial number from an inbound topic: split on '/', and for
@@ -3411,6 +3461,10 @@ Copyright (c) 2026 huienming
 | `NCL_TOPIC_PROBE_VERSION_PREFIX` | "Probe/Version/" |
 | `NCL_TOPIC_METHOD_CALL_REQUEST_PREFIX` | "Method/Call/Request/" |
 | `NCL_TOPIC_METHOD_CALL_RESPONSE_PREFIX` | "Method/Call/Response/" |
+| `NCL_TOPIC_METHOD_STATUS_REQUEST_PREFIX` | "Method/Status/Request/" |
+| `NCL_TOPIC_METHOD_STATUS_RESPONSE_PREFIX` | "Method/Status/Response/" |
+| `NCL_TOPIC_METHOD_RESULT_REQUEST_PREFIX` | "Method/Result/Request/" |
+| `NCL_TOPIC_METHOD_RESULT_RESPONSE_PREFIX` | "Method/Result/Response/" |
 | `NCL_TOPIC_EVENT_PREFIX` | "Event/" |
 ## 附录 D · 安装根目录布局
 

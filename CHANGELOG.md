@@ -11,6 +11,26 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 变更（破坏性）
 
+- **方法调用可以异步了**（GB/T 41970-2022 的 `Method/Status`、`Method/Result` 两对，
+  之前只有 `Method/Call` 一对）：
+  - 请求带 `async: true`（报文键就是 `async`；历史版本里拼成 `aysnc`，解析时兼容）
+    → 设备把方法丢进共享线程池执行，**立刻**回 `code=OK` + `handler`（方法句柄，
+    代表本次调用的那个线程/任务）；
+  - 客户端拿句柄查进度：`Method/Status/Request|Response`（`id`/`@id`/`handler` +
+    `process`/`status`/`code`，`status ∈ executing|waiting|stopped|sleep`）；
+  - 查结果：`Method/Result/Request|Response`（`id`/`@id`/`handler` + `code`/`return`/
+    `result`，`result ∈ finished|cancel|error`）。未完成时回 `code=PENDING` 且不带
+    `result`；完成后第一次查询带 `return` 与 `result` 并释放句柄，之后同句柄是 NG。
+  - 设备端工具仍是普通函数（异步调度、句柄、状态/结果登记都在库里）；可选
+    `ncl_server_report_method_progress()` 上报 `process`/`status`。
+  - 报文层：`MethodCallRequest` 增加 `async`、`MethodCallResponse` 增加 `handler`；
+    新增 4 个消息类型与 `ncl_message_*handler/request_id/async/status/process/result/
+    return` 一组访问器；`ncl_general.h` 补状态与结果取值常量。
+  - 客户端 API：`ncl_client_method_call_async()`、`ncl_client_method_status()`、
+    `ncl_client_method_result()`；设备端 `ncl_server_subscribe()` 从 6 条主题加到 8 条，
+    客户端响应主题同样 6 → 8。
+  - **线格式决定**：方法入参的键从 `params` 改成 **`args`**（与既有 Java 客户端一致；
+    解析时兼容旧的 `params`）。
 - **移除 `Edge/*` 主题**：4 个前缀常量（`NCL_TOPIC_EDGE_GET_REQUEST_PREFIX`、
   `..._GET_RESPONSE_PREFIX`、`..._REGISTER_PREFIX`、`..._MESSAGE_PREFIX`）与 4 个构造函数
   （`ncl_topic_edge_get_request/_get_response/_register/_message`）删除，
@@ -110,6 +130,7 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 | 内存检查 | ASan + LeakSanitizer（6 个套件）**0 发现**；ThreadSanitizer **0 数据竞争** |
 | 托管绑定自检 | C# 106 项、Java 107 项、Python 46 项，**0 失败**；对真 broker（EMQX）C# **135 项**、Java **15 项**、Python 46 项 0 失败（含文件通道握手全流程） |
 | Go 绑定 | Linux 容器与 Windows（cgo + mingw）`go test ./...` 通过；`-tags nclink_tls` 两侧通过 |
+| 异步方法调用 | `test_server` 的 `test_async_method_call`：立刻回句柄（`code=OK`+`handler`）、按句柄查状态、结果先 `PENDING` 后 `finished`（带 `return` 值）、句柄取走后查不到、失败方法给出 `NG`+`error`、同步调用不带 `handler`、结束时无悬挂句柄 |
 
 ## 3.3.0
 

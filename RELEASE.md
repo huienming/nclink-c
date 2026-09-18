@@ -133,6 +133,7 @@ tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认�
 | mingw-w64（gcc 16.2.0，UCRT + posix threads） | 库 / 示例 / 测试 **25/25**（`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw`）；TLS 变体（Strawberry Perl 的 OpenSSL 头/导入库）同样 **25/25**，`test_tls` 通过 |
 | 内存检查 | Linux ASan + LeakSanitizer（`tools/asan-linux.sh --docker`，6 个套件）**0 发现**；ThreadSanitizer（分配器并发用例）**0 数据竞争** |
 | 托管绑定自检（离线） | C# 106 项、Java 107 项、Python 46 项，**0 失败** |
+| 异步方法调用 | `Method/Status`、`Method/Result` 两对已实现并接入设备端线程池：`async: true` 立刻回 `code=OK`+`handler`，状态/结果按句柄查询（未完成 `PENDING`、完成 `finished|error` 并释放句柄）；`test_server` 端到端用例通过 |
 | 托管绑定对真 broker（EMQX 5.x，`NCLINK_TEST_BROKER`） | C# **135 项**、Java **15 项**、Python 46 项，**0 失败**——含文件通道握手全流程（上传 / 列目录 / 下载 / 建目录 / 带文件参数的方法调用 / close 撤销） |
 | Go 绑定 | Linux（golang:1.22 容器）与 Windows（cgo + mingw gcc 16.2.0）`go test ./...` 均通过；`-tags nclink_tls`（链 `libnclink_core_tls.a`）两侧同样通过 |
 | 文件通道握手 | 新增用例覆盖：无通道时文件方法被拒（`NoFileChannelException`）、握手后可用、同租约重复握手幂等、换租约需 `force`、`closeFileChannel` 撤销临时账号后登录失败、重复 close 幂等；`conf/ftp.txt` 往返 / 坏文件容忍 / 端点跟随文件里的端口与账号 / 函数参数优先于文件 |
