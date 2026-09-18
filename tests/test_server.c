@@ -1328,10 +1328,228 @@ static void test_free_with_running_samples(void)
     NCL_CHECK(tool.status_calls > 0);
 }
 
+/* ===================================================== 异步方法调用 -------- */
+
+typedef struct {
+    int calls;
+} async_tool;
+
+/** A method that takes its time: the client must get a handle, not an answer. */
+static ncl_err async_slow(void *instance, const ncl_json *params,
+                          ncl_json **result, char **reason)
+{
+    async_tool *tool = (async_tool *)instance;
+    ncl_json *value;
+
+    (void)params;
+    (void)reason;
+    tool->calls++;
+    ncl_sleep_millis(150);
+    value = ncl_json_new_object();
+    ncl_json_obj_set_bool(value, "done", true);
+    *result = value;
+    return NCL_OK;
+}
+
+/** A method that fails: the result pair must report it. */
+static ncl_err async_boom(void *instance, const ncl_json *params,
+                          ncl_json **result, char **reason)
+{
+    (void)instance;
+    (void)params;
+    (void)result;
+    if (reason != NULL) {
+        *reason = ncl_strdup("炸了");
+    }
+    return NCL_ERR;
+}
+
+/** Dispatch one Method/Call|Status|Result request; caller frees both. */
+static ncl_message *async_dispatch(ncl_server *server, const char *prefix,
+                                   const char *sn, ncl_message *request)
+{
+    char topic[256];
+
+    snprintf(topic, sizeof(topic), "%s%s", prefix, sn);
+    return ncl_server_dispatch(server, topic, request);
+}
+
+static void test_async_method_call(void)
+{
+    static const ncl_tool_method methods[] = {{"slow", async_slow},
+                                              {"boom", async_boom}};
+    async_tool tool;
+    ncl_server_options options;
+    ncl_server *server;
+    ncl_message *request;
+    ncl_message *response;
+    char handler[64];
+    const char *code;
+    int round;
+
+    NCL_TEST_CASE("异步方法调用：立刻回句柄，结果与状态按句柄取");
+    memset(&tool, 0, sizeof(tool));
+    memset(&options, 0, sizeof(options));
+    options.sn = TEST_SN;
+    server = ncl_server_create(&options);
+    NCL_CHECK(server != NULL);
+    if (server == NULL) {
+        return;
+    }
+    NCL_CHECK_EQ_INT(ncl_server_register_tool(server, "async", &tool, methods,
+                                              sizeof(methods) / sizeof(methods[0]),
+                                              NULL, 0),
+                     NCL_OK);
+
+    /* 1) async 调用：应答是 OK + handler，方法还在跑。 */
+    request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+    ncl_message_set_method(request, "/async/slow");
+    ncl_message_set_async(request, true);
+    response = async_dispatch(server, NCL_TOPIC_METHOD_CALL_REQUEST_PREFIX,
+                              TEST_SN, request);
+    ncl_message_free(request);
+    NCL_CHECK(response != NULL);
+    if (response == NULL) {
+        ncl_server_free(server);
+        return;
+    }
+    NCL_CHECK_EQ_STR(response->as.method_call_response.code, NCL_KW_CODE_OK);
+    NCL_CHECK(response->as.method_call_response.handler != NULL);
+    snprintf(handler, sizeof(handler), "%s",
+             response->as.method_call_response.handler != NULL
+                 ? response->as.method_call_response.handler
+                 : "");
+    ncl_message_free(response);
+
+    /* 2) 状态：跑着是 executing，且句柄还在表里。 */
+    request = ncl_message_new(NCL_MSG_METHOD_STATUS_REQUEST);
+    ncl_message_set_request_id(request, TEST_SN);
+    ncl_message_set_handler(request, handler);
+    response = async_dispatch(server, NCL_TOPIC_METHOD_STATUS_REQUEST_PREFIX,
+                              TEST_SN, request);
+    ncl_message_free(request);
+    NCL_CHECK(response != NULL);
+    if (response != NULL) {
+        NCL_CHECK_EQ_STR(response->as.method_status_response.code,
+                         NCL_KW_CODE_OK);
+        NCL_CHECK(response->as.method_status_response.status != NULL);
+        NCL_CHECK_EQ_STR(response->as.method_status_response.handler, handler);
+        ncl_message_free(response);
+    }
+
+    /* 3) 结果：先 PENDING（无 result），跑完给出 return + finished。 */
+    response = NULL;
+    for (round = 0; round < 100; round++) {
+        request = ncl_message_new(NCL_MSG_METHOD_RESULT_REQUEST);
+        ncl_message_set_request_id(request, TEST_SN);
+        ncl_message_set_handler(request, handler);
+        response = async_dispatch(server, NCL_TOPIC_METHOD_RESULT_REQUEST_PREFIX,
+                                  TEST_SN, request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response == NULL) {
+            break;
+        }
+        code = response->as.method_result_response.code;
+        if (code == NULL || !ncl_check_is_pending(code)) {
+            break;
+        }
+        ncl_message_free(response);
+        response = NULL;
+        ncl_sleep_millis(20);
+    }
+    NCL_CHECK(response != NULL);
+    if (response != NULL) {
+        NCL_CHECK_EQ_STR(response->as.method_result_response.code,
+                         NCL_KW_CODE_OK);
+        NCL_CHECK_EQ_STR(response->as.method_result_response.result,
+                         NCL_KW_RESULT_FINISHED);
+        NCL_CHECK(ncl_json_obj_get_bool(response->as.method_result_response.returns,
+                                        "done", false));
+        ncl_message_free(response);
+    }
+    NCL_CHECK_EQ_INT(tool.calls, 1);
+    NCL_CHECK_EQ_INT((int)ncl_server_pending_method_count(server), 0);
+
+    /* 4) 句柄取走后就查不到了。 */
+    request = ncl_message_new(NCL_MSG_METHOD_RESULT_REQUEST);
+    ncl_message_set_request_id(request, TEST_SN);
+    ncl_message_set_handler(request, handler);
+    response = async_dispatch(server, NCL_TOPIC_METHOD_RESULT_REQUEST_PREFIX,
+                              TEST_SN, request);
+    ncl_message_free(request);
+    NCL_CHECK(response != NULL);
+    if (response != NULL) {
+        NCL_CHECK_EQ_STR(response->as.method_result_response.code,
+                         NCL_KW_CODE_NG);
+        ncl_message_free(response);
+    }
+
+    /* 5) 失败的方法：result=error + code=NG + reason。 */
+    request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+    ncl_message_set_method(request, "/async/boom");
+    ncl_message_set_async(request, true);
+    response = async_dispatch(server, NCL_TOPIC_METHOD_CALL_REQUEST_PREFIX,
+                              TEST_SN, request);
+    ncl_message_free(request);
+    NCL_CHECK(response != NULL);
+    if (response != NULL) {
+        snprintf(handler, sizeof(handler), "%s",
+                 response->as.method_call_response.handler != NULL
+                     ? response->as.method_call_response.handler
+                     : "");
+        NCL_CHECK_EQ_STR(response->as.method_call_response.code, NCL_KW_CODE_OK);
+        ncl_message_free(response);
+    }
+    response = NULL;
+    for (round = 0; round < 100 && response == NULL; round++) {
+        request = ncl_message_new(NCL_MSG_METHOD_RESULT_REQUEST);
+        ncl_message_set_request_id(request, TEST_SN);
+        ncl_message_set_handler(request, handler);
+        response = async_dispatch(server, NCL_TOPIC_METHOD_RESULT_REQUEST_PREFIX,
+                                  TEST_SN, request);
+        ncl_message_free(request);
+        if (response != NULL && response->as.method_result_response.code != NULL &&
+            ncl_check_is_pending(response->as.method_result_response.code)) {
+            ncl_message_free(response);
+            response = NULL;
+            ncl_sleep_millis(20);
+        }
+    }
+    NCL_CHECK(response != NULL);
+    if (response != NULL) {
+        NCL_CHECK_EQ_STR(response->as.method_result_response.code,
+                         NCL_KW_CODE_NG);
+        NCL_CHECK_EQ_STR(response->as.method_result_response.result,
+                         NCL_KW_RESULT_ERROR);
+        /* 报文里没有 reason 字段（与上游 MethodResultResponse 一致）：失败只看
+         * code=NG + result=error。 */
+        ncl_message_free(response);
+    }
+
+    /* 6) 同步调用不带句柄（老行为不变）。 */
+    request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+    ncl_message_set_method(request, "/async/slow");
+    response = async_dispatch(server, NCL_TOPIC_METHOD_CALL_REQUEST_PREFIX,
+                              TEST_SN, request);
+    ncl_message_free(request);
+    NCL_CHECK(response != NULL);
+    if (response != NULL) {
+        NCL_CHECK_EQ_STR(response->as.method_call_response.code, NCL_KW_CODE_OK);
+        NCL_CHECK(response->as.method_call_response.handler == NULL);
+        NCL_CHECK(response->as.method_call_response.data != NULL);
+        ncl_message_free(response);
+    }
+    NCL_CHECK_EQ_INT(tool.calls, 2);
+
+    ncl_server_free(server);
+}
+
 NCL_TEST_MAIN_BEGIN()
     test_server_end_to_end();
     test_sampling();
     test_sample_channel_shapes();
     test_sub_millisecond_samples();
     test_free_with_running_samples();
+    test_async_method_call();
 NCL_TEST_MAIN_END()

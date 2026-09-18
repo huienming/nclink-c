@@ -183,6 +183,26 @@ ncl_err ncl_server_subscribe(ncl_server *server);
 void ncl_server_on_message(ncl_server *server, const char *topic,
                            ncl_message *request);
 
+/*
+ * Asynchronous method calls. A request that carries "async": true is answered
+ * immediately with code=OK and a handler; the method itself runs on the shared
+ * thread pool. The client then asks for progress (Method/Status) and for the
+ * outcome (Method/Result) with that handler - both are answered by the server
+ * out of its own bookkeeping, so a tool implementation stays a plain function.
+ */
+
+/**
+ * Report progress of the running call @p handler (process 0..100, status one of
+ * NCL_KW_STATUS_*). Optional: without it the framework answers process=0 and
+ * executing -> stopped.
+ */
+ncl_err ncl_server_report_method_progress(ncl_server *server,
+                                          const char *handler, long long process,
+                                          const char *status);
+
+/** Calls with a handler that have not been collected through the result pair. */
+size_t ncl_server_pending_method_count(ncl_server *server);
+
 /** Publish a response message on @p topic. */
 ncl_err ncl_server_publish(ncl_server *server, const char *topic,
                            const ncl_message *response);

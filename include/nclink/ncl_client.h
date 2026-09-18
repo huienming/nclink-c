@@ -190,6 +190,35 @@ ncl_err ncl_client_probe_set(ncl_client *client, ncl_message *request,
 ncl_err ncl_client_method_call(ncl_client *client, ncl_message *request,
                                unsigned timeout_ms, ncl_message **out);
 
+/*
+ * Asynchronous method call: the same request, but marked async. The device
+ * answers with code=OK and a handler right away and runs the method on its own
+ * worker; ask for progress with ncl_client_method_status() and for the outcome
+ * with ncl_client_method_result(), both with that handler.
+ */
+
+/** Set "async" on @p request and issue it (takes ownership of the request). */
+ncl_err ncl_client_method_call_async(ncl_client *client, ncl_message *request,
+                                     unsigned timeout_ms, ncl_message **out);
+
+/**
+ * Method/Status query: @p object_id is the "id" field (the device id) and
+ * @p handler the handle of the running call. The response carries process /
+ * status / code.
+ */
+ncl_err ncl_client_method_status(ncl_client *client, const char *object_id,
+                                 const char *handler, unsigned timeout_ms,
+                                 ncl_message **out);
+
+/**
+ * Method/Result query: while the call runs the response is code=PENDING with no
+ * "result"; once it finished the first query delivers code + "return" +
+ * "result" (finished / error) and releases the handle.
+ */
+ncl_err ncl_client_method_result(ncl_client *client, const char *object_id,
+                                 const char *handler, unsigned timeout_ms,
+                                 ncl_message **out);
+
 /* Convenience wrappers for the common single path operations. */
 
 /** Read a single value: *out receives a clone of values[0]. */

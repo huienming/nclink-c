@@ -27,6 +27,8 @@ struct ncl_client {
     char *set_response;
     char *probe_set_response;
     char *method_call_response;
+    char *method_status_response;
+    char *method_result_response;
     char *event_topic; /**< Event/<sn>, subscribed on demand */
     char *sample_topic; /**< Sample/<sn>/#, subscribed on demand */
 
@@ -100,6 +102,10 @@ ncl_client *ncl_client_create(const char *sn, ncl_message_channel *channel)
     ncl_client_replace_topic(&client->set_response, ncl_topic_set_response(sn, NULL));
     ncl_client_replace_topic(&client->probe_set_response, ncl_topic_probe_set_response(sn, NULL));
     ncl_client_replace_topic(&client->method_call_response, ncl_topic_method_call_response(sn, NULL));
+    ncl_client_replace_topic(&client->method_status_response,
+                             ncl_topic_method_status_response(sn, NULL));
+    ncl_client_replace_topic(&client->method_result_response,
+                             ncl_topic_method_result_response(sn, NULL));
     ncl_client_replace_topic(&client->event_topic, ncl_topic_event(sn, NULL));
     /* A wildcard filter, so one subscription covers every sample channel. */
     {
@@ -115,6 +121,8 @@ ncl_client *ncl_client_create(const char *sn, ncl_message_channel *channel)
     if (client->query_response == NULL || client->probe_response == NULL ||
         client->set_response == NULL || client->probe_set_response == NULL ||
         client->method_call_response == NULL ||
+        client->method_status_response == NULL ||
+        client->method_result_response == NULL ||
         client->event_topic == NULL || client->sample_topic == NULL) {
         ncl_client_free(client);
         return NULL;
@@ -135,6 +143,8 @@ void ncl_client_free(ncl_client *client)
     ncl_mem_free(client->set_response);
     ncl_mem_free(client->probe_set_response);
     ncl_mem_free(client->method_call_response);
+    ncl_mem_free(client->method_status_response);
+    ncl_mem_free(client->method_result_response);
     ncl_mem_free(client->event_topic);
     ncl_mem_free(client->sample_topic);
     ncl_mem_free(client->file_channel_id);
@@ -208,6 +218,14 @@ ncl_err ncl_client_subscribe(ncl_client *client)
         rc = ncl_channel_subscribe(client->channel, client->method_call_response, 2);
     }
     if (rc == NCL_OK) {
+        rc = ncl_channel_subscribe(client->channel, client->method_status_response,
+                                   2);
+    }
+    if (rc == NCL_OK) {
+        rc = ncl_channel_subscribe(client->channel, client->method_result_response,
+                                   2);
+    }
+    if (rc == NCL_OK) {
         rc = ncl_channel_subscribe(client->channel, client->probe_set_response, 2);
     }
     if (rc != NCL_OK) {
@@ -225,6 +243,8 @@ ncl_err ncl_client_unsubscribe(ncl_client *client)
     ncl_channel_unsubscribe(client->channel, client->probe_response);
     ncl_channel_unsubscribe(client->channel, client->set_response);
     ncl_channel_unsubscribe(client->channel, client->method_call_response);
+    ncl_channel_unsubscribe(client->channel, client->method_status_response);
+    ncl_channel_unsubscribe(client->channel, client->method_result_response);
     ncl_channel_unsubscribe(client->channel, client->probe_set_response);
     return NCL_OK;
 }
@@ -522,6 +542,74 @@ ncl_err ncl_client_method_call(ncl_client *client, ncl_message *request,
                                timeout_ms, out);
     ncl_mem_free(topic);
     return rc;
+}
+
+/** One Method/Status or Method/Result query (same shape, different topics). */
+static ncl_err ncl_client_method_query(ncl_client *client, ncl_msg_type type,
+                                       const char *object_id,
+                                       const char *handler,
+                                       unsigned timeout_ms,
+                                       ncl_message **out)
+{
+    ncl_message *request;
+    char *topic;
+    ncl_err rc;
+
+    if (client == NULL || ncl_str_is_blank(handler)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    request = ncl_message_new(type);
+    if (request == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_message_set_request_id(request, object_id);
+    (void)ncl_message_set_handler(request, handler);
+    rc = ncl_message_finalise(request);
+    if (rc != NCL_OK) {
+        ncl_message_free(request);
+        return rc;
+    }
+    topic = type == NCL_MSG_METHOD_STATUS_REQUEST
+                ? ncl_topic_method_status_request(client->sn, NULL)
+                : ncl_topic_method_result_request(client->sn, NULL);
+    if (topic == NULL) {
+        ncl_message_free(request);
+        return NCL_ERR_NOMEM;
+    }
+    rc = ncl_client_do_request(client, topic, NULL, request, timeout_ms, out);
+    ncl_mem_free(topic);
+    return rc;
+}
+
+ncl_err ncl_client_method_call_async(ncl_client *client, ncl_message *request,
+                                     unsigned timeout_ms, ncl_message **out)
+{
+    if (request == NULL) {
+        ncl_message_free(request);
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (request->type != NCL_MSG_METHOD_CALL_REQUEST) {
+        ncl_message_free(request);
+        return NCL_ERR_INVALID_TYPE;
+    }
+    (void)ncl_message_set_async(request, true);
+    return ncl_client_method_call(client, request, timeout_ms, out);
+}
+
+ncl_err ncl_client_method_status(ncl_client *client, const char *object_id,
+                                 const char *handler, unsigned timeout_ms,
+                                 ncl_message **out)
+{
+    return ncl_client_method_query(client, NCL_MSG_METHOD_STATUS_REQUEST,
+                                   object_id, handler, timeout_ms, out);
+}
+
+ncl_err ncl_client_method_result(ncl_client *client, const char *object_id,
+                                 const char *handler, unsigned timeout_ms,
+                                 ncl_message **out)
+{
+    return ncl_client_method_query(client, NCL_MSG_METHOD_RESULT_REQUEST,
+                                   object_id, handler, timeout_ms, out);
 }
 
 /* ============================================================ file channel == */

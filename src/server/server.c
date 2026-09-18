@@ -87,7 +87,47 @@ struct ncl_server {
 
     ncl_server_publish_fn publish_sink;
     void                 *publish_user;
+
+    /* Asynchronous method calls: handler -> ncl_method_task, the state a
+     * Method/Status or Method/Result query is answered from. */
+    ncl_ptrvec            method_tasks;
+    unsigned long long    method_seq;
 };
+
+/**
+ * One running (or finished) asynchronous method call. The client got @p
+ * handler in the Method/Call/Response and addresses this call with it in the
+ * Method/Status and Method/Result pairs.
+ */
+typedef struct {
+    char       *handler;
+    bool        finished;   /**< the worker stored the outcome */
+    bool        abandoned;  /**< the server is gone: the worker frees it */
+    long long   process;    /**< progress, host reported (0 = unknown) */
+    char       *status;     /**< host reported status, NULL = framework's */
+    ncl_err     rc;         /**< outcome of the call */
+    ncl_json   *value;      /**< its value, owned */
+    char       *reason;     /**< its NG reason, owned */
+    int64_t     finished_ms;
+} ncl_method_task;
+
+static void ncl_method_task_free(ncl_method_task *task);
+
+typedef struct {
+    ncl_server        *server;
+    ncl_binding       *binding; /**< borrowed: the binding table outlives it */
+    ncl_json          *params;  /**< cloned for the worker */
+    ncl_method_task   *task;
+} ncl_method_worker;
+
+static void ncl_method_worker_run(void *arg);
+
+/** Task of @p handler, or NULL. Caller holds server->mutex. */
+static ncl_method_task *ncl_server_find_task_locked(ncl_server *server,
+                                                    const char *handler);
+/** Drop a task from the table (the caller keeps ownership of the memory). */
+static void ncl_server_unlink_task_locked(ncl_server *server,
+                                          ncl_method_task *task);
 
 /* ============================================================ tool lookup = */
 
@@ -488,6 +528,7 @@ ncl_server *ncl_server_create(const ncl_server_options *options)
     server->publish_sink = options->publish;
     server->publish_user = options->publish_user;
     server->mutex = ncl_mutex_create();
+    ncl_ptrvec_init(&server->method_tasks, NULL);
     if (server->sn == NULL || server->mutex == NULL) {
         ncl_server_free(server);
         return NULL;
@@ -528,6 +569,18 @@ void ncl_server_free(ncl_server *server)
     ncl_mem_free(server->schemas);
     ncl_mem_free(server->last_tool_name);
     ncl_node_free(server->root_node);
+    /* Asynchronous method calls: a finished entry is ours to release, a running
+     * one is handed to its worker (which frees it when the method returns). */
+    for (i = 0; i < server->method_tasks.len; i++) {
+        ncl_method_task *task =
+            (ncl_method_task *)server->method_tasks.items[i];
+        if (task->finished) {
+            ncl_method_task_free(task);
+        } else {
+            task->abandoned = true;
+        }
+    }
+    ncl_ptrvec_free(&server->method_tasks);
     ncl_mem_free(server->sn);
     ncl_mutex_destroy(server->mutex);
     ncl_mem_free(server);
@@ -962,6 +1015,72 @@ ncl_message *ncl_server_invoke_method_call(ncl_server *server,
         return response;
     }
 
+    /*
+     * Asynchronous call: run the method on the shared thread pool and answer
+     * right away with a handle. The client asks for progress through the
+     * Method/Status pair and for the outcome through the Method/Result pair,
+     * both carrying that handle.
+     */
+    if (ncl_message_async(request)) {
+        ncl_method_task *task = NULL;
+        ncl_method_worker *work = NULL;
+        char handler[64];
+        const ncl_json *params = request->as.method_call_request.params;
+
+        if (ncl_uuid4(handler, sizeof(handler)) != NCL_OK) {
+            snprintf(handler, sizeof(handler), "%s-%llu",
+                     server->sn != NULL ? server->sn : "nclink",
+                     (unsigned long long)++server->method_seq);
+        }
+        task = (ncl_method_task *)ncl_mem_calloc(1, sizeof(*task));
+        work = (ncl_method_worker *)ncl_mem_calloc(1, sizeof(*work));
+        if (task != NULL && work != NULL) {
+            task->handler = ncl_strdup(handler);
+            work->server = server;
+            work->binding = binding;
+            work->task = task;
+            work->params = params != NULL ? ncl_json_clone(params) : NULL;
+        }
+        if (task == NULL || work == NULL || task->handler == NULL ||
+            (params != NULL && work->params == NULL)) {
+            ncl_method_task_free(task);
+            if (work != NULL) {
+                ncl_json_free(work->params);
+                ncl_mem_free(work);
+            }
+            ncl_mem_free(method_copy);
+            ncl_mem_free(tool_copy);
+            ncl_message_set_code(response, NCL_KW_CODE_NG);
+            ncl_message_set_reason(response, ncl_err_name(NCL_ERR_NOMEM));
+            return response;
+        }
+        ncl_mutex_lock(server->mutex);
+        server->method_seq++;
+        if (ncl_ptrvec_push(&server->method_tasks, task) != NCL_OK) {
+            ncl_mutex_unlock(server->mutex);
+            ncl_method_task_free(task);
+            ncl_json_free(work->params);
+            ncl_mem_free(work);
+            ncl_mem_free(method_copy);
+            ncl_mem_free(tool_copy);
+            ncl_message_set_code(response, NCL_KW_CODE_NG);
+            ncl_message_set_reason(response, ncl_err_name(NCL_ERR_NOMEM));
+            return response;
+        }
+        ncl_mutex_unlock(server->mutex);
+        if (ncl_thread_pool_submit(ncl_thread_service(),
+                                   ncl_method_worker_run, work) != NCL_OK) {
+            /* Pool unavailable or full: run it here (the handle was already
+             * handed out, the client just gets its answer a little later). */
+            ncl_method_worker_run(work);
+        }
+        ncl_message_set_code(response, NCL_KW_CODE_OK);
+        ncl_message_set_handler(response, handler);
+        ncl_mem_free(method_copy);
+        ncl_mem_free(tool_copy);
+        return response;
+    }
+
     rc = ncl_server_call_binding(binding, request->as.method_call_request.params,
                                  &value, &reason);
     if (rc == NCL_OK) {
@@ -983,6 +1102,89 @@ ncl_message *ncl_server_invoke_method_call(ncl_server *server,
     return response;
 }
 
+/** Method/Status/Request: how is the call with this handle doing? */
+static ncl_message *ncl_server_invoke_method_status(ncl_server *server,
+                                                    const ncl_message *request)
+{
+    ncl_message *response = ncl_message_new(NCL_MSG_METHOD_STATUS_RESPONSE);
+    const char *handler = request->as.method_status_request.handler;
+    ncl_method_task *task;
+
+    if (response == NULL) {
+        return NULL;
+    }
+    ncl_message_set_message_id(response, request->message_id);
+    ncl_message_set_request_id(response, request->as.method_status_request.id);
+    ncl_message_set_handler(response, handler);
+
+    ncl_mutex_lock(server->mutex);
+    task = ncl_server_find_task_locked(server, handler);
+    if (task == NULL) {
+        ncl_mutex_unlock(server->mutex);
+        ncl_message_set_code(response, NCL_KW_CODE_NG);
+        ncl_message_set_status(response, NCL_KW_STATUS_STOPPED);
+        ncl_message_set_reason(response, "没有找到方法");
+        return response;
+    }
+    ncl_message_set_code(response, NCL_KW_CODE_OK);
+    ncl_message_set_process(response, task->process);
+    ncl_message_set_status(response,
+                           task->status != NULL
+                               ? task->status
+                               : (task->finished ? NCL_KW_STATUS_STOPPED
+                                                 : NCL_KW_STATUS_EXECUTING));
+    ncl_mutex_unlock(server->mutex);
+    return response;
+}
+
+/**
+ * Method/Result/Request: the outcome of the call with this handle. While it is
+ * still running the answer is code=PENDING and carries no "result"; the first
+ * query after it finished delivers the outcome and releases the handle.
+ */
+static ncl_message *ncl_server_invoke_method_result(ncl_server *server,
+                                                    const ncl_message *request)
+{
+    ncl_message *response = ncl_message_new(NCL_MSG_METHOD_RESULT_RESPONSE);
+    const char *handler = request->as.method_result_request.handler;
+    ncl_method_task *task;
+
+    if (response == NULL) {
+        return NULL;
+    }
+    ncl_message_set_message_id(response, request->message_id);
+    ncl_message_set_request_id(response, request->as.method_result_request.id);
+    ncl_message_set_handler(response, handler);
+
+    ncl_mutex_lock(server->mutex);
+    task = ncl_server_find_task_locked(server, handler);
+    if (task == NULL || !task->finished) {
+        ncl_mutex_unlock(server->mutex);
+        if (task == NULL) {
+            ncl_message_set_code(response, NCL_KW_CODE_NG);
+            ncl_message_set_result(response, NCL_KW_RESULT_ERROR);
+        } else {
+            ncl_message_set_code(response, NCL_KW_CODE_PENDING);
+        }
+        return response;
+    }
+    ncl_server_unlink_task_locked(server, task);
+    ncl_mutex_unlock(server->mutex);
+
+    if (task->rc == NCL_OK) {
+        ncl_message_set_code(response, NCL_KW_CODE_OK);
+        ncl_message_set_result(response, NCL_KW_RESULT_FINISHED);
+        if (task->value != NULL) {
+            ncl_message_set_return(response, ncl_json_clone(task->value));
+        }
+    } else {
+        ncl_message_set_code(response, NCL_KW_CODE_NG);
+        ncl_message_set_result(response, NCL_KW_RESULT_ERROR);
+    }
+    ncl_method_task_free(task);
+    return response;
+}
+
 ncl_message *ncl_server_dispatch(ncl_server *server, const char *topic,
                                  const ncl_message *request)
 {
@@ -996,6 +1198,10 @@ ncl_message *ncl_server_dispatch(ncl_server *server, const char *topic,
         return ncl_server_invoke_set(server, request);
     case NCL_MSG_METHOD_CALL_REQUEST:
         return ncl_server_invoke_method_call(server, request);
+    case NCL_MSG_METHOD_STATUS_REQUEST:
+        return ncl_server_invoke_method_status(server, request);
+    case NCL_MSG_METHOD_RESULT_REQUEST:
+        return ncl_server_invoke_method_result(server, request);
     case NCL_MSG_PROBE_QUERY_REQUEST: {
         ncl_message *response = ncl_message_new(NCL_MSG_PROBE_QUERY_RESPONSE);
         if (response == NULL) {
@@ -1132,7 +1338,7 @@ static void ncl_server_response_topic(const ncl_server *server,
 
 ncl_err ncl_server_subscribe(ncl_server *server)
 {
-    char *topics[6];
+    char *topics[8];
     size_t i;
     ncl_err rc = NCL_OK;
     int granted = -1;
@@ -1146,8 +1352,10 @@ ncl_err ncl_server_subscribe(ncl_server *server)
     topics[3] = ncl_topic_probe_set_request(server->sn, NULL);
     topics[4] = ncl_topic_method_call_request(server->sn, NULL);
     topics[5] = ncl_topic_ping(server->sn);
+    topics[6] = ncl_topic_method_status_request(server->sn, NULL);
+    topics[7] = ncl_topic_method_result_request(server->sn, NULL);
 
-    for (i = 0; i < 6; i++) {
+    for (i = 0; i < 8; i++) {
         if (topics[i] == NULL) {
             rc = NCL_ERR_NOMEM;
             break;
@@ -1158,10 +1366,88 @@ ncl_err ncl_server_subscribe(ncl_server *server)
             break;
         }
     }
-    for (i = 0; i < 6; i++) {
+    for (i = 0; i < 8; i++) {
         ncl_mem_free(topics[i]);
     }
     return rc;
+}
+
+/* ================================================ asynchronous method call = */
+
+static void ncl_method_task_free(ncl_method_task *task)
+{
+    if (task == NULL) {
+        return;
+    }
+    ncl_mem_free(task->handler);
+    ncl_mem_free(task->status);
+    ncl_json_free(task->value);
+    ncl_mem_free(task->reason);
+    ncl_mem_free(task);
+}
+
+/** Task of @p handler, or NULL. Caller holds server->mutex. */
+static ncl_method_task *ncl_server_find_task_locked(ncl_server *server,
+                                                    const char *handler)
+{
+    size_t i;
+
+    for (i = 0; i < server->method_tasks.len; i++) {
+        ncl_method_task *task =
+            (ncl_method_task *)server->method_tasks.items[i];
+        if (task->handler != NULL && handler != NULL &&
+            strcmp(task->handler, handler) == 0) {
+            return task;
+        }
+    }
+    return NULL;
+}
+
+/** Drop a task from the table (the caller keeps ownership of the memory). */
+static void ncl_server_unlink_task_locked(ncl_server *server,
+                                          ncl_method_task *task)
+{
+    size_t i;
+
+    for (i = 0; i < server->method_tasks.len; i++) {
+        if (server->method_tasks.items[i] == task) {
+            for (; i + 1 < server->method_tasks.len; i++) {
+                server->method_tasks.items[i] = server->method_tasks.items[i + 1];
+            }
+            server->method_tasks.len--;
+            return;
+        }
+    }
+}
+
+/** The method of one asynchronous call: runs on the shared thread pool. */
+static void ncl_method_worker_run(void *arg)
+{
+    ncl_method_worker *work = (ncl_method_worker *)arg;
+    ncl_server *server = work->server;
+    ncl_json *value = NULL;
+    char *reason = NULL;
+    ncl_err rc = ncl_server_call_binding(work->binding, work->params, &value,
+                                         &reason);
+    bool kept = false;
+
+    ncl_mutex_lock(server->mutex);
+    if (!work->task->abandoned) {
+        work->task->rc = rc;
+        work->task->value = value;
+        work->task->reason = reason;
+        work->task->finished = true;
+        work->task->finished_ms = ncl_time_monotonic_millis();
+        kept = true;
+    }
+    ncl_mutex_unlock(server->mutex);
+    if (!kept) {
+        ncl_json_free(value);
+        ncl_mem_free(reason);
+        ncl_method_task_free(work->task);
+    }
+    ncl_json_free(work->params);
+    ncl_mem_free(work);
 }
 
 /* Asynchronous request handling: work is submitted to the shared thread pool. */
@@ -1230,6 +1516,48 @@ void ncl_server_on_message(ncl_server *server, const char *topic,
         /* Pool unavailable (shutting down): fall back to this thread. */
         ncl_server_task_run(task);
     }
+}
+
+ncl_err ncl_server_report_method_progress(ncl_server *server,
+                                          const char *handler, long long process,
+                                          const char *status)
+{
+    ncl_method_task *task;
+    char *copy = NULL;
+
+    if (server == NULL || ncl_str_is_blank(handler)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (status != NULL && (copy = ncl_strdup(status)) == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    ncl_mutex_lock(server->mutex);
+    task = ncl_server_find_task_locked(server, handler);
+    if (task == NULL) {
+        ncl_mutex_unlock(server->mutex);
+        ncl_mem_free(copy);
+        return NCL_ERR_NOT_FOUND;
+    }
+    task->process = process;
+    if (copy != NULL) {
+        ncl_mem_free(task->status);
+        task->status = copy;
+    }
+    ncl_mutex_unlock(server->mutex);
+    return NCL_OK;
+}
+
+size_t ncl_server_pending_method_count(ncl_server *server)
+{
+    size_t count;
+
+    if (server == NULL) {
+        return 0;
+    }
+    ncl_mutex_lock(server->mutex);
+    count = server->method_tasks.len;
+    ncl_mutex_unlock(server->mutex);
+    return count;
 }
 
 /* ============================================================== sampling == */

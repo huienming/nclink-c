@@ -908,7 +908,9 @@ bool ncl_message_is_valid(const ncl_message *msg)
 
     case NCL_MSG_METHOD_RESULT_RESPONSE:
         return !ncl_str_is_blank(msg->as.method_result_response.id) &&
-               !ncl_str_is_blank(msg->as.method_result_response.result);
+               (msg->as.method_result_response.result != NULL ||
+                (msg->as.method_result_response.code != NULL &&
+                 ncl_check_is_pending(msg->as.method_result_response.code)));
 
     default:
         return false;
