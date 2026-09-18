@@ -636,9 +636,11 @@ func (s *Server) RegisterFileTool() error {
 	return check(C.ncl_server_register_file_tool(s.server), "RegisterFileTool")
 }
 
-// SetFilePeer points the file channel at the peer's FTP endpoint. The default
-// is the broker host with port 2323 and admin/123456; an empty user or
-// password keeps the default.
+// SetFilePeer pins the peer's FTP endpoint without the channel handshake: the
+// peer must run its own FTP server and lay files out as "/<sn>/...". A peer
+// that opens a channel (file/openFileChannel) replaces it. There is no
+// implicit default any more (3.4.0 removed the conf/mqtt.cfg guess): pass the
+// host, and an empty user or password keeps the endpoint's defaults.
 func (s *Server) SetFilePeer(host string, port uint, username, password string) error {
 	if err := s.requireOpen("SetFilePeer"); err != nil {
 		return err

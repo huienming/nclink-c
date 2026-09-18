@@ -200,6 +200,42 @@ public final class DeviceClient implements AutoCloseable {
     // ------------------------------------------------------ 文件通道 -- //
 
     /**
+     * 开文件通道（file/openFileChannel）：把托管侧的 FTP 端点交给设备，设备随即
+     * 往那儿拨 FTP 传字节。
+     *
+     * <p>不传参就是默认：地址 = 到 broker 的本机地址（拿不到就 127.0.0.1）、端口 =
+     * 进程级端点端口（没起就按 2323 起）、账号 = 库临时生成的一对（关闭时撤销）。
+     * 对端不在这台机器上、或端口有映射时用 {@link #openFileChannel(String, int,
+     * String, String)}。
+     *
+     * <p>幂等；通道是租约，{@link #closeFileChannel()} 之前一直是这条对端。上传/
+     * 下载/列目录/建目录/删除这些便利方法也会在没通道时自动开一次。
+     */
+    public void openFileChannel() {
+        NclinkException.check(Native.clientFileChannelOpen(requireOpen()),
+                              "openFileChannel");
+    }
+
+    /** 同上，但显式给出设备要拨的 host / port 和账号（host、port 必填）。 */
+    public void openFileChannel(String host, int port, String username, String password) {
+        NclinkException.check(
+                Native.clientFileChannelOpenEx(requireOpen(), host, port, username,
+                                               password),
+                "openFileChannel");
+    }
+
+    /** 收回文件通道：设备停用它的 FTP 连接，库给这条通道加的账号一并撤销（幂等）。 */
+    public void closeFileChannel() {
+        NclinkException.check(Native.clientFileChannelClose(requireOpen()),
+                              "closeFileChannel");
+    }
+
+    /** 这条客户端手上有没有文件通道。 */
+    public boolean fileChannelIsOpen() {
+        return Native.clientFileChannelIsOpen(requireOpen()) != 0;
+    }
+
+    /**
      * 上传 {@code relativePath}（形如 {@code /demo.txt}）：文件必须已经在
      * {@code <当前目录>/<sn><relativePath>} 上——用 {@link #uploadLocalFile} 就不用
      * 操心这件事。

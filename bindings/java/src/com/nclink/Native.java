@@ -407,6 +407,15 @@ final class Native {
     static native int serverSetFilePeer(long server, String host, int port, String user,
                                         String password);
     static native void fileStopFtp();
+    static native int clientFileChannelOpen(long client);
+
+    static native int clientFileChannelOpenEx(long client, String host, int port, String user,
+                                              String password);
+
+    static native int clientFileChannelClose(long client);
+
+    static native int clientFileChannelIsOpen(long client);
+
     static native int clientFileWrite(long client, String localFilePath);
     static native String clientFileRead(long client, String remoteFilePath);
     static native String clientFileLlJson(long client, String remoteDir);

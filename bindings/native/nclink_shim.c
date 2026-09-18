@@ -1907,17 +1907,22 @@ NCLSHIM_API int nclshim_http_route(const void *handle, const char *method,
  *   设备端（收/发文件）：nclshim_server_register_file_tool() +
  *                        nclshim_server_start_ftp()（读 bin/ftp.txt 起端点）
  *   客户端（传/收文件）：进程级 FTP 端点（127.0.0.1:2323，admin/123456，根 =
- *                        安装根；nclshim_open() 里已经起了）+ 每个客户端一份
- *                        文件通道（客户端管理器建客户端时已经装好）。
+ *                        安装根）+ 每个客户端一份文件通道（客户端管理器建客户端
+ *                        时已经装好）+ **文件通道握手**：先
+ *                        nclshim_client_file_channel_open() 把端点交给设备（设备
+ *                        于是往这儿拨 FTP），传完 ..._close() 收回租约并撤销临时
+ *                        账号。nclshim_open() 不再顺手起端点（打开通道时按需起）。
  *
  * 路径基准：
  *   设备侧  <root>/uploadFile/<相对路径>         对端看到的目录树是 /<sn>/<相对>
  *   客户端  <root>/<sn>/<相对路径>               要上传的文件先放这儿
  * 即同一个相对路径（如 "/demo.txt"）在两边各自落到上面两个位置。
  *
- * 相对于设备：设备是 FTP 客户端、托管侧是 FTP 服务端。设备地址取 conf/mqtt.cfg
- * 里 broker 的主机名、端口 2323（拿不到配置就 127.0.0.1）——所以托管侧与 broker
- * 同一台机器时开箱即用。
+ * 相对于设备：设备是 FTP 客户端、托管侧是 FTP 服务端。通道里广播的地址默认是
+ * "到 broker 的本机地址"（回环时取本机 LAN 地址）+ 进程级端点端口；跨网段或端口
+ * 映射的场合用 ..._channel_open_ex() 显式指定，或者写进 <root>/conf/ftp.txt
+ * （host / port / advertisePort / root / userName / password / path / force，
+ * 全可选；优先级：函数参数 > 文件 > 推导默认）。
  */
 
 /** 起进程级 FTP 端点（幂等；nclshim_open 也会起）。 */
@@ -1938,8 +1943,9 @@ NCLSHIM_API int nclshim_file_start_ftp_ex(unsigned port, const char *root,
 }
 
 /**
- * 覆盖设备端文件通道对端的 FTP 端点（默认按 conf/mqtt.cfg 推：broker 的主机名 +
- * 2323 + admin/123456）。host 必填；port=0 / user / password 为 NULL 用默认。
+ * 给设备端文件通道指定一个静态对端（不握手）。要求对端自己跑 FTP 服务端、目录布局
+ * 是 "/<sn>/..."。host 必填；port=0 / user / password 为 NULL 用默认。对端用
+ * nclshim_client_file_channel_open() 握手开的通道会顶替它。
  */
 NCLSHIM_API int nclshim_server_set_file_peer(const void *handle, const char *host,
                                              unsigned port, const char *user,
@@ -1958,14 +1964,93 @@ NCLSHIM_API void nclshim_file_stop_ftp(void)
 }
 
 /**
+ * 开文件通道（file/openFileChannel）：把本进程的 FTP 端点交给设备，设备随即往那儿
+ * 拨 FTP。通道是租约，关掉（..._channel_close()）之前一直是这条对端。
+ *
+ * 默认：地址 = 到 broker 的本机地址（拿不到就 127.0.0.1），端口 = 进程级端点端口
+ * （没起就按 2323 起），账号 = 库临时生成的、只有设备知道的一对（关闭时撤销）。
+ * 幂等：已经开着就直接返回 0。
+ */
+NCLSHIM_API int nclshim_client_file_channel_open(const void *client)
+{
+    if (client == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return (int)ncl_client_open_file_channel((ncl_client *)client, NULL);
+}
+
+/**
+ * 同上，但显式给出设备要拨的 host / port 和账号（host 必填，port 必填）。
+ * 对端不在这台机器上、或者端口有映射时用它；user/password 指向的若是本进程端点，
+ * 库会把账号加上并在关闭时撤销。
+ */
+NCLSHIM_API int nclshim_client_file_channel_open_ex(const void *client,
+                                                    const char *host,
+                                                    unsigned port,
+                                                    const char *user,
+                                                    const char *password)
+{
+    ncl_file_channel_options options;
+
+    if (client == NULL || host == NULL || host[0] == '\0') {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_file_channel_options_default(&options);
+    options.host = host;
+    options.port = port;
+    options.user = user;
+    options.password = password;
+    return (int)ncl_client_open_file_channel((ncl_client *)client, &options);
+}
+
+/** 收回文件通道：file/closeFileChannel + 撤销库给这条通道加的账号（幂等）。 */
+NCLSHIM_API int nclshim_client_file_channel_close(const void *client)
+{
+    if (client == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return (int)ncl_client_close_file_channel((ncl_client *)client);
+}
+
+/** 这条客户端手上有没有文件通道（1/0）。 */
+NCLSHIM_API int nclshim_client_file_channel_is_open(const void *client)
+{
+    return client != NULL &&
+                   ncl_client_file_channel_is_open((ncl_client *)client)
+               ? 1
+               : 0;
+}
+
+/**
+ * 保证文件通道开着：没开就按默认开一次（幂等）。绑定里的上传/下载/列目录等
+ * 便利方法先调它，省得每个调用方都记得先 open。
+ */
+NCLSHIM_API int nclshim_client_ensure_file_channel(const void *client)
+{
+    if (client == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (ncl_client_file_channel_is_open((ncl_client *)client)) {
+        return NCL_OK;
+    }
+    return (int)ncl_client_open_file_channel((ncl_client *)client, NULL);
+}
+
+/**
  * 上传一个文件：local_file_path 是**相对路径**（形如 "/demo.txt"），文件必须在
  * <root>/<sn><相对路径> 上（与 C API 一致）。
  */
 NCLSHIM_API int nclshim_client_file_write(const void *client,
                                           const char *local_file_path)
 {
+    int rc;
+
     if (client == NULL || local_file_path == NULL) {
         return NCL_ERR_INVALID_ARG;
+    }
+    rc = nclshim_client_ensure_file_channel(client);
+    if (rc != NCL_OK) {
+        return rc;
     }
     return (int)ncl_client_write((ncl_client *)client, local_file_path);
 }
@@ -1975,6 +2060,9 @@ NCLSHIM_API char *nclshim_client_file_read(const void *client,
                                            const char *remote_file_path)
 {
     if (client == NULL || remote_file_path == NULL) {
+        return NULL;
+    }
+    if (nclshim_client_ensure_file_channel(client) != NCL_OK) {
         return NULL;
     }
     return ncl_client_read((ncl_client *)client, remote_file_path);
@@ -1989,6 +2077,9 @@ NCLSHIM_API char *nclshim_client_file_ll_json(const void *client,
     char *json = NULL;
 
     if (client == NULL || remote_dir == NULL) {
+        return NULL;
+    }
+    if (nclshim_client_ensure_file_channel(client) != NCL_OK) {
         return NULL;
     }
     ncl_ptrvec_init(&files, ncl_file_attribute_release);
@@ -2008,9 +2099,14 @@ NCLSHIM_API char *nclshim_client_file_ll_json(const void *client,
 NCLSHIM_API int nclshim_client_file_mkdir(const void *client, const char *remote_dir)
 {
     ncl_file_client_tool *tool;
+    int rc;
 
     if (client == NULL || remote_dir == NULL) {
         return NCL_ERR_INVALID_ARG;
+    }
+    rc = nclshim_client_ensure_file_channel(client);
+    if (rc != NCL_OK) {
+        return rc;
     }
     tool = ncl_client_file_tool((ncl_client *)client);
     if (tool == NULL) {
@@ -2023,9 +2119,14 @@ NCLSHIM_API int nclshim_client_file_delete(const void *client,
                                            const char *remote_file_path)
 {
     ncl_file_client_tool *tool;
+    int rc;
 
     if (client == NULL || remote_file_path == NULL) {
         return NCL_ERR_INVALID_ARG;
+    }
+    rc = nclshim_client_ensure_file_channel(client);
+    if (rc != NCL_OK) {
+        return rc;
     }
     tool = ncl_client_file_tool((ncl_client *)client);
     if (tool == NULL) {
@@ -2063,6 +2164,9 @@ NCLSHIM_API int nclshim_client_method_call_file(const void *client,
     if (client == NULL || method == NULL || keys_json == NULL ||
         paths_json == NULL || out_json == NULL) {
         return NCL_ERR_INVALID_ARG;
+    }
+    if (nclshim_client_ensure_file_channel(client) != NCL_OK) {
+        return NCL_ERR_NO_CHANNEL;
     }
     keys_doc = ncl_json_parse_cstr(keys_json, NULL);
     paths_doc = ncl_json_parse_cstr(paths_json, NULL);

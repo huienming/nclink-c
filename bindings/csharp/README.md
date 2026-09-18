@@ -173,7 +173,9 @@ using (NclServer device = new NclServer("V2CS0000001"))
 
 MQTT 报文里只传 `/temp/<名字>` 这样的**令牌**，字节走 FTP。方向要记住：**设备是
 FTP 客户端**，托管侧是 FTP 服务端（进程级端点 127.0.0.1:2323、admin / 123456、根
-= 安装根；`Nclink.Init()` 时已经起好，`Nclink.StartFileServer()` 是显式的幂等版本）。
+= 安装根）。传字节之前先**握手**：`client.OpenFileChannel()` 把端点交给设备
+（file/openFileChannel），设备随即往那儿拨 FTP；`client.CloseFileChannel()` 收回
+租约并撤销库给这条通道加的临时账号。下面的上传/下载等便利方法会自己确保通道开着。
 
 ```csharp
 // 设备端（收文件的那一边）
@@ -186,6 +188,7 @@ using (NclServer device = new NclServer("V2CS0000001", null, "tcp://127.0.0.1:18
 // 客户端（上位机那一侧）
 using (NclDeviceClient client = Nclink.GetDevice("V2CS0000001"))
 {
+    client.OpenFileChannel();       // 握手：设备往这台机器的 FTP 端点拨
     client.UploadLocalFile(@"D:\work\report.txt", "/data/report.txt");  // 传上去
     foreach (NclFileInfo item in client.ListFiles("/data"))
     {
@@ -195,6 +198,7 @@ using (NclDeviceClient client = Nclink.GetDevice("V2CS0000001"))
     string local = client.DownloadTo("/data/report.txt", @"D:\work\back.txt");
     client.MakeDirectory("/docs");
     client.DeleteRemoteFile("/data/report.txt");
+    client.CloseFileChannel();      // 收回租约（幂等；不调也会随 Nclink.Shutdown 收掉）
 
     // 带文件参数的方法调用：keys 与 paths 一一对应，应答里的 fileKeys 会被换成本地路径
     using (NclJson reply = client.MethodCallFile("plc/convert",
@@ -214,11 +218,19 @@ NclFileInfo info = Nclink.FileAttribute(@"D:\work\report.txt");
   （与 C API 一致）；`UploadLocalFile` 会先替你摆到那个位置。
 - 下载回来的文件先落在 `<当前目录>/<sn>/` 下，`DownloadFile` 返回绝对路径，
   `DownloadTo` 再替你复制到目标。
-- 设备按 `conf/mqtt.cfg` 里 broker 的主机名 + 端口 2323 找托管侧的 FTP 端点（拿不到
-  配置就 127.0.0.1）——所以托管侧与 broker 同一台机器时开箱即用。
+- 通道里广播的地址默认是"到 broker 的本机地址" + 进程级端点端口（拿不到配置就
+  127.0.0.1）——托管侧与 broker 同一台机器时开箱即用。
 - 设备侧的 `StartFtp()` 是"设备自己也开个 FTP 端点"（读 `bin/ftp.txt`），客户端传文件
   用不到它；缺文件时它抛异常，示例里是容忍着来的。
-- 对端不跟 broker 同机（或者端口/账号不一样）时显式指定：
+- 托管侧不跟 broker 同机（或者端口/账号不一样）时改用带参数的握手：
+  ```csharp
+  client.OpenFileChannel("10.0.0.7", 2323);                        // 设备拨到这台机器的 2323
+  ```
+  地址不想写死在代码里就放 `<root>/conf/ftp.txt`（可省文件，键全可选：
+  `host` / `port` / `advertisePort` / `root` / `userName` / `password` / `path` /
+  `force`）；函数参数优先于它，它优先于推导默认。
+- 设备端也可以不握手，直接钉一个静态 FTP 对端（要求对端自己跑 FTP 服务端、目录布局
+  是 `/<sn>/...`）：
   ```csharp
   device.SetFilePeer("10.0.0.7", 2323);                          // 设备端指到上位机的 FTP
   Nclink.StartFileServer(2323, @"D:\files", "admin", "123456");   // 本机端点换端口/根/账号

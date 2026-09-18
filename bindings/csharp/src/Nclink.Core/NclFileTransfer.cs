@@ -104,8 +104,8 @@ namespace Nclink
     /// 客户端的文件通道：MQTT 报文里只传 "/temp/&lt;名字&gt;" 令牌，字节走 FTP。
     ///
     /// 方向很重要：**设备是 FTP 客户端**，托管侧是 FTP 服务端（进程级端点
-    /// 127.0.0.1:2323，admin / 123456，根 = 安装根，<see cref="Nclink.Init(string, string, string)"/> 时
-    /// 已经起好）。本地文件放 &lt;当前目录&gt;/&lt;sn&gt;/&lt;相对路径&gt;：
+    /// 127.0.0.1:2323，admin / 123456，根 = 安装根，开文件通道时按需起）。本地文件放
+    /// &lt;当前目录&gt;/&lt;sn&gt;/&lt;相对路径&gt;：
     ///
     /// <list type="bullet">
     ///   <item>上传：文件先落到那儿，再用同样的相对路径 <see cref="UploadFile"/>
@@ -114,15 +114,70 @@ namespace Nclink
     ///         （<see cref="DownloadTo"/> 再替你搬到目标）。</item>
     /// </list>
     ///
-    /// 设备侧要先把文件工具与 FTP 端点挂起来：<see cref="NclServer.RegisterFileTool"/>
-    /// 加 <see cref="NclServer.StartFtp"/>。
+    /// 传字节之前要先握手：<see cref="OpenFileChannel()"/> 把端点交给设备
+    /// （file/openFileChannel），设备随即往那儿拨 FTP。下面的便利方法会自己确保通道
+    /// 开着，<see cref="CloseFileChannel()"/> 收回租约并撤销临时账号。
     ///
-    /// 设备按 conf/mqtt.cfg 里 broker 的主机名 + 端口 2323 找托管侧的 FTP 端点
-    /// （拿不到配置就 127.0.0.1）——所以托管侧与 broker 同一台机器时开箱即用。
+    /// 设备侧要先把文件工具挂起来：<see cref="NclServer.RegisterFileTool"/>（设备自己
+    /// 也服务 FTP 时再加 <see cref="NclServer.StartFtp"/>；不握手、钉静态对端则是
+    /// <see cref="NclServer.SetFilePeer"/>）。
     /// </summary>
     public sealed partial class NclDeviceClient
     {
         /* -------------------------------------------------------- 文件通道 -- */
+
+        /// <summary>
+        /// 开文件通道（file/openFileChannel）：把托管侧的 FTP 端点交给设备，设备随即
+        /// 往那儿拨 FTP 传字节。
+        ///
+        /// 不传参就是默认：地址 = 到 broker 的本机地址（拿不到就 127.0.0.1）、端口 =
+        /// 进程级端点端口（没起就按 2323 起）、账号 = 库临时生成的一对（关闭时撤销）。
+        /// 对端不在这台机器上、或端口有映射时用
+        /// <see cref="OpenFileChannel(string, int, string, string)"/>。
+        ///
+        /// 幂等；通道是租约，<see cref="CloseFileChannel()"/> 之前一直是这条对端。
+        /// 上传/下载/列目录/建目录/删除这些便利方法也会在没通道时自动开一次。
+        /// </summary>
+        public void OpenFileChannel()
+        {
+            ThrowIfDisposed();
+            NclinkException.Check(Native.ClientFileChannelOpen(_client),
+                                  "OpenFileChannel");
+        }
+
+        /// <summary>同上，但显式给出设备要拨的 host / port 和账号（host、port 必填）。</summary>
+        public void OpenFileChannel(string host, int port, string username = null,
+                                    string password = null)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrEmpty(host) || port <= 0)
+            {
+                throw new ArgumentException("OpenFileChannel 需要 host 和 port");
+            }
+            NclinkException.Check(
+                Native.ClientFileChannelOpenEx(_client, Native.Utf8Z(host), (uint)port,
+                                               Native.Utf8Z(username),
+                                               Native.Utf8Z(password)),
+                "OpenFileChannel");
+        }
+
+        /// <summary>收回文件通道：设备停用它的 FTP 连接，库给这条通道加的账号一并撤销（幂等）。</summary>
+        public void CloseFileChannel()
+        {
+            ThrowIfDisposed();
+            NclinkException.Check(Native.ClientFileChannelClose(_client),
+                                  "CloseFileChannel");
+        }
+
+        /// <summary>这条客户端手上有没有文件通道。</summary>
+        public bool FileChannelIsOpen
+        {
+            get
+            {
+                ThrowIfDisposed();
+                return Native.ClientFileChannelIsOpen(_client) != 0;
+            }
+        }
 
         /// <summary>
         /// 上传 <paramref name="relativePath"/>（形如 "/demo.txt"）：文件必须已经在

@@ -3,6 +3,82 @@
 本文件记录 NC-Link C 实现（`nclink-core-c`）的版本变更。版本号跟随
 NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
+## 3.4.0
+
+文件通道换成**显式握手**：字节仍然走 FTP、MQTT 只传 `/temp/<名字>` 令牌，但设备不再
+从 `conf/mqtt.cfg` 猜对端。版本号推进到 **3.4.0**（`NCL_VERSION`、CMake 工程版本与
+包名一致）。
+
+### 变更（破坏性）
+
+- **删掉"按 conf/mqtt.cfg 猜对端"那条隐式路径**。3.3.0 以前设备端文件工具默认按
+  "broker 的主机名 + 2323 + admin/123456"去拨 FTP——只有对端恰好跑在 broker 那台机器
+  上才成立。现在对端只有两个来源：
+  - 上位机用 **`file/openFileChannel`** 握手把端点交过来（推荐）；
+  - 设备自己用 `ncl_server_set_file_peer()` 钉一个静态对端（要求对端自己跑 FTP 服务端、
+    目录布局是 `/<sn>/...`）。
+  两者都没有时，设备端文件方法答新增的 **`NoFileChannelException`
+  （`NCL_ERR_NO_CHANNEL`，-14）**，不再有 `127.0.0.1` 兜底。
+- **客户端管理器不再在 `init` 时顺手起本机 FTP 端点**。要传文件就先
+  `ncl_client_open_file_channel()`；它按需把端点拉起来（`ncl_client_holder_start_ftp*()`
+  仍是显式起端点的入口，用于换端口/根目录/账号）。
+
+### 新增
+- **文件通道握手**（`file/openFileChannel` / `file/closeFileChannel`，`file` 工具的第
+  6、7 个方法）：参数 `host`/`port`/`user` 必填，`password`、`channelId`（租约名）、
+  `path`（远端前缀，默认设备 SN）、`force`（顶替已有通道）可选。租约名相同的重复握手是
+  幂等 no-op（应答 `reused=true`），断线重连后重试不会打断正在传的传输；租约名不同又
+  没给 `force` 则拒绝（`NG`，理由里带当前租约名）。设备侧查状态：
+  `ncl_server_file_channel_is_open()` / `ncl_server_file_channel_id()`。
+- **客户端侧 API**：`ncl_client_open_file_channel(client, options)`（`options` 可为
+  `NULL`，结构体 `ncl_file_channel_options` 覆盖 host/port/user/password/channelId/
+  path/force/timeout）、`ncl_client_close_file_channel()`（幂等）、
+  `ncl_client_file_channel_is_open()`、`ncl_client_file_channel_id()`。默认路径下库给
+  每条通道在端点上加**一个临时账号**（随机口令，只有设备知道），关闭通道时撤销它——
+  撤一条通道不影响同一端点上别的对端。
+- **配置文件 `conf/ftp.txt`（可省）**：`host` / `port` / `advertisePort` / `root` /
+  `userName` / `password` / `path` / `force`，键全可选，缺文件/缺键/空值都退回默认，
+  文件写坏只记一条 WARNING。每次开通道与 `start_ftp*()` 都重新读，改完不用重启；
+  优先级 **函数参数 > conf/ftp.txt > 推导默认**。读写接口
+  `ncl_file_channel_config_read/_write/_free()`。
+- **地址推导**：默认交给设备的地址是"到 broker 的本机地址"
+  （`ncl_socket_local_ip_toward()`：connected UDP 套接字问路由表，不发包）；broker 在
+  本机时结果是回环地址，改取本机第一个非回环 IPv4，最后才 `127.0.0.1`。跨网段、端口
+  映射、走 VPN 的部署用 `options.host` 或 `conf/ftp.txt` 显式指定。
+- **FTP 服务端多账号**：`ncl_ftp_account` +
+  `ncl_ftp_server_add_account()` / `ncl_ftp_server_remove_account()` /
+  `ncl_ftp_server_account_count()`；每个账号可带自己的根目录与写权限，撤销账号会断开
+  同名会话（文件通道的临时账号就建在这上面）。
+- **`ncl_client_holder_server_uri()`**：返回进程级客户端实际建连用的 broker URL
+  （`init_ex` 里存下来的那份，不一定是磁盘上的 `conf/mqtt.cfg`）。
+- **托管绑定**：原生垫片新增 `nclshim_client_file_channel_open` / `..._open_ex` /
+  `..._close` / `..._is_open` 与便利入口 `nclshim_client_ensure_file_channel`；
+  C# / Java / Python 的 `DeviceClient` 加 `OpenFileChannel` / `CloseFileChannel` /
+  `FileChannelIsOpen`，并且上传/下载/列目录/建目录/删文件/带文件参数的方法调用这些
+  便利方法会**按需自动握一次手**（C API 保持显式，不做隐式网络动作）。
+
+### 修复
+- **`ncl_client_ll()` 以前把设备回的 NG 当成功**：空目录和被拒绝都返回 `NCL_OK`，
+  调用方分不出来。现在应答项 `code != OK` 记日志并返回 `NCL_ERR`。
+
+### 文档
+- 手册 5.10 重写成"握手 → 传输 → 收租约"三段，并补了 `conf/ftp.txt` 一节；5.9 补 FTP
+  多账号；2.4.3/2.4.4/2.4.5（Java/Python/C#）与 3.2 客户端最小程序、7 章排错、附录 D
+  目录布局同步；附录 A/B 由 `tools/gen_api_index.py` 重生成（错误码表补
+  `NoFileChannelException` 文案）。四个绑定的 README、垫片头注释也跟上。
+
+### 实测（本次发布前）
+
+| 项 | 结果 |
+|----|------|
+| Windows x64（MSVC 14.44.35207，Release） | **25/25**；`file` 套件 **219 项断言**（新增握手 6 个用例：无通道被拒 / 握手 / 同租约复用 / 换租约需 force / close 撤销账号 / 幂等，以及 `conf/ftp.txt` 往返、坏文件容忍、端点跟随文件、参数优先于文件） |
+| Windows 其他变体 | x86、静态内存、TLS、静态内存+TLS、x86 静态内存各 **25/25** |
+| Linux（gcc 13.4 / Debian bookworm，容器内） | 默认堆 / TLS / 静态内存 / 静态内存+TLS 各 **25/25** |
+| mingw-w64（gcc 16.2.0，UCRT + posix threads） | 非 TLS 与 TLS 各 **25/25**（含 `test_cpp`） |
+| 内存检查 | ASan + LeakSanitizer（6 个套件）**0 发现**；ThreadSanitizer **0 数据竞争** |
+| 托管绑定自检 | C# 106 项、Java 107 项、Python 46 项，**0 失败**；对真 broker（EMQX）C# **135 项**、Java **15 项**、Python 46 项 0 失败（含文件通道握手全流程） |
+| Go 绑定 | Linux 容器与 Windows（cgo + mingw）`go test ./...` 通过；`-tags nclink_tls` 两侧通过 |
+
 ## 3.3.0
 
 ### 新增

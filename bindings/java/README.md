@@ -209,7 +209,9 @@ http.close();                    // 幂等；device.close() 也会替你收
 
 MQTT 报文里只传 `/temp/<名字>` 这样的**令牌**，字节走 FTP。方向要记住：**设备是
 FTP 客户端**，本机是 FTP 服务端（进程级端点 127.0.0.1:2323、admin / 123456、根 =
-安装根；`Nclink.init()` 时已经起好，`Nclink.startFileServer()` 是显式的幂等版本）。
+安装根）。传字节之前先**握手**：`client.openFileChannel()` 把端点交给设备
+（file/openFileChannel），设备随即往那儿拨 FTP；`client.closeFileChannel()` 收回
+租约并撤销库给这条通道加的临时账号。下面的上传/下载等便利方法会自己确保通道开着。
 
 ```java
 // 设备端（收文件的那一边）
@@ -220,11 +222,13 @@ try (Server device = new Server("V2JAVA00001", modelJson, broker)) {
 
 // 客户端（上位机那一侧）
 try (DeviceClient client = Nclink.getDevice("V2JAVA00001")) {
+    client.openFileChannel();        // 握手：设备往这台机器的 FTP 端点拨
     client.uploadLocalFile(new File("report.txt"), "/data/report.txt");
     for (FileInfo item : client.listFiles("/data")) {
         System.out.println(item.fileName() + " " + item.fileSize() + " 字节");
     }
     client.downloadTo("/data/report.txt", new File("back.txt"));
+    client.closeFileChannel();       // 收回租约（幂等；不调也会随 Nclink.shutdown 收掉）
     client.makeDirectory("/docs");
     client.deleteFile("/data/report.txt");
 
@@ -245,11 +249,22 @@ Nclink.fileAttribute("report.txt");        // com.nclink.FileInfo
   （与 C API 一致）；`uploadLocalFile()` 会先替你摆到那个位置。
 - 下载回来的文件先落在 `<当前目录>/<sn>/` 下，`downloadFile()` 返回绝对路径，
   `downloadTo()` 再替你复制到目标。
-- 设备按 `conf/mqtt.cfg` 里 broker 的主机名 + 端口 2323 找本机的 FTP 端点（拿不到配置
-  就 127.0.0.1）——所以本机与 broker 是同一台机器时开箱即用。
+- 通道里广播的地址默认是"到 broker 的本机地址" + 进程级端点端口（拿不到配置就
+  127.0.0.1）——本机与 broker 是同一台机器时开箱即用。
 - 设备侧的 `startFtp()` 是"设备自己也开个 FTP 端点"（读 `bin/ftp.txt`），客户端传文件
   用不到它；缺文件时它抛 `NclinkException`，示例里是容忍着来的。
-- 对端不跟 broker 同机（或者端口/账号不一样）时显式指定：
+- 本机不跟 broker 同机（或者端口/账号不一样）时改用带参数的握手：
+
+```java
+client.openFileChannel("10.0.0.7", 2323, null, null);      // 设备拨到这台机器的 2323
+```
+
+  地址不想写死在代码里就放 `<root>/conf/ftp.txt`（可省文件，键全可选：
+  `host` / `port` / `advertisePort` / `root` / `userName` / `password` / `path` /
+  `force`）；函数参数优先于它，它优先于推导默认。
+
+  设备端也可以不握手，直接钉一个静态 FTP 对端（要求对端自己跑 FTP 服务端、目录布局
+  是 `/<sn>/...`）：
 
 ```java
 device.setFilePeer("10.0.0.7", 2323, null, null);          // 设备端指到上位机的 FTP

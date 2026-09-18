@@ -240,10 +240,13 @@ HTTP / REST 端点：`device.startHttp(9008, true)`（`0` = 随机端口）挂�
 `client.uploadLocalFile(本地文件, "/data/x.bin")` / `client.downloadTo("/data/x.bin",
 本地文件)` / `client.listFiles("/data")`（`FileInfo`）/ `client.makeDirectory` /
 `client.deleteFile` / `client.methodCallFile(...)`（带文件参数的方法调用）。方向是
-**设备当 FTP 客户端**、上位机当 FTP 服务端（`Nclink.startFileServer()` 起
-127.0.0.1:2323，`init` 时已经起过）。
-对端 FTP 不跟 broker 同机、或端口/账号不同时显式指定：`device.setFilePeer(host,
-port, user, pass)` 与 `Nclink.startFileServer(port, root, user, pass)`。
+**设备当 FTP 客户端**、上位机当 FTP 服务端。传字节之前先握手：
+`client.openFileChannel()` 把本机端点交给设备（设备随即往那儿拨 FTP），
+`client.closeFileChannel()` 收回租约并撤销临时账号；上面的便利方法会自己确保通道
+开着。本机不跟 broker 同机、或端口/账号不同时用
+`client.openFileChannel(host, port, user, pass)`（`Nclink.startFileServer(port,
+root, user, pass)` 用来换进程级端点的端口 / 根目录 / 账号）。
+设备端也可以不握手，直接钉静态对端：`device.setFilePeer(host, port, user, pass)`。
 
 `ssl://` 的连接选项也在绑定里：`Nclink.init(uri, user, pass, TlsOptions)`（CA、双向
 证书、SNI、`verifyPeer(false)`）与设备端 `new Server(..., TlsOptions)`；用之前先问
@@ -278,10 +281,14 @@ HTTP / REST 端点用 `device.start_http(port, with_config=True)`：库自带
 
 文件通道同一套形状：设备端 `device.register_file_tool()`，客户端
 `client.upload_local_file(...)` / `download_to(...)` / `list_files(...)`（`FileInfo`）/
-`make_directory(...)` / `delete_file(...)` / `method_call_file(...)`；本机的 FTP 服务端
-由 `nclink.init()` 起好（`nclink.start_file_server()` 是显式版本）。
-对端 FTP 不跟 broker 同机时显式指定：`device.set_file_peer(host, port, user, pass)`
-与 `nclink.start_file_server(port, root=..., username=..., password=...)`。
+`make_directory(...)` / `delete_file(...)` / `method_call_file(...)`；传字节之前先握手
+`client.open_file_channel()`（设备随即往本机的 FTP 端点拨），传完
+`client.close_file_channel()` 收回租约并撤销临时账号——上面的便利方法会自己确保通道
+开着。本机不跟 broker 同机时用
+`client.open_file_channel(host=..., port=..., username=..., password=...)`；
+`nclink.start_file_server(port, root=..., username=..., password=...)` 换的是进程级端点
+自己的端口 / 根目录 / 账号。设备端不握手就钉静态对端：
+`device.set_file_peer(host, port, user, pass)`。
 
 `ssl://` 的连接选项：`nclink.init(uri, tls=nclink.TlsOptions(ca_file=..., ...))` 与
 设备端 `nclink.Server(..., tls=...)`；先问 `nclink.tls_available()`。
@@ -320,10 +327,15 @@ broker）；想看"报文真的过 MQTT"的那一段，设 `NCLINK_TEST_BROKER=t
 `UploadLocalFile` / `DownloadTo` / `ListFiles`（`NclFileInfo`）/ `MakeDirectory` /
 `DeleteRemoteFile` / `MethodCallFile`，本地小工具 `Nclink.FileChecksum` /
 `FileAttribute` / `NeedCompression` / `TotalChunks`。
+传字节之前先握手：`client.OpenFileChannel()`（本机不跟 broker 同机时给
+`host` / `port` / `username` / `password`）把端点交给设备，
+`client.CloseFileChannel()` 收回租约并撤销临时账号（`client.FileChannelIsOpen` 查状态）；
+上面的便利方法会自己确保通道开着。设备端也可以不握手，钉静态对端用
+`server.SetFilePeer(host, port, user, pass)`。
 `ssl://` 的连接选项：`Nclink.Init(uri, user, pass, new NclTlsOptions { CaFile = ... })`
 与设备端 `new NclServer(..., new NclTlsOptions { ... })`（先用 `Nclink.TlsAvailable`
-问一下）；文件通道对端可配：`server.SetFilePeer(host, port, user, pass)` /
-`Nclink.StartFileServer(port, root, user, pass)`；客户端侧还能用 `Nclink.LoadModel()`
+问一下）；`Nclink.StartFileServer(port, root, user, pass)` 换进程级端点自己的
+端口 / 根目录 / 账号；客户端侧还能用 `Nclink.LoadModel()`
 装上自己那份模型（`ClearModel()` 卸下），路径 ↔ id 与采样补齐都靠它。
 示例：`Nclink.Demo.Cli`（客户端）与 `Nclink.Demo.Device`（设备端，`broker` 传 `-`
 即离线，出站报文走自研传输打到控制台）。
@@ -335,6 +347,9 @@ P/Invoke、Java 走 JNI（`nclink_jni` 把垫片一起编进去）、Python 走 
 3.2.0 起垫片还多了连接选项那组入口：`nclshim_open_ex` / `nclshim_tls_available`
 （客户端 TLS）、`nclshim_server_create_ex`（设备端连 `ssl://` broker）、
 `nclshim_server_set_file_peer` 与 `nclshim_file_start_ftp_ex`（文件通道对端可配）。
+3.4.0 又加了文件通道握手那组：`nclshim_client_file_channel_open` /
+`..._open_ex` / `..._close` / `..._is_open` 与便利入口
+`nclshim_client_ensure_file_channel`（托管绑定的上传/下载等便利方法用它按需握手）。
 
 ### 2.4 CMake 选项
 
@@ -528,7 +543,8 @@ int main(void) {
     ncl_message *probe = NULL;
     long long number = 0;
 
-    /* 一个进程只需初始化一次：内部建立 MQTT 连接，并启动本机 FTP 端点(2323) */
+    /* 一个进程只需初始化一次：内部建立 MQTT 连接。本机的 FTP 端点不再顺手起，
+     * 要传文件时由 ncl_client_open_file_channel() 按需拉起（见 5.10） */
     ncl_client_holder_init("tcp://192.168.1.10:1883", "admin", "123456");
 
     client = ncl_client_holder_get("V200583BC87");  /* 按 SN 取设备视图 */
@@ -2142,6 +2158,18 @@ ncl_ftp_server_free(ftp);   /* 不删除 root 目录 */
 LIST NLST RETR STOR APPE DELE RMD MKD RNFR RNTO SIZE MDTM REST ABOR NOOP STAT
 ALLO HELP QUIT`，主动与被动两种数据连接都支持。
 
+一个端点可以挂多个登录：创建时的账号（`opt.user` / `opt.password` / `opt.root`）与
+`anonymous` 以外，还能加：
+
+```c
+ncl_ftp_account account = { "chan-1", "s3cret", NULL, true };  /* 名字/口令/根=NULL 用服务端根/可写 */
+ncl_ftp_server_add_account(ftp, &account);      /* 同名则原地更新 */
+size_t n = ncl_ftp_server_account_count(ftp);
+ncl_ftp_server_remove_account(ftp, "chan-1");   /* 同名会话随即被断开（凭据撤销） */
+```
+
+文件通道的临时账号就建在这上面：撤销一条通道的账号不会碰到同一个端点上别的对端。
+
 #### 客户端
 
 ```c
@@ -2179,11 +2207,26 @@ ncl_ftp_client_free(c);
 #### 设备端（收文件）
 
 ```c
-ncl_server_register_file_tool(server);   /* 注册 file 工具 + 5 条绑定 */
-ncl_server_start_ftp(server);            /* 读 bin/ftp.txt 起 FTP 端点，默认 2121 */
+ncl_server_register_file_tool(server);   /* 注册 file 工具 + 5 条绑定 + 2 条握手方法 */
+ncl_server_start_ftp(server);            /* 可选：设备自己也服务 FTP（读 bin/ftp.txt，默认 2121） */
 ```
 
-注册后，`/CONTROLLER/FILE` 上就有 `write/read/ll/mkdir/delete` 五个方法，
+注册后，`/CONTROLLER/FILE` 上就有 `write/read/ll/mkdir/delete` 五个方法，外加文件
+通道的握手方法 `file/openFileChannel` / `file/closeFileChannel`。**握手之前设备没有
+对端**：文件方法一律答 `NoFileChannelException`（`NCL_ERR_NO_CHANNEL`）。对端只有
+两种来源：
+
+| 来源 | 谁开 | 生命周期 |
+|------|------|----------|
+| `file/openFileChannel` | 上位机（客户端）握手 | 直到 `file/closeFileChannel`、被下一条通道顶替（`force`）或设备重启 |
+| `ncl_server_set_file_peer(host, port, user, pass)` | 设备自己配置的静态对端 | 静态；被后来的握手顶替 |
+
+握手的参数：`host` / `port` / `user` 必填，`password`、`channelId`（租约名）、`path`
+（远端前缀，默认本机 SN）、`force`（顶替已有通道）可选。**租约名相同**的重复握手是
+幂等的 no-op（应答 `reused=true`）——断线重连后重试不会打断正在传的传输；租约名不同
+又没给 `force` 则被拒绝（`NG`，理由里带当前租约名），保护正在用这条通道的对端。
+设备侧查状态：`ncl_server_file_channel_is_open()` / `ncl_server_file_channel_id()`。
+
 协议路径约定：
 
 | 侧 | 路径基准 |
@@ -2198,7 +2241,13 @@ ncl_server_start_ftp(server);            /* 读 bin/ftp.txt 起 FTP 端点，默
 ```c
 #include "nclink/ncl_file.h"
 
-/* 上传：文件必须先放到 <cwd>/<sn>/<相对路径>，再用同样的相对路径调用 */
+/* 1. 开文件通道：把本进程的 FTP 端点交出去（设备是 FTP 客户端，往这儿拨）。地址
+ *    默认取"到 broker 的本机地址"（回环时改取本机第一个非回环 IPv4）、端口默认取
+ *    进程级端点（没起就按 2323 起）、账号是库临时生成的一对（只有设备知道）。
+ *    参数传 NULL = 全默认。 */
+ncl_client_open_file_channel(client, NULL);
+
+/* 2. 上传：文件必须先放到 <cwd>/<sn>/<相对路径>，再用同样的相对路径调用 */
 ncl_mkdir_p(sn);
 ncl_file_write_all("V200583BC87/demo.txt", text, strlen(text));
 ncl_client_write(client, "/demo.txt");        /* 设备侧落到 uploadFile/demo.txt */
@@ -2219,7 +2268,55 @@ ncl_ptrvec_free(&files);
 
 ncl_file_client_tool_mkdir(ncl_client_file_tool(client), "/docs");
 ncl_file_client_tool_delete(ncl_client_file_tool(client), "/demo.txt");
+
+/* 3. 收回租约（幂等）：撤销临时账号，设备那条 FTP 会话随之断开；进程级 FTP 端点
+ *    本身留到 ncl_client_holder_stop_ftp() / shutdown() 才收。 */
+ncl_client_close_file_channel(client);
 ```
+
+对端不在这台机器上、或者端口有映射时用 `ncl_file_channel_options`：
+
+```c
+ncl_file_channel_options options;
+ncl_file_channel_options_default(&options);
+options.host = "10.0.0.7";       /* 设备拨得到的地址；NULL = 路由表选到 broker 的本机地址
+                                  *      （回环则改取本机第一个非回环 IPv4） */
+options.port = 2323;             /* 0 = 进程级端点自己的端口 */
+options.user = "chan";           /* 指向本进程端点时库会把账号加上、关闭时撤销 */
+options.password = "secret";
+options.force = true;            /* 顶替别人占着的通道（默认 false：被拒绝） */
+ncl_client_open_file_channel(client, &options);
+```
+
+**C API 不会自己开通道**（`ncl_client_write/read/ll` 之前必须显式握手，否则设备答
+`NoFileChannelException`）；托管语言绑定里的上传/下载等便利方法会在没通道时自动
+握一次手。查状态：`ncl_client_file_channel_is_open()` / `ncl_client_file_channel_id()`。
+
+#### 配置文件 `conf/ftp.txt`（可选）
+
+不想把地址写在代码里（或者部署现场才定）就放在 `<root>/conf/ftp.txt`。键全是可选的，
+缺文件 / 缺键 / 空值都退回默认，**文件写坏也不会让库交出去一个坏地址**（只记一条
+WARNING）。每次 `ncl_client_open_file_channel()` 与 `ncl_client_holder_start_ftp*()`
+都重新读它，改完不用重启；优先级是 **函数参数 > conf/ftp.txt > 推导默认**。
+
+```json
+{
+  "host": "10.0.0.7",      // 交给设备的地址；缺省 = 到 broker 的本机地址（回环→LAN 地址）
+  "port": 2323,            // 本进程 FTP 端点监听端口；缺省/0 = 2323
+  "advertisePort": 4023,   // 交给设备的端口（有端口映射时用）；缺省/0 = "port"
+  "root": "D:/share",      // 端点登录根；缺省 = 安装根
+  "userName": "nclink",    // 端点账号，同时也是交给设备的登录；缺省 = 库按通道临时生成
+  "password": "secret",    // 与 userName 成对；缺省 = 随机口令（关闭通道时撤销）
+  "path": "V200583BC87",   // 设备侧远端前缀；缺省 = 设备自己的 SN（客户端镜像是
+                           //   <root>/<sn>/，要改它得连着端点根目录布局一起改）
+  "force": true            // 交出去时顶替已占用的通道；缺省 false（被拒绝）
+}
+```
+
+读写它：`ncl_file_channel_config_read()` / `ncl_file_channel_config_write()` /
+`ncl_file_channel_config_free()`（结构体 `ncl_file_channel_config`）。配了
+`userName`/`password` 时这对账号就是"端点自己的账号"，关闭通道只断会话、不撤销账号；
+不配则由库按通道临时生成一对，`ncl_client_close_file_channel()` 会撤销它。
 
 #### 方法调用里的文件参数
 
@@ -2466,7 +2563,7 @@ curl -X POST http://<设备IP>:9008/api/nclinkServer/addSample \
 | `SET` 返回失败 | 工具方法返回 NCL_OK 但 `*result` 为 NULL 时，应答 code=NG |
 | 客户端 `setValue` 返回错误 | 说明设备应答里有 `code=NG` 的项（写失败被拒绝），报文 `reason` 里有原因 |
 | 采样报文某一列全是 `null` | 该采样项的路径在设备端没有绑定工具（见 3.4 的路径表）：`kBindings` 里的路径要和模型里数据项的路径一致 |
-| 文件上传报 `Error` | 检查三件事：① 本地文件是否放在 `<cwd>/<sn>/<相对路径>`；② 设备端是否起了 FTP（`ncl_server_start_ftp`，端口见 `bin/ftp.txt`）且可达；③ 客户端本机 2323 端口是否被占用 |
+| 文件上传报 `Error` / `NoFileChannelException` | 检查四件事：① 是否先握了手（`ncl_client_open_file_channel`，托管绑定里便利方法会自己握）；② 本地文件是否放在 `<cwd>/<sn>/<相对路径>`；③ 设备拨回的地址是否可达（跨网段用 `options.host`，设备端静态对端用 `ncl_server_set_file_peer`）；④ 客户端本机 2323 端口是否被占用 |
 | FTP 主动模式连不上 | 默认走主动模式：服务端要能反向连到客户端的监听端口。跨 NAT 时改用被动：`ncl_ftp_client_set_passive(c, true)` |
 | `ncl_sn_read()` 每次启动都变 | 根目录是否可写、`bin/sn.txt` 是否被 `/api/cfg/init` 覆盖过（该接口无条件重写，见 4.1） |
 | 中文字符串编译报 C4819/C2001 | MSVC 没加 `/utf-8` |
@@ -2705,8 +2802,19 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_client_holder_start_ftp(void);`
 - `void ncl_client_holder_stop_ftp(void);` — Stop the process wide FTP server.
 - `ncl_err ncl_client_holder_restart(void);` — Rebuild the process wide client from conf/mqtt.cfg: the running connection is
+- `const char *ncl_client_holder_server_uri(void);` — Broker URL the process wide client was initialised with; NULL before
+- `ncl_err ncl_file_channel_config_read(ncl_file_channel_config *out);` — Read `conf/ftp.txt` into @p out (memset first, then the file's values).
+- `ncl_err ncl_file_channel_config_write(const ncl_file_channel_config *config);` — Write @p config to `conf/ftp.txt` (keys with a value only).
+- `void ncl_file_channel_config_free(ncl_file_channel_config *config);` — Release the strings of @p config and zero it.
+- `void ncl_file_channel_options_default(ncl_file_channel_options *options);` — Zero @p options and install the documented defaults.
+- `ncl_err ncl_client_open_file_channel(ncl_client *client, const ncl_file_channel_options *options);` — Open (or refresh) the file channel of @p client: make sure the process wide
+- `ncl_err ncl_client_close_file_channel(ncl_client *client);` — Drop the channel of @p client: file/closeFileChannel, then revoke the login
+- `bool ncl_client_file_channel_is_open(ncl_client *client);` — True when @p client holds a file channel.
+- `bool ncl_client_file_channel_id(ncl_client *client, char *out, size_t out_len);` — Copy the lease name of the channel into @p out; false when there is none.
 - `ncl_err ncl_server_register_file_tool(ncl_server *server);` — Register the built in "file" tool on @p server.
-- `ncl_err ncl_server_set_file_peer(ncl_server *server, const char *host, unsigned port, const char *user, const char *password);` — Override the FTP endpoint of the peer the file channel talks to.
+- `ncl_err ncl_server_set_file_peer(ncl_server *server, const char *host, unsigned port, const char *user, const char *password);` — Point the device at a fixed FTP endpoint (the "static peer"), for hosts that
+- `bool ncl_server_file_channel_is_open(ncl_server *server);` — True when a channel is open (handshake) or a static peer is configured.
+- `bool ncl_server_file_channel_id(ncl_server *server, char *out, size_t out_len);` — Copy the open channel's id into @p out; false when no channel is open.
 - `ncl_err ncl_server_start_ftp(ncl_server *server);` — Start the server side FTP endpoint: read bin/ftp.txt for the port and
 - `void ncl_server_stop_ftp(ncl_server *server);` — Stop the server side FTP endpoint.
 
@@ -2746,6 +2854,9 @@ Copyright (c) 2026 huienming
 - `ncl_ftp_server *ncl_ftp_server_create_ex(const ncl_ftp_server_options *options);`
 - `void ncl_ftp_server_free(ncl_ftp_server *server);` — Stop the server if it is running and release it.
 - `ncl_err ncl_ftp_server_start(ncl_ftp_server *server);` — Bind and start accepting sessions.
+- `ncl_err ncl_ftp_server_add_account(ncl_ftp_server *server, const ncl_ftp_account *account);` — Register @p account (or update it in place when the user name is already
+- `ncl_err ncl_ftp_server_remove_account(ncl_ftp_server *server, const char *user);` — Drop @p user and close its live sessions.
+- `size_t ncl_ftp_server_account_count(ncl_ftp_server *server);` — Number of accounts added with ncl_ftp_server_add_account().
 - `void ncl_ftp_server_stop(ncl_ftp_server *server);` — Stop accepting, close every session and join all threads.
 - `bool ncl_ftp_server_is_running(ncl_ftp_server *server);`
 - `unsigned ncl_ftp_server_port(const ncl_ftp_server *server);`
@@ -3151,6 +3262,7 @@ Copyright (c) 2026 huienming
 - `unsigned ncl_socket_local_port(const ncl_socket *s);` — Local port of a bound socket, or 0 when unknown.
 - `ncl_err ncl_socket_local_ip(const ncl_socket *s, char *buf, size_t buf_len);` — Local address of @p s as text ("192.168.1.7" or "fe80::1%12"), which is the
 - `ncl_err ncl_socket_peer_ip(const ncl_socket *s, char *buf, size_t buf_len);` — Peer address of @p s as text.
+- `ncl_err ncl_socket_local_ip_toward(const char *host, unsigned port, char *buf, size_t buf_len);` — Local IPv4 address the routing table would use to reach @p host:@p port -
 - `const char *ncl_net_local_ipv4(void);` — First non-loopback IPv4 address of an up interface: the address a peer on the
 - `char *ncl_net_ip_map_json(void);` — Build `{"<interface>":"<ipv4>", ...}` in interface enumeration order.
 - `ncl_err ncl_socket_send(ncl_socket *s, const void *data, size_t len);` — Send exactly @p len bytes.
@@ -3227,6 +3339,7 @@ Copyright (c) 2026 huienming
 | `NCL_ERR_RANGE` | (-11) | 越界 |
 | `NCL_ERR_CONNECT` | (-12) | MqttException / 连接失败 |
 | `NCL_ERR_CLOSED` | (-13) | 对象已关闭 |
+| `NCL_ERR_NO_CHANNEL` | (-14) | NoFileChannelException / 设备还没有文件通道 |
 | `NCL_ERR_INVALID_CODE` | (-100) | InvalidCodeException |
 | `NCL_ERR_INVALID_DATA_NAME` | (-101) | InvalidDataNameException |
 | `NCL_ERR_INVALID_DATA_TYPE` | (-102) | InvalidDataTypException |
@@ -3286,3 +3399,4 @@ Copyright (c) 2026 huienming
   temp/                   文件通道的临时交换目录
   <sn>/                   客户端侧文件镜像（相对路径的基准）
 ```
+

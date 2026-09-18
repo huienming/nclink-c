@@ -455,14 +455,48 @@ NCLSHIM_API int nclshim_file_start_ftp_ex(unsigned port, const char *root,
                                           const char *user, const char *password);
 
 /**
- * 覆盖设备端文件通道对端的 FTP 端点（默认按 conf/mqtt.cfg 推：broker 的主机名 +
- * 2323 + admin/123456）。host 必填；port=0 / user / password 为 NULL 用默认。
+ * 给设备端文件通道指定一个静态对端（不握手）。要求对端自己跑 FTP 服务端、目录布局
+ * 是 "/<sn>/..."。host 必填；port=0 / user / password 为 NULL 用默认。对端用
+ * nclshim_client_file_channel_open() 握手开的通道会顶替它。
  */
 NCLSHIM_API int nclshim_server_set_file_peer(const void *handle, const char *host,
                                              unsigned port, const char *user,
                                              const char *password);
 
 NCLSHIM_API void nclshim_file_stop_ftp(void);
+
+/**
+ * 开文件通道（file/openFileChannel）：把本进程的 FTP 端点交给设备，设备随即往那儿
+ * 拨 FTP。通道是租约，关掉（..._channel_close()）之前一直是这条对端。
+ *
+ * 默认：地址 = 到 broker 的本机地址（拿不到就 127.0.0.1），端口 = 进程级端点端口
+ * （没起就按 2323 起），账号 = 库临时生成的、只有设备知道的一对（关闭时撤销）。
+ * 幂等：已经开着就直接返回 0。
+ */
+NCLSHIM_API int nclshim_client_file_channel_open(const void *client);
+
+/**
+ * 同上，但显式给出设备要拨的 host / port 和账号（host 必填，port 必填）。
+ * 对端不在这台机器上、或者端口有映射时用它；user/password 指向的若是本进程端点，
+ * 库会把账号加上并在关闭时撤销。
+ */
+NCLSHIM_API int nclshim_client_file_channel_open_ex(const void *client,
+                                                    const char *host,
+                                                    unsigned port,
+                                                    const char *user,
+                                                    const char *password);
+
+/** 收回文件通道：file/closeFileChannel + 撤销库给这条通道加的账号（幂等）。 */
+NCLSHIM_API int nclshim_client_file_channel_close(const void *client);
+
+/** 这条客户端手上有没有文件通道（1/0）。 */
+NCLSHIM_API int nclshim_client_file_channel_is_open(const void *client);
+
+/**
+ * 保证文件通道开着：没开就按默认开一次（幂等）。绑定里的上传/下载/列目录等
+ * 便利方法先调它，省得每个调用方都记得先 open。
+ */
+NCLSHIM_API int nclshim_client_ensure_file_channel(const void *client);
 
 /**
  * 上传一个文件：local_file_path 是**相对路径**（形如 "/demo.txt"），文件必须在

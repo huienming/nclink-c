@@ -159,6 +159,7 @@ def error_table():
         "NCL_ERR_RANGE": "越界",
         "NCL_ERR_CONNECT": "MqttException / 连接失败",
         "NCL_ERR_CLOSED": "对象已关闭",
+        "NCL_ERR_NO_CHANNEL": "NoFileChannelException / 设备还没有文件通道",
     }
     # The names ncl_err_name() returns for the protocol domain errors
     # (src/core/common.c); one per NC-Link validity rule.

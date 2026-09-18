@@ -176,6 +176,8 @@ public final class BrokerE2E {
     private static void fileChannel(DeviceClient client, File work, File local,
                                     String content, long size, String deviceMirror,
                                     long[] seen) throws Exception {
+                client.openFileChannel();        // 握手：设备往本机的 FTP 端点拨
+                check("文件通道：握手之后通道是开着的", client.fileChannelIsOpen());
                 client.uploadLocalFile(local, "/data/report.txt");
                 File mirror = new File(deviceMirror);
                 check("文件通道：上传后设备侧有文件",
@@ -218,6 +220,11 @@ public final class BrokerE2E {
 
                 client.deleteFile("/data/report.txt");
                 check("文件通道：删掉之后列不到了", client.listFiles("/data").isEmpty());
+
+                client.closeFileChannel();
+                check("文件通道：close 之后通道关掉了", !client.fileChannelIsOpen());
+                client.closeFileChannel();       // 幂等
+                check("文件通道：重复 close 不抛异常", true);
     }
 
     private static void check(String name, boolean ok) {

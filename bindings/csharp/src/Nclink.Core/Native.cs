@@ -446,6 +446,18 @@ namespace Nclink
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_file_stop_ftp")]
         internal static extern void FileStopFtp();
 
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_file_channel_open")]
+        internal static extern int ClientFileChannelOpen(IntPtr client);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_file_channel_open_ex")]
+        internal static extern int ClientFileChannelOpenEx(IntPtr client, byte[] host, uint port, byte[] user, byte[] password);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_file_channel_close")]
+        internal static extern int ClientFileChannelClose(IntPtr client);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_file_channel_is_open")]
+        internal static extern int ClientFileChannelIsOpen(IntPtr client);
+
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_file_write")]
         internal static extern int ClientFileWrite(IntPtr client, byte[] localFilePath);
 

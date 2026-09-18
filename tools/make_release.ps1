@@ -16,7 +16,7 @@
 # character can swallow the following line.
 #
 #   .\tools\make_release.ps1                        # headers + libs + docs + examples
-#   .\tools\make_release.ps1 -Version 3.3.0
+#   .\tools\make_release.ps1 -Version 3.4.0
 #   .\tools\make_release.ps1 -WithSource            # also ship src/tests/tools
 #
 # Libraries and example executables are collected from the locations below;
@@ -43,7 +43,7 @@
 #
 [CmdletBinding()]
 param(
-    [string]$Version = "3.3.0",
+    [string]$Version = "3.4.0",
     [string]$Name = "",
     [switch]$NoZip,
     [switch]$WithSource

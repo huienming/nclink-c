@@ -164,7 +164,7 @@ docker run --rm -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh buil
 .\build.ps1 -Arch x86 -StaticMem -BuildDir build-x86-staticmem
 docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh build-linux-staticmem"
 # 3. 组装（会带上 build/ 与 build-linux/bin 里编好的示例可执行文件）
-.\tools\make_release.ps1 -Version 3.3.0
+.\tools\make_release.ps1 -Version 3.4.0
 ```
 
 产物：`dist/nclink-core-c-<版本>/`（头文件 + Windows x64/x86 与 Linux 静态库 + **静态内存版** + 文档 +
@@ -216,8 +216,13 @@ C++ 封装在 `include/nclink/ncl.hpp`（header-only，RAII + 异常）；四个
 托管绑定**两边都包**：既能当客户端（`DeviceClient`/`NclDeviceClient`），也能当设备端
 （`Server`：注册工具方法、路径绑定、采样通道、事件推送、HTTP/REST 端点、文件通道），
 连接选项也贯通到托管侧：`ssl://` 的 CA / 双向证书 / 关校验 / SNI（`TlsOptions` /
-`NclTlsOptions`，C API 是 `ncl_client_holder_init_ex`）与文件通道对端的 FTP 地址
-（`ncl_server_set_file_peer` / `ncl_client_holder_start_ftp_ex`）。示例里有
+`NclTlsOptions`，C API 是 `ncl_client_holder_init_ex`）。3.4.0 起文件通道要**显式握手**：
+客户端 `open_file_channel()` / `openFileChannel()`（对应 C 的
+`ncl_client_open_file_channel()`）把本机 FTP 端点交给设备，传完
+`close_file_channel()` 收回租约；地址不写死就放可选的 `<root>/conf/ftp.txt`
+（`host` / `port` / `advertisePort` / `root` / `userName` / `password` / `path` / `force`）。
+设备端也可以不握手，用 `set_file_peer()` / `SetFilePeer()` / `ncl_server_set_file_peer()`
+钉一个静态 FTP 对端（布局要 `/<sn>/...`）。示例里有
 "Python 当机床、C 客户端来读"这种跨语言跑法。Go 绑定走 cgo 直接链 C API（不过垫片），
 客户端与设备端（`nclink.NewServer` + `RegisterTool` / `InitSamples` / `PushEvent` /
 `StartHTTP`）都在 `bindings/go/server.go`，设备端示例是 `example/device`。
@@ -427,6 +432,9 @@ ncl_json_obj_set(*result, "copy", marker);
 /* 客户端 */
 ncl_client_holder_init("tcp://broker:1883", "admin", "123456");
 ncl_client *c = ncl_client_holder_get("V203243111F");
+
+/* 先开文件通道：把本机 FTP 端点交给设备（传完 ncl_client_close_file_channel 收回） */
+ncl_client_open_file_channel(c, NULL);
 
 /* 上传：把本地文件送到设备（走 /CONTROLLER/FILE + FTP） */
 ncl_client_write(c, "/data/report.txt");          /* 落在设备的 uploadFile/ 下 */

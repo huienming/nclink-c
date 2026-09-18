@@ -154,7 +154,6 @@ class BrokerE2ETest(unittest.TestCase):
                                broker=BROKER)
         self.addCleanup(device.close)
         device.register_file_tool()
-        device.set_file_peer("127.0.0.1", 2323)     # 显式指定对端
         seen = {"size": -1}
         device.register_tool(
             "sink",
@@ -166,7 +165,7 @@ class BrokerE2ETest(unittest.TestCase):
         nclink.init(BROKER)
         self.addCleanup(nclink.shutdown)
         try:
-            nclink.start_file_server()          # 幂等（init 里已经起过）
+            nclink.start_file_server()          # 换过端口/账号的场合先起端点
         except nclink.NclinkError as error:
             self.skipTest("FTP 2323 起不来（%s），跳过文件通道" % error)
 
@@ -180,6 +179,8 @@ class BrokerE2ETest(unittest.TestCase):
         size = os.path.getsize(local)
 
         with nclink.get_device(SN) as client:
+            # 握手：把本机端点交给设备（后面的便利方法也会按需开一次）。
+            client.open_file_channel()
             client.upload_local_file(local, "/data/report.txt")
             on_device = os.path.join(nclink.root(), "uploadFile", "data",
                                      "report.txt")

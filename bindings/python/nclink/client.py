@@ -174,6 +174,38 @@ class DeviceClient:
 
     # ------------------------------------------------------ 文件通道 -- #
 
+    def open_file_channel(self, host=None, port=0, username=None,
+                          password=None):
+        """开文件通道（file/openFileChannel）：把托管侧的 FTP 端点交给设备，
+        设备随即往那儿拨 FTP 传字节。
+
+        参数全空就用默认：地址 = 到 broker 的本机地址（拿不到就 127.0.0.1）、
+        端口 = 进程级端点端口（没起就按 2323 起）、账号 = 库临时生成的一对
+        （关闭时撤销）。对端不在这台机器上、或端口有映射时给 `host` / `port` /
+        `username` / `password`。
+
+        幂等；通道是租约，`close_file_channel()` 之前一直是这条对端。上传/
+        下载/列目录/建目录/删除这些便利方法也会在没通道时自动开一次。
+        """
+        if host or port or username or password:
+            rc = lib.nclshim_client_file_channel_open_ex(
+                self._check_open(), encode(host), int(port), encode(username),
+                encode(password))
+        else:
+            rc = lib.nclshim_client_file_channel_open(self._check_open())
+        if rc != 0:
+            raise NclinkError(rc, "open_file_channel")
+
+    def close_file_channel(self):
+        """收回文件通道：设备停用它的 FTP 连接，库给这条通道加的账号一并撤销（幂等）。"""
+        rc = lib.nclshim_client_file_channel_close(self._check_open())
+        if rc != 0:
+            raise NclinkError(rc, "close_file_channel")
+
+    def file_channel_is_open(self):
+        """这条客户端手上有没有文件通道。"""
+        return bool(lib.nclshim_client_file_channel_is_open(self._check_open()))
+
     def upload_file(self, relative_path, timeout_ms=5000):
         """上传 `<当前目录>/<sn><相对路径>` 上的文件；`upload_local_file()` 会替你
         把本地文件摆到那个位置。"""

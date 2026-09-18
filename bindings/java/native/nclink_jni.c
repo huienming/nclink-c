@@ -1522,6 +1522,51 @@ JNIEXPORT void JNICALL Java_com_nclink_Native_fileStopFtp(JNIEnv *env, jclass cl
     nclshim_file_stop_ftp();
 }
 
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientFileChannelOpen(JNIEnv *env,
+                                                                    jclass cls,
+                                                                    jlong client)
+{
+    (void)env;
+    (void)cls;
+    return (jint)nclshim_client_file_channel_open(HANDLE(client));
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientFileChannelOpenEx(
+    JNIEnv *env, jclass cls, jlong client, jstring host, jint port, jstring user,
+    jstring password)
+{
+    char *raw_host = from_jstring(env, host);
+    char *raw_user = from_jstring(env, user);
+    char *raw_password = from_jstring(env, password);
+    int rc;
+
+    (void)cls;
+    rc = nclshim_client_file_channel_open_ex(HANDLE(client), raw_host, (unsigned)port,
+                                             raw_user, raw_password);
+    free(raw_host);
+    free(raw_user);
+    free(raw_password);
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientFileChannelClose(JNIEnv *env,
+                                                                     jclass cls,
+                                                                     jlong client)
+{
+    (void)env;
+    (void)cls;
+    return (jint)nclshim_client_file_channel_close(HANDLE(client));
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientFileChannelIsOpen(JNIEnv *env,
+                                                                      jclass cls,
+                                                                      jlong client)
+{
+    (void)env;
+    (void)cls;
+    return (jint)nclshim_client_file_channel_is_open(HANDLE(client));
+}
+
 JNIEXPORT jint JNICALL Java_com_nclink_Native_clientFileWrite(JNIEnv *env, jclass cls,
                                                              jlong client,
                                                              jstring local_path)

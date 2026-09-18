@@ -1,6 +1,6 @@
 # NC-Link C 实现 · 发布包说明
 
-版本 **3.3.0**（实现 GB/T 41970-2022 协议 3.0.0）
+版本 **3.4.0**（实现 GB/T 41970-2022 协议 3.0.0）
 本包为 **零第三方依赖** 的 C11 静态库，交付内容为**头文件 + 两个平台的预编译库 +
 使用手册 + 示例程序**；不含实现源码（需要源码请见第 5 节）。
 
@@ -113,7 +113,7 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | 托管绑定自检 | C# 106 项（`bindings/csharp/tests/Nclink.SelfTest`，net472 与 net8.0 各跑一遍）、Java 107 项、Python 46 项，全部 0 失败；覆盖客户端、设备端（工具注册 / 采样通道 / 事件 / 离线 dispatch / 自研传输）、HTTP/REST 端点（OpenAPI、swagger-ui、工具端点、配置端点、自定义路由）与文件小工具（压缩判断、分片数、SHA-256、属性），都不需要 broker |
 | Go 绑定自检 | `cd bindings/go && go test ./...`（cgo）：**Windows（mingw-w64 gcc 16.2.0）与 Linux（gcc 12/13）两侧都跑通**，客户端 + 设备端（工具注册与路径绑定、离线 dispatch、采样通道、事件、内建工具、文件工具、HTTP 端点与自定义路由、关闭语义、注册上限），离线跑，不需要 broker；`-tags nclink_tls` 那份在 **Windows 与 Linux 两侧也都跑通**（链 `libnclink_core_tls.a` + OpenSSL，`nclink.TLSAvailable()` 为 true） |
 | 绑定对真 broker | `NCLINK_TEST_BROKER=tcp://host:port` 打开的可选用例（设备端 + 客户端同进程，报文真的过 MQTT）：C# 132 项、Java 12 项、Python 46 项，对 **Mosquitto 2** 与 **EMQX 5.8.9** 各跑一遍都 0 失败（probe、路径绑定读写、methodCall、采样、事件、文件通道上传下载与带文件参数的方法调用） |
-| 文件通道 | 托管绑定：上传 / 列目录 / 下载 / 建目录 / 删文件 / 带文件参数的方法调用（含"工具返回文件"的反向）、自定义 FTP 端口与显式指定对端，都实测通过；跨语言也过一遍：C 客户端示例对 **C# 设备端示例** 的 `上传 /demo.txt` → `文件回读路径` → `远端文件 demo.txt (14 字节)` 全通 |
+| 文件通道 | 3.4.0 起要**显式握手**（`file/openFileChannel`）或由设备钉静态对端（`ncl_server_set_file_peer`）；托管绑定：上传 / 列目录 / 下载 / 建目录 / 删文件 / 带文件参数的方法调用（含"工具返回文件"的反向）、自定义 FTP 端口与显式指定对端，都实测通过；跨语言也过一遍：C 客户端示例对 **C# 设备端示例** 的 `上传 /demo.txt` → `文件回读路径` → `远端文件 demo.txt (14 字节)` 全通 |
 | 绑定 + TLS | 三份托管绑定都过一遍（`build-shim.ps1 -Tls` / Java 的 `build-native.ps1 -Tls`）+ Mosquitto 的 8883 TLS 监听：`ssl://` 设备端与客户端都用 CA 连通（C# 134 项、Java 13 项、Python 46 项，对 Mosquitto 2 与 EMQX 5.8.9 都 0 失败），不给 CA 时握手被拒（证书校验），`verify_peer=false` 放行；库没编 TLS 时 `ssl://` 返回明确的 `NCL_ERR_NOT_SUPPORTED` |
 | 跨语言互读 | C# 设备端 ← C 客户端 / Python 客户端（Mosquitto 与 EMQX）、C# 客户端 ← Java 设备端（`GET`、采样、事件；`SET /STATUS` 按对端模型拒绝）、C# 与 Java 设备端的 REST 端点实测（`/api/schema`、`/swagger-ui`、工具端点、自定义路由） |
 | HTTP/REST 端点实跑 | C# 设备端示例（离线 + REST）与 Java / Python 设备端示例都挂上了端点：`GET /api/schema`、`GET /swagger-ui`、`POST /api/<工具>/<方法>`、`GET /api/cfg/*` 与自定义路由实测通过 |
@@ -123,7 +123,21 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 client、server、http、rest、config、ftp、file、schema、event、license、broker、
 tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认跳过）。
 
-### 3.1 3.3.0 的验证（本次发布前实测）
+### 3.1 3.4.0 的验证（本次发布前实测）
+
+| 项目 | 结果 |
+|------|------|
+| Windows（MSVC 14.44.35207，Release） | x64 全量 **25/25**（`file` 套件 **219 项断言**）；x86 / 静态内存 / TLS / 静态内存+TLS / x86 静态内存 各 **25/25** |
+| Linux（gcc 13.4，容器内） | 默认堆 / TLS / 静态内存 / 静态内存+TLS 四套各 **25/25**（`docker run --rm -v <repo>:/work -w /work gcc:13 sh build-linux.sh <目录>`） |
+| mingw-w64（gcc 16.2.0，UCRT + posix threads） | 库 / 示例 / 测试 **25/25**（`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw`）；TLS 变体（Strawberry Perl 的 OpenSSL 头/导入库）同样 **25/25**，`test_tls` 通过 |
+| 内存检查 | Linux ASan + LeakSanitizer（`tools/asan-linux.sh --docker`，6 个套件）**0 发现**；ThreadSanitizer（分配器并发用例）**0 数据竞争** |
+| 托管绑定自检（离线） | C# 106 项、Java 107 项、Python 46 项，**0 失败** |
+| 托管绑定对真 broker（EMQX 5.x，`NCLINK_TEST_BROKER`） | C# **135 项**、Java **15 项**、Python 46 项，**0 失败**——含文件通道握手全流程（上传 / 列目录 / 下载 / 建目录 / 带文件参数的方法调用 / close 撤销） |
+| Go 绑定 | Linux（golang:1.22 容器）与 Windows（cgo + mingw gcc 16.2.0）`go test ./...` 均通过；`-tags nclink_tls`（链 `libnclink_core_tls.a`）两侧同样通过 |
+| 文件通道握手 | 新增用例覆盖：无通道时文件方法被拒（`NoFileChannelException`）、握手后可用、同租约重复握手幂等、换租约需 `force`、`closeFileChannel` 撤销临时账号后登录失败、重复 close 幂等；`conf/ftp.txt` 往返 / 坏文件容忍 / 端点跟随文件里的端口与账号 / 函数参数优先于文件 |
+| 地址推导 | broker 在本机（回环）时改取本机非回环 IPv4；无 broker 语境回退 `127.0.0.1` |
+
+### 3.1.1 3.3.0 的验证
 
 | 项目 | 结果 |
 |------|------|
@@ -136,6 +150,25 @@ tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认�
 | ThreadSanitizer | 并发分配器用例 **0 数据竞争** |
 | 包内库自检 | 用**包里的库**编程序实测：默认版 `ncl_mem_mode()=="heap"`；静态内存版 `"static-pool"`、池 20971520 字节、分配/释放与统计正常 |
 | 真 broker 互操作 | Mosquitto 2.1.2 与 EMQX 5.8.9 各 **44 项检查全过**（含静态内存版二进制）；**包内 staticmem-tls 库**编出的用例走 `ssl://` 对 Mosquitto 的 TLS 监听同样 **44 项全过** |
+
+### 3.2 从 3.3.0 升级：文件通道要显式握手
+
+3.3.0 的设备端文件工具会按 `conf/mqtt.cfg` 里 broker 的主机名 + 端口 2323 +
+admin/123456 去拨 FTP。3.4.0 删掉了这条隐式路径，升级时二选一：
+
+```c
+/* A. 推荐：上位机开通道（库按需起本机 FTP 端点并给一个临时账号） */
+ncl_client_open_file_channel(client, NULL);   /* 传完 ncl_client_close_file_channel() */
+
+/* B. 设备自己钉静态对端：对端要有自己的 FTP 服务端，布局 "/<sn>/..." */
+ncl_server_set_file_peer(server, "10.0.0.7", 2323, "admin", "123456");
+```
+
+跨网段 / 端口映射用 `ncl_file_channel_options.host/port`，或者写进可选的
+`conf/ftp.txt`（`host` / `port` / `advertisePort` / `root` / `userName` / `password` /
+`path` / `force`，键全可选；优先级：函数参数 > 文件 > 推导默认）。三个托管绑定的
+`DeviceClient` 便利方法会自动握一次手，绑定用户通常不用改代码。
+
 ## 4. 在你的工程里使用
 
 ### 4.1 Windows（MSVC）

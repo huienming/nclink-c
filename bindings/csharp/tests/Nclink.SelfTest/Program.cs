@@ -522,6 +522,8 @@ namespace Nclink.SelfTest
                     });
 
                 client.UploadLocalFile(local, "/data/report.txt");
+                Check("文件通道：上传后通道是开着的（便利方法按需握过手）",
+                      client.FileChannelIsOpen);
                 Check("文件通道：上传后设备侧有文件", File.Exists(onDevice));
                 Check("文件通道：设备侧字节一致（" + contentBytes + " 字节）",
                       File.Exists(onDevice) && new FileInfo(onDevice).Length == contentBytes
@@ -597,6 +599,11 @@ namespace Nclink.SelfTest
                     stillThere = stillThere || entry.FileName == "report.txt";
                 }
                 Check("文件通道：删掉之后列不到了", !stillThere);
+
+                client.CloseFileChannel();
+                Check("文件通道：close 之后通道关掉了", !client.FileChannelIsOpen);
+                client.CloseFileChannel();       // 幂等
+                Check("文件通道：重复 close 不抛异常", true);
             }
             catch (NclinkException error)
             {

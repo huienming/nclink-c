@@ -238,14 +238,27 @@ nclink.file_attribute("report.txt")            # nclink.FileInfo
   （与 C API 一致）；`upload_local_file()` 会先替你摆到那个位置。
 - 下载回来的文件先落在 `<当前目录>/<sn>/` 下，`download_file()` 返回绝对路径，
   `download_to()` 再替你复制到目标。
-- 设备按 `conf/mqtt.cfg` 里 broker 的主机名 + 端口 2323 找本机的 FTP 端点（拿不到配置
-  就 127.0.0.1）——所以本机与 broker 是同一台机器时开箱即用。
+- 字节走 FTP 之前要先**开文件通道**：`client.open_file_channel()` 把本机的 FTP 端点
+  交给设备（设备是 FTP 客户端）。上面的上传/下载/列目录等便利方法会自己开一次，
+  用完 `client.close_file_channel()` 收回租约（幂等，不调用也会在 `shutdown()` 时收掉）。
+  通道里广播的地址默认是"到 broker 的本机地址" + 端点端口（拿不到配置就 127.0.0.1）。
 - 设备侧的 `start_ftp()` 是"设备自己也开个 FTP 端点"（读 `bin/ftp.txt`），客户端传文件
   用不到它；缺文件时它抛 `NclinkError`，示例里是容忍着来的。
-- 对端不跟 broker 同机（或者端口/账号不一样）时显式指定：
+- 托管侧不跟 broker 同机（或者端口/账号不一样）时改用带参数的握手：
 
 ```python
-device.set_file_peer("10.0.0.7", 2323)                    # 设备端指到本机的 FTP
+client.open_file_channel(host="10.0.0.7", port=2323)      # 设备拨到这台机器的 2323
+```
+
+  地址不想写死在代码里就放 `<root>/conf/ftp.txt`（可省文件，键全可选：
+  `host` / `port` / `advertisePort` / `root` / `userName` / `password` / `path` /
+  `force`）；函数参数优先于它，它优先于推导默认。
+
+  设备端也可以不用握手，直接钉一个静态 FTP 对端（要求对端自己跑 FTP 服务端、
+  目录布局是 `/<sn>/...`）：
+
+```python
+device.set_file_peer("10.0.0.7", 2323)                    # 不握手，指到本机的 FTP
 nclink.start_file_server(2323, root="D:/files", username="admin", password="123456")
 ```
 

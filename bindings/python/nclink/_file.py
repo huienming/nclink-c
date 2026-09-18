@@ -4,15 +4,19 @@
 """文件通道：MQTT 报文里只传 "/temp/<名字>" 令牌，字节走 FTP。
 
 方向很重要：**设备是 FTP 客户端**，本机是 FTP 服务端（进程级端点
-127.0.0.1:2323，admin / 123456，根 = 安装根；`nclink.init()` 时已经起好）。
+127.0.0.1:2323，admin / 123456，根 = 安装根；开文件通道时按需起）。
+
+传字节之前要先握手：`DeviceClient.open_file_channel()` 把端点交给设备
+（file/openFileChannel），设备随即往那儿拨 FTP。下面的便利方法会自己确保通道
+开着；`DeviceClient.close_file_channel()` 收回租约并撤销临时账号。
 
 * 上传：文件先落到 `<当前目录>/<sn>/<相对路径>`（`DeviceClient.upload_file()`
   就是用这个约定；`upload_local_file()` 会替你摆好），
 * 下载：字节先落到那儿，`download_file()` 返回绝对路径（`download_to()` 再替你
   搬到目标）。
 
-设备侧要先把文件工具与 FTP 端点挂起来：`Server.register_file_tool()` +
-`Server.start_ftp()`。
+设备侧要先把文件工具挂起来：`Server.register_file_tool()`（设备自己也服务 FTP 时
+再加 `Server.start_ftp()`；不握手、钉静态对端则是 `Server.set_file_peer()`）。
 """
 
 from __future__ import annotations
