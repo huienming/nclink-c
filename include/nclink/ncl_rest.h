@@ -13,7 +13,7 @@
  * envelope plus the endpoints that can be generated from the NC-Link server
  * state (the OpenAPI document and a minimal Swagger UI page).
  *
- * The concrete configuration handlers (the cfg / method / edgeUrl groups) are
+ * The concrete configuration handlers (the cfg / method groups) are
  * registered by the application through ncl_http_server_route() using the
  * helpers below.
  */

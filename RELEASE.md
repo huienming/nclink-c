@@ -287,7 +287,7 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 | TLS 运行时依赖 | Linux 用系统 `libssl.so.3` / `libcrypto.so.3`；**Windows 版是 OpenSSL 静态链接**（`no-shared no-asm`），除 MSVC 运行库外无额外 DLL |
 | 压缩编解码 | 默认关闭；开启需 zlib（`NCLINK_WITH_ZLIB=ON`） |
 | 驱动层 | Modbus RTU、串口、Q0/Q1 继电器接口未实现（按需求排除） |
-| 边缘接口 | `Edge/*` 主题未实现（暂不使用） |
+| 边缘接口 | `Edge/*` 主题与 4 个 `ncl_topic_edge_*()` 构造函数在 3.4.0 **移除**（不使用）；需要时按 GB/T 41970-2022 自行拼主题即可 |
 | JSON Schema | 校验器为 draft-07 子集，不支持 `patternProperties`/`dependencies`/外部 `$ref` 等 |
 | FTP | 实现 RFC 959/2389 子集（覆盖 NC-Link 文件通道用到的命令与两种数据连接模式） |
 | POSIX 分支 | 已在 gcc 13.4 + glibc 验证；musl、FreeBSD 等未验证 |

@@ -27,7 +27,6 @@ struct ncl_client {
     char *set_response;
     char *probe_set_response;
     char *method_call_response;
-    char *edge_response;
     char *event_topic; /**< Event/<sn>, subscribed on demand */
     char *sample_topic; /**< Sample/<sn>/#, subscribed on demand */
 
@@ -101,7 +100,6 @@ ncl_client *ncl_client_create(const char *sn, ncl_message_channel *channel)
     ncl_client_replace_topic(&client->set_response, ncl_topic_set_response(sn, NULL));
     ncl_client_replace_topic(&client->probe_set_response, ncl_topic_probe_set_response(sn, NULL));
     ncl_client_replace_topic(&client->method_call_response, ncl_topic_method_call_response(sn, NULL));
-    ncl_client_replace_topic(&client->edge_response, ncl_topic_edge_get_response(sn));
     ncl_client_replace_topic(&client->event_topic, ncl_topic_event(sn, NULL));
     /* A wildcard filter, so one subscription covers every sample channel. */
     {
@@ -116,7 +114,7 @@ ncl_client *ncl_client_create(const char *sn, ncl_message_channel *channel)
 
     if (client->query_response == NULL || client->probe_response == NULL ||
         client->set_response == NULL || client->probe_set_response == NULL ||
-        client->method_call_response == NULL || client->edge_response == NULL ||
+        client->method_call_response == NULL ||
         client->event_topic == NULL || client->sample_topic == NULL) {
         ncl_client_free(client);
         return NULL;
@@ -137,7 +135,6 @@ void ncl_client_free(ncl_client *client)
     ncl_mem_free(client->set_response);
     ncl_mem_free(client->probe_set_response);
     ncl_mem_free(client->method_call_response);
-    ncl_mem_free(client->edge_response);
     ncl_mem_free(client->event_topic);
     ncl_mem_free(client->sample_topic);
     ncl_mem_free(client->file_channel_id);
@@ -211,9 +208,6 @@ ncl_err ncl_client_subscribe(ncl_client *client)
         rc = ncl_channel_subscribe(client->channel, client->method_call_response, 2);
     }
     if (rc == NCL_OK) {
-        rc = ncl_channel_subscribe(client->channel, client->edge_response, 2);
-    }
-    if (rc == NCL_OK) {
         rc = ncl_channel_subscribe(client->channel, client->probe_set_response, 2);
     }
     if (rc != NCL_OK) {
@@ -231,7 +225,6 @@ ncl_err ncl_client_unsubscribe(ncl_client *client)
     ncl_channel_unsubscribe(client->channel, client->probe_response);
     ncl_channel_unsubscribe(client->channel, client->set_response);
     ncl_channel_unsubscribe(client->channel, client->method_call_response);
-    ncl_channel_unsubscribe(client->channel, client->edge_response);
     ncl_channel_unsubscribe(client->channel, client->probe_set_response);
     return NCL_OK;
 }

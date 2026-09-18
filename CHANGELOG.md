@@ -11,6 +11,10 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ### 变更（破坏性）
 
+- **移除 `Edge/*` 主题**：4 个前缀常量（`NCL_TOPIC_EDGE_GET_REQUEST_PREFIX`、
+  `..._GET_RESPONSE_PREFIX`、`..._REGISTER_PREFIX`、`..._MESSAGE_PREFIX`）与 4 个构造函数
+  （`ncl_topic_edge_get_request/_get_response/_register/_message`）删除，
+  客户端也不再订阅 `Edge/Get/Response/<sn>`。边缘接口暂不使用；需要时按规范自行拼主题。
 - **删掉"按 conf/mqtt.cfg 猜对端"那条隐式路径**。3.3.0 以前设备端文件工具默认按
   "broker 的主机名 + 2323 + admin/123456"去拨 FTP——只有对端恰好跑在 broker 那台机器
   上才成立。现在对端只有两个来源：

@@ -33,10 +33,6 @@ extern "C" {
 #define NCL_TOPIC_METHOD_CALL_REQUEST_PREFIX "Method/Call/Request/"
 #define NCL_TOPIC_METHOD_CALL_RESPONSE_PREFIX "Method/Call/Response/"
 #define NCL_TOPIC_EVENT_PREFIX               "Event/"
-#define NCL_TOPIC_EDGE_GET_REQUEST_PREFIX    "Edge/Get/Request/"
-#define NCL_TOPIC_EDGE_GET_RESPONSE_PREFIX   "Edge/Get/Response/"
-#define NCL_TOPIC_EDGE_REGISTER_PREFIX       "Edge/Register/"
-#define NCL_TOPIC_EDGE_MESSAGE_PREFIX        "Edge/Message/"
 
 /** Build "<prefix><deviceId>[/<clientId>]". */
 char *ncl_topic_build(const char *prefix, const char *device_id,
@@ -61,10 +57,6 @@ char *ncl_topic_method_call_request(const char *device_id, const char *client_id
 char *ncl_topic_method_call_response(const char *device_id, const char *client_id);
 char *ncl_topic_event(const char *device_id, const char *client_id);
 
-char *ncl_topic_edge_get_request(const char *edge_id);
-char *ncl_topic_edge_get_response(const char *edge_id);
-char *ncl_topic_edge_register(const char *edge_id);
-char *ncl_topic_edge_message(const char *edge_id);
 
 char *ncl_topic_register_request(void);
 

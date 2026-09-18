@@ -102,26 +102,6 @@ char *ncl_topic_event(const char *device_id, const char *client_id)
     return ncl_topic_build(NCL_TOPIC_EVENT_PREFIX, device_id, client_id);
 }
 
-char *ncl_topic_edge_get_request(const char *edge_id)
-{
-    return ncl_topic_build(NCL_TOPIC_EDGE_GET_REQUEST_PREFIX, edge_id, NULL);
-}
-
-char *ncl_topic_edge_get_response(const char *edge_id)
-{
-    return ncl_topic_build(NCL_TOPIC_EDGE_GET_RESPONSE_PREFIX, edge_id, NULL);
-}
-
-char *ncl_topic_edge_register(const char *edge_id)
-{
-    return ncl_topic_build(NCL_TOPIC_EDGE_REGISTER_PREFIX, edge_id, NULL);
-}
-
-char *ncl_topic_edge_message(const char *edge_id)
-{
-    return ncl_topic_build(NCL_TOPIC_EDGE_MESSAGE_PREFIX, edge_id, NULL);
-}
-
 char *ncl_topic_register_request(void)
 {
     return ncl_strdup(NCL_TOPIC_REGISTER_REQUEST);

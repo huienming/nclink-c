@@ -3347,10 +3347,6 @@ Copyright (c) 2026 huienming
 - `char *ncl_topic_method_call_request(const char *device_id, const char *client_id);`
 - `char *ncl_topic_method_call_response(const char *device_id, const char *client_id);`
 - `char *ncl_topic_event(const char *device_id, const char *client_id);`
-- `char *ncl_topic_edge_get_request(const char *edge_id);`
-- `char *ncl_topic_edge_get_response(const char *edge_id);`
-- `char *ncl_topic_edge_register(const char *edge_id);`
-- `char *ncl_topic_edge_message(const char *edge_id);`
 - `char *ncl_topic_register_request(void);`
 - `char *ncl_topic_extract_sn(const char *topic);` — Extract the device serial number from an inbound topic: split on '/', and for
 
@@ -3416,8 +3412,6 @@ Copyright (c) 2026 huienming
 | `NCL_TOPIC_METHOD_CALL_REQUEST_PREFIX` | "Method/Call/Request/" |
 | `NCL_TOPIC_METHOD_CALL_RESPONSE_PREFIX` | "Method/Call/Response/" |
 | `NCL_TOPIC_EVENT_PREFIX` | "Event/" |
-
-
 ## 附录 D · 安装根目录布局
 
 ```
@@ -3434,4 +3428,3 @@ Copyright (c) 2026 huienming
   temp/                   文件通道的临时交换目录
   <sn>/                   客户端侧文件镜像（相对路径的基准）
 ```
-

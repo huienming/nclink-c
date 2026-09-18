@@ -38,10 +38,6 @@ static void test_builders(void)
     NCL_CHECK_EQ_STR(t, "Pong/V42");
     ncl_free_safe(t);
 
-    NCL_TEST_CASE("edge topics");
-    t = ncl_topic_edge_message("edge1");
-    NCL_CHECK_EQ_STR(t, "Edge/Message/edge1");
-    ncl_free_safe(t);
 }
 
 static void test_extract_sn(void)
