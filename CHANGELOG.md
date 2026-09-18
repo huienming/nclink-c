@@ -9,6 +9,7 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 - **发布包同时提供两种构建**：`lib/<平台>/` 仍是默认（分配走 C 运行库堆）版，新增
   `lib/<平台>-staticmem/` 是**静态内存版**（库内分配全部走 `.bss` 里的固定池，本包按默认
   20 MiB 编译，不调用 `malloc`）；示例可执行文件同样给两份（`examples/bin/*-staticmem/`）。
+  另有 **静态内存 + TLS** 的组合（`lib/*-staticmem-tls/`，池仍只覆盖库自身、OpenSSL 走系统堆）。
   打包脚本 `make_release.ps1` 一并收集，并新增产出 `dist/<包名>.zip.sha256`；版本号推进到
   **3.3.0**（`NCL_VERSION`、CMake 工程版本与包名一致）。
 

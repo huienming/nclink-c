@@ -17,6 +17,8 @@ lib/linux-x86_64-gcc-tls/…             同上，但启用了 TLS（ssl://，�
 lib/windows-x64-msvc-staticmem/* 静态内存版（无堆）x64 静态库，池默认 20 MiB
 lib/windows-x86-msvc-staticmem/* 同上，32 位
 lib/linux-x86_64-gcc-staticmem/* 静态内存版 Linux 静态库
+lib/windows-x64-msvc-staticmem-tls/* 静态内存版 + TLS（x64）
+lib/linux-x86_64-gcc-staticmem-tls/* 静态内存版 + TLS（Linux）
 examples/*.c, *.cpp, CMakeLists.txt    两个示例程序的源码（设备端 / 客户端）
 examples/device_model.c, device_model.h  设备模型（编译进设备端示例与各语言绑定的垫片：
                                       五个语言的设备端示例共用同一份，不依赖外部文件）
@@ -49,6 +51,8 @@ lib/windows-x64-msvc-staticmem/nclink_core.lib  **静态内存版**：库内分�
 lib/windows-x86-msvc-staticmem/                 同上（32 位）
 lib/linux-x86_64-gcc/libnclink_core.a           默认：堆
 lib/linux-x86_64-gcc-staticmem/libnclink_core.a **静态内存版**
+lib/windows-x64-msvc-staticmem-tls/nclink_core.lib   静态内存版 + TLS（ssl://）
+lib/linux-x86_64-gcc-staticmem-tls/libnclink_core.a  同上（Linux，链接 -lssl -lcrypto）
 ```
 
 - **静态内存版是"库的分配全静态"**：库内 471 处分配/释放都走同一个接缝，池是一个静态数组
@@ -61,6 +65,7 @@ lib/linux-x86_64-gcc-staticmem/libnclink_core.a **静态内存版**
   现场调参用 `-MemReport`（退出时打印峰值/每类用量/拒绝快照）。
 - **所有权约定**：静态内存版交出来的指针只能用 `ncl_free_safe()` / `ncl_*_free()` 释放，
   **不要用 libc 的 `free()`**（两个堆）。默认（堆）版没有这个约束。
+- **静态内存 + TLS**：`lib/*-staticmem-tls/` 是两者的组合。池覆盖的是**库自身**的分配，`ssl://` 用到的 OpenSSL 仍走系统堆（Linux 用系统 `libssl.so.3`/`libcrypto.so.3`，Windows 版是 OpenSSL 静态链接）；要「整个进程零堆」得把 OpenSSL 的分配也接过来，本包不做。
 - **示例可执行文件也给了两份**：`examples/bin/<平台>-staticmem/` 就是链接静态内存版构建出来的，
   直接跑就能看到池版本的行为。
 - 本包的五份语言绑定按**默认（堆）版**验证；静态内存版与绑定混用未做实测，绑定的宿主进程若
@@ -129,7 +134,7 @@ tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认�
 | AddressSanitizer + LeakSanitizer | 库与分配器套件（含并发用例）**0 发现** |
 | ThreadSanitizer | 并发分配器用例 **0 数据竞争** |
 | 包内库自检 | 用**包里的库**编程序实测：默认版 `ncl_mem_mode()=="heap"`；静态内存版 `"static-pool"`、池 20971520 字节、分配/释放与统计正常 |
-| 真 broker 互操作 | Mosquitto 2.1.2 与 EMQX 5.8.9 各 **44 项检查全过**（含静态内存版二进制） |
+| 真 broker 互操作 | Mosquitto 2.1.2 与 EMQX 5.8.9 各 **44 项检查全过**（含静态内存版二进制）；**包内 staticmem-tls 库**编出的用例走 `ssl://` 对 Mosquitto 的 TLS 监听同样 **44 项全过** |
 ## 4. 在你的工程里使用
 
 ### 4.1 Windows（MSVC）
@@ -253,6 +258,8 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 | Go 绑定的 mingw 库 | 包内未含 `lib/windows-amd64-mingw/`（本次机器上没有 mingw）；Windows 上跑 Go 绑定前按 `tools/stage-go-libs.sh` 自编 |
 | 静态内存版的池大小 | 编译期常量：包内两份静态内存库都按默认 **20 MiB** 编译（换尺寸要重编，见第 1 节）；池不支持运行时扩容 |
 | 静态内存版与绑定 | 五份绑定按默认（堆）版验证；静态内存版与绑定混用未实测 |
+| 静态内存 + TLS | 池只覆盖库自身的分配：OpenSSL（`ssl://`）仍用系统堆，所以「整个进程零堆」在这份变体里不成立 |
+| 静态内存 + TLS 的验证 | 包内 `lib/linux-x86_64-gcc-staticmem-tls` 编出的 `test_broker` 对 Mosquitto 的 TLS 监听 44 项全过；Windows/Linux 两侧该组合的 25 个套件（含 `test_tls`）也全过 |
 
 ## 7. 校验
 

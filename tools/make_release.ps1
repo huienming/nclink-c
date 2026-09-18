@@ -34,6 +34,8 @@
 #   build-staticmem/nclink_core.lib          lib/windows-x64-msvc-staticmem/
 #   build-x86-staticmem/nclink_core.lib      lib/windows-x86-msvc-staticmem/
 #   build-linux-staticmem/libnclink_core.a   lib/linux-x86_64-gcc-staticmem/
+#   build-staticmem-tls/nclink_core.lib      lib/windows-x64-msvc-staticmem-tls/
+#   build-linux-staticmem-tls/libnclink_core.a  lib/linux-x86_64-gcc-staticmem-tls/
 # plus the matching example binaries under examples/bin/<platform>-staticmem/.
 # The static memory library carries a fixed pool inside its .bss (20 MiB with
 # the default NCLINK_MEM_POOL_BYTES), so it is a separate artifact rather than a
@@ -61,6 +63,8 @@ $mingwLib = Join-Path $root "build-mingw\libnclink_core.a"
 $msvcStaticLib = Join-Path $root "build-staticmem\nclink_core.lib"
 $x86StaticLib = Join-Path $root "build-x86-staticmem\nclink_core.lib"
 $gccStaticLib = Join-Path $root "build-linux-staticmem\libnclink_core.a"
+$msvcStaticTlsLib = Join-Path $root "build-staticmem-tls\nclink_core.lib"
+$gccStaticTlsLib = Join-Path $root "build-linux-staticmem-tls\libnclink_core.a"
 
 # The two platforms the package must carry; the static memory variant ships as
 # well because it cannot be produced from the heap library afterwards.
@@ -115,7 +119,9 @@ $exeSources = @(
     @{ From = "build-linux\bin"; Dst = "examples\bin\linux-x86_64-gcc"; Filter = "ncl_*" }
     @{ From = "build-staticmem\examples"; Dst = "examples\bin\windows-x64-msvc-staticmem"; Filter = "ncl_*.exe" },
     @{ From = "build-x86-staticmem\examples"; Dst = "examples\bin\windows-x86-msvc-staticmem"; Filter = "ncl_*.exe" },
-    @{ From = "build-linux-staticmem\bin"; Dst = "examples\bin\linux-x86_64-gcc-staticmem"; Filter = "ncl_*" }
+    @{ From = "build-linux-staticmem\bin"; Dst = "examples\bin\linux-x86_64-gcc-staticmem"; Filter = "ncl_*" },
+    @{ From = "build-staticmem-tls\examples"; Dst = "examples\bin\windows-x64-msvc-staticmem-tls"; Filter = "ncl_*.exe" },
+    @{ From = "build-linux-staticmem-tls\bin"; Dst = "examples\bin\linux-x86_64-gcc-staticmem-tls"; Filter = "ncl_*" }
 )
 foreach ($exe in $exeSources) {
     $from = Join-Path $root $exe.From
@@ -179,6 +185,22 @@ if (Test-Path -LiteralPath $x86StaticLib) {
     Copy-Item -LiteralPath $x86StaticLib -Destination (Join-Path $pkg "lib\windows-x86-msvc-staticmem\nclink_core.lib") -Force
 } else {
     Write-Host "  note: build-x86-staticmem not found, the 32-bit static memory library is not packaged"
+}
+
+# Static memory with TLS: the pool covers the library, OpenSSL keeps using the
+# system heap, so this is a variant of its own rather than "the static one with
+# a flag". Optional like the other TLS artifacts.
+foreach ($pair in @(
+        @{ Src = $msvcStaticTlsLib; Dst = "lib\windows-x64-msvc-staticmem-tls\nclink_core.lib" },
+        @{ Src = $gccStaticTlsLib; Dst = "lib\linux-x86_64-gcc-staticmem-tls\libnclink_core.a" })) {
+    if (Test-Path -LiteralPath $pair.Src) {
+        $dest = Join-Path $pkg $pair.Dst
+        New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+        Copy-Item -LiteralPath $pair.Src -Destination $dest -Force
+        Write-Host ("  + {0}" -f $pair.Dst)
+    } else {
+        Write-Host ("  note: {0} not found, that static memory + TLS variant is not packaged" -f $pair.Src)
+    }
 }
 
 # Optional: the Linux library built with TLS support (ssl:// over OpenSSL).
