@@ -335,6 +335,32 @@ static void test_server_file_tool(void)
         ncl_ptrvec_free(&attributes);
     }
 
+    NCL_TEST_CASE("a multi-chunk upload lands byte for byte");
+    {
+        /* 5 片（每片 256 KB）：分片与并行分片只在 >1 片时才走，5 片正好把
+         * "并行传 5 片"那条路也带进来。 */
+        enum { BIG_SIZE = 4 * NCL_FILE_CHUNK_SIZE + 12345 };
+        static char big_payload[BIG_SIZE];
+        static char big_back[BIG_SIZE];
+        size_t i;
+
+        for (i = 0; i < sizeof(big_payload); i++) {
+            big_payload[i] = (char)((i * 7 + 3) & 0xFF);
+        }
+        NCL_CHECK_EQ_INT(ncl_file_write_all("uploadFile/data/big.bin",
+                                            big_payload, sizeof(big_payload)),
+                         NCL_OK);
+        NCL_CHECK(ncl_server_file_tool_write(tool, "uploadFile/data/big.bin",
+                                            "/data"));
+        snprintf(path, sizeof(path), "%s%cdata%cbig.bin", TEST_SN, NCL_PATH_SEP,
+                 NCL_PATH_SEP);
+        NCL_CHECK(ncl_path_exists(path));
+        NCL_CHECK(read_file(path, big_back, sizeof(big_back), &len));
+        NCL_CHECK_EQ_INT(len, sizeof(big_payload));
+        NCL_CHECK(memcmp(big_back, big_payload, sizeof(big_payload)) == 0);
+        NCL_CHECK_EQ_INT(ncl_path_remove("uploadFile/data/big.bin"), NCL_OK);
+    }
+
     NCL_TEST_CASE("mkdir creates local and remote folders");
     NCL_CHECK(ncl_server_file_tool_mkdir(tool, "/data/nested"));
     NCL_CHECK(ncl_path_is_dir("uploadFile/data/nested"));
@@ -635,6 +661,46 @@ static void test_end_to_end(void)
     NCL_CHECK(ncl_file_client_tool_delete(ncl_client_file_tool(client),
                                           "/data/report.txt"));
     NCL_CHECK(!ncl_path_exists("uploadFile/data/report.txt"));
+
+    NCL_TEST_CASE("a multi-chunk file round trips over the channel");
+    {
+        /* 5 片（每片 256 KB）+ 零头：一次把分片、并行分片和整片校验都走到。 */
+        enum { BIG_SIZE = 4 * NCL_FILE_CHUNK_SIZE + 4321 };
+        static char big_payload[BIG_SIZE];
+        static char big_back[BIG_SIZE];
+        size_t i;
+        char *restored;
+
+        for (i = 0; i < sizeof(big_payload); i++) {
+            big_payload[i] = (char)((i * 13 + 5) & 0xFF);
+        }
+        NCL_CHECK_EQ_INT(ncl_mkdir_p(TEST_SN "/big"), NCL_OK);
+        snprintf(local, sizeof(local), "%s%cbig%cbinary.bin", TEST_SN,
+                 NCL_PATH_SEP, NCL_PATH_SEP);
+        NCL_CHECK_EQ_INT(ncl_file_write_all(local, big_payload,
+                                            sizeof(big_payload)),
+                         NCL_OK);
+
+        NCL_CHECK_EQ_INT(ncl_client_write(client, "/big/binary.bin"), NCL_OK);
+        NCL_CHECK(read_file("uploadFile/big/binary.bin", big_back,
+                            sizeof(big_back), &len));
+        NCL_CHECK_EQ_INT(len, sizeof(big_payload));
+        NCL_CHECK(memcmp(big_back, big_payload, sizeof(big_payload)) == 0);
+
+        /* 本地删掉再拉回来，走的是设备→本机那条 FTP 方向。 */
+        NCL_CHECK_EQ_INT(ncl_path_remove(local), NCL_OK);
+        restored = ncl_client_read(client, "/big/binary.bin");
+        NCL_CHECK(restored != NULL);
+        if (restored != NULL) {
+            NCL_CHECK(read_file(restored, big_back, sizeof(big_back), &len));
+            NCL_CHECK_EQ_INT(len, sizeof(big_payload));
+            NCL_CHECK(memcmp(big_back, big_payload, sizeof(big_payload)) == 0);
+            ncl_free_safe(restored);
+        }
+        NCL_CHECK(ncl_file_client_tool_delete(ncl_client_file_tool(client),
+                                              "/big/binary.bin"));
+        NCL_CHECK(!ncl_path_exists("uploadFile/big/binary.bin"));
+    }
 
     NCL_TEST_CASE("methodCall file parameters use the @file marker");
     {
