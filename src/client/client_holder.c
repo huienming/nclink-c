@@ -86,7 +86,7 @@ static ncl_err ncl_holder_publish(ncl_message_channel *self, const char *topic,
         ncl_log_error("MQTT 发布失败: topic=%s, %s", topic,
                       ncl_mqtt_client_last_error(holder->mqtt));
     }
-    free(payload);
+    ncl_mem_free(payload);
     return rc;
 }
 
@@ -135,7 +135,7 @@ static void ncl_holder_sweep_idle(ncl_client_holder *holder)
             ncl_client_set_file_tool(slot->client, NULL);
             ncl_file_client_tool_free(slot->file_tool);
             ncl_client_free(slot->client);
-            free(slot->sn);
+            ncl_mem_free(slot->sn);
             memmove(&holder->slots[i], &holder->slots[i + 1],
                     (holder->slot_count - i - 1) * sizeof(ncl_client_slot));
             holder->slot_count--;
@@ -172,7 +172,7 @@ static ncl_client *ncl_holder_get_locked(ncl_client_holder *holder, const char *
         if (holder->slot_count == holder->slot_capacity) {
             size_t capacity = holder->slot_capacity == 0 ? 8
                                                          : holder->slot_capacity * 2;
-            ncl_client_slot *grown = (ncl_client_slot *)realloc(
+            ncl_client_slot *grown = (ncl_client_slot *)ncl_mem_realloc(
                 holder->slots, capacity * sizeof(ncl_client_slot));
             if (grown == NULL) {
                 ncl_client_free(client);
@@ -232,14 +232,14 @@ static void ncl_holder_on_message(void *user, const ncl_mqtt_publish *publish)
     message = ncl_message_parse(topic, (const char *)publish->payload,
                                 publish->payload_len);
     if (message == NULL) {
-        free(sn);
+        ncl_mem_free(sn);
         return;
     }
 
     ncl_mutex_lock(holder->mutex);
     client = ncl_holder_get_locked(holder, sn);
     ncl_mutex_unlock(holder->mutex);
-    free(sn);
+    ncl_mem_free(sn);
 
     if (client == NULL) {
         ncl_message_free(message);
@@ -306,16 +306,16 @@ ncl_err ncl_client_holder_init_ex(const ncl_client_holder_options *options_in)
         if (ncl_socket_parse_url(server_uri, &tls_host, &tls_port, &tls_url) ==
                 NCL_OK &&
             tls_url && !ncl_socket_tls_available()) {
-            free(tls_host);
+            ncl_mem_free(tls_host);
             ncl_log_error("TLS 未编译进本库（用 -DNCLINK_WITH_TLS=ON 重新构建）: %s",
                           server_uri);
             ncl_mutex_unlock(g_holder_mutex);
             return NCL_ERR_NOT_SUPPORTED;
         }
-        free(tls_host);
+        ncl_mem_free(tls_host);
     }
 
-    holder = (ncl_client_holder *)calloc(1, sizeof(ncl_client_holder));
+    holder = (ncl_client_holder *)ncl_mem_calloc(1, sizeof(ncl_client_holder));
     if (holder == NULL) {
         ncl_mutex_unlock(g_holder_mutex);
         return NCL_ERR_NOMEM;
@@ -358,7 +358,7 @@ ncl_err ncl_client_holder_init_ex(const ncl_client_holder_options *options_in)
     if (holder->mqtt == NULL || holder->mutex == NULL) {
         ncl_mqtt_client_destroy(holder->mqtt);
         ncl_mutex_destroy(holder->mutex);
-        free(holder);
+        ncl_mem_free(holder);
         ncl_mutex_unlock(g_holder_mutex);
         return NCL_ERR;
     }
@@ -370,7 +370,7 @@ ncl_err ncl_client_holder_init_ex(const ncl_client_holder_options *options_in)
                           ncl_mqtt_client_last_error(holder->mqtt));
             ncl_mqtt_client_destroy(holder->mqtt);
             ncl_mutex_destroy(holder->mutex);
-            free(holder);
+            ncl_mem_free(holder);
             ncl_mutex_unlock(g_holder_mutex);
             return rc;
         }
@@ -479,9 +479,9 @@ void ncl_client_holder_shutdown(void)
             ncl_client_set_file_tool(holder->slots[i].client, NULL);
             ncl_file_client_tool_free(holder->slots[i].file_tool);
             ncl_client_free(holder->slots[i].client);
-            free(holder->slots[i].sn);
+            ncl_mem_free(holder->slots[i].sn);
         }
-        free(holder->slots);
+        ncl_mem_free(holder->slots);
         holder->slots = NULL;
         holder->slot_count = 0;
         holder->slot_capacity = 0;
@@ -493,7 +493,7 @@ void ncl_client_holder_shutdown(void)
             holder->mqtt = NULL; /* channel calls become no-ops */
         }
         ncl_mutex_destroy(holder->mutex);
-        free(holder);
+        ncl_mem_free(holder);
         ncl_log_info("客户端管理器已关闭");
     }
     ncl_mutex_unlock(g_holder_mutex);

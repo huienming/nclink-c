@@ -18,7 +18,7 @@ void ncl_buffer_free(ncl_buffer *buf)
     if (buf == NULL) {
         return;
     }
-    free(buf->data);
+    ncl_mem_free(buf->data);
     buf->data = NULL;
     buf->len = 0;
 }
@@ -33,7 +33,7 @@ static ncl_err ncl_buffer_alloc(ncl_buffer *out, size_t len)
     if (len == 0) {
         return NCL_OK;
     }
-    out->data = (unsigned char *)malloc(len);
+    out->data = (unsigned char *)ncl_mem_alloc(len);
     if (out->data == NULL) {
         return NCL_ERR_NOMEM;
     }
@@ -142,7 +142,7 @@ static ncl_err ncl_zlib_run(const unsigned char *src, size_t src_len,
     }
 
     capacity = src_len > 128 ? src_len * 2 : 256;
-    buffer = (unsigned char *)malloc(capacity);
+    buffer = (unsigned char *)ncl_mem_alloc(capacity);
     if (buffer == NULL) {
         return NCL_ERR_NOMEM;
     }
@@ -150,7 +150,7 @@ static ncl_err ncl_zlib_run(const unsigned char *src, size_t src_len,
     memset(&stream, 0, sizeof(stream));
     if (compress ? deflateInit(&stream, Z_DEFAULT_COMPRESSION) != Z_OK
                  : inflateInit(&stream) != Z_OK) {
-        free(buffer);
+        ncl_mem_free(buffer);
         return NCL_ERR;
     }
 
@@ -167,7 +167,7 @@ static ncl_err ncl_zlib_run(const unsigned char *src, size_t src_len,
                 rc = NCL_ERR_NOMEM;
                 break;
             }
-            grown = (unsigned char *)realloc(buffer, next);
+            grown = (unsigned char *)ncl_mem_realloc(buffer, next);
             if (grown == NULL) {
                 rc = NCL_ERR_NOMEM;
                 break;
@@ -211,7 +211,7 @@ static ncl_err ncl_zlib_run(const unsigned char *src, size_t src_len,
         out->data = buffer;
         out->len = produced;
     } else {
-        free(buffer);
+        ncl_mem_free(buffer);
     }
     return rc;
 }

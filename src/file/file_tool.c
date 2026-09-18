@@ -158,7 +158,7 @@ static ncl_err file_tool_write(void *instance, const ncl_json *params,
             *result = bool_result(false);
             return NCL_OK;
         }
-        free(local);
+        ncl_mem_free(local);
         *result = bool_result(true);
         return NCL_OK;
     }
@@ -359,11 +359,11 @@ static void file_state_destroy(void *data)
         ncl_server_file_tool_free(state->remote);
         state->remote = NULL;
     }
-    free(state->sn);
-    free(state->peer_host);
-    free(state->peer_user);
-    free(state->peer_password);
-    free(state);
+    ncl_mem_free(state->sn);
+    ncl_mem_free(state->peer_host);
+    ncl_mem_free(state->peer_user);
+    ncl_mem_free(state->peer_password);
+    ncl_mem_free(state);
 }
 
 /** 用当前生效的对端参数建（或换）FTP 客户端。 */
@@ -399,7 +399,7 @@ static ncl_file_tool_state *file_state_of(ncl_server *server)
     if (state != NULL) {
         return state;
     }
-    state = (ncl_file_tool_state *)calloc(1, sizeof(*state));
+    state = (ncl_file_tool_state *)ncl_mem_calloc(1, sizeof(*state));
     if (state == NULL) {
         return NULL;
     }
@@ -411,7 +411,7 @@ static ncl_file_tool_state *file_state_of(ncl_server *server)
      */
     state->sn = ncl_strdup(ncl_server_sn(server));
     if (state->sn == NULL) {
-        free(state);
+        ncl_mem_free(state);
         return NULL;
     }
     if (state->peer_host != NULL) {
@@ -430,7 +430,7 @@ static ncl_file_tool_state *file_state_of(ncl_server *server)
             file_state_open_remote(state, host, NCL_FTP_CLIENT_HOLDER_PORT, NULL,
                                    NULL);
         }
-        free(host);
+        ncl_mem_free(host);
         ncl_mqtt_config_free(&config);
     }
     if (state->remote == NULL) {
@@ -485,21 +485,21 @@ ncl_err ncl_server_set_file_peer(ncl_server *server, const char *host, unsigned 
     if (user != NULL && user[0] != '\0') {
         user_copy = ncl_strdup(user);
         if (user_copy == NULL) {
-            free(host_copy);
+            ncl_mem_free(host_copy);
             return NCL_ERR_NOMEM;
         }
     }
     if (password != NULL && password[0] != '\0') {
         pass_copy = ncl_strdup(password);
         if (pass_copy == NULL) {
-            free(host_copy);
-            free(user_copy);
+            ncl_mem_free(host_copy);
+            ncl_mem_free(user_copy);
             return NCL_ERR_NOMEM;
         }
     }
-    free(state->peer_host);
-    free(state->peer_user);
-    free(state->peer_password);
+    ncl_mem_free(state->peer_host);
+    ncl_mem_free(state->peer_user);
+    ncl_mem_free(state->peer_password);
     state->peer_host = host_copy;
     state->peer_port = port;
     state->peer_user = user_copy;

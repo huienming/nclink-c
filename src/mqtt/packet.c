@@ -130,7 +130,7 @@ static ncl_err ncl_mqtt_frame(uint8_t type_and_flags, const ncl_strbuf *body,
     length_len = ncl_mqtt_varint_encode((uint32_t)body->len, length_bytes);
     total = 1 + length_len + body->len;
 
-    buffer = (unsigned char *)malloc(total);
+    buffer = (unsigned char *)ncl_mem_alloc(total);
     if (buffer == NULL) {
         return NCL_ERR_NOMEM;
     }
@@ -247,7 +247,7 @@ static ncl_err ncl_mqtt_read_binary(ncl_mqtt_reader *reader, ncl_buffer *out)
     out->data = NULL;
     out->len = 0;
     if (len > 0) {
-        out->data = (unsigned char *)malloc(len);
+        out->data = (unsigned char *)ncl_mem_alloc(len);
         if (out->data == NULL) {
             return NCL_ERR_NOMEM;
         }
@@ -275,15 +275,15 @@ void ncl_mqtt_properties_free(ncl_mqtt_properties *props)
     if (props == NULL) {
         return;
     }
-    free(props->content_type);
-    free(props->response_topic);
+    ncl_mem_free(props->content_type);
+    ncl_mem_free(props->response_topic);
     ncl_buffer_free(&props->correlation_data);
-    free(props->assigned_client_identifier);
-    free(props->authentication_method);
+    ncl_mem_free(props->assigned_client_identifier);
+    ncl_mem_free(props->authentication_method);
     ncl_buffer_free(&props->authentication_data);
-    free(props->response_information);
-    free(props->server_reference);
-    free(props->reason_string);
+    ncl_mem_free(props->response_information);
+    ncl_mem_free(props->server_reference);
+    ncl_mem_free(props->reason_string);
     ncl_strvec_free(&props->user_property_keys);
     ncl_strvec_free(&props->user_property_values);
     memset(props, 0, sizeof(*props));
@@ -551,11 +551,11 @@ ncl_err ncl_mqtt_properties_read(const unsigned char *data, size_t len,
             props->has_message_expiry_interval = true;
             break;
         case NCL_MQTT_PROP_CONTENT_TYPE:
-            free(props->content_type);
+            ncl_mem_free(props->content_type);
             props->content_type = ncl_mqtt_read_string(&reader);
             break;
         case NCL_MQTT_PROP_RESPONSE_TOPIC:
-            free(props->response_topic);
+            ncl_mem_free(props->response_topic);
             props->response_topic = ncl_mqtt_read_string(&reader);
             break;
         case NCL_MQTT_PROP_CORRELATION_DATA:
@@ -574,7 +574,7 @@ ncl_err ncl_mqtt_properties_read(const unsigned char *data, size_t len,
             props->has_session_expiry_interval = true;
             break;
         case NCL_MQTT_PROP_ASSIGNED_CLIENT_IDENTIFIER:
-            free(props->assigned_client_identifier);
+            ncl_mem_free(props->assigned_client_identifier);
             props->assigned_client_identifier = ncl_mqtt_read_string(&reader);
             break;
         case NCL_MQTT_PROP_SERVER_KEEP_ALIVE:
@@ -582,7 +582,7 @@ ncl_err ncl_mqtt_properties_read(const unsigned char *data, size_t len,
             props->has_server_keep_alive = true;
             break;
         case NCL_MQTT_PROP_AUTHENTICATION_METHOD:
-            free(props->authentication_method);
+            ncl_mem_free(props->authentication_method);
             props->authentication_method = ncl_mqtt_read_string(&reader);
             break;
         case NCL_MQTT_PROP_AUTHENTICATION_DATA:
@@ -605,15 +605,15 @@ ncl_err ncl_mqtt_properties_read(const unsigned char *data, size_t len,
             props->has_request_response_information = true;
             break;
         case NCL_MQTT_PROP_RESPONSE_INFORMATION:
-            free(props->response_information);
+            ncl_mem_free(props->response_information);
             props->response_information = ncl_mqtt_read_string(&reader);
             break;
         case NCL_MQTT_PROP_SERVER_REFERENCE:
-            free(props->server_reference);
+            ncl_mem_free(props->server_reference);
             props->server_reference = ncl_mqtt_read_string(&reader);
             break;
         case NCL_MQTT_PROP_REASON_STRING:
-            free(props->reason_string);
+            ncl_mem_free(props->reason_string);
             props->reason_string = ncl_mqtt_read_string(&reader);
             break;
         case NCL_MQTT_PROP_RECEIVE_MAXIMUM:
@@ -640,14 +640,14 @@ ncl_err ncl_mqtt_properties_read(const unsigned char *data, size_t len,
             char *key = ncl_mqtt_read_string(&reader);
             char *value = reader.truncated ? NULL : ncl_mqtt_read_string(&reader);
             if (key == NULL || value == NULL) {
-                free(key);
-                free(value);
+                ncl_mem_free(key);
+                ncl_mem_free(value);
                 ncl_mqtt_properties_free(props);
                 return NCL_ERR_PARSE;
             }
             ncl_mqtt_properties_add_user(props, key, value);
-            free(key);
-            free(value);
+            ncl_mem_free(key);
+            ncl_mem_free(value);
             break;
         }
         case NCL_MQTT_PROP_MAXIMUM_PACKET_SIZE:
@@ -883,7 +883,7 @@ void ncl_mqtt_publish_free(ncl_mqtt_publish *publish)
     if (publish == NULL) {
         return;
     }
-    free(publish->topic);
+    ncl_mem_free(publish->topic);
     ncl_mqtt_properties_free(&publish->properties);
     memset(publish, 0, sizeof(*publish));
 }
@@ -1057,7 +1057,7 @@ void ncl_mqtt_suback_free(ncl_mqtt_suback *suback)
         return;
     }
     ncl_mqtt_properties_free(&suback->properties);
-    free(suback->reason_codes);
+    ncl_mem_free(suback->reason_codes);
     memset(suback, 0, sizeof(*suback));
 }
 
@@ -1088,7 +1088,7 @@ ncl_err ncl_mqtt_decode_suback(const unsigned char *body, size_t len,
 
     remaining = reader.len - reader.pos;
     if (remaining > 0) {
-        out->reason_codes = (uint8_t *)malloc(remaining);
+        out->reason_codes = (uint8_t *)ncl_mem_alloc(remaining);
         if (out->reason_codes == NULL) {
             ncl_mqtt_suback_free(out);
             return NCL_ERR_NOMEM;

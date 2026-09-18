@@ -35,6 +35,23 @@ option(NCLINK_WITH_MQTT "Build the MQTT 5.0 transport layer" ON)
 option(NCLINK_WITH_TLS "Enable TLS (OpenSSL) for MQTT over ssl://" OFF)
 option(NCLINK_BUILD_CPP "Build the C++ wrapper sample/test (C++17)" ON)
 
+# Static memory: every allocation the library makes is served from one pool
+# inside a static array, so a build with this ON never calls malloc() and can
+# run on a device without a heap. Size the pool with NCLINK_MEM_POOL_BYTES.
+option(NCLINK_STATIC_MEM "Serve library allocations from a fixed static pool" OFF)
+set(NCLINK_MEM_POOL_BYTES "20971520" CACHE STRING
+        "Static pool size in bytes (NCLINK_STATIC_MEM=ON)")
+set(NCLINK_MEM_CLASS_BYTES "-1" CACHE STRING
+        "Small object size class area in bytes; -1 = pool/4, 0 = classes off")
+option(NCLINK_MEM_SINGLE_THREAD
+        "Static pool without a lock: only for single context (bare metal) builds" OFF)
+option(NCLINK_MEM_STRICT
+        "Abort when the static pool is asked to free a foreign pointer" OFF)
+option(NCLINK_MEM_REPORT
+        "Print the static pool high water mark at exit (pool sizing aid)" OFF)
+option(NCLINK_MEM_FIRST_FIT
+        "Static pool: use first fit instead of best fit (A/B measurement only)" OFF)
+
 # ---------------------------------------------------------------- library ----
 file(GLOB_RECURSE NCLINK_CORE_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.c"
@@ -60,6 +77,29 @@ set_target_properties(nclink_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(nclink_core
         PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+if(NCLINK_STATIC_MEM)
+    target_compile_definitions(nclink_core PRIVATE
+            NCL_STATIC_MEM=1
+            NCL_MEM_POOL_BYTES=${NCLINK_MEM_POOL_BYTES})
+    if(NOT NCLINK_MEM_CLASS_BYTES EQUAL -1)
+        target_compile_definitions(nclink_core PRIVATE
+                NCL_MEM_CLASS_BYTES=${NCLINK_MEM_CLASS_BYTES})
+    endif()
+    if(NCLINK_MEM_SINGLE_THREAD)
+        target_compile_definitions(nclink_core PRIVATE NCL_MEM_SINGLE_THREAD=1)
+    endif()
+    if(NCLINK_MEM_STRICT)
+        target_compile_definitions(nclink_core PRIVATE NCL_MEM_STRICT=1)
+    endif()
+    if(NCLINK_MEM_REPORT)
+        target_compile_definitions(nclink_core PRIVATE NCL_MEM_REPORT=1)
+    endif()
+    if(NCLINK_MEM_FIRST_FIT)
+        target_compile_definitions(nclink_core PRIVATE NCL_MEM_FIRST_FIT=1)
+    endif()
+    message(STATUS "nclink: static memory pool, ${NCLINK_MEM_POOL_BYTES} bytes")
+endif()
 
 find_package(Threads REQUIRED)
 target_link_libraries(nclink_core PUBLIC Threads::Threads)

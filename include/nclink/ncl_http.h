@@ -61,6 +61,24 @@ ncl_err ncl_http_server_route(ncl_http_server *server, const char *method,
                               const char *path, ncl_http_handler handler,
                               void *user);
 
+/**
+ * Hand @p context to @p server: it is released through @p free_fn when the
+ * server is freed, after the routes are gone. The caller must not free it
+ * itself afterwards.
+ *
+ * Ownership is registered once per context, not once per route, because a
+ * route table commonly has several routes sharing one context (the REST layer
+ * registers four routes over a single context and would otherwise release it
+ * four times). Registering the same pointer twice is refused with
+ * NCL_ERR_EXISTS. A pointer registered as owned survives a failed route
+ * registration: it is still released by ncl_http_server_free().
+ *
+ * Routes that carry a stack or static object as their @p user never call this,
+ * so nothing changes for them.
+ */
+ncl_err ncl_http_server_own_context(ncl_http_server *server, void *context,
+                                    ncl_free_fn free_fn);
+
 /** Bind and start serving. Returns NCL_OK once the listener is ready. */
 ncl_err ncl_http_server_start(ncl_http_server *server);
 

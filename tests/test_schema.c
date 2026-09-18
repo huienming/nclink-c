@@ -79,7 +79,7 @@ static void test_regex(void)
             NCL_CHECK_EQ_INT(got, cases[i].matches);
             ncl_regex_free(regex);
         }
-        free(error);
+        ncl_free_safe(error);
     }
 
     NCL_TEST_CASE("unsupported expressions are rejected");
@@ -88,7 +88,7 @@ static void test_regex(void)
         ncl_regex *regex = ncl_regex_compile("[a-", &error);
         NCL_CHECK(regex == NULL);
         NCL_CHECK(error != NULL);
-        free(error);
+        ncl_free_safe(error);
     }
 }
 
@@ -301,7 +301,7 @@ static void test_entry_points(void)
         ncl_strvec_push(&errors, "b");
         text = ncl_schema_join_errors(&errors);
         NCL_CHECK_EQ_STR(text, "[a, b]");
-        free(text);
+        ncl_free_safe(text);
         ncl_strvec_free(&errors);
     }
 

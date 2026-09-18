@@ -92,7 +92,7 @@ static void ncl_rest_handle_schema(ncl_http_request *request,
     }
     ncl_http_reply(response, NCL_HTTP_OK, "application/json; charset=utf-8",
                    document, strlen(document));
-    free(document);
+    ncl_mem_free(document);
 }
 
 /* Minimal stand-in for the bundled Swagger UI assets. */
@@ -232,11 +232,21 @@ ncl_err ncl_rest_attach(ncl_http_server *http, ncl_server *server)
     if (http == NULL || server == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    context = (ncl_rest_context *)calloc(1, sizeof(ncl_rest_context));
+    context = (ncl_rest_context *)ncl_mem_calloc(1, sizeof(ncl_rest_context));
     if (context == NULL) {
         return NCL_ERR_NOMEM;
     }
     context->server = server;
+
+    /* The four routes below share this one context, so it is handed to the
+     * server as owned exactly once: the server releases it after the routes are
+     * gone. Registering it here instead of per route is what keeps a shared
+     * context from being released once per route. */
+    rc = ncl_http_server_own_context(http, context, ncl_mem_free);
+    if (rc != NCL_OK) {
+        ncl_mem_free(context);
+        return rc;
+    }
 
     rc = ncl_http_server_route(http, "GET", "/api/schema",
                                ncl_rest_handle_schema, context);
@@ -255,7 +265,7 @@ ncl_err ncl_rest_attach(ncl_http_server *http, ncl_server *server)
                                    context);
     }
     if (rc != NCL_OK) {
-        free(context);
+        ncl_mem_free(context);
         return rc;
     }
     ncl_log_info("HTTP 接口已挂载: /api/schema, /swagger-ui, "
@@ -278,7 +288,7 @@ static void ncl_rest_get_sn(ncl_http_request *request, ncl_http_response *respon
         return;
     }
     ncl_rest_reply(response, NCL_HTTP_OK, ncl_json_new_string(sn));
-    free(sn);
+    ncl_mem_free(sn);
 }
 
 static void ncl_rest_get_model(ncl_http_request *request,
@@ -389,7 +399,7 @@ static void ncl_rest_post_init(ncl_http_request *request,
         ncl_rest_reply_error(response, NCL_HTTP_OK, "初始化失败");
         return;
     }
-    free(sn);
+    ncl_mem_free(sn);
     ncl_rest_reply(response, NCL_HTTP_OK, NULL); /* success with no data */
 }
 

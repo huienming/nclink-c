@@ -41,13 +41,13 @@ static void test_round_trip(void)
     root = ncl_root_node_parse(source);
     NCL_CHECK(root != NULL);
     if (root == NULL) {
-        free(source);
+        ncl_free_safe(source);
         return;
     }
 
     written = ncl_node_write_string(root);
     NCL_CHECK_EQ_STR(written, source);
-    free(written);
+    ncl_free_safe(written);
 
     NCL_TEST_CASE("the parsed model is valid");
     NCL_CHECK(ncl_node_is_valid(root));
@@ -107,10 +107,10 @@ static void test_round_trip(void)
         if (ncl_node_sample_count(sample_config) == 3) {
             char *path = ncl_sample_ref_path(ncl_node_sample_at(sample_config, 0));
             NCL_CHECK_EQ_STR(path, "/STATUS");
-            free(path);
+            ncl_free_safe(path);
             path = ncl_sample_ref_path(ncl_node_sample_at(sample_config, 2));
             NCL_CHECK_EQ_STR(path, "/CONTROLLER/WARNNING");
-            free(path);
+            ncl_free_safe(path);
         }
     }
 
@@ -138,7 +138,7 @@ static void test_round_trip(void)
     NCL_CHECK(ncl_node_find_by_id(root, "does-not-exist") == NULL);
 
     ncl_node_free(root);
-    free(source);
+    ncl_free_safe(source);
 }
 
 static void test_default_model(void)
@@ -201,7 +201,7 @@ static void test_builder_api(void)
         "{\"id\":\"020001\",\"type\":\"FILE\",\"dataType\":\"HASH\"}],"
         "\"dataItems\":[{\"id\":\"030001\",\"type\":\"STATUS\",\"settable\":false}],"
         "\"version\":\"2.0\"}]}");
-    free(text);
+    ncl_free_safe(text);
     ncl_node_free(root);
 }
 
@@ -272,17 +272,17 @@ static void test_component_paths_and_sample_header(void)
     ref = ncl_node_sample_at(config, 0);
     path = ncl_sample_ref_path(ref);
     NCL_CHECK_EQ_STR(path, "/AXIS@0/POSITION");
-    free(path);
+    ncl_free_safe(path);
 
     ref = ncl_node_sample_at(config, 1);
     path = ncl_sample_ref_path(ref);
     NCL_CHECK_EQ_STR(path, "/AXIS@0/TRACE$LIST-0");
-    free(path);
+    ncl_free_safe(path);
 
     ref = ncl_node_sample_at(config, 2);
     path = ncl_sample_ref_path(ref);
     NCL_CHECK_EQ_STR(path, "/AXIS@0/PARAM$HASH-speed");
-    free(path);
+    ncl_free_safe(path);
 
     NCL_TEST_CASE("多个索引时形如 $LIST-[0, 1]");
     {
@@ -294,7 +294,7 @@ static void test_component_paths_and_sample_header(void)
         multi->node = ncl_node_data_item_at(axis, 1); /* 借用 */
         path = ncl_sample_ref_path(multi);
         NCL_CHECK_EQ_STR(path, "/AXIS@0/TRACE$LIST-[0, 1]");
-        free(path);
+        ncl_free_safe(path);
         multi->node = NULL;
         ncl_sample_ref_free(multi);
     }
@@ -365,11 +365,11 @@ static void test_data_item_number_paths(void)
     ref = ncl_node_sample_at(config, 0);
     path = ncl_sample_ref_path(ref);
     NCL_CHECK_EQ_STR(path, "/AXIS@S/POWER@1");
-    free(path);
+    ncl_free_safe(path);
     ref = ncl_node_sample_at(config, 1);
     path = ncl_sample_ref_path(ref);
     NCL_CHECK_EQ_STR(path, "/AXIS@S/POWER@2");
-    free(path);
+    ncl_free_safe(path);
 
     ncl_node_free(root);
 }
@@ -401,7 +401,7 @@ static void test_data_item_number_serialisation(void)
         "{\"id\":\"02\",\"type\":\"MACHINE\",\"dataItems\":["
         "{\"id\":\"030001\",\"type\":\"TRACE\",\"number\":\"2\","
         "\"dataType\":\"LIST\"}],\"version\":\"2.0\"}]}");
-    free(text);
+    ncl_free_safe(text);
 
     NCL_TEST_CASE("带 number 的模型文本能原样往返");
     {
@@ -414,7 +414,7 @@ static void test_data_item_number_serialisation(void)
                   strstr(written, "\"type\":\"POWER\",\"number\":\"1\"") != NULL);
         NCL_CHECK(written != NULL &&
                   strstr(written, "\"type\":\"POWER\",\"number\":\"2\"") != NULL);
-        free(written);
+        ncl_free_safe(written);
         ncl_node_free(parsed);
     }
 

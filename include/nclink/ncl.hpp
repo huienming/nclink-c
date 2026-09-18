@@ -111,7 +111,7 @@ public:
             throw Error(NCL_ERR_STATE, "ncl::Json::dump on an empty value");
         }
         std::string out(text);
-        free(text);
+        ncl_free_safe(text);
         return out;
     }
 
@@ -181,7 +181,7 @@ public:
             throw Error(NCL_ERR_STATE, "ncl::Message::dump on an empty message");
         }
         std::string out(text);
-        free(text);
+        ncl_free_safe(text);
         return out;
     }
 
@@ -241,7 +241,7 @@ public:
             throw Error(NCL_ERR_STATE, "ncl::Model::dump on an empty model");
         }
         std::string out(text);
-        free(text);
+        ncl_free_safe(text);
         return out;
     }
 

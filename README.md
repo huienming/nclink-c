@@ -84,6 +84,11 @@ ctest --test-dir build --output-on-failure
 
 ### Linux（已验证：gcc 13.4，22/22 测试通过）
 
+容器内 gcc 13 复验：全量 **24/24**（含新的 `mem`、`mem_mc`），静态池 64 KiB / 20 MiB
+同样 **24/24**，且蒙特卡洛统计与 MSVC 逐位一致；对 Mosquitto 2.1.2 与 EMQX 5.8.9 的
+真 broker 互操作各 44 项检查全过。内存门禁：`./tools/asan-linux.sh --docker`
+（ASan + LeakSanitizer）。
+
 没有 CMake 也能编（只需要 gcc/binutils 与 sh）：
 
 ```bash
@@ -164,6 +169,25 @@ docker run --rm -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh buil
 | `NCLINK_BUILD_TESTS` | `ON` | 构建单元测试 |
 | `NCLINK_WITH_ZLIB` | `OFF` | 启用 zlib 压缩编解码（CompressEncoder/Decoder） |
 | `NCLINK_WITH_MQTT` | `ON` | 构建 MQTT 传输层（关掉后只剩纯协议层，便于嵌入式裁剪） |
+| `NCLINK_STATIC_MEM` | `OFF` | 库内所有分配走静态池，不调用 `malloc`（无堆设备；见手册 4.9） |
+| `NCLINK_MEM_POOL_BYTES` | `20971520` | 静态池大小（字节，默认 20 MiB） |
+| `NCLINK_MEM_SINGLE_THREAD` | `OFF` | 静态池不加锁（单上下文/裸机） |
+| `NCLINK_MEM_REPORT` | `OFF` | 退出时打印池峰值，用来量池该开多大 |
+| `NCLINK_MEM_CLASS_BYTES` | `-1` | 小对象尺寸类区域（`-1` = 池的 1/4，`0` = 关闭） |
+
+静态内存（无堆）构建：`.\build.ps1 -StaticMem`，Linux 上是
+`NCL_STATIC_MEM=1 ./build-linux.sh build-linux-static`；池**默认 20 MiB**，小设备用
+`-MemPoolBytes 65536`（Linux 用 `NCL_MEM_POOL_BYTES=65536`）往下压。
+库内的 471 处分配已经全部走 `ncl_mem_*()` 这一层，池耗尽返回 `NCL_ERR_NOMEM` 而不是
+回退到堆；池用**最佳适配 + 释放时双向合并**，所以同一套流量反复跑不会留下永久空洞
+（`tests/test_mem.c` 有逐轮断言的用例，`tests/test_mem_mc.c` 是蒙特卡洛压测）。实测全量
+测试 **64 KiB 池 24/24 通过、零拒绝**
+（设备端常见的 model + message + client/server + mqtt 组合只需 32 KiB 上下，文件搬运
+是唯一的大户）。池大小、峰值、碎片诊断（拒绝时的空闲快照）与线程模型见手册 4.9。
+
+长跑压测：`./tools/soak-linux.sh --docker` 会为多个池尺寸各编一份程序并**并行跑 1 小时**
+（逐操作校验池不变量、逐轮验证"排空后回到一整块空闲"）；内存门禁是
+`./tools/asan-linux.sh --docker`（ASan + LeakSanitizer）。两者都能在 Windows/macOS 上跑。
 
 ## 语言绑定
 

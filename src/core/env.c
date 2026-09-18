@@ -68,20 +68,20 @@ static bool g_server_list_ready = false;
 
 static void ncl_env_invalidate_paths(void)
 {
-    free(g_conf); g_conf = NULL;
-    free(g_run); g_run = NULL;
-    free(g_driver); g_driver = NULL;
-    free(g_log); g_log = NULL;
-    free(g_log_file); g_log_file = NULL;
-    free(g_mqtt_cfg); g_mqtt_cfg = NULL;
-    free(g_model_file); g_model_file = NULL;
-    free(g_driver_cfg); g_driver_cfg = NULL;
-    free(g_sn_file); g_sn_file = NULL;
+    ncl_mem_free(g_conf); g_conf = NULL;
+    ncl_mem_free(g_run); g_run = NULL;
+    ncl_mem_free(g_driver); g_driver = NULL;
+    ncl_mem_free(g_log); g_log = NULL;
+    ncl_mem_free(g_log_file); g_log_file = NULL;
+    ncl_mem_free(g_mqtt_cfg); g_mqtt_cfg = NULL;
+    ncl_mem_free(g_model_file); g_model_file = NULL;
+    ncl_mem_free(g_driver_cfg); g_driver_cfg = NULL;
+    ncl_mem_free(g_sn_file); g_sn_file = NULL;
 }
 
 void ncl_env_set_root(const char *path)
 {
-    free(g_root);
+    ncl_mem_free(g_root);
     g_root = NULL;
     if (path != NULL && path[0] != '\0') {
         g_root = ncl_strdup(path);
@@ -212,14 +212,14 @@ void ncl_env_set_server_list(const char *const *servers, size_t count)
 {
     size_t i;
     if (!g_server_list_ready) {
-        ncl_ptrvec_init(&g_server_list, free);
+        ncl_ptrvec_init(&g_server_list, ncl_mem_free);
         g_server_list_ready = true;
     }
     ncl_ptrvec_clear(&g_server_list);
     for (i = 0; i < count; i++) {
         char *copy = ncl_strdup(servers[i]);
         if (copy == NULL || ncl_ptrvec_push(&g_server_list, copy) != NCL_OK) {
-            free(copy);
+            ncl_mem_free(copy);
             break;
         }
     }
@@ -240,7 +240,7 @@ const char *ncl_env_server_at(size_t index)
 
 void ncl_env_shutdown(void)
 {
-    free(g_root);
+    ncl_mem_free(g_root);
     g_root = NULL;
     ncl_env_invalidate_paths();
     if (g_server_list_ready) {
@@ -319,7 +319,7 @@ ncl_err ncl_mkdir_p(const char *path)
         rc = NCL_ERR_IO;
     }
 #endif
-    free(work);
+    ncl_mem_free(work);
     return rc;
 }
 
@@ -353,7 +353,7 @@ ncl_err ncl_file_read_all(const char *path, char **out, size_t *out_len)
     }
     rewind(fp);
 
-    buf = (char *)malloc((size_t)size + 1);
+    buf = (char *)ncl_mem_alloc((size_t)size + 1);
     if (buf == NULL) {
         fclose(fp);
         return NCL_ERR_NOMEM;
@@ -429,7 +429,7 @@ ncl_err ncl_file_copy(const char *src, const char *dst)
         }
     }
     rc = ncl_file_write_all(dst, data, len);
-    free(data);
+    ncl_mem_free(data);
     return rc;
 }
 
@@ -633,14 +633,14 @@ ncl_err ncl_mqtt_config_read(ncl_mqtt_config *out)
     url = ncl_mqtt_cfg_value(content, "url");
     user = ncl_mqtt_cfg_value(content, "username");
     pwd = ncl_mqtt_cfg_value(content, "password");
-    free(content);
+    ncl_mem_free(content);
 
     if (url == NULL || url[0] == '\0') {
-        free(url);
+        ncl_mem_free(url);
         url = ncl_strdup("tcp://localhost:1883");
     }
     if (user == NULL || user[0] == '\0') {
-        free(user);
+        ncl_mem_free(user);
         user = ncl_strdup("admin");
     }
     if (pwd == NULL) {
@@ -662,9 +662,9 @@ void ncl_mqtt_config_free(ncl_mqtt_config *cfg)
     if (cfg == NULL) {
         return;
     }
-    free(cfg->url);
-    free(cfg->username);
-    free(cfg->password);
+    ncl_mem_free(cfg->url);
+    ncl_mem_free(cfg->username);
+    ncl_mem_free(cfg->password);
     cfg->url = NULL;
     cfg->username = NULL;
     cfg->password = NULL;
@@ -698,6 +698,6 @@ char *ncl_sn_read(void)
         return NULL;
     }
     trimmed = ncl_str_trim_dup(content);
-    free(content);
+    ncl_mem_free(content);
     return trimmed;
 }

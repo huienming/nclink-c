@@ -9,6 +9,11 @@
 # 可选：NCL_WITH_TLS=1 打开 ssl:// 支持（需要 OpenSSL 的头文件与库），
 # 例如 NCL_WITH_TLS=1 ./build-linux.sh build-linux-tls
 #
+# 可选：NCL_STATIC_MEM=1 让库内每次分配都从固定静态池里拿（不调用 malloc），
+# 池大小用 NCL_MEM_POOL_BYTES 指定，默认 20 MiB（20971520 字节）；
+# NCL_MEM_SINGLE_THREAD=1 可去掉池的锁（单上下文/裸机）。
+# 例如 NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 ./build-linux.sh build-linux-static
+#
 # 产出：
 #   <输出目录>/libnclink_core.a        静态库
 #   <输出目录>/bin/*                   示例与测试可执行文件
@@ -42,6 +47,15 @@ LDLIBS="-lpthread"
 if [ "${NCL_WITH_TLS:-0}" = "1" ]; then
     CFLAGS="$CFLAGS -DNCL_WITH_TLS=1"
     LDLIBS="$LDLIBS -lssl -lcrypto"
+fi
+
+# 静态内存：库内所有分配走 ncl_mem_*，打开后由固定池供给，
+# 池的地址空间也在静态区里，整个库不再向堆要一个字节。
+if [ "${NCL_STATIC_MEM:-0}" = "1" ]; then
+    CFLAGS="$CFLAGS -DNCL_STATIC_MEM=1 -DNCL_MEM_POOL_BYTES=${NCL_MEM_POOL_BYTES:-20971520}"
+    if [ "${NCL_MEM_SINGLE_THREAD:-0}" = "1" ]; then
+        CFLAGS="$CFLAGS -DNCL_MEM_SINGLE_THREAD=1"
+    fi
 fi
 
 rm -rf "$OUT/obj"

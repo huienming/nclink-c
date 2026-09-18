@@ -89,7 +89,7 @@ bool ncl_log_init(const char *log_dir)
     /* Append mode; the file is rotated once it passes the limit. */
     g_log_file = fopen(path, "ab");
     if (g_log_file == NULL) {
-        free(path);
+        ncl_mem_free(path);
         ncl_mutex_unlock(mtx);
         return false;
     }
@@ -111,7 +111,7 @@ void ncl_log_shutdown(void)
         fclose(g_log_file);
         g_log_file = NULL;
     }
-    free(g_log_path);
+    ncl_mem_free(g_log_path);
     g_log_path = NULL;
     g_log_bytes = 0;
     ncl_mutex_unlock(mtx);
@@ -148,7 +148,7 @@ static void ncl_log_maybe_rotate(void)
     } else {
         g_log_file = fopen(g_log_path, "ab");
     }
-    free(rotated);
+    ncl_mem_free(rotated);
 }
 
 void ncl_log_write(ncl_log_level level, const char *fmt, ...)

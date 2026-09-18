@@ -72,6 +72,133 @@ typedef int ncl_err;
  */
 const char *ncl_err_name(ncl_err err);
 
+/* ------------------------------------------------------------- allocator -- */
+
+/*
+ * Every byte the library allocates goes through these four functions, which
+ * is what makes a build without a heap possible:
+ *
+ *   default            the C runtime allocator (malloc/free/realloc/calloc)
+ *   NCL_STATIC_MEM=1   one fixed pool carved out of a static array
+ *
+ * Pointers handed back through the public API (char * from ncl_strdup(), the
+ * objects behind ncl_*_free()) are always owned by the *library* allocator, so
+ * an application that shares them must release them through the matching
+ * ncl_*_free() call and never through the C runtime's free() - in the static
+ * pool build those two are different heaps.
+ */
+
+/** Allocate @p size bytes, or NULL when the allocator is exhausted. */
+void *ncl_mem_alloc(size_t size);
+
+/** Every pointer handed out by ncl_mem_*() is aligned to at least this. */
+#define NCL_MEM_ALIGNMENT 16u
+
+/** Allocate @p count * @p size zeroed bytes, or NULL (with overflow check). */
+void *ncl_mem_calloc(size_t count, size_t size);
+
+/** Resize @p ptr (NULL behaves as ncl_mem_alloc(), 0 as ncl_mem_free()). */
+void *ncl_mem_realloc(void *ptr, size_t size);
+
+/** Release @p ptr; NULL is a no-op. */
+void ncl_mem_free(void *ptr);
+
+/** Which allocator is compiled in: "heap" or "static-pool". */
+const char *ncl_mem_mode(void);
+
+/** Counters of the allocation layer; all zero in the "heap" build. */
+typedef struct {
+    size_t pool_bytes;      /**< size of the pool (0 in the "heap" build)   */
+    size_t in_use_bytes;    /**< payload bytes currently handed out         */
+    size_t peak_in_use_bytes; /**< high water mark since the last reset     */
+    /**
+     * What the pool has actually committed to live objects: payload plus the
+     * 32 byte header of every arena block, and the whole block for a size class
+     * object (a class block has no header). This is the number to size the pool
+     * against - in_use_bytes alone flatters the arena, because it leaves the
+     * headers out.
+     */
+    size_t footprint_bytes;
+    size_t peak_footprint_bytes; /**< high water mark of footprint_bytes     */
+    size_t live_blocks;     /**< blocks currently handed out                */
+    size_t largest_free_bytes; /**< largest single free block               */
+    size_t free_bytes;      /**< total free space, holes included            */
+    size_t free_blocks;     /**< number of free blocks (1 = no holes)        */
+    /**
+     * Bytes spent on block headers. This is the price of an allocator that can
+     * release individual objects: 32 bytes per live (or free) block. In a small
+     * pool with many small objects it is a real part of the budget, so it is
+     * reported instead of being hidden.
+     */
+    size_t meta_bytes;
+    /**
+     * Small object size classes, index 0 upwards while class_size[i] is
+     * non-zero. A class block is fixed size and carries no header, so its
+     * region serves requests up to class_size[i] in O(1) and cannot fragment.
+     * class_live/class_free say how well the region is sized for the traffic
+     * that just ran (a class that is always empty was over-provisioned, one
+     * that is never free was under-provisioned - it falls back to the arena,
+     * which costs speed, never correctness).
+     */
+    size_t class_size[8];   /**< block size per class, 0 = class unused   */
+    size_t class_bytes[8];  /**< region size per class                    */
+    size_t class_live[8];   /**< blocks in use per class                  */
+    size_t class_free[8];   /**< blocks on the class free list            */
+    /**
+     * Size of the general arena inside the pool: pool_bytes minus the size
+     * class regions. largest_free_bytes and free_blocks describe this part,
+     * because a size class has no holes to speak of.
+     */
+    size_t arena_bytes;
+    /**
+     * Request size histogram: bucket i counts requests of (2^i, 2^(i+1)] bytes,
+     * bucket 0 everything up to 2 bytes, bucket 15 everything above 64 KiB.
+     * This is what tells an integrator whether a pool of size classes would
+     * pay off, or whether one arena is the right shape.
+     */
+    size_t size_hist[16];
+    size_t allocations;     /**< successful allocations                     */
+    size_t failures;        /**< refused allocations (pool exhausted)       */
+    size_t foreign_frees;   /**< free() of a pointer the pool never handed out */
+    /**
+     * Biggest single request ever made. A pool has to be at least this plus
+     * the long lived set, no matter how well it coalesces - that is the floor
+     * below which no fragmentation policy can help.
+     */
+    size_t largest_request_bytes;
+    /**
+     * Snapshot taken when the last allocation was refused: how much was free
+     * in total, and how big the largest contiguous piece was. When the first
+     * number is much larger than the second, the refusal was fragmentation,
+     * not a pool that is genuinely too small.
+     */
+    size_t failure_free_bytes;
+    size_t failure_largest_free_bytes;
+    /**
+     * Block headers whose back link did not add up when a block was released.
+     * Always zero in a healthy pool; a non-zero value means something wrote
+     * past the end of an allocation.
+     */
+    size_t bad_links;
+} ncl_mem_stats;
+
+/** Snapshot the allocator counters (safe to call from any thread). */
+void ncl_mem_get_stats(ncl_mem_stats *out);
+
+/** Clear peak/allocations/failures counters, keeping in_use and pool_bytes. */
+void ncl_mem_reset_stats(void);
+
+/**
+ * Walk the whole pool and verify its invariants: every block lies inside the
+ * arena, the back links add up, no two free blocks are left unmerged, and the
+ * blocks cover the arena exactly. Returns 0 when the pool is consistent, or
+ * the number of problems found.
+ *
+ * A bring up aid: call it from a test after each phase, or from a field build
+ * when something writes past its own allocation. Always 0 for the "heap" mode.
+ */
+size_t ncl_mem_check(void);
+
 /* ------------------------------------------------------------ string utils -- */
 
 /** Heap copy of @p s (NULL safe). Caller frees. */

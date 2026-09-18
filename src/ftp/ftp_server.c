@@ -426,7 +426,7 @@ static void session_replyf(ncl_ftp_session *s, int code, const char *fmt, ...)
     va_start(ap, fmt);
     if (ncl_vasprintf(&body, fmt, ap) == NCL_OK) {
         ncl_ftp_reply(s->ctrl, code, body);
-        free(body);
+        ncl_mem_free(body);
     }
     va_end(ap);
 }
@@ -645,7 +645,7 @@ static void session_handle_retr(ncl_ftp_session *s, const char *arg)
         if (permanent) {
             session_reply(s, 425, "Use PORT or PASV first.");
         }
-        free(data);
+        ncl_mem_free(data);
         return;
     }
     if (len > 0) {
@@ -654,7 +654,7 @@ static void session_handle_retr(ncl_ftp_session *s, const char *arg)
     }
     s->rest = 0;
     ncl_socket_close(conn);
-    free(data);
+    ncl_mem_free(data);
     session_reply(s, 226, "Transfer complete.");
 }
 
@@ -1061,7 +1061,7 @@ static void server_reap_locked(ncl_ftp_server *srv)
         if (srv->session_count > 0) {
             srv->session_count--;
         }
-        free(s);
+        ncl_mem_free(s);
         for (; i < srv->sessions.len; i++) {
             srv->sessions.items[i - 1] = srv->sessions.items[i];
         }
@@ -1081,7 +1081,7 @@ static void server_accept_thread(void *arg)
             continue;
         }
         ncl_socket_set_nodelay(ctrl, true);
-        session = (ncl_ftp_session *)calloc(1, sizeof(*session));
+        session = (ncl_ftp_session *)ncl_mem_calloc(1, sizeof(*session));
         if (session == NULL) {
             ncl_socket_close(ctrl);
             continue;
@@ -1105,7 +1105,7 @@ static void server_accept_thread(void *arg)
                 ncl_thread_join(session->thread);
             }
             ncl_socket_close(ctrl);
-            free(session);
+            ncl_mem_free(session);
         }
     }
 }
@@ -1119,7 +1119,7 @@ ncl_ftp_server *ncl_ftp_server_create(void)
 
 ncl_ftp_server *ncl_ftp_server_create_ex(const ncl_ftp_server_options *options)
 {
-    ncl_ftp_server *srv = (ncl_ftp_server *)calloc(1, sizeof(*srv));
+    ncl_ftp_server *srv = (ncl_ftp_server *)ncl_mem_calloc(1, sizeof(*srv));
     const char *root;
 
     if (srv == NULL) {
@@ -1215,7 +1215,7 @@ void ncl_ftp_server_stop(ncl_ftp_server *srv)
         if (s->ctrl != NULL) {
             ncl_socket_close(s->ctrl);
         }
-        free(s);
+        ncl_mem_free(s);
     }
     ncl_ptrvec_clear(&srv->sessions);
     srv->session_count = 0;
@@ -1229,13 +1229,13 @@ void ncl_ftp_server_free(ncl_ftp_server *srv)
     }
     ncl_ftp_server_stop(srv);
     ncl_ptrvec_free(&srv->sessions);
-    free(srv->root);
-    free(srv->user);
-    free(srv->password);
+    ncl_mem_free(srv->root);
+    ncl_mem_free(srv->user);
+    ncl_mem_free(srv->password);
     if (srv->lock != NULL) {
         ncl_mutex_destroy(srv->lock);
     }
-    free(srv);
+    ncl_mem_free(srv);
 }
 
 bool ncl_ftp_server_is_running(ncl_ftp_server *srv)

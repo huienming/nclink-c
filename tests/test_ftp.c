@@ -281,7 +281,7 @@ NCL_TEST_MAIN_BEGIN()
         if (map != NULL) {
             NCL_CHECK(map[0] == '{');
             NCL_CHECK(map[strlen(map) - 1] == '}');
-            free(map);
+            ncl_free_safe(map);
         }
     }
 

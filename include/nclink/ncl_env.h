@@ -64,7 +64,8 @@ void    ncl_mqtt_config_free(ncl_mqtt_config *cfg);
 /**
  * Read <root>/bin/sn.txt, generating and persisting a serial number with
  * ncl_sn_generate() when the file does not exist.
- * Returns a heap string (free with free()) or NULL on I/O failure.
+ * Returns a library owned string (release with ncl_free_safe()) or NULL on I/O
+ * failure.
  */
 char *ncl_sn_read(void);
 

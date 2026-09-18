@@ -182,7 +182,7 @@ static int ncl_socket_wait(ncl_sock_handle handle, bool for_write,
 
 static ncl_socket *ncl_socket_wrap(ncl_sock_handle handle, unsigned local_port)
 {
-    ncl_socket *s = (ncl_socket *)calloc(1, sizeof(ncl_socket));
+    ncl_socket *s = (ncl_socket *)ncl_mem_calloc(1, sizeof(ncl_socket));
     if (s == NULL) {
 #if defined(NCL_OS_WINDOWS)
         closesocket(handle);
@@ -198,7 +198,7 @@ static ncl_socket *ncl_socket_wrap(ncl_sock_handle handle, unsigned local_port)
 #else
         close(handle);
 #endif
-        free(s);
+        ncl_mem_free(s);
         return NULL;
     }
     s->handle = handle;
@@ -819,7 +819,7 @@ static void ncl_net_escape_json(ncl_strbuf *sb, const char *text)
  */
 static ncl_strbuf *ncl_net_collect(void)
 {
-    ncl_strbuf *sb = (ncl_strbuf *)calloc(1, sizeof(ncl_strbuf));
+    ncl_strbuf *sb = (ncl_strbuf *)ncl_mem_calloc(1, sizeof(ncl_strbuf));
     char first[64];
 
     if (sb == NULL) {
@@ -838,7 +838,7 @@ static ncl_strbuf *ncl_net_collect(void)
         int written = 0;
 
         for (iter = 0; iter < 3; iter++) {
-            addrs = (IP_ADAPTER_ADDRESSES *)malloc(size);
+            addrs = (IP_ADAPTER_ADDRESSES *)ncl_mem_alloc(size);
             if (addrs == NULL) {
                 break;
             }
@@ -848,7 +848,7 @@ static ncl_strbuf *ncl_net_collect(void)
                                           GAA_FLAG_SKIP_DNS_SERVER,
                                       NULL, addrs, &size);
             if (rc == ERROR_BUFFER_OVERFLOW) {
-                free(addrs);
+                ncl_mem_free(addrs);
                 addrs = NULL;
                 continue;
             }
@@ -896,7 +896,7 @@ static ncl_strbuf *ncl_net_collect(void)
                 snprintf(first, sizeof(first), "%s", ip);
             }
         }
-        free(addrs);
+        ncl_mem_free(addrs);
     }
 #else
     {
@@ -1182,7 +1182,7 @@ void ncl_socket_close(ncl_socket *s)
     }
 #endif
     ncl_mutex_destroy(s->lock);
-    free(s);
+    ncl_mem_free(s);
 }
 
 void ncl_socket_shutdown(ncl_socket *s)
@@ -1285,7 +1285,7 @@ ncl_err ncl_socket_parse_url(const char *url, char **host, unsigned *port,
         *host = ncl_strndup(rest, (size_t)(end - rest));
     }
     if (*host == NULL || (*host)[0] == '\0') {
-        free(*host);
+        ncl_mem_free(*host);
         *host = NULL;
         return NCL_ERR_INVALID_ARG;
     }

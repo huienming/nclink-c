@@ -199,7 +199,7 @@ ncl_err ncl_ftp_send_command(ncl_socket *sock, const char *fmt, ...)
         return rc;
     }
     rc = ncl_ftp_send_line(sock, line);
-    free(line);
+    ncl_mem_free(line);
     return rc;
 }
 
@@ -221,7 +221,7 @@ ncl_err ncl_ftp_replyf(ncl_socket *sock, int code, const char *fmt, ...)
         return rc;
     }
     rc = ncl_ftp_reply(sock, code, body);
-    free(body);
+    ncl_mem_free(body);
     return rc;
 }
 
@@ -242,7 +242,7 @@ ncl_err ncl_ftp_reply_multiline(ncl_socket *sock, int code, const char *text)
                 return NCL_ERR_NOMEM;
             }
             rc = ncl_ftp_send_command(sock, "%d-%s", code, piece);
-            free(piece);
+            ncl_mem_free(piece);
         }
         if (rc != NCL_OK) {
             return rc;
@@ -592,8 +592,8 @@ void ncl_ftp_entry_free(void *entry)
     if (e == NULL) {
         return;
     }
-    free(e->name);
-    free(e);
+    ncl_mem_free(e->name);
+    ncl_mem_free(e);
 }
 
 bool ncl_ftp_entry_is_dir(const ncl_ftp_entry *entry)

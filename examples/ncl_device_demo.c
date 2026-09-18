@@ -85,7 +85,7 @@ static char *demo_load_model(void)
     }
     if (ncl_asprintf(&dir, "%s%cmodel", ncl_env_conf_path(), NCL_PATH_SEP) == NCL_OK) {
         ncl_mkdir_p(dir);
-        free(dir);
+        ncl_free_safe(dir);
     }
     text = ncl_strdup(ncl_demo_device_model());
     if (text == NULL) {
@@ -578,7 +578,7 @@ static void log_sample_channels(const ncl_node *root)
                 ncl_log_info("    [%u] %s -> %s", (unsigned)i,
                              ref != NULL && ref->id != NULL ? ref->id : "?",
                              path != NULL ? path : "(未解析)");
-                free(path);
+                ncl_free_safe(path);
             }
         }
     }
@@ -951,13 +951,13 @@ cleanup:
     }
     ncl_mqtt_client_disconnect(mqtt);
     ncl_mqtt_client_destroy(mqtt);
-    free(broker_url);
-    free(broker_user);
-    free(broker_password);
-    free(model_json);
+    ncl_free_safe(broker_url);
+    ncl_free_safe(broker_user);
+    ncl_free_safe(broker_password);
+    ncl_free_safe(model_json);
     ncl_log_info("设备端已退出");
     ncl_log_shutdown();
     ncl_env_shutdown();
-    free(sn);
+    ncl_free_safe(sn);
     return exit_code;
 }

@@ -132,11 +132,11 @@ static void answer_query(ncl_fake_server *server, const char *sn,
         char *json = ncl_message_write_string(response);
         if (json != NULL) {
             ncl_fake_server_publish(server, topic, json, 2);
-            free(json);
+            ncl_free_safe(json);
         }
     }
     ncl_message_free(response);
-    free(topic);
+    ncl_free_safe(topic);
 }
 
 static void answer_set(ncl_fake_server *server, const char *sn,
@@ -156,11 +156,11 @@ static void answer_set(ncl_fake_server *server, const char *sn,
         char *json = ncl_message_write_string(response);
         if (json != NULL) {
             ncl_fake_server_publish(server, topic, json, 2);
-            free(json);
+            ncl_free_safe(json);
         }
     }
     ncl_message_free(response);
-    free(topic);
+    ncl_free_safe(topic);
 }
 
 static void answer_probe(ncl_fake_server *server, const char *sn)
@@ -174,11 +174,11 @@ static void answer_probe(ncl_fake_server *server, const char *sn)
         char *json = ncl_message_write_string(response);
         if (json != NULL) {
             ncl_fake_server_publish(server, topic, json, 2);
-            free(json);
+            ncl_free_safe(json);
         }
     }
     ncl_message_free(response);
-    free(topic);
+    ncl_free_safe(topic);
 }
 
 static void answer_method_call(ncl_fake_server *server, const char *sn,
@@ -197,11 +197,11 @@ static void answer_method_call(ncl_fake_server *server, const char *sn,
         char *json = ncl_message_write_string(response);
         if (json != NULL) {
             ncl_fake_server_publish(server, topic, json, 2);
-            free(json);
+            ncl_free_safe(json);
         }
     }
     ncl_message_free(response);
-    free(topic);
+    ncl_free_safe(topic);
 }
 
 /** Dispatch an inbound request to the server. */
@@ -358,9 +358,9 @@ static void test_client_full_flow(void)
             NCL_CHECK(path != NULL);
             if (path != NULL) {
                 NCL_CHECK_EQ_STR(path, "/STATUS");
-                free(path);
+                ncl_free_safe(path);
             }
-            free(id);
+            ncl_free_safe(id);
         }
         NCL_CHECK(ncl_client_get_id(client, "/nope") == NULL);
     }
@@ -411,7 +411,7 @@ static void test_client_full_flow(void)
         NCL_CHECK_EQ_INT(
             ncl_fake_server_publish(server, "Sample/" TEST_SN "/ch1", payload, 0),
             NCL_OK);
-        free(payload);
+        ncl_free_safe(payload);
 
         for (i = 0; i < 200 && seen.samples == 0; i++) {
             ncl_sleep_millis(10);
@@ -441,7 +441,7 @@ static void test_client_full_flow(void)
         payload = ncl_message_write_string(sample);
         ncl_message_free(sample);
         ncl_fake_server_publish(server, "Sample/" TEST_SN "/ch2", payload, 0);
-        free(payload);
+        ncl_free_safe(payload);
         ncl_sleep_millis(200);
         NCL_CHECK_EQ_INT(seen.samples, 1);
         NCL_CHECK_EQ_INT(ncl_client_sample_count(client), 1);

@@ -393,8 +393,8 @@ static void srv_stop(tls_server *server)
         ncl_thread_join(server->thread);
         server->thread = NULL;
     }
-    free((void *)server->cert);
-    free((void *)server->key);
+    ncl_free_safe((void *)server->cert);
+    ncl_free_safe((void *)server->key);
     ncl_cond_destroy(server->cond);
     ncl_mutex_destroy(server->mutex);
 }
@@ -570,8 +570,8 @@ NCL_TEST_MAIN_BEGIN()
     ncl_mqtt_client_destroy(client);
 
     free(big);
-    free(ca);
-    free(other_ca);
+    ncl_free_safe(ca);
+    ncl_free_safe(other_ca);
     srv_stop(&server);
     ncl_cond_destroy(g_events.cond);
     ncl_mutex_destroy(g_events.mutex);

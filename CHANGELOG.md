@@ -3,6 +3,120 @@
 本文件记录 NC-Link C 实现（`nclink-core-c`）的版本变更。版本号跟随
 NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
+## 未发布
+
+### 新增
+
+- **并发（多线程）压测套件 `mem_mt`（`tests/test_mem_mt.c`）**：多线程共享同一个池做随机
+  流量（随机尺寸、随机分配/释放/重分配），每块带图案并在释放前校验；线程之间还通过环形
+  队列**传递所有权**（A 分配写图案、B 收到校验再释放——正是"收包线程分配、调用方释放"的
+  形状）；主线程在它们运行期间**不停调用 `ncl_mem_check()`**。为让自检可用于并发，
+  `ncl_mem_check()` 现在还会**从块本身重算**账目恒等式（`已用 + 空闲 + 块头×块数 == 池大小`）
+  并与计数器比对，全部在同一把锁下完成，因此每次观测都是一致快照、非零即真缺陷。
+  收尾断言：池回到一整块空闲、`in_use 0`，且"申请最大空洞大小必须成功、比它大一个对齐
+  单位必须被拒"。
+  实测：单轮 64 KiB 池 4 线程 × 40000 次操作 = **160000 次操作 / 22838 次跨线程交接 /
+  0 违规**；10 分钟并发长跑（8 线程 × 64 KiB/512 KiB/20 MiB）= **约 5.63 亿次操作、
+  1.44 亿次分配、8030 万次跨线程交接、7034 轮、0 失败**；见手册 4.9.4。
+- **ThreadSanitizer 门禁**：`./tools/asan-linux.sh --tsan --docker` 专压上述并发用例
+  （TSan 与容器 ASLR 冲突，脚本自动把 `vm.mmap_rnd_bits` 降到 28，需要 `--privileged`）。
+  6 线程 × 20000 次操作 **0 数据竞争**；`--docker` 的 ASan 套件也已把 `test_mem_mt` 纳入。
+- **长跑（soak）工具 `tools/soak-linux.sh`**：为每个池尺寸各编一份库 + 压测程序，并行跑满
+  指定时长（默认 1 小时），支持 `NCL_SOAK_MT=1` 切换到并发版；逐操作校验不变量、逐轮验证
+  "排空后回到一整块空闲"，任一条不满足即非零退出。首次实测（18 逻辑核，7 个尺寸并行，
+  3600 s，exit=0）：**260389 轮、约 52.1 亿次操作、22.0 亿次分配、0 失败**；形状拒绝约占
+  拒绝的 60%（合成流量特征），最坏最大连续空洞约为池的 1/128～1/50。表见手册 4.9.3。
+
+- **静态池的小对象尺寸类**：实测请求分布极度偏小（**98% 以上的请求 ≤128 字节**，33～64
+  字节一档约占一半），所以池在首次使用时把自己切成"尺寸类区域 + 通用区"。尺寸类为
+  {16, 32, 48, 64, 96, 128, 192, 256}（**步长不用 2 的幂**：C 类只在请求 > C−32 时划算，
+  插 48/96 是为了压掉 65～96 字节那段亏损窗口），类内**无块头**、靠"指针落在哪个区域"
+  判定类别，分配/释放 O(1) 且**类内结构上不可能外部碎片**；类用完**自动回落通用区**，
+  因此配小了只损失速度、不产生新失败模式。开关 `NCLINK_MEM_CLASS_BYTES`（`-MemClassBytes`，
+  `-1`＝池的 1/4，`0`＝关闭）。
+  实测收益（64 KiB 池，24 个套件，**实际占用＝载荷+块头**的峰值，开/关对照）：
+  server 36160→25584（**−29.2%**）、message 24064→16256（**−32.4%**）、
+  client 20032→13920（−30.5%）、rest 25872→18000（−30.4%）、model 16304→10720（−34.2%）、
+  event 25504→15344（−39.8%）、schema 7456→4032（−45.9%）、json 2800→1568（−44%）、
+  mem_mc 50608→40736（−19.5%）；`ftp` 只 −1.9%（几乎全是 16 KiB 大块，本就不进类）。
+  池大小边界随之改善：**32 KiB 池 21/24 → 22/24**（`message` 现在通过），64 KiB 仍 24/24。
+  另新增两个统计口径：`footprint_bytes` / `peak_footprint_bytes`（载荷 + 块头）与每类的
+  `class_size/class_bytes/class_live/class_free`——`in_use_bytes` 只算载荷、天然偏向通用区，
+  比较"省没省"要看 footprint。
+
+- **静态内存（无堆）构建**：库内 471 处分配点全部改道 `ncl_mem_alloc()` /
+  `ncl_mem_calloc()` / `ncl_mem_realloc()` / `ncl_mem_free()`（`src/core/ncl_mem.c`
+  是唯一知道内存从哪来的文件；默认实现转发给 C 运行库，行为与开销不变）。
+  `NCLINK_STATIC_MEM=ON` 时改由**静态数组里的一个固定池**供给：库不再调用
+  `malloc`，池耗尽返回 `NULL` 并由上层翻成 `NCL_ERR_NOMEM`，绝不回退到堆。
+  池默认 **20 MiB**（`NCLINK_MEM_POOL_BYTES` / `NCL_MEM_POOL_BYTES`，池在 `.bss`
+  里，不占可执行文件体积），先跑通再按量到的峰值往下压。配套选项还有
+  `NCLINK_MEM_SINGLE_THREAD`（去锁）、
+  `NCLINK_MEM_STRICT`（外来指针释放即 abort）、`NCLINK_MEM_REPORT`（退出时打印峰值）；
+  `build.ps1` 是 `-StaticMem / -MemPoolBytes / -MemReport`，`build-linux.sh` 是
+  `NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=...`。新增运行时统计
+  `ncl_mem_get_stats()` / `ncl_mem_mode()` 与测试套件 `tests/test_mem.c`。
+  **碎片**：池用最佳适配 + 释放时双向合并，`test_pool_fragmentation` 逐轮断言"空闲块
+  数回到 1、最大连续空闲块逐字节等于轮次前"（长期块 + 6×300 次混合尺寸 churn）；
+  拒绝时的空闲快照（`failure_free_bytes` / `failure_largest_free_bytes`）用来区分
+  "池小了"和"空间被形状打散"。这一改有实测依据：64 KiB 池 + 首适配时 file 用例出现过
+  一次真实的形状拒绝（总空闲 21152 / 最大连续 10592 / 请求 16384），换最佳适配后
+  0 拒绝。实测（Windows x64 / MSVC）：**64 KiB 池全量测试 23/23 通过**，32 KiB 时
+  20/23（message、ftp、file 是"总空闲都不够"的尺寸问题）；设备端常见组合的峰值在
+  32 KiB 上下。细节见手册 4.9。
+- **深挖碎片时修掉两个真缺陷**（都在静态池里，只有紧池 + 自检能稳定暴露）：
+  ① `realloc` 原地扩张合并后没更新"后继块的前驱链接"，留下陈旧链接，之后释放会往错
+  地址合并；② 切分块产生的空闲尾块没有与后面的空闲块合并，出现**两个空闲块永久并排**
+  （空间是空的，却是碎的）。合并逻辑统一改成"向前合并到底"。
+- 新增自检 `size_t ncl_mem_check(void)`：走一遍池，校验前驱链接、相邻空闲块、覆盖范围，
+  返回问题条数（默认构建恒 0）。就是它把上面第 ② 条从"偶发崩溃"钉成了可复现的用例。
+- 新增蒙特卡洛压测套件 `tests/test_mem_mc.c`（`mem_mc`）：随机尺寸跨三个数量级、随机
+  分配/释放/重分配、每块带图案校验、每次操作后校验池不变量与账目恒等式、拒绝必须正当
+  （把"总空闲够却失败"单独计为形状拒绝）、**同一种子跑两遍必须完全一致**（漂移检测）。
+  它上线即抓到第三个缺陷：切分后若后继块是已分配的，`merge_forward` 提前返回，导致后继
+  块的前驱链接陈旧（一个"任何尺寸变化都必须修后继链接"的不变量，现在由
+  `pool_fix_follower()` 统一保证）。
+  同序列对照（64 KiB，4 种子 × 20000 操作）：最佳适配 20 次拒绝（其中形状 7 次 / 35%），
+  首适配 22 次（形状 13 次 / 59%），最坏最大连续空洞 5504 B vs 3920 B——最佳适配的收益
+  第一次有了量化数字。新增开关 `NCLINK_MEM_FIRST_FIT`（`-MemFirstFit`）用于复现对照。
+- `ncl_mem_stats` 追加 `meta_bytes`（块头总开销）与 `size_hist[16]`（请求尺寸直方图），
+  `-MemReport` 退出时一并打印：实测 **98% 以上的请求 ≤ 128 字节**，而 `ncl_strbuf` /
+  向量 / 模型 map 都是翻倍增长，单次最大块需求可达最终大小的 1.5 倍以上——这两条是
+  "要不要上尺寸类"与"池该留多少余量"的直接依据。
+- `ncl.hpp`、`examples/`、`tests/` 里释放库指针的地方统一改用 `ncl_free_safe()`，
+  与静态池构建的所有权约定一致（此前直接用 libc `free()`）。
+
+### 修复（Linux + ASan 复验发现）
+
+- **MQTT 客户端重连会漏掉已结束的收包线程对象**：`ncl_mqtt_client_connect()` 在
+  reader 因服务端 DISCONNECT/网络故障自行退出后再次被调用时，会直接覆盖
+  `client->reader`，那个已结束但从未 join 的线程对象就漏了（24 字节；POSIX 上还会一
+  并占着已结束线程的栈直到 join）。设备反复重连就是长期增长。现在重连前先 join 掉陈旧
+  的 reader。由 LeakSanitizer 在 `test_mqtt_client` 抓到（MSVC ASan 无泄漏检测，
+  所以此前看不见）。
+- **`test_mqtt_client` 的假 broker 停机写法是 use-after-free**：`broker_stop()` 直接
+  `ncl_socket_close(listener)` 去打断 `accept()`，而 close 会立即释放对象 —— 另一线程
+  的 `accept()` 正在读它。库自己在 `http_server.c` 的注释里给出的正确写法是
+  shutdown → join → close，`fake_nclink_server.c` 也是这么写的。已按同样形状修正。
+- **`test_message` 的 `check_wire()` 泄漏解析结果**：`ncl_message_from_json()` 收的是
+  `const ncl_json *`（借用），测试把 `ncl_json_parse_cstr()` 的结果直接传进去却没释放
+  —— 每次调用漏一个 JSON 根对象，一次运行累计 269 个对象。已补 `ncl_json_free()`。
+- 测试侧的分配器混用：`tests/` 里由 libc `malloc` 申请、却被 `ncl_free_safe()` 释放的
+  缓冲（假服务器收包缓冲、TLS/broker 大载荷、ptrvec 元素）改回 libc `free()` —— 静态池
+  构建下池会（按设计）拒收外来指针，于是这些缓冲全部泄漏（LeakSanitizer 报了 170 处）。
+  `test_mem` 里两个"超大请求"探针只在池构建下运行（堆构建下那是 libc 的
+  calloc 溢出/malloc 过大，ASan 直接 abort）。
+- 新增 `tools/asan-linux.sh`（ASan + LeakSanitizer，`--docker` 可在 Windows 跑）。
+
+- **`ncl_rest_attach()` 的上下文没人释放**（每次 attach 8 字节，`test_rest` 报 16 字节 /
+  2 处）：REST 用同一个上下文注册 4 条路由，"谁负责回收"此前没有约定。新增
+  `ncl_http_server_own_context(server, ctx, free_fn)`，**按上下文登记一次**（不是每个路由
+  一个析构器——那个共用上下文会被释放 4 次），由 `ncl_http_server_free()` 在路由释放之后
+  释放一次；同一指针重复登记返回 `NCL_ERR_EXISTS`，登记失败时调用方仍持有它。不登记
+  上下文的既有写法（栈上/静态对象）行为逐位不变。`ncl_rest_attach()` 已改用它。
+  `tests/test_http.c` 新增用例覆盖"恰好释放一次／重复登记被拒／参数校验"；验收标准是
+  `tools/asan-linux.sh` 归零，现已达成：`asan-linux: 0 suite(s) with sanitizer findings`。
+
 ## 3.2.0
 
 三种托管绑定补齐 HTTP/REST、设备端与文件通道，并加上 TLS 选项；顺带修掉

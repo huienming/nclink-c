@@ -150,7 +150,7 @@ static void test_cache(void)
     char *value = ncl_strdup("first");
 
     NCL_TEST_CASE("cache stores and returns values");
-    cache = ncl_cache_create(0, false, free);
+    cache = ncl_cache_create(0, false, ncl_mem_free);
     NCL_CHECK(cache != NULL);
     NCL_CHECK_EQ_INT(ncl_cache_put(cache, "k1", value), NCL_OK);
     NCL_CHECK_EQ_STR((const char *)ncl_cache_get(cache, "k1"), "first");
@@ -169,7 +169,7 @@ static void test_cache(void)
     ncl_cache_free(cache);
 
     NCL_TEST_CASE("entries expire after the TTL");
-    cache = ncl_cache_create(150, false, free);
+    cache = ncl_cache_create(150, false, ncl_mem_free);
     ncl_cache_put(cache, "e1", ncl_strdup("v"));
     NCL_CHECK(ncl_cache_get(cache, "e1") != NULL);
     ncl_sleep_millis(400);
@@ -180,7 +180,7 @@ static void test_cache(void)
     NCL_TEST_CASE("reading refreshes the deadline");
     /* Generous margins: the assertions must not depend on how closely a sleep
      * matches the requested duration on a loaded machine. */
-    cache = ncl_cache_create(1000, true, free);
+    cache = ncl_cache_create(1000, true, ncl_mem_free);
     ncl_cache_put(cache, "a1", ncl_strdup("v"));
     ncl_sleep_millis(400);
     NCL_CHECK(ncl_cache_get(cache, "a1") != NULL); /* refresh: deadline -> +1000 */

@@ -21,7 +21,7 @@ static void test_strings(void)
     NCL_TEST_CASE("trim / blank / prefix helpers");
     t = ncl_str_trim_dup("  hello \r\n");
     NCL_CHECK_EQ_STR(t, "hello");
-    free(t);
+    ncl_free_safe(t);
     NCL_CHECK(ncl_str_is_blank(" \t\r\n"));
     NCL_CHECK(!ncl_str_is_blank(" x "));
     NCL_CHECK(ncl_str_is_blank(NULL));
@@ -41,7 +41,7 @@ static void test_asprintf(void)
     NCL_TEST_CASE("asprintf allocates and formats");
     NCL_CHECK_EQ_INT(ncl_asprintf(&s, "%s/%d", "Ping", 7), NCL_OK);
     NCL_CHECK_EQ_STR(s, "Ping/7");
-    free(s);
+    ncl_free_safe(s);
 }
 
 static void test_strbuf(void)
@@ -61,7 +61,7 @@ static void test_strbuf(void)
     detached = ncl_strbuf_detach(&sb);
     NCL_CHECK_EQ_STR(detached, "keep");
     NCL_CHECK_EQ_INT(sb.len, 0);
-    free(detached);
+    ncl_free_safe(detached);
     ncl_strbuf_free(&sb);
 }
 

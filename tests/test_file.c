@@ -58,11 +58,11 @@ static bool read_file(const char *path, char *buffer, size_t len,
         return false;
     }
     if (data_len > len) {
-        free(data);
+        ncl_free_safe(data);
         return false;
     }
     memcpy(buffer, data, data_len);
-    free(data);
+    ncl_free_safe(data);
     if (out_len != NULL) {
         *out_len = data_len;
     }
@@ -92,7 +92,7 @@ static void test_checksum(void)
                                         strlen(vectors[i].input), &hex),
                          NCL_OK);
         NCL_CHECK_EQ_STR(hex, vectors[i].hex);
-        free(hex);
+        ncl_free_safe(hex);
     }
     NCL_TEST_CASE("SHA-256 over a long input");
     {
@@ -103,7 +103,7 @@ static void test_checksum(void)
         NCL_CHECK_EQ_STR(hex,
                          "c93eee2d0db02f10acc7460d9576e122dcf8cd53c4bf8dfcae1b"
                          "3e74ebcfff5a");
-        free(hex);
+        ncl_free_safe(hex);
     }
 }
 
@@ -156,7 +156,7 @@ static void test_attribute_json(void)
 
     NCL_TEST_CASE("file attributes parse back");
     json = ncl_json_parse_cstr(text, NULL);
-    free(text);
+    ncl_free_safe(text);
     round_trip = ncl_file_attribute_from_json(json);
     NCL_CHECK(round_trip != NULL);
     if (round_trip != NULL) {
@@ -183,7 +183,7 @@ static void test_attribute_json(void)
     NCL_CHECK_EQ_STR(text,
                      "{\"fileType\":0,\"fileSize\":0,\"totalChunks\":0,"
                      "\"compressed\":false}");
-    free(text);
+    ncl_free_safe(text);
     ncl_json_free(json);
 }
 
@@ -213,7 +213,7 @@ static void test_local_attribute(void)
         NCL_CHECK(attribute->modify_time > 0);
     }
     ncl_file_attribute_free(attribute);
-    free(checksum);
+    ncl_free_safe(checksum);
 
     NCL_TEST_CASE("directories report type 1 and no checksum");
     attribute = NULL;
@@ -254,7 +254,7 @@ static void test_ftp_info(void)
     {
         char *map = ncl_net_ip_map_json();
         NCL_CHECK(map != NULL);
-        free(map);
+        ncl_free_safe(map);
     }
 }
 
@@ -351,7 +351,7 @@ static void test_server_file_tool(void)
         NCL_CHECK(read_file(downloaded, buffer, sizeof(buffer), &len));
         NCL_CHECK_EQ_INT(len, sizeof(payload));
         NCL_CHECK(memcmp(buffer, payload, len) == 0);
-        free(downloaded);
+        ncl_free_safe(downloaded);
     }
 
     NCL_TEST_CASE("delete removes both copies");
@@ -575,7 +575,7 @@ static void test_end_to_end(void)
             NCL_CHECK(read_file(restored, buffer, sizeof(buffer), &len));
             NCL_CHECK_EQ_INT(len, sizeof(payload));
             NCL_CHECK(memcmp(buffer, payload, len) == 0);
-            free(restored);
+            ncl_free_safe(restored);
         }
     }
 

@@ -13,34 +13,34 @@ static void test_builders(void)
     NCL_TEST_CASE("request/response topic shapes");
     t = ncl_topic_query_request("V203243111F", NULL);
     NCL_CHECK_EQ_STR(t, "Query/Request/V203243111F");
-    free(t);
+    ncl_free_safe(t);
 
     t = ncl_topic_query_response("V203243111F", NULL);
     NCL_CHECK_EQ_STR(t, "Query/Response/V203243111F");
-    free(t);
+    ncl_free_safe(t);
 
     NCL_TEST_CASE("client id variant appends a second segment");
     t = ncl_topic_probe_query_request("V1", "client-9");
     NCL_CHECK_EQ_STR(t, "Probe/Query/Request/V1/client-9");
-    free(t);
+    ncl_free_safe(t);
 
     NCL_TEST_CASE("register topic is a constant");
     t = ncl_topic_register_request();
     NCL_CHECK_EQ_STR(t, "Register/Request");
-    free(t);
+    ncl_free_safe(t);
 
     NCL_TEST_CASE("ping / pong carry the serial number");
     t = ncl_topic_ping("V42");
     NCL_CHECK_EQ_STR(t, "Ping/V42");
-    free(t);
+    ncl_free_safe(t);
     t = ncl_topic_pong("V42");
     NCL_CHECK_EQ_STR(t, "Pong/V42");
-    free(t);
+    ncl_free_safe(t);
 
     NCL_TEST_CASE("edge topics");
     t = ncl_topic_edge_message("edge1");
     NCL_CHECK_EQ_STR(t, "Edge/Message/edge1");
-    free(t);
+    ncl_free_safe(t);
 }
 
 static void test_extract_sn(void)
@@ -50,23 +50,23 @@ static void test_extract_sn(void)
     NCL_TEST_CASE("ordinary topics end with the serial number");
     sn = ncl_topic_extract_sn("Query/Response/V203243111F");
     NCL_CHECK_EQ_STR(sn, "V203243111F");
-    free(sn);
+    ncl_free_safe(sn);
 
     sn = ncl_topic_extract_sn("Query/Response/V203243111F/extra");
     NCL_CHECK_EQ_STR(sn, "extra");
-    free(sn);
+    ncl_free_safe(sn);
 
     NCL_TEST_CASE("Sample topics carry the serial number before the last segment");
     sn = ncl_topic_extract_sn("Sample//V203243111F/DATA@01");
     NCL_CHECK_EQ_STR(sn, "V203243111F");
-    free(sn);
+    ncl_free_safe(sn);
 
     NCL_TEST_CASE("degenerate topics");
     NCL_CHECK(ncl_topic_extract_sn("") == NULL);
     NCL_CHECK(ncl_topic_extract_sn(NULL) == NULL);
     sn = ncl_topic_extract_sn("Register/Request");
     NCL_CHECK_EQ_STR(sn, "Request");
-    free(sn);
+    ncl_free_safe(sn);
 }
 
 NCL_TEST_MAIN_BEGIN()

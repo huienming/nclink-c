@@ -44,7 +44,7 @@ struct ncl_json {
 
 static ncl_json *ncl_json_alloc(ncl_json_type type)
 {
-    ncl_json *j = (ncl_json *)calloc(1, sizeof(ncl_json));
+    ncl_json *j = (ncl_json *)ncl_mem_calloc(1, sizeof(ncl_json));
     if (j != NULL) {
         j->type = type;
     }
@@ -104,9 +104,9 @@ ncl_json *ncl_json_new_string_len(const char *value, size_t len)
     if (j == NULL) {
         return NULL;
     }
-    j->u.string.ptr = (char *)malloc(len + 1);
+    j->u.string.ptr = (char *)ncl_mem_alloc(len + 1);
     if (j->u.string.ptr == NULL) {
-        free(j);
+        ncl_mem_free(j);
         return NULL;
     }
     if (len > 0) {
@@ -143,29 +143,29 @@ void ncl_json_free(ncl_json *j)
     }
     switch (j->type) {
     case NCL_JSON_STRING:
-        free(j->u.string.ptr);
+        ncl_mem_free(j->u.string.ptr);
         break;
     case NCL_JSON_NUMBER:
-        free(j->u.number.raw);
+        ncl_mem_free(j->u.number.raw);
         break;
     case NCL_JSON_ARRAY:
         for (i = 0; i < j->u.array.len; i++) {
             ncl_json_free(j->u.array.items[i]);
         }
-        free(j->u.array.items);
+        ncl_mem_free(j->u.array.items);
         break;
     case NCL_JSON_OBJECT:
         for (i = 0; i < j->u.object.len; i++) {
-            free(j->u.object.keys[i]);
+            ncl_mem_free(j->u.object.keys[i]);
             ncl_json_free(j->u.object.vals[i]);
         }
-        free(j->u.object.keys);
-        free(j->u.object.vals);
+        ncl_mem_free(j->u.object.keys);
+        ncl_mem_free(j->u.object.vals);
         break;
     default:
         break;
     }
-    free(j);
+    ncl_mem_free(j);
 }
 
 ncl_json_type ncl_json_type_of(const ncl_json *j)
@@ -247,7 +247,7 @@ ncl_err ncl_json_obj_remove(ncl_json *obj, const char *key)
     if (idx == (size_t)-1) {
         return NCL_ERR_NOT_FOUND;
     }
-    free(obj->u.object.keys[idx]);
+    ncl_mem_free(obj->u.object.keys[idx]);
     ncl_json_free(obj->u.object.vals[idx]);
     memmove(&obj->u.object.keys[idx], &obj->u.object.keys[idx + 1],
             (obj->u.object.len - idx - 1) * sizeof(char *));
@@ -280,14 +280,14 @@ ncl_err ncl_json_obj_set(ncl_json *obj, const char *key, ncl_json *value)
 
     if (obj->u.object.len == obj->u.object.cap) {
         size_t cap = obj->u.object.cap == 0 ? 8 : obj->u.object.cap * 2;
-        char **keys = (char **)realloc(obj->u.object.keys, cap * sizeof(char *));
+        char **keys = (char **)ncl_mem_realloc(obj->u.object.keys, cap * sizeof(char *));
         ncl_json **vals;
         if (keys == NULL) {
             ncl_json_free(value);
             return NCL_ERR_NOMEM;
         }
         obj->u.object.keys = keys;
-        vals = (ncl_json **)realloc(obj->u.object.vals, cap * sizeof(ncl_json *));
+        vals = (ncl_json **)ncl_mem_realloc(obj->u.object.vals, cap * sizeof(ncl_json *));
         if (vals == NULL) {
             ncl_json_free(value);
             return NCL_ERR_NOMEM;
@@ -386,7 +386,7 @@ ncl_err ncl_json_arr_push(ncl_json *arr, ncl_json *value)
     if (arr->u.array.len == arr->u.array.cap) {
         size_t cap = arr->u.array.cap == 0 ? 8 : arr->u.array.cap * 2;
         ncl_json **grown =
-            (ncl_json **)realloc(arr->u.array.items, cap * sizeof(ncl_json *));
+            (ncl_json **)ncl_mem_realloc(arr->u.array.items, cap * sizeof(ncl_json *));
         if (grown == NULL) {
             ncl_json_free(value);
             return NCL_ERR_NOMEM;
@@ -953,7 +953,7 @@ static ncl_json *ncl_json_parse_number(ncl_json_parser *p)
     if (j == NULL) {
         return NULL;
     }
-    free(j->u.number.raw);
+    ncl_mem_free(j->u.number.raw);
     j->u.number.raw = ncl_strndup(p->text + start, scan - start);
     if (j->u.number.raw == NULL) {
         ncl_json_free(j);
@@ -1031,23 +1031,23 @@ static ncl_json *ncl_json_parse_object(ncl_json_parser *p, int depth)
         ncl_json_skip_ws(p);
         if (p->pos >= p->len || p->text[p->pos] != ':') {
             ncl_json_parser_error(p, "expected ':'");
-            free(key);
+            ncl_mem_free(key);
             ncl_json_free(obj);
             return NULL;
         }
         p->pos++;
         value = ncl_json_parse_value(p, depth + 1);
         if (value == NULL) {
-            free(key);
+            ncl_mem_free(key);
             ncl_json_free(obj);
             return NULL;
         }
         if (ncl_json_obj_set(obj, key, value) != NCL_OK) {
-            free(key);
+            ncl_mem_free(key);
             ncl_json_free(obj);
             return NULL;
         }
-        free(key);
+        ncl_mem_free(key);
 
         ncl_json_skip_ws(p);
         if (p->pos < p->len && p->text[p->pos] == ',') {
@@ -1091,7 +1091,7 @@ static ncl_json *ncl_json_parse_value(ncl_json_parser *p, int depth)
             return NULL;
         }
         j = ncl_json_new_string_len(s, len);
-        free(s);
+        ncl_mem_free(s);
         return j;
     }
     case 't':
@@ -1178,7 +1178,7 @@ ncl_json *ncl_json_clone(const ncl_json *j)
         if (n == NULL) {
             return NULL;
         }
-        free(n->u.number.raw);
+        ncl_mem_free(n->u.number.raw);
         n->u.number.raw = j->u.number.raw != NULL
                               ? ncl_strdup(j->u.number.raw)
                               : NULL;

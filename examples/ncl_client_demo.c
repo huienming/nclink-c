@@ -79,7 +79,7 @@ static void log_sample_channels(const ncl_node *node)
 
             ncl_log_info("    [%u] %s", (unsigned)i,
                          path != NULL ? path : "(未解析)");
-            free(path);
+            ncl_free_safe(path);
         }
     }
     for (i = 0; ncl_node_device_at(node, i) != NULL; i++) {
@@ -218,7 +218,7 @@ static void on_sample(ncl_client *client, const char *topic,
 
             if (raw != NULL) {
                 ncl_log_warn("    报文前 300 字符: %.300s", raw);
-                free(raw);
+                ncl_free_safe(raw);
             }
         }
         return;
@@ -237,7 +237,7 @@ static void on_sample(ncl_client *client, const char *topic,
         char *text = header != NULL ? ncl_json_write_string(header) : NULL;
         ncl_log_info("    表头 paths(%u 项) = %s", (unsigned)paths,
                      text != NULL ? text : "[]");
-        free(text);
+        ncl_free_safe(text);
         ncl_json_free(header);
     }
 
@@ -245,7 +245,7 @@ static void on_sample(ncl_client *client, const char *topic,
     if (g_samples == 1) {
         char *raw = ncl_message_write_string(msg);
         ncl_log_info("    原始报文: %s", raw != NULL ? raw : "");
-        free(raw);
+        ncl_free_safe(raw);
     }
 
     for (i = 0; i < items; i++) {
@@ -265,7 +265,7 @@ static void on_sample(ncl_client *client, const char *topic,
                          path, (unsigned)slots,
                          (unsigned)(slots > 0 ? points / slots : 0),
                          (unsigned)points, text != NULL ? text : "null");
-            free(text);
+            ncl_free_safe(text);
         } else {
             ncl_strbuf line;
             size_t v;
@@ -275,7 +275,7 @@ static void on_sample(ncl_client *client, const char *topic,
                 char *text = ncl_json_as_text(ncl_json_arr_get(item->data, v));
                 ncl_strbuf_printf(&line, "%s%s", v == 0 ? "" : ", ",
                                   text != NULL ? text : "null");
-                free(text);
+                ncl_free_safe(text);
             }
             ncl_log_info("    %-16s 编码=%s 本轮 %u 个值: [%s]", path,
                          /* 未设置 encoding 表示按原始 JSON 值传输 */
@@ -308,7 +308,7 @@ static void on_sample(ncl_client *client, const char *topic,
 
                 ncl_strbuf_printf(&line, "%s%s=%s", i == 0 ? "" : "  ", path,
                                   text != NULL ? text : "null");
-                free(text);
+                ncl_free_safe(text);
             }
             ncl_log_info("      行[%u] %s", (unsigned)row, ncl_strbuf_cstr(&line));
             ncl_strbuf_free(&line);
@@ -379,7 +379,7 @@ int main(int argc, char **argv)
                              ? ncl_node_path(root)
                              : "(空)",
                          id != NULL ? id : "?");
-            free(id);
+            ncl_free_safe(id);
             log_sample_channels(root);
             ncl_log_info("各轴的功率、转速与加速度（路径 含义）:");
             log_axis_quantities(root);
@@ -472,7 +472,7 @@ int main(int argc, char **argv)
             size_t n;
 
             ncl_log_info("文件回传路径: %s", local != NULL ? local : "(失败)");
-            free(local);
+            ncl_free_safe(local);
 
             ncl_ptrvec_init(&files, ncl_file_attribute_release);
             if (ncl_client_ll(client, "/", &files) == NCL_OK) {

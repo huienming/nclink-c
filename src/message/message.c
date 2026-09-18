@@ -41,7 +41,7 @@ static void ncl_item_dtor_sample(void *p)
 
 ncl_message *ncl_message_new(ncl_msg_type type)
 {
-    ncl_message *msg = (ncl_message *)calloc(1, sizeof(ncl_message));
+    ncl_message *msg = (ncl_message *)ncl_mem_calloc(1, sizeof(ncl_message));
     if (msg == NULL) {
         return NULL;
     }
@@ -79,20 +79,20 @@ void ncl_message_free(ncl_message *msg)
     if (msg == NULL) {
         return;
     }
-    free(msg->message_id);
+    ncl_mem_free(msg->message_id);
 
     switch (msg->type) {
     case NCL_MSG_PONG:
-        free(msg->as.pong.open_api_schema);
+        ncl_mem_free(msg->as.pong.open_api_schema);
         break;
     case NCL_MSG_PROBE_VERSION:
-        free(msg->as.probe_version.version);
+        ncl_mem_free(msg->as.probe_version.version);
         break;
     case NCL_MSG_REGISTER_REQUEST:
-        free(msg->as.register_request.device_id);
+        ncl_mem_free(msg->as.register_request.device_id);
         break;
     case NCL_MSG_REGISTER_RESPONSE:
-        free(msg->as.register_response.code);
+        ncl_mem_free(msg->as.register_response.code);
         break;
     case NCL_MSG_QUERY_REQUEST:
         ncl_ptrvec_free(&msg->as.query_request.items);
@@ -107,45 +107,45 @@ void ncl_message_free(ncl_message *msg)
         ncl_ptrvec_free(&msg->as.set_response.items);
         break;
     case NCL_MSG_PROBE_QUERY_RESPONSE:
-        free(msg->as.probe_query_response.code);
+        ncl_mem_free(msg->as.probe_query_response.code);
         ncl_node_free(msg->as.probe_query_response.model);
-        free(msg->as.probe_query_response.reason);
+        ncl_mem_free(msg->as.probe_query_response.reason);
         break;
     case NCL_MSG_PROBE_SET_REQUEST:
         ncl_node_free(msg->as.probe_set_request.model);
         break;
     case NCL_MSG_PROBE_SET_RESPONSE:
-        free(msg->as.probe_set_response.code);
-        free(msg->as.probe_set_response.reason);
+        ncl_mem_free(msg->as.probe_set_response.code);
+        ncl_mem_free(msg->as.probe_set_response.reason);
         break;
     case NCL_MSG_SAMPLE:
         ncl_strvec_free(&msg->as.sample.paths);
-        free(msg->as.sample.id);
-        free(msg->as.sample.begin_time);
+        ncl_mem_free(msg->as.sample.id);
+        ncl_mem_free(msg->as.sample.begin_time);
         ncl_ptrvec_free(&msg->as.sample.data);
         break;
     case NCL_MSG_EVENT:
-        free(msg->as.event.id);
-        free(msg->as.event.time);
+        ncl_mem_free(msg->as.event.id);
+        ncl_mem_free(msg->as.event.time);
         ncl_json_free(msg->as.event.event);
         break;
     case NCL_MSG_METHOD_CALL_REQUEST:
-        free(msg->as.method_call_request.method);
+        ncl_mem_free(msg->as.method_call_request.method);
         ncl_json_free(msg->as.method_call_request.params);
-        free(msg->as.method_call_request.token);
+        ncl_mem_free(msg->as.method_call_request.token);
         break;
     case NCL_MSG_METHOD_CALL_RESPONSE:
-        free(msg->as.method_call_response.code);
-        free(msg->as.method_call_response.method);
+        ncl_mem_free(msg->as.method_call_response.code);
+        ncl_mem_free(msg->as.method_call_response.method);
         ncl_json_free(msg->as.method_call_response.params);
-        free(msg->as.method_call_response.token);
+        ncl_mem_free(msg->as.method_call_response.token);
         ncl_json_free(msg->as.method_call_response.data);
-        free(msg->as.method_call_response.reason);
+        ncl_mem_free(msg->as.method_call_response.reason);
         break;
     default:
         break;
     }
-    free(msg);
+    ncl_mem_free(msg);
 }
 
 ncl_err ncl_message_set_message_id(ncl_message *msg, const char *id)
@@ -158,7 +158,7 @@ ncl_err ncl_message_set_message_id(ncl_message *msg, const char *id)
     if (id != NULL && copy == NULL) {
         return NCL_ERR_NOMEM;
     }
-    free(msg->message_id);
+    ncl_mem_free(msg->message_id);
     msg->message_id = copy;
     return NCL_OK;
 }
@@ -169,7 +169,7 @@ static ncl_err ncl_msg_set_str(char **slot, const char *value)
     if (value != NULL && copy == NULL) {
         return NCL_ERR_NOMEM;
     }
-    free(*slot);
+    ncl_mem_free(*slot);
     *slot = copy;
     return NCL_OK;
 }
@@ -903,7 +903,7 @@ static ncl_err ncl_sample_paths_from_model(ncl_message *msg, ncl_node *root)
             return NCL_ERR_NOT_FOUND;
         }
         err = ncl_strvec_push(&msg->as.sample.paths, path);
-        free(path);
+        ncl_mem_free(path);
         if (err != NCL_OK) {
             ncl_strvec_clear(&msg->as.sample.paths);
             return err;
@@ -1710,7 +1710,7 @@ ncl_message *ncl_message_parse(const char *topic, const char *payload,
     }
 
     json = ncl_json_parse(text, payload_len, NULL);
-    free(empty_payload);
+    ncl_mem_free(empty_payload);
     if (json == NULL) {
         ncl_log_error("接收消息出错: JSON解析失败 topic=%s", topic);
         return NULL;

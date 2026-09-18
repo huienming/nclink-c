@@ -46,7 +46,7 @@ static void ncl_ftp_client_set_reply(ncl_ftp_client *c, int code,
                                      const char *text)
 {
     c->reply_code = code;
-    free(c->reply_text);
+    ncl_mem_free(c->reply_text);
     c->reply_text = ncl_strdup(text != NULL ? text : "");
 }
 
@@ -88,7 +88,7 @@ static ncl_err ncl_ftp_client_command(ncl_ftp_client *c, const char *fmt, ...)
         return rc;
     }
     rc = ncl_ftp_send_line(c->ctrl, line);
-    free(line);
+    ncl_mem_free(line);
     return rc;
 }
 
@@ -405,7 +405,7 @@ ncl_ftp_client *ncl_ftp_client_create_ex(const char *host, unsigned port,
     if (host == NULL || host[0] == '\0') {
         return NULL;
     }
-    c = (ncl_ftp_client *)calloc(1, sizeof(*c));
+    c = (ncl_ftp_client *)ncl_mem_calloc(1, sizeof(*c));
     if (c == NULL) {
         return NULL;
     }
@@ -440,11 +440,11 @@ void ncl_ftp_client_free(ncl_ftp_client *c)
         return;
     }
     ncl_ftp_client_disconnect(c);
-    free(c->host);
-    free(c->user);
-    free(c->password);
-    free(c->reply_text);
-    free(c);
+    ncl_mem_free(c->host);
+    ncl_mem_free(c->user);
+    ncl_mem_free(c->password);
+    ncl_mem_free(c->reply_text);
+    ncl_mem_free(c);
 }
 
 const char *ncl_ftp_client_host(const ncl_ftp_client *c)
@@ -723,7 +723,7 @@ ncl_err ncl_ftp_client_store_file(ncl_ftp_client *c, const char *remote,
         return rc;
     }
     rc = ncl_ftp_client_store(c, remote, data, len);
-    free(data);
+    ncl_mem_free(data);
     return rc;
 }
 
@@ -851,7 +851,7 @@ ncl_err ncl_ftp_client_list(ncl_ftp_client *c, const char *path,
         }
         {
             ncl_ftp_entry *owned =
-                (ncl_ftp_entry *)calloc(1, sizeof(*owned));
+                (ncl_ftp_entry *)ncl_mem_calloc(1, sizeof(*owned));
             if (owned == NULL) {
                 ncl_ftp_entry_free(&entry);
                 ncl_strbuf_free(&raw);

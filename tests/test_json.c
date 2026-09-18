@@ -30,7 +30,7 @@ static void test_parse_and_write(void)
     NCL_CHECK(j != NULL);
     out = ncl_json_write_string(j);
     NCL_CHECK_EQ_STR(out, "{\"@id\":\"m1\",\"ids\":[{\"id\":\"/a\",\"params\":{\"offset\":0}}]}");
-    free(out);
+    ncl_free_safe(out);
     ncl_json_free(j);
 
     NCL_TEST_CASE("whitespace and trailing space are tolerated");
@@ -59,7 +59,7 @@ static void test_numbers(void)
     NCL_TEST_CASE("parsed numbers keep their original literal");
     out = ncl_json_write_string(j);
     NCL_CHECK_EQ_STR(out, "{\"i\":42,\"d\":1.5,\"e\":1e3,\"neg\":-7}");
-    free(out);
+    ncl_free_safe(out);
     ncl_json_free(j);
 
     NCL_TEST_CASE("built doubles keep the .0 suffix (1.0, not 1)");
@@ -68,7 +68,7 @@ static void test_numbers(void)
     ncl_json_obj_set_int(j, "y", 5);
     out = ncl_json_write_string(j);
     NCL_CHECK_EQ_STR(out, "{\"x\":1.0,\"y\":5}");
-    free(out);
+    ncl_free_safe(out);
     ncl_json_free(j);
 }
 
@@ -92,7 +92,7 @@ static void test_strings_and_escapes(void)
     out = ncl_json_write_string(j);
     NCL_CHECK(strstr(out, "\\n") != NULL);
     NCL_CHECK(strstr(out, "\\u4e2d") == NULL); /* raw UTF-8 on the wire */
-    free(out);
+    ncl_free_safe(out);
     ncl_json_free(j);
 }
 
@@ -113,7 +113,7 @@ static void test_type_of_text(void)
     NCL_TEST_CASE("as_text renders scalars as text");
     text = ncl_json_as_text(ncl_json_obj_get(j, "n"));
     NCL_CHECK_EQ_STR(text, "12");
-    free(text);
+    ncl_free_safe(text);
     NCL_CHECK(ncl_json_as_text(ncl_json_obj_get(j, "o")) == NULL);
     ncl_json_free(j);
 }
@@ -172,7 +172,7 @@ static void test_object_mutation(void)
     NCL_CHECK_EQ_INT(ncl_json_obj_get_int(j, "a", 0), 9);
     out = ncl_json_write_string(j);
     NCL_CHECK_EQ_STR(out, "{\"a\":9}");
-    free(out);
+    ncl_free_safe(out);
     ncl_json_free(j);
 }
 

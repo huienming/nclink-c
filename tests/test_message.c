@@ -28,20 +28,24 @@ static void check_wire(ncl_message *msg, const char *expected, const char *what)
     if (text != NULL) {
         char topic[64];
         ncl_message *reparsed;
+        ncl_json *doc;
         snprintf(topic, sizeof(topic), "x/%s", "");
         finalised = ncl_message_write_string(msg);
-        reparsed = ncl_message_from_json(msg->type,
-                                        ncl_json_parse_cstr(text, NULL));
+        /* ncl_message_from_json() borrows the document (const), so the parse
+         * result is ours to release. */
+        doc = ncl_json_parse_cstr(text, NULL);
+        reparsed = ncl_message_from_json(msg->type, doc);
         NCL_CHECK(reparsed != NULL);
         if (reparsed != NULL) {
             char *again = ncl_message_write_string(reparsed);
             NCL_CHECK_EQ_STR(again, text);
-            free(again);
+            ncl_free_safe(again);
             ncl_message_free(reparsed);
         }
-        free(finalised);
+        ncl_json_free(doc);
+        ncl_free_safe(finalised);
     }
-    free(text);
+    ncl_free_safe(text);
     ncl_message_free(msg);
 }
 
@@ -193,7 +197,7 @@ static void test_sample_and_event(void)
         NCL_TEST_CASE("Event message");
         NCL_CHECK_EQ_STR(text, "{\"@id\":\"m1\",\"id\":\"e1\","
                                "\"time\":\"1700000000000\",\"event\":{\"value\":1}}");
-        free(text);
+        ncl_free_safe(text);
         ncl_message_free(ev);
     }
 }
@@ -250,7 +254,7 @@ static void test_sample_normalise(void)
         return;
     }
     root = ncl_root_node_parse(source);
-    free(source);
+    ncl_free_safe(source);
     NCL_CHECK(root != NULL);
     if (root == NULL) {
         return;
@@ -369,7 +373,7 @@ static void test_probe_with_model(void)
         return;
     }
     root = ncl_root_node_parse(source);
-    free(source);
+    ncl_free_safe(source);
     NCL_CHECK(root != NULL);
     if (root == NULL) {
         return;
@@ -388,7 +392,7 @@ static void test_probe_with_model(void)
         {
             char *model_text = ncl_node_write_string(root);
             ncl_strbuf_puts(&expected, model_text);
-            free(model_text);
+            ncl_free_safe(model_text);
         }
         ncl_strbuf_puts(&expected, "}");
         NCL_CHECK_EQ_STR(text, ncl_strbuf_cstr(&expected));
@@ -405,7 +409,7 @@ static void test_probe_with_model(void)
             }
             ncl_json_free(json);
         }
-        free(text);
+        ncl_free_safe(text);
     }
     ncl_message_free(m);
 }
@@ -442,7 +446,7 @@ static void test_validation_and_finalise(void)
         NCL_CHECK_EQ_STR(text, "{\"@id\":\"m1\",\"values\":[{\"id\":\"/A\",\"params\":"
                                "{\"offset\":1,\"operation\":\"set_value\","
                                "\"value\":\"x\",\"length\":3}}]}");
-        free(text);
+        ncl_free_safe(text);
     }
     ncl_message_free(m);
 }
@@ -543,7 +547,7 @@ static void test_index_expansion(void)
         NCL_CHECK_EQ_INT(indexes[1], 1);
         NCL_CHECK_EQ_INT(indexes[2], 4);
     }
-    free(indexes);
+    ncl_free_safe(indexes);
     ncl_query_request_item_free(item);
 }
 

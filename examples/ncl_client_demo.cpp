@@ -41,7 +41,7 @@ static void on_sample(const char *topic, const ncl_message *msg) {
                 (long long)msg->as.sample.upload_interval, (unsigned)items,
                 (unsigned)rows);
     std::printf("  header: %s\n", header != NULL ? header : "(none)");
-    free(header);
+    ncl_free_safe(header);
 
     // 每列的形态：几个槽位、每槽几个点、合计几个点（批量列 = 亚毫秒采样）。
     for (size_t i = 0; i < items; i++) {
@@ -60,7 +60,7 @@ static void on_sample(const char *topic, const ncl_message *msg) {
                     (unsigned)points,
                     ncl_sample_item_is_nested(item) ? "（批量）" : "",
                     text != NULL ? text : "null");
-        free(text);
+        ncl_free_safe(text);
     }
 
     // 按行遍历：每行把各列的值摆在一起（前 8 行）。
@@ -78,7 +78,7 @@ static void on_sample(const char *topic, const ncl_message *msg) {
             line += "=";
             line += text != NULL ? text : "null";
             line += "  ";
-            free(text);
+            ncl_free_safe(text);
         }
         std::printf("  行[%u] %s\n", (unsigned)row, line.c_str());
     }
@@ -96,7 +96,7 @@ static void on_event(const char *topic, const ncl_message *msg) {
 
     std::printf("event %s: key=%s value=%s\n", topic, key != NULL ? key : "?",
                 text != NULL ? text : "?");
-    free(text);
+    ncl_free_safe(text);
 }
 
 // 轴下面这两类数据项的中文含义（T/CMTBA 1008.4—2020 表4 物理量数据项）。

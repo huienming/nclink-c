@@ -52,7 +52,7 @@ static ncl_err ncl_node_replace_str(char **slot, const char *value)
     if (value != NULL && copy == NULL) {
         return NCL_ERR_NOMEM;
     }
-    free(*slot);
+    ncl_mem_free(*slot);
     *slot = copy;
     return NCL_OK;
 }
@@ -71,7 +71,7 @@ static void ncl_sample_ref_dtor(void *p)
 
 ncl_sample_params *ncl_sample_params_new(void)
 {
-    ncl_sample_params *p = (ncl_sample_params *)calloc(1, sizeof(*p));
+    ncl_sample_params *p = (ncl_sample_params *)ncl_mem_calloc(1, sizeof(*p));
     if (p == NULL) {
         return NULL;
     }
@@ -87,7 +87,7 @@ void ncl_sample_params_free(ncl_sample_params *p)
     }
     ncl_strvec_free(&p->indexes);
     ncl_strvec_free(&p->keys);
-    free(p);
+    ncl_mem_free(p);
 }
 
 ncl_sample_params *ncl_sample_params_clone(const ncl_sample_params *p)
@@ -186,14 +186,14 @@ ncl_sample_params *ncl_sample_params_from_json(const ncl_json *j)
 
 ncl_sample_ref *ncl_sample_ref_new(const char *id)
 {
-    ncl_sample_ref *ref = (ncl_sample_ref *)calloc(1, sizeof(*ref));
+    ncl_sample_ref *ref = (ncl_sample_ref *)ncl_mem_calloc(1, sizeof(*ref));
     if (ref == NULL) {
         return NULL;
     }
     if (id != NULL) {
         ref->id = ncl_strdup(id);
         if (ref->id == NULL) {
-            free(ref);
+            ncl_mem_free(ref);
             return NULL;
         }
     }
@@ -205,10 +205,10 @@ void ncl_sample_ref_free(ncl_sample_ref *ref)
     if (ref == NULL) {
         return;
     }
-    free(ref->id);
+    ncl_mem_free(ref->id);
     ncl_sample_params_free(ref->params);
-    free(ref->path);
-    free(ref);
+    ncl_mem_free(ref->path);
+    ncl_mem_free(ref);
 }
 
 bool ncl_sample_ref_is_valid(const ncl_sample_ref *ref)
@@ -278,7 +278,7 @@ char *ncl_sample_ref_path(ncl_sample_ref *ref)
                          NCL_DATA_CHILD_SEPARATOR[0], detail) != NCL_OK) {
             result = NULL;
         }
-        free(detail);
+        ncl_mem_free(detail);
         ref->path = result != NULL ? ncl_strdup(result) : NULL;
         return result;
     }
@@ -301,7 +301,7 @@ char *ncl_sample_ref_path(ncl_sample_ref *ref)
                          NCL_DATA_CHILD_SEPARATOR[0], detail) != NCL_OK) {
             result = NULL;
         }
-        free(detail);
+        ncl_mem_free(detail);
         ref->path = result != NULL ? ncl_strdup(result) : NULL;
         return result;
     }
@@ -313,7 +313,7 @@ char *ncl_sample_ref_path(ncl_sample_ref *ref)
 
 ncl_node *ncl_node_new(ncl_node_type type)
 {
-    ncl_node *node = (ncl_node *)calloc(1, sizeof(ncl_node));
+    ncl_node *node = (ncl_node *)ncl_mem_calloc(1, sizeof(ncl_node));
     if (node == NULL) {
         return NULL;
     }
@@ -331,27 +331,27 @@ void ncl_node_free(ncl_node *node)
     if (node == NULL) {
         return;
     }
-    free(node->name);
-    free(node->id);
-    free(node->node_type_name);
-    free(node->description);
-    free(node->path);
-    free(node->number);
-    free(node->data_type);
+    ncl_mem_free(node->name);
+    ncl_mem_free(node->id);
+    ncl_mem_free(node->node_type_name);
+    ncl_mem_free(node->description);
+    ncl_mem_free(node->path);
+    ncl_mem_free(node->number);
+    ncl_mem_free(node->data_type);
     ncl_json_free(node->value);
-    free(node->mapping);
-    free(node->value_type);
-    free(node->source);
-    free(node->version);
-    free(node->guid);
-    free(node->unique_id);
+    ncl_mem_free(node->mapping);
+    ncl_mem_free(node->value_type);
+    ncl_mem_free(node->source);
+    ncl_mem_free(node->version);
+    ncl_mem_free(node->guid);
+    ncl_mem_free(node->unique_id);
 
     ncl_ptrvec_free(&node->configs);
     ncl_ptrvec_free(&node->data_items);
     ncl_ptrvec_free(&node->components);
     ncl_ptrvec_free(&node->devices);
     ncl_ptrvec_free(&node->sample_items);
-    free(node);
+    ncl_mem_free(node);
 }
 
 ncl_node *ncl_node_clone(const ncl_node *node, bool shallow_children)
@@ -486,7 +486,7 @@ ncl_err ncl_node_set_type_name(ncl_node *node, const char *value)
             != NCL_OK) {
             return NCL_ERR_NOMEM;
         }
-        free(node->path);
+        ncl_mem_free(node->path);
         node->path = built;
     }
     return NCL_OK;
@@ -505,12 +505,12 @@ ncl_err ncl_node_set_source(ncl_node *node, const char *value)
             return NCL_ERR_NOMEM;
         }
         if (trimmed[0] == '\0') {
-            free(trimmed);
+            ncl_mem_free(trimmed);
             trimmed = NULL;
         }
     }
     rc = ncl_node_replace_str(&node->source, trimmed);
-    free(trimmed);
+    ncl_mem_free(trimmed);
     return rc;
 }
 
@@ -721,7 +721,7 @@ static ncl_err ncl_node_build_path(ncl_node *node, const char *parent_path)
     if (built == NULL) {
         return NCL_ERR_NOMEM;
     }
-    free(node->path);
+    ncl_mem_free(node->path);
     node->path = built;
     return NCL_OK;
 }
@@ -770,11 +770,11 @@ ncl_err ncl_node_set_path(ncl_node *node, const char *parent_path)
                 ncl_asprintf(&built, "%s%s%s", source_path, NCL_PATH_SEPARATOR,
                              node->node_type_name != NULL ? node->node_type_name : "");
             }
-            free(source_path);
+            ncl_mem_free(source_path);
             if (built == NULL) {
                 return NCL_ERR_NOMEM;
             }
-            free(node->path);
+            ncl_mem_free(node->path);
             node->path = built;
             return NCL_OK;
         }
@@ -1274,7 +1274,7 @@ static bool ncl_config_bind_sample_items(ncl_node *config, const ncl_node *root)
         if (target != NULL &&
             (target->type == NCL_NODE_DATA_ITEM || target->type == NCL_NODE_CONFIG)) {
             ref->node = target;
-            free(ref->path);
+            ncl_mem_free(ref->path);
             ref->path = NULL;
         } else {
             ok = false;
@@ -1303,7 +1303,7 @@ ncl_node *ncl_root_node_post_construct(ncl_node *root)
             != NCL_OK) {
             return NULL;
         }
-        free(root->path);
+        ncl_mem_free(root->path);
         root->path = path;
     }
     for (i = 0; i < ncl_ptrvec_len(&root->devices); i++) {
@@ -1435,10 +1435,10 @@ void ncl_node_map_free(ncl_node_map *map)
         return;
     }
     for (i = 0; i < map->len; i++) {
-        free(map->keys[i]);
+        ncl_mem_free(map->keys[i]);
     }
-    free(map->keys);
-    free(map->vals);
+    ncl_mem_free(map->keys);
+    ncl_mem_free(map->vals);
     map->keys = NULL;
     map->vals = NULL;
     map->len = 0;
@@ -1461,13 +1461,13 @@ ncl_err ncl_node_map_put(ncl_node_map *map, const char *key, ncl_node *node)
     }
     if (map->len == map->cap) {
         size_t cap = map->cap == 0 ? 16 : map->cap * 2;
-        char **keys = (char **)realloc(map->keys, cap * sizeof(char *));
+        char **keys = (char **)ncl_mem_realloc(map->keys, cap * sizeof(char *));
         ncl_node **vals;
         if (keys == NULL) {
             return NCL_ERR_NOMEM;
         }
         map->keys = keys;
-        vals = (ncl_node **)realloc(map->vals, cap * sizeof(ncl_node *));
+        vals = (ncl_node **)ncl_mem_realloc(map->vals, cap * sizeof(ncl_node *));
         if (vals == NULL) {
             return NCL_ERR_NOMEM;
         }

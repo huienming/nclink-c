@@ -60,7 +60,8 @@ examples/           两个可运行示例：设备端 / 客户端
 MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 
 src/<模块>/         实现，共 13 个模块目录        ← 以下仅源码仓库有
-tests/              22 个测试套件（含可选的 broker 互操作与 TLS 套件）+ 协议黄金样本
+tests/              24 个测试套件（含 mem 分配器不变量、mem_mc 蒙特卡洛压测，以及可选的
+                    broker 互操作与 TLS 套件）+ 协议黄金样本
 tools/              许可头检查、broker 互操作、文档生成与发布打包脚本
 build.ps1           Windows 一键：配置 + 编译 + ctest
 build-linux.sh      Linux 免 cmake 构建
@@ -89,6 +90,16 @@ ctest --test-dir build --output-on-failure
 ```
 
 ### 2.3 Linux（已验证：gcc 13.4，22/22 测试通过）
+
+补充验证（gcc 13，容器内，2026-09-17）：`./build-linux.sh` 全量 **24/24 通过**；
+静态池版 `NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536` 与默认 20 MiB 也都是 **24/24**，
+且 `mem_mc` 的统计与 Windows/MSVC 逐位一致（确定性序列）。真 broker 互操作
+（`tests/test_broker`）对 **Mosquitto 2.1.2** 与 **EMQX 5.8.9** 各 **44 项检查全过**。
+
+内存门禁：`./tools/asan-linux.sh`（`--docker` 可在 Windows/macOS 上一键跑）用
+AddressSanitizer + LeakSanitizer 覆盖分配器、协议层与传输层；MSVC 的 ASan 不带泄漏
+检测，所以 Linux 这一遍是唯一能报泄漏的。目前 `test_rest` 仍报 16 字节（2 次
+`ncl_rest_attach()` 的上下文），见 CHANGELOG"未发布"里的待办。
 
 源码是 C11，套接字层有 Winsock / BSD 两套实现，两个平台都已在真机编过并跑通
 全部测试（Windows 见 2.2，Linux 见下）。
@@ -323,6 +334,12 @@ P/Invoke、Java 走 JNI（`nclink_jni` 把垫片一起编进去）、Python 走 
 | `NCLINK_WITH_MQTT` | ON | 编译 MQTT 传输层、客户端、服务端、文件与 FTP |
 | `NCLINK_WITH_ZLIB` | OFF | 启用 zlib 压缩编解码 |
 | `NCLINK_WITH_TLS` | OFF | 启用 OpenSSL，支持 MQTT over `ssl://`（需要的现场才打开） |
+| `NCLINK_STATIC_MEM` | OFF | 库内所有分配改由一个静态池供给，不调用 `malloc`（见 4.9） |
+| `NCLINK_MEM_POOL_BYTES` | 20971520 | 静态池大小，单位字节（默认 20 MiB） |
+| `NCLINK_MEM_CLASS_BYTES` | -1 | 小对象尺寸类区域大小；`-1` = 池的 1/4，`0` = 关掉尺寸类 |
+| `NCLINK_MEM_SINGLE_THREAD` | OFF | 静态池不加锁，仅限单上下文/裸机 |
+| `NCLINK_MEM_REPORT` | OFF | 退出时打印池的峰值用量，用来定池大小 |
+| `NCLINK_MEM_FIRST_FIT` | OFF | 静态池改用首适配（只用于 A/B 对照测量，见 4.9） |
 
 Windows 打开 TLS：`.\build.ps1 -Tls`（自动在 `OPENSSL_ROOT_DIR`、常见安装目录与
 vcpkg 里找 OpenSSL；用 `-OpenSslRoot <目录>` 指定），运行时需要
@@ -1083,6 +1100,11 @@ C 没有 GC，规则统一为「谁申请谁负责，转移要显式」：
 | JSON 上的 `ncl_json_obj_get()` / `ncl_json_arr_get()` | 借用；`ncl_json_arr_take()` 才是脱开所有权 |
 | `ncl_message_take_model(probe)` | 从消息里摘出模型，调用方接管（配合 `ncl_client_set_root_node()`） |
 | `ncl_cache_take()` / `ncl_ptrvec_take()` | 摘除且不释放，所有权交给调用方 |
+| `ncl_http_server_own_context(server, ctx, free_fn)` | 把上下文交给 HTTP 服务器：随 `ncl_http_server_free()` 释放**一次**（路由可共用同一个 ctx；同一指针登记两次返回 `NCL_ERR_EXISTS`）。登记后调用方不要再自己释放；传栈上/静态对象的旧写法不变（不登记即可） |
+
+上表里的「调用方 `free()`」在默认构建里就是 C 运行库的 `free()`。**静态池构建
+（4.9）下要改用 `ncl_free_safe()`**：库的内存来自池，和运行库的堆是两处，用 libc
+的 `free()` 去放池指针会破坏堆。库自己的 `ncl_*_free()` 系列本身是对的用法。
 
 ### 4.8 线程模型与线程安全
 
@@ -1105,6 +1127,292 @@ C 没有 GC，规则统一为「谁申请谁负责，转移要显式」：
 | `ncl_ftp_server` / `ncl_http_server` | 启停与运行线程安全，`stop()` 会 join 全部线程 |
 
 日志函数（`ncl_log_info` 等）可在任意线程调用。
+
+### 4.9 静态内存（无堆）构建
+
+库内每一次分配都走 `ncl_mem_alloc()` / `ncl_mem_calloc()` / `ncl_mem_realloc()` /
+`ncl_mem_free()`（`src/core/ncl_mem.c` 是唯一知道内存从哪来的文件，471 处分配点
+已经全部改道）。默认实现直接转发给 C 运行库；打开 `NCLINK_STATIC_MEM` 后换成
+**静态数组里的一个固定池**：库不再调用 `malloc`，池耗尽就返回 `NULL`（上层统一
+翻成 `NCL_ERR_NOMEM`），绝不会偷偷回退到堆。
+
+```powershell
+.\build.ps1 -StaticMem                          # Windows：默认 20 MiB 池
+.\build.ps1 -StaticMem -MemPoolBytes 65536      # 小设备：显式给 64 KiB
+.\build.ps1 -StaticMem -MemReport               # 顺手量一下峰值
+```
+
+```sh
+NCL_STATIC_MEM=1 ./build-linux.sh build-linux-static          # 默认 20 MiB
+NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 ./build-linux.sh build-linux-static-64k
+```
+
+**默认池是 20 MiB**（`NCLINK_MEM_POOL_BYTES` / `NCL_MEM_POOL_BYTES`），对全量测试
+与文件搬运都留了余量，先跑通再按下面的实测数据往下压。池放在 `.bss` 里，不占可执行
+文件体积，也不占栈；换的小只是省 RAM。
+
+**池开多大是量出来的**：加上 `-MemReport`（或 `-DNCLINK_MEM_REPORT=ON`）跑一遍真实
+流量，退出时会打一行：
+
+```
+ncl_mem: static-pool peak 25632 of 65536 bytes, live 269 blocks, 3236 allocations, 0 failures, 0 foreign frees; free 45728 bytes in 13 blocks (largest 43808), largest request 1024
+```
+
+运行时也可以读 `ncl_mem_get_stats()`：池大小、当前用量、峰值、活块数、**总空闲字节与
+空闲块数**、最大连续空闲块、**历史最大单次请求**、分配次数、拒绝次数、外来释放次数、
+**最后一次拒绝时的空闲快照**、坏链计数、**实际占用峰值（`peak_footprint_bytes`，含块头）
+与每个尺寸类的用量**（见 4.9.2）。
+
+本仓库全量测试的实测峰值（Windows x64 / MSVC，64 KiB 池，尺寸类开启；单位字节，
+**载荷口径**的峰值与最大单次请求，测试日志原值。含块头的"实际占用"口径见 4.9.2）：
+
+| 用例 | 峰值 | 最大单次请求 | 用例 | 峰值 | 最大单次请求 |
+|------|------|------|------|------|------|
+| file | 47568 | 16384 | http | 5792 | 2760 |
+| ftp | 43392 | 16384 | mqtt_client | 4032 | 2600 |
+| message | 14688 | 1024 | schema | 4032 | 1536 |
+| server | 22960 | 2600 | json | 1568 | 64 |
+| rest | 17168 | 2760 | thread | 2272 | 1600 |
+| event | 14416 | 768 | model | 10368 | 1024 |
+| client | 13344 | 2600 | config | 6592 | 2760 |
+
+- 实测边界：**64 KiB 池全量 24/24 通过、零拒绝**；32 KiB 时 21/24（message、ftp、file
+  三条被拒，且拒绝快照显示是"总空闲都不够"，即尺寸问题；加上尺寸类后是 **22/24**，
+  `message` 通过，见 4.9.2）。设备端常见组合
+  （model + message + client/server + mqtt）在 32 KiB 上下就够，文件搬运是唯一的大户；
+  默认的 20 MiB 是"先跑通"的余量口径。
+- 分配策略：**最佳适配**（能装下的最小空闲块） + 释放时**双向合并**；块头 32 字节、
+  载荷 16 字节对齐（`NCL_MEM_ALIGNMENT`）；剩余空间小于"块头 + 对齐"时不再切分，免得
+  池里堆满永远用不上的碎屑。同尺寸请求会命中完全匹配而提前结束查找。
+
+**碎片是怎么处理的**（这部分给的是实测，不是设计承诺）：
+
+1. **不留永久空洞**：同一套流量反复跑，工作负载回到空闲态时，它用过的空间必须重新
+   变成一整块。`tests/test_mem.c` 的 `test_pool_fragmentation` 就是这条：长期块
+   （模拟模型/服务端表）留在池里，周围做 6 轮 × 300 次混合尺寸的分配/重分配/释放，
+   每轮结束断言**空闲块数 == 1**、最大连续空闲块**逐字节等于**轮次开始前的值。
+2. **拒绝要能归因**：非紧凑分配器有一种固有失败——**单次请求大于最大连续空闲块**，
+   哪怕总空闲够。为此池会记录最后一次拒绝时的 `failure_free_bytes` 与
+   `failure_largest_free_bytes`：两个数接近 = 池真的小了；前者远大于后者 = 形状被
+   打散了（该换更大的池，或把长期数据与短命缓冲分开用两个池）。
+   实测抓到过一次真实的形状拒绝：64 KiB 池 + 首适配跑 file 用例，
+   **总空闲 21152 / 最大连续 10592 / 请求 16384** → 拒绝；换成最佳适配后同一场景
+   **0 拒绝**（file 峰值 47776，仍在 64 KiB 内）。
+3. **不能消除的部分**：没有压缩（compaction），交出去的指针永远有效，所以上面第 2 条
+   的"超大单次请求"只能靠**把池开够**（经验：峰值 × 1.5～2，或直接看
+   `largest_request_bytes` 加上长期数据集的大小）。长期数据与短命缓冲混合、且尺寸差异
+   极大时，最稳的做法是两个池（本项目目前是一个池，够用但不宣称免疫）。
+
+**块的固定开销与请求尺寸分布**（决定"该不该用尺寸类"，也是小池的主要成本）：
+
+- 每个块 32 字节块头 + 载荷按 16 字节对齐。所以一次 64 字节的请求实际占用 96 字节
+  （32％ 是开销），一次 1 KiB 的请求占用 1056 字节（3％）。池里同时活着的块越多，
+  这块开销越大：实测 message 用例在 64 KiB 池里同时有 282 个块，
+  **9024 字节（14％）花在块头上**。`ncl_mem_stats.meta_bytes` 直接给这个数。
+- 实测请求尺寸分布（`size_hist`，各用例真实流量）：**98％ 以上的请求 ≤ 128 字节**
+  （server 16760 次里 16503 次、message 3273 次里 3238 次、ftp 786 次里 772 次），
+  只有文件/FTP 通道会出现 8 KiB、16 KiB 的大请求。也就是说：库的分配画像天然适合
+  "小对象尺寸类 + 大块走通用区"，见下面"下一步"。
+- **增长型缓冲会放大单次请求**：`ncl_strbuf` 从 64 字节起翻倍，`ncl_ptrvec` 从 8 起
+  翻倍，模型 map 从 16 起翻倍，JSON 对象数组同理。翻到 N 字节的过程中，旧的 N/2 与
+  新的 N 可能同时存在（无法原地扩展时）→ **单次最大块需求可到最终大小的 1.5 倍以上**。
+  这也是"池至少要能装下 2 × 最大期望缓冲"的原因（例如 REST 的 body 上限是 4 MiB，
+  真收满时池里需要 6 MB 级别的连续空间）。
+
+**排错用的自检**：`size_t ncl_mem_check(void)` 会走一遍整个池，校验"块都在池内、
+前驱链接对得上、没有两个相邻的空闲块、所有块恰好覆盖整个池"，返回问题条数（默认构建
+恒返回 0）。它已经抓出过两个真实缺陷：`realloc` 原地扩张留下的陈旧前驱链接，以及
+切分产生的空闲尾块没有与后面空闲块合并（两个空闲块永久并排 = 空间是空的却是碎的）。
+建议：现场怀疑"谁写越界了"时，在可疑阶段后调用它。
+
+### 4.9.1 蒙特卡洛压测（`mem_mc` 套件）
+
+`tests/test_mem_mc.c` 用随机流量把池往死里逼，比库自身的访问模式狠得多：
+
+- **随机尺寸**跨三个数量级（对数均匀 8 B～pool/64，另有 5% 概率落在 pool/64～pool/8 的
+  大块档），**随机操作**按权重分配/释放/重分配，长期把池维持在约半满，4 个固定种子 ×
+  20000 次操作。
+- 每个块都带**按自身种子生成的图案**，释放前与重分配前后都抽样校验（首尾各 32 B + 每
+  97 B 采样），所以"两块重叠"或"头部写进载荷"会表现为内容不符，而不是几天后的神秘崩溃。
+- **每次操作后**跑一次 `ncl_mem_check()` 与账目恒等式
+  `in_use + free_bytes + meta_bytes == pool_bytes`；第一次不一致会打印**出问题的那次
+  操作**（操作类型、尺寸）与前 6 步的操作轨迹。
+- **拒绝必须正当**：只有当"最大连续空闲块 < 请求的对齐后大小"时才允许失败；失败时总
+  空闲却够的，单独记为 `shape refusals`——这就是碎片造成的失败，是量出来的，不是估的。
+- **同一种子跑两遍**，两遍的成功分配数、拒绝数、形状拒绝数、峰值必须逐项相等。池若漏
+  了一块、或留下一个永久空洞，第二遍就会不一致。
+
+同一套随机序列下，**最佳适配 vs 首适配**（64 KiB 池，4 种子 × 20000 次操作）：
+
+| 指标 | 最佳适配（默认） | 首适配（`-MemFirstFit` A/B 用） |
+|------|------------------|----------------------------------|
+| 拒绝总数 | 20 | 22 |
+| 其中**形状拒绝**（总空闲够） | **7（35%）** | **13（59%）** |
+| 最坏空闲块数 | 20 | 22 |
+| 最坏"最大连续空洞" | 5504 B | 3920 B |
+| 平均峰值 | 52976 B | 52640 B |
+
+不同池大小的同一套流量（最佳适配，全部零不一致）：
+
+| 池 | 平均峰值 | 最大单次请求 | 拒绝（形状占） | 最坏形状 |
+|----|----------|--------------|----------------|----------|
+| 32 KiB | 26680 B | 4095 B | 18（50%） | 19 块 / 最大连续 1280 B |
+| 64 KiB | 52976 B | 8190 B | 20（35%） | 20 块 / 最大连续 5504 B |
+| 20 MiB | 16697140 B | 2621163 B | 38（58%） | 39 块 / 最大连续 1281488 B |
+
+这张表最值得记的一条：**碎片压力取决于"最大单次请求 / 池大小"这个比值，而不只是池够不
+够大**。20 MiB 池在随机流量里仍出现 22 次形状拒绝，因为随机流量会一次性申请到 2.6 MB
+（池的 1/8）。库自身的真实最大请求是 16 KB（文件块），所以在 64 KiB 池里它占 1/4、在
+512 KiB 池里只占 1/32——这也解释了为什么 64 KiB 是"够用但很紧"而 128 KiB 就宽松。
+
+跑法：`build.ps1 -StaticMem -MemPoolBytes 65536` 之后 `ctest -R mem_mc`；想复现上面的
+首适配对照，加 `-MemFirstFit`（Linux：`NCL_MEM_FIRST_FIT=1`）。堆构建下这个套件同样会
+跑（尺寸分布与内容/一致性检查与分配器无关），只是没有池统计可比。
+
+### 4.9.2 小对象尺寸类
+
+实测的请求尺寸分布是**极度偏小**的：全量测试里 **98% 以上的请求 ≤128 字节**，而其中
+33～64 字节那一档就占了大约一半（结构体、key、短字符串）。所以池在首次使用时把自己
+切成两块，小对象走**定长尺寸类**，其余走通用区：
+
+```
++----------+----------+---- ... ----+------------------------------------+
+| 类 16 B  | 类 32 B  |     ...     | 通用区（块头 + 变长块）             |
++----------+----------+---- ... ----+------------------------------------+
+ <---------- NCL_MEM_CLASS_BYTES ---->   默认 = 池的 1/4（最多占一半）
+```
+
+尺寸类为 {16, 32, 48, 64, 96, 128, 192, 256} 字节。**为什么不是 2 的幂**：一个尺寸为 C
+的类只在请求大于 C−32 时才划算（通用区的成本是"对齐后的请求 + 32 字节块头"），C=128
+时 65～96 字节的请求在通用区反而更便宜；插入 48 与 96 两档把这个亏损窗口压到很小。
+
+- **类内没有块头**：定长块不需要 size 字段，释放时靠"指针落在哪个区域"判定类别
+  （一次范围检查），因此分配/释放都是 **O(1)**，而且**类内结构上不可能产生外部碎片**。
+- **代价只有内部碎片**：40 字节的请求占一个 48 字节块（对比通用区的 32+48=80）。
+- **类用完了自动回落通用区**：所以尺寸类配小了只损失速度，**不会产生新的失败模式**。
+- **区域份额按实测分布加权**（`g_class_share`），可用宏覆盖；`-MemReport` 会打印每一类的
+  `live/free/region` 用量，现场按真实流量调。
+
+实测收益（64 KiB 池，同一套 24 个测试，**实际占用＝载荷＋块头**的峰值，开/关尺寸类）：
+
+| 用例 | 关（字节） | 开（字节） | 省 | 用例 | 关 | 开 | 省 |
+|------|-----------|-----------|----|------|----|----|----|
+| server | 36160 | 25584 | **29.2%** | model | 16304 | 10720 | 34.2% |
+| message | 24064 | 16256 | **32.4%** | event | 25504 | 15344 | 39.8% |
+| client | 20032 | 13920 | **30.5%** | json | 2800 | 1568 | 44.0% |
+| rest | 25872 | 18000 | **30.4%** | schema | 7456 | 4032 | 45.9% |
+| config | 8896 | 6720 | 24.5% | mqtt | 1120 | 544 | 51.4% |
+| http | 6944 | 5952 | 14.3% | mem_mc | 50608 | 40736 | 19.5% |
+| file | 57584 | 48272 | 16.2% | ftp | 44384 | 43520 | 1.9% |
+
+设备端那几条主力路径都在 **29%～32%**，与设计预期一致；`ftp` 收益小是因为它几乎全是
+16 KiB 的大块（本来就不进尺寸类）。**池大小的边界也跟着变了**：32 KiB 池从 21/24 变成
+**22/24**（`message` 现在能过了，只剩 ftp/file 需要大块连续空间），64 KiB 仍是 24/24。
+
+度量口径提醒：`in_use_bytes` 只算载荷，**不含块头**，因此它天然偏向通用区；要比较
+"池到底省没省"，看 `footprint_bytes` / `peak_footprint_bytes`（载荷 + 每块 32 字节
+块头，尺寸类块整块计入）。这两个字段与每类的 `class_size/class_bytes/class_live/
+class_free` 都在 `ncl_mem_stats` 里。
+
+开关：`build.ps1 -StaticMem -MemClassBytes 0` 关掉尺寸类做对照（Linux：
+`NCL_MEM_CLASS_BYTES=0`）；想给小池多留通用区，就把它调小（例如 `-MemClassBytes 8192`）。
+- 线程安全：池自带锁，Windows 上是静态初始化的 `CRITICAL_SECTION`，POSIX 上是
+  `PTHREAD_MUTEX_INITIALIZER`，都不需要先分配对象（否则会自己咬自己）。单上下文/
+  裸机可以 `NCLINK_MEM_SINGLE_THREAD=ON` 去掉锁。
+- 排错：`-DNCLINK_MEM_STRICT=ON` 时，一旦释放了池没发出去的指针就 `abort()` 并打印。
+- **接口约定**：静态池构建下，库交出来的指针只能用 `ncl_free_safe()` 或
+  `ncl_*_free()` 释放，**不能用 libc 的 `free()`**。仓库里的测试、示例与 `ncl.hpp`
+  都按这条改过；把 `free` 当回调传的地方也要跟着改，例如
+  `ncl_ptrvec_init(&v, ncl_mem_free)`、`ncl_cache_create(ttl, false, ncl_mem_free)`。
+- **池管不到的部分**（要一整块堆都不用，还需这些）：C 运行库自己的内部缓冲（`fopen`
+  的文件缓冲）、`getaddrinfo()`、线程栈（`pthread_create` / `_beginthreadex` 由 OS
+  分配）、以及打开 TLS 后的 OpenSSL。也就是说「**库的分配全静态**」这一步已经完成；
+  「**整个进程零堆**」还要把传输层接到 RTOS 的 socket/线程上——`ncl_platform.h`
+  （互斥、条件变量、线程、时钟）与 `ncl_socket.h`（TCP/TLS）就是这两个接缝。
+
+### 4.9.3 长跑（soak）：多个池尺寸并行
+
+不同池尺寸是**编译期常量**，所以"多尺寸同时压"要编多份程序：
+`tools/soak-linux.sh`（Windows/macOS 上加 `--docker`）会为每个尺寸编一份库 + 压测程序，
+然后**并行**跑满指定时长（默认 3600 s）：
+
+```sh
+./tools/soak-linux.sh --docker                                   # 1 小时，7 个默认尺寸
+NCL_SOAK_SECONDS=600 NCL_SOAK_SIZES="65536 1048576" ./tools/soak-linux.sh --docker
+# 并发版（每个尺寸内再起多个线程，线程间传递块所有权）：
+NCL_SOAK_MT=1 NCL_SOAK_SECONDS=600 NCL_MEM_MT_THREADS=8 ./tools/soak-linux.sh --docker
+```
+
+每一份都是蒙特卡洛流量（随机尺寸跨三个数量级、随机分配/释放/重分配），**每次操作后**校验
+池不变量与账目恒等式，**每一轮**把池彻底排空并要求它回到"一整块空闲"，任何一条不满足就
+判失败并非零退出。日志在 `build-soak/<模式>/<尺寸>.log`（每 30 s 一行心跳，末行是累计值）。
+
+实测（2026-09-17，单机 18 逻辑核，7 个进程并行，3600 s，容器 exit=0）：
+
+| 池 | 轮数 | 操作数 | 分配数 | 拒绝 | 其中形状拒绝 | 最坏空闲块数 | 最坏最大连续空洞 |
+|----|------|--------|--------|------|--------------|--------------|------------------|
+| 16 KiB | 102834 | 20.57 亿 | 8.70 亿 | 673550 | 412535 | 20 | 128 B |
+| 32 KiB | 71678 | 14.34 亿 | 6.06 亿 | 212260 | 127278 | 22 | 368 B |
+| 64 KiB | 46053 | 9.21 亿 | 3.90 亿 | 91505 | 54472 | 23 | 864 B |
+| 128 KiB | 27734 | 5.55 亿 | 2.35 亿 | 53184 | 31154 | 26 | 2080 B |
+| 512 KiB | 8294 | 1.66 亿 | 0.70 亿 | 19748 | 11638 | 29 | 9552 B |
+| 4 MiB | 3080 | 0.62 亿 | 0.26 亿 | 13030 | 7840 | 36 | 62864 B |
+| 20 MiB | 716 | 0.14 亿 | 0.06 亿 | 4869 | 2964 | 41 | 332992 B |
+| **合计** | **260389** | **约 52.1 亿** | **约 22.0 亿** | 1068146 | 647881（60.7%） | — | — |
+
+- 每个进程都是 `checks, 0 failures`，收尾 `soak: 0 process(es) failed`，容器 `exit=0`；
+  结束后各池一律 `in_use 0` + **一整块空闲** → 26 万轮里没有一轮留下永久空洞。
+- 形状拒绝在所有尺寸下都稳定占拒绝的约 **60%**：这是**合成**流量的特征（存活集稳在约半个
+  通用区、单次请求可占池的 1/8），不是库的真实画像；它衡量的是"池被随机流量逼到极限时
+  还剩多少形状余量"。
+- 最坏"最大连续空洞"≈ 池的 1/128～1/50，可作为"最大单次请求 / 池大小"这条经验的量化对照。
+
+### 4.9.4 多线程
+
+池是**一个全局对象**（与 C 运行库的堆一样），库里所有线程都打到同一个池上：MQTT 收包线程、
+服务端线程池（5/10/100）、采样线程、HTTP/FTP 受理线程。因此：
+
+- 池自带一把锁，覆盖**整个**分配/释放/重分配临界区（含尺寸类的空闲链操作）。Windows 上是
+  静态初始化的 `CRITICAL_SECTION`，POSIX 上是 `PTHREAD_MUTEX_INITIALIZER`——都不需要
+  "先分配一把锁"，否则池会自己咬自己。
+- **跨线程所有权是允许的，也是库依赖的行为**：一个线程分配的块可以由另一个线程释放
+  （响应报文由收包线程分配、调用方线程释放）。锁保护的是池的结构，不是"谁分配谁释放"。
+- 单上下文/裸机可用 `NCLINK_MEM_SINGLE_THREAD=ON` 去掉锁；**去掉之后就不能再有第二个
+  线程碰池**（`mem_mt` 套件在这种构建下会自己跳过）。
+
+**怎么验证的**（`tests/test_mem_mt.c`，套件名 `mem_mt`，已进常规 ctest）：
+
+- 多个线程共享同一个池做随机流量，每块带图案、释放前校验——**同一块被同时交给两个所有者**
+  会直接表现为内容不符；
+- 线程间通过环形队列**传递所有权**：A 分配并写图案，B 收到后校验再释放；
+- 主线程在它们跑的同时不停调用 `ncl_mem_check()`：该自检在同一把锁下取快照（所以"看到的
+  状态本来就必须一致"），并且会**从块本身重算**账目恒等式 `已用 + 空闲 + 块头×块数 == 池大小`
+  再与计数器比对——这正是它能当并发不变量用的原因；
+- 收尾要求池回到一整块空闲、`in_use 0`，且拒绝路径正确（申请"最大空洞"大小必须成功，
+  比它大一个对齐单位必须被拒）。
+
+```powershell
+.\build.ps1 -StaticMem -MemPoolBytes 65536      # 常规：4 线程 × 40000 次操作
+cd build-static-64k\tests; .\ncl_test_mem_mt.exe
+```
+
+工具侧：`./tools/asan-linux.sh --docker` 已把 `test_mem_mt` 纳入（ASan + 泄漏检测）；
+`./tools/asan-linux.sh --tsan --docker` 用 **ThreadSanitizer** 专压这个并发用例
+（TSan 与容器 ASLR 冲突，脚本会自动把 `vm.mmap_rnd_bits` 降到 28，因此需要 `--privileged`）。
+
+单轮实测（64 KiB 池，4 线程 × 40000 次操作）：**160000 次操作、22838 次跨线程交接、
+0 处内容不符、0 处不变量违规**；TSan 下 6 线程 × 20000 次操作 **0 数据竞争**；
+并发长跑（8 线程/进程 × 3 个池尺寸，600 s，容器 exit=0）：
+
+| 池 | 操作数 | 分配数 | 拒绝 | 跨线程交接 | 每 worker 峰值存活 | 轮数 | 失败 |
+|----|--------|--------|------|------------|--------------------|------|------|
+| 64 KiB | 3.82 亿 | 0.97 亿 | 8219928 | 54550267（54521324 收到） | 16167 B | 4778 | 0 |
+| 512 KiB | 1.64 亿 | 0.42 亿 | 3344825 | 23470775（23458865 收到） | 138306 B | 2054 | 0 |
+| 20 MiB | 0.16 亿 | 0.04 亿 | 364793 | 2316368（2314926 收到） | 5850785 B | 202 | 0 |
+| **合计** | **约 5.63 亿** | **约 1.44 亿** | 11929546 | **约 8030 万**（差额是收尾时排空的环形队列） | — | 7034 | **0** |
+
+7034 轮并发轮次、每轮都以"池回到一整块空闲 + 账目恒等式成立"收尾，全部通过；期间主线程
+持续调用 `ncl_mem_check()`，**没有报出任何一次不一致**。
 
 ---
 
@@ -1590,6 +1898,12 @@ ncl_http_server *http = ncl_http_server_create(9008);
  * 传 NULL 或 "*" 表示任意方法；handler 跑在受理连接的那个线程上。 */
 ncl_http_server_route(http, "GET", "/api/hello", hello_handler, user);
 ncl_http_server_route(http, "*", "/api/health", health_handler, user);
+
+/* 多个路由共用一个堆上下文时，把它登记成"服务器拥有"：只释放一次，
+ * 时机是 ncl_http_server_free()（路由先走，上下文后走）。 */
+ncl_http_server_own_context(http, heap_ctx, ncl_mem_free);
+ncl_http_server_route(http, "GET", "/api/a", a_handler, heap_ctx);
+ncl_http_server_route(http, "GET", "/api/b", b_handler, heap_ctx);
 
 /* 内置挂载：/api/schema + /swagger-ui，以及 12 个配置接口 */
 ncl_rest_attach(http, server);
@@ -2158,6 +2472,14 @@ Copyright (c) 2026 huienming
 ### `nclink/ncl_common.h`
 
 - `const char *ncl_err_name(ncl_err err);` — Stable, human readable name of an error code.
+- `void *ncl_mem_alloc(size_t size);` — Allocate @p size bytes, or NULL when the allocator is exhausted.
+- `void *ncl_mem_calloc(size_t count, size_t size);` — Allocate @p count * @p size zeroed bytes, or NULL (with overflow check).
+- `void *ncl_mem_realloc(void *ptr, size_t size);` — Resize @p ptr (NULL behaves as ncl_mem_alloc(), 0 as ncl_mem_free()).
+- `void ncl_mem_free(void *ptr);` — Release @p ptr; NULL is a no-op.
+- `const char *ncl_mem_mode(void);` — Which allocator is compiled in: "heap" or "static-pool".
+- `void ncl_mem_get_stats(ncl_mem_stats *out);` — Snapshot the allocator counters (safe to call from any thread).
+- `void ncl_mem_reset_stats(void);` — Clear peak/allocations/failures counters, keeping in_use and pool_bytes.
+- `size_t ncl_mem_check(void);` — Walk the whole pool and verify its invariants: every block lies inside the
 - `char *ncl_strdup(const char *s);` — Heap copy of @p s (NULL safe).
 - `char *ncl_strndup(const char *s, size_t len);` — Heap copy of the first @p len bytes of @p s (NUL terminated).
 - `ncl_err ncl_asprintf(char **out, const char *fmt, ...);` — printf into a freshly allocated buffer.
@@ -2353,6 +2675,7 @@ Copyright (c) 2026 huienming
 - `ncl_http_server *ncl_http_server_create(unsigned port);` — Create a server bound to @p port once started (0 = ephemeral).
 - `void ncl_http_server_free(ncl_http_server *server);`
 - `ncl_err ncl_http_server_route(ncl_http_server *server, const char *method, const char *path, ncl_http_handler handler, void *user);` — Register a handler for an exact path.
+- `ncl_err ncl_http_server_own_context(ncl_http_server *server, void *context, ncl_free_fn free_fn);` — Hand @p context to @p server: it is released through @p free_fn when the
 - `ncl_err ncl_http_server_start(ncl_http_server *server);` — Bind and start serving.
 - `void ncl_http_server_stop(ncl_http_server *server);` — Shut the listener down and join the accept thread.
 - `unsigned ncl_http_server_port(const ncl_http_server *server);` — Port actually bound (useful when creating with port 0).

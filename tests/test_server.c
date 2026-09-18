@@ -136,7 +136,7 @@ static ncl_err send_request(ncl_fake_server *broker, const char *topic,
         return NCL_ERR_NOMEM;
     }
     rc = ncl_fake_server_publish(broker, topic, payload, 2);
-    free(payload);
+    ncl_free_safe(payload);
     return rc;
 }
 
@@ -716,7 +716,7 @@ static void test_sample_channel_shapes(void)
             if (sample != NULL) {
                 char *header = ncl_message_sample_header(sample, ";");
                 NCL_CHECK_EQ_STR(header, "/EXT/A@0;/STATUS");
-                free(header);
+                ncl_free_safe(header);
                 NCL_CHECK(ncl_message_sample_is_complete(sample));
                 NCL_CHECK_EQ_INT(ncl_message_item_count(sample), 2);
                 NCL_CHECK_EQ_INT(ncl_strvec_len(&sample->as.sample.paths), 2);
@@ -911,10 +911,10 @@ static void test_sampling(void)
             {
                 char *header = ncl_message_sample_header(sample, ";");
                 NCL_CHECK_EQ_STR(header, "/STATUS;/PART_COUNT");
-                free(header);
+                ncl_free_safe(header);
                 header = ncl_message_sample_header(sample, NULL);
                 NCL_CHECK_EQ_STR(header, "/STATUS;/PART_COUNT");
-                free(header);
+                ncl_free_safe(header);
             }
             {
                 const ncl_sample_item *first =

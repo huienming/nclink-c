@@ -271,17 +271,17 @@ static void test_utilities(void)
     NCL_TEST_CASE("URL decoding handles %XX, '+' and malformed input");
     decoded = ncl_http_url_decode("A%2FB+C");
     NCL_CHECK_EQ_STR(decoded, "A/B C");
-    free(decoded);
+    ncl_free_safe(decoded);
     decoded = ncl_http_url_decode("100%");
     NCL_CHECK_EQ_STR(decoded, "100%");
-    free(decoded);
+    ncl_free_safe(decoded);
     decoded = ncl_http_url_decode(NULL);
     NCL_CHECK(decoded == NULL);
 
     NCL_TEST_CASE("URL encoding escapes reserved characters");
     encoded = ncl_http_url_encode("a b/c?d=e");
     NCL_CHECK_EQ_STR(encoded, "a+b%2Fc%3Fd%3De");
-    free(encoded);
+    ncl_free_safe(encoded);
 
     NCL_TEST_CASE("status text lookup");
     NCL_CHECK_EQ_STR(ncl_http_status_text(200), "OK");
@@ -289,7 +289,55 @@ static void test_utilities(void)
     NCL_CHECK_EQ_STR(ncl_http_status_text(500), "Internal Server Error");
 }
 
+static int g_owned_released;
+
+static void owned_context_free(void *context)
+{
+    g_owned_released++;
+    ncl_free_safe(context);
+}
+
+/*
+ * Ownership of a shared route context: the REST layer registers four routes
+ * over one context, so the context is handed to the server once and released
+ * once, when the server (and with it the routes) goes away.
+ */
+static void test_owned_context(void)
+{
+    ncl_http_server *server;
+    int *context;
+
+    NCL_TEST_CASE("an owned context is released exactly once, on server free");
+    server = ncl_http_server_create(0);
+    context = (int *)ncl_mem_alloc(sizeof(*context));
+    NCL_CHECK(server != NULL);
+    NCL_CHECK(context != NULL);
+    if (server == NULL || context == NULL) {
+        ncl_free_safe(context);
+        ncl_http_server_free(server);
+        return;
+    }
+    *context = 42;
+
+    NCL_CHECK_EQ_INT(ncl_http_server_own_context(server, context,
+                                                 owned_context_free), NCL_OK);
+    NCL_TEST_CASE("the same pointer twice is refused, two pointers are fine");
+    NCL_CHECK_EQ_INT(ncl_http_server_own_context(server, context,
+                                                 owned_context_free),
+                     NCL_ERR_EXISTS);
+    NCL_CHECK_EQ_INT(ncl_http_server_own_context(server, NULL,
+                                                 owned_context_free),
+                     NCL_ERR_INVALID_ARG);
+    NCL_CHECK_EQ_INT(ncl_http_server_own_context(server, context, NULL),
+                     NCL_ERR_INVALID_ARG);
+
+    g_owned_released = 0;
+    ncl_http_server_free(server);
+    NCL_CHECK_EQ_INT(g_owned_released, 1);
+}
+
 NCL_TEST_MAIN_BEGIN()
     test_http_server();
     test_utilities();
+    test_owned_context();
 NCL_TEST_MAIN_END()

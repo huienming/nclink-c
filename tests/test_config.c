@@ -112,7 +112,7 @@ static void test_file_layer(void)
          * deliberately *not* the "V2..." form ncl_sn_read() produces. */
         NCL_CHECK_EQ_INT(strlen(sn), 32);
         NCL_CHECK_EQ_INT(strspn(sn, "0123456789abcdef"), 32);
-        free(sn);
+        ncl_free_safe(sn);
     }
     NCL_CHECK(ncl_path_exists(ncl_env_conf_path()));
     NCL_CHECK(ncl_path_exists(ncl_env_sn_file()));
@@ -125,8 +125,8 @@ static void test_file_layer(void)
         if (first != NULL && second != NULL) {
             NCL_CHECK_EQ_STR(first, second);
         }
-        free(first);
-        free(second);
+        ncl_free_safe(first);
+        ncl_free_safe(second);
     }
 
     NCL_TEST_CASE("a generated serial is hexadecimal, never a bare number");
@@ -154,7 +154,7 @@ static void test_file_layer(void)
                 }
             }
             NCL_CHECK(has_letter);
-            free(fresh);
+            ncl_free_safe(fresh);
         }
     }
 
@@ -163,16 +163,16 @@ static void test_file_layer(void)
     NCL_CHECK(read_back != NULL);
     if (read_back != NULL) {
         ncl_check_is_code_valid(NULL); /* keep the symbol used */
-        free(read_back);
+        ncl_free_safe(read_back);
     }
 
     NCL_TEST_CASE("cfgInit honours an explicit serial number");
     NCL_CHECK_EQ_INT(ncl_config_init("V2TEST00001", &sn), NCL_OK);
     NCL_CHECK_EQ_STR(sn, "V2TEST00001");
-    free(sn);
+    ncl_free_safe(sn);
     read_back = ncl_config_get_sn();
     NCL_CHECK_EQ_STR(read_back, "V2TEST00001");
-    free(read_back);
+    ncl_free_safe(read_back);
 
     NCL_TEST_CASE("a missing model file reports failure, not a crash");
     NCL_CHECK(ncl_config_get_model() == NULL);

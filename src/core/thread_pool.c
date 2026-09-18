@@ -148,7 +148,7 @@ ncl_thread_pool *ncl_thread_pool_create(const ncl_thread_pool_options *options)
         return NULL;
     }
 
-    pool = (ncl_thread_pool *)calloc(1, sizeof(ncl_thread_pool));
+    pool = (ncl_thread_pool *)ncl_mem_calloc(1, sizeof(ncl_thread_pool));
     if (pool == NULL) {
         return NULL;
     }
@@ -156,8 +156,8 @@ ncl_thread_pool *ncl_thread_pool_create(const ncl_thread_pool_options *options)
     pool->core_threads = options->core_threads;
     pool->max_threads = options->max_threads;
     pool->idle_timeout_ms = options->idle_timeout_ms;
-    pool->queue = (ncl_task *)calloc(pool->queue_capacity, sizeof(ncl_task));
-    pool->slots = (ncl_worker_slot *)calloc((size_t)options->max_threads,
+    pool->queue = (ncl_task *)ncl_mem_calloc(pool->queue_capacity, sizeof(ncl_task));
+    pool->slots = (ncl_worker_slot *)ncl_mem_calloc((size_t)options->max_threads,
                                             sizeof(ncl_worker_slot));
     pool->mutex = ncl_mutex_create();
     pool->cond = ncl_cond_create();
@@ -249,9 +249,9 @@ void ncl_thread_pool_shutdown(ncl_thread_pool *pool, bool wait)
 
     ncl_cond_destroy(pool->cond);
     ncl_mutex_destroy(pool->mutex);
-    free(pool->queue);
-    free(pool->slots);
-    free(pool);
+    ncl_mem_free(pool->queue);
+    ncl_mem_free(pool->slots);
+    ncl_mem_free(pool);
 }
 
 size_t ncl_thread_pool_pending(const ncl_thread_pool *pool)
@@ -333,7 +333,7 @@ struct ncl_cache {
 
 static void ncl_cache_entry_release(ncl_cache *cache, ncl_cache_entry *entry)
 {
-    free(entry->key);
+    ncl_mem_free(entry->key);
     if (cache->free_fn != NULL && entry->value != NULL) {
         cache->free_fn(entry->value);
     }
@@ -342,13 +342,13 @@ static void ncl_cache_entry_release(ncl_cache *cache, ncl_cache_entry *entry)
 ncl_cache *ncl_cache_create(unsigned ttl_ms, bool expire_after_access,
                             ncl_cache_free_fn free_fn)
 {
-    ncl_cache *cache = (ncl_cache *)calloc(1, sizeof(ncl_cache));
+    ncl_cache *cache = (ncl_cache *)ncl_mem_calloc(1, sizeof(ncl_cache));
     if (cache == NULL) {
         return NULL;
     }
     cache->mutex = ncl_mutex_create();
     if (cache->mutex == NULL) {
-        free(cache);
+        ncl_mem_free(cache);
         return NULL;
     }
     cache->ttl_ms = ttl_ms;
@@ -423,7 +423,7 @@ ncl_err ncl_cache_put(ncl_cache *cache, const char *key, void *value)
     if (cache->len == cache->cap) {
         size_t cap = cache->cap == 0 ? 16 : cache->cap * 2;
         ncl_cache_entry *grown =
-            (ncl_cache_entry *)realloc(cache->entries, cap * sizeof(ncl_cache_entry));
+            (ncl_cache_entry *)ncl_mem_realloc(cache->entries, cap * sizeof(ncl_cache_entry));
         if (grown == NULL) {
             ncl_mutex_unlock(cache->mutex);
             return NCL_ERR_NOMEM;
@@ -505,7 +505,7 @@ void *ncl_cache_take(ncl_cache *cache, const char *key)
         } else {
             /* Detach the value, then release the key without the destructor. */
             value = cache->entries[index].value;
-            free(cache->entries[index].key);
+            ncl_mem_free(cache->entries[index].key);
             memmove(&cache->entries[index], &cache->entries[index + 1],
                     (cache->len - index - 1) * sizeof(ncl_cache_entry));
             cache->len--;
@@ -545,7 +545,7 @@ void ncl_cache_free(ncl_cache *cache)
         return;
     }
     ncl_cache_clear(cache);
-    free(cache->entries);
+    ncl_mem_free(cache->entries);
     ncl_mutex_destroy(cache->mutex);
-    free(cache);
+    ncl_mem_free(cache);
 }

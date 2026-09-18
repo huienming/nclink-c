@@ -38,7 +38,7 @@ ncl_file_client_tool *ncl_file_client_tool_create(ncl_client *client)
     if (client == NULL) {
         return NULL;
     }
-    tool = (ncl_file_client_tool *)calloc(1, sizeof(*tool));
+    tool = (ncl_file_client_tool *)ncl_mem_calloc(1, sizeof(*tool));
     if (tool == NULL) {
         return NULL;
     }
@@ -48,7 +48,7 @@ ncl_file_client_tool *ncl_file_client_tool_create(ncl_client *client)
 
 void ncl_file_client_tool_free(ncl_file_client_tool *tool)
 {
-    free(tool);
+    ncl_mem_free(tool);
 }
 
 /* --------------------------------------------------------------- helpers -- */
@@ -166,12 +166,12 @@ static ncl_message *build_set(ncl_client *client, const char *key,
     }
     request = ncl_message_new(NCL_MSG_SET_REQUEST);
     if (request == NULL) {
-        free(id);
+        ncl_mem_free(id);
         return NULL;
     }
     ncl_message_finalise(request);
     item = ncl_set_request_item_new(id);
-    free(id);
+    ncl_mem_free(id);
     if (item == NULL) {
         ncl_message_free(request);
         return NULL;
@@ -205,12 +205,12 @@ static ncl_message *build_query(ncl_client *client, ncl_operation operation,
     }
     request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
     if (request == NULL) {
-        free(id);
+        ncl_mem_free(id);
         return NULL;
     }
     ncl_message_finalise(request);
     item = ncl_query_request_item_new(id);
-    free(id);
+    ncl_mem_free(id);
     if (item == NULL) {
         ncl_message_free(request);
         return NULL;

@@ -16,6 +16,7 @@
 #define NCL_HTTP_MAX_BODY_BYTES (4 * 1024 * 1024)
 #define NCL_HTTP_MAX_HEADERS 32
 #define NCL_HTTP_MAX_ROUTES 64
+#define NCL_HTTP_MAX_OWNED_CONTEXTS 8
 #define NCL_HTTP_READ_TIMEOUT_MS 5000
 
 typedef struct {
@@ -53,6 +54,12 @@ typedef struct {
     void            *user;
 } ncl_http_route;
 
+/** A context the server was told it owns, released once on free. */
+typedef struct {
+    void        *context;
+    ncl_free_fn  free_fn;
+} ncl_http_owned_context;
+
 struct ncl_http_server {
     unsigned        port;
     ncl_socket     *listener;
@@ -61,6 +68,8 @@ struct ncl_http_server {
     volatile bool   stopping;
     ncl_http_route  routes[NCL_HTTP_MAX_ROUTES];
     size_t          route_count;
+    ncl_http_owned_context owned[NCL_HTTP_MAX_OWNED_CONTEXTS];
+    size_t          owned_count;
     ncl_mutex      *mutex;
     size_t          request_count;
     bool            cors;
@@ -275,7 +284,7 @@ const char *ncl_http_form_field(const ncl_http_request *request, const char *nam
     }
     /* Keep the decoded string alive for the lifetime of the request. */
     if (ncl_ptrvec_push_owned(&mutable_request->decoded, value) != NCL_OK) {
-        free(value);
+        ncl_mem_free(value);
         return NULL;
     }
     return value;
@@ -293,7 +302,7 @@ const char *ncl_http_query(const ncl_http_request *request, const char *name)
         return NULL;
     }
     if (ncl_ptrvec_push_owned(&mutable_request->decoded, value) != NCL_OK) {
-        free(value);
+        ncl_mem_free(value);
         return NULL;
     }
     return value;
@@ -305,17 +314,17 @@ static void ncl_http_request_free(ncl_http_request *request)
     if (request == NULL) {
         return;
     }
-    free(request->method);
-    free(request->target);
-    free(request->path);
-    free(request->query);
+    ncl_mem_free(request->method);
+    ncl_mem_free(request->target);
+    ncl_mem_free(request->path);
+    ncl_mem_free(request->query);
     for (i = 0; i < request->header_count; i++) {
-        free(request->headers[i].name);
-        free(request->headers[i].value);
+        ncl_mem_free(request->headers[i].name);
+        ncl_mem_free(request->headers[i].value);
     }
-    free(request->body);
+    ncl_mem_free(request->body);
     ncl_ptrvec_free(&request->decoded);
-    free(request);
+    ncl_mem_free(request);
 }
 
 /* ============================================================== response == */
@@ -337,7 +346,7 @@ void ncl_http_set_header(ncl_http_response *response, const char *name,
     }
     for (i = 0; i < response->header_count; i++) {
         if (ncl_streq_ignore_case(response->headers[i].name, name)) {
-            free(response->headers[i].value);
+            ncl_mem_free(response->headers[i].value);
             response->headers[i].value = value != NULL ? ncl_strdup(value) : NULL;
             return;
         }
@@ -358,12 +367,12 @@ void ncl_http_reply(ncl_http_response *response, int status,
         return;
     }
     response->status = status;
-    free(response->body);
+    ncl_mem_free(response->body);
     response->body = NULL;
     response->body_len = 0;
     response->body_owned = true;
     if (body_len > 0) {
-        response->body = (char *)malloc(body_len + 1);
+        response->body = (char *)ncl_mem_alloc(body_len + 1);
         if (response->body == NULL) {
             response->status = NCL_HTTP_INTERNAL_ERROR;
             return;
@@ -394,7 +403,7 @@ void ncl_http_reply_json(ncl_http_response *response, int status,
     }
     ncl_http_reply(response, status, "application/json; charset=utf-8", text,
                    strlen(text));
-    free(text);
+    ncl_mem_free(text);
 }
 
 static void ncl_http_response_free(ncl_http_response *response)
@@ -404,11 +413,11 @@ static void ncl_http_response_free(ncl_http_response *response)
         return;
     }
     for (i = 0; i < response->header_count; i++) {
-        free(response->headers[i].name);
-        free(response->headers[i].value);
+        ncl_mem_free(response->headers[i].name);
+        ncl_mem_free(response->headers[i].value);
     }
-    free(response->body);
-    free(response);
+    ncl_mem_free(response->body);
+    ncl_mem_free(response);
 }
 
 /* ================================================================ parsing = */
@@ -487,11 +496,11 @@ static ncl_http_request *ncl_http_parse_request(char *head, size_t head_len,
     char *rest;
 
     (void)head_len;
-    request = (ncl_http_request *)calloc(1, sizeof(ncl_http_request));
+    request = (ncl_http_request *)ncl_mem_calloc(1, sizeof(ncl_http_request));
     if (request == NULL) {
         return NULL;
     }
-    ncl_ptrvec_init(&request->decoded, free);
+    ncl_ptrvec_init(&request->decoded, ncl_mem_free);
 
     /* Request line: METHOD SP TARGET SP VERSION */
     line = ncl_http_next_line(&cursor);
@@ -557,14 +566,14 @@ static ncl_http_request *ncl_http_parse_request(char *head, size_t head_len,
         const char *length_text = ncl_http_header(request, "Content-Length");
         long long length = length_text != NULL ? strtoll(length_text, NULL, 10) : 0;
         if (length > 0 && length <= NCL_HTTP_MAX_BODY_BYTES) {
-            request->body = (char *)malloc((size_t)length + 1);
+            request->body = (char *)ncl_mem_alloc((size_t)length + 1);
             if (request->body != NULL &&
                 ncl_socket_recv_exact(sock, request->body, (size_t)length,
                                       NCL_HTTP_READ_TIMEOUT_MS) == NCL_OK) {
                 request->body[length] = '\0';
                 request->body_len = (size_t)length;
             } else {
-                free(request->body);
+                ncl_mem_free(request->body);
                 request->body = NULL;
             }
         }
@@ -651,7 +660,7 @@ static void ncl_http_handle(ncl_http_server *server, ncl_socket *sock)
         return;
     }
 
-    response = (ncl_http_response *)calloc(1, sizeof(ncl_http_response));
+    response = (ncl_http_response *)ncl_mem_calloc(1, sizeof(ncl_http_response));
     if (response == NULL) {
         ncl_http_request_free(request);
         return;
@@ -721,7 +730,7 @@ static void ncl_http_accept_thread(void *arg)
 
 ncl_http_server *ncl_http_server_create(unsigned port)
 {
-    ncl_http_server *server = (ncl_http_server *)calloc(1, sizeof(ncl_http_server));
+    ncl_http_server *server = (ncl_http_server *)ncl_mem_calloc(1, sizeof(ncl_http_server));
     if (server == NULL) {
         return NULL;
     }
@@ -729,7 +738,7 @@ ncl_http_server *ncl_http_server_create(unsigned port)
     server->cors = true;
     server->mutex = ncl_mutex_create();
     if (server->mutex == NULL) {
-        free(server);
+        ncl_mem_free(server);
         return NULL;
     }
     return server;
@@ -743,11 +752,42 @@ void ncl_http_server_free(ncl_http_server *server)
     }
     ncl_http_server_stop(server);
     for (i = 0; i < server->route_count; i++) {
-        free(server->routes[i].method);
-        free(server->routes[i].path);
+        ncl_mem_free(server->routes[i].method);
+        ncl_mem_free(server->routes[i].path);
     }
+    /* Routes are gone, so nothing references the contexts any more; this is the
+     * only place they are released, which is why registering one twice is
+     * refused (see ncl_http_server_own_context). */
+    for (i = 0; i < server->owned_count; i++) {
+        server->owned[i].free_fn(server->owned[i].context);
+    }
+    server->owned_count = 0;
     ncl_mutex_destroy(server->mutex);
-    free(server);
+    ncl_mem_free(server);
+}
+
+ncl_err ncl_http_server_own_context(ncl_http_server *server, void *context,
+                                    ncl_free_fn free_fn)
+{
+    size_t i;
+
+    if (server == NULL || context == NULL || free_fn == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    for (i = 0; i < server->owned_count; i++) {
+        if (server->owned[i].context == context) {
+            /* One release per pointer: a second registration would be a double
+             * free waiting for the server to be freed. */
+            return NCL_ERR_EXISTS;
+        }
+    }
+    if (server->owned_count >= NCL_HTTP_MAX_OWNED_CONTEXTS) {
+        return NCL_ERR_NOMEM;
+    }
+    server->owned[server->owned_count].context = context;
+    server->owned[server->owned_count].free_fn = free_fn;
+    server->owned_count++;
+    return NCL_OK;
 }
 
 ncl_err ncl_http_server_route(ncl_http_server *server, const char *method,
@@ -777,7 +817,7 @@ ncl_err ncl_http_server_route(ncl_http_server *server, const char *method,
         route->path[route->prefix_len] = '\0';
     }
     if (route->path == NULL) {
-        free(route->method);
+        ncl_mem_free(route->method);
         return NCL_ERR_NOMEM;
     }
     server->route_count++;

@@ -120,7 +120,7 @@ static void ncl_mqtt_client_set_error(ncl_mqtt_client *client, const char *fmt, 
     va_end(ap);
 
     ncl_mutex_lock(client->mutex);
-    free(client->last_error);
+    ncl_mem_free(client->last_error);
     client->last_error = ncl_strdup(buffer);
     ncl_mutex_unlock(client->mutex);
 }
@@ -317,7 +317,7 @@ static void ncl_mqtt_subscription_forget(ncl_mqtt_client *client,
     ncl_mutex_lock(client->mutex);
     for (i = 0; i < client->subscription_count; i++) {
         if (strcmp(client->subscriptions[i].filter, filter) == 0) {
-            free(client->subscriptions[i].filter);
+            ncl_mem_free(client->subscriptions[i].filter);
             memmove(&client->subscriptions[i], &client->subscriptions[i + 1],
                     (client->subscription_count - i - 1) * sizeof(ncl_mqtt_subscription));
             client->subscription_count--;
@@ -456,7 +456,7 @@ static bool ncl_mqtt_client_read_packet(ncl_mqtt_client *client,
         remaining = value;
     }
 
-    buffer = (unsigned char *)malloc(remaining > 0 ? remaining : 1);
+    buffer = (unsigned char *)ncl_mem_alloc(remaining > 0 ? remaining : 1);
     if (buffer == NULL) {
         ncl_mqtt_client_set_error(client, "内存不足，无法读取 MQTT 报文");
         return false;
@@ -465,7 +465,7 @@ static bool ncl_mqtt_client_read_packet(ncl_mqtt_client *client,
         ncl_socket_recv_exact(sock, buffer, remaining,
                               client->connect_timeout_ms) != NCL_OK) {
         client->link_closed = true;
-        free(buffer);
+        ncl_mem_free(buffer);
         return false;
     }
     client->link_closed = false; /* a complete frame arrived */
@@ -731,12 +731,12 @@ static ncl_err ncl_mqtt_client_handshake(ncl_mqtt_client *client, bool reconnect
     if (type != NCL_MQTT_PKT_CONNACK) {
         ncl_mqtt_client_set_error(client, "期望 CONNACK，收到 %s",
                                   ncl_mqtt_packet_type_name(type));
-        free(body);
+        ncl_mem_free(body);
         return NCL_ERR;
     }
 
     rc = ncl_mqtt_decode_connack(body, body_len, &connack);
-    free(body);
+    ncl_mem_free(body);
     if (rc != NCL_OK) {
         ncl_mqtt_client_set_error(client, "CONNACK 报文解析失败");
         return rc;
@@ -990,7 +990,7 @@ static void ncl_mqtt_client_reader(void *arg)
                           ncl_mqtt_packet_type_name(type));
             break;
         }
-        free(body);
+        ncl_mem_free(body);
         if (session_over) {
             break;
         }
@@ -1069,14 +1069,14 @@ ncl_mqtt_client *ncl_mqtt_client_create(const ncl_mqtt_client_options *options)
         if (!ncl_socket_tls_available()) {
             ncl_log_error("TLS 未编译进本库（用 -DNCLINK_WITH_TLS=ON 重新构建）: %s",
                           options->url);
-            free(host);
+            ncl_mem_free(host);
             return NULL;
         }
     }
 
-    client = (ncl_mqtt_client *)calloc(1, sizeof(*client));
+    client = (ncl_mqtt_client *)ncl_mem_calloc(1, sizeof(*client));
     if (client == NULL) {
-        free(host);
+        ncl_mem_free(host);
         return NULL;
     }
     client->mutex = ncl_mutex_create();
@@ -1159,22 +1159,22 @@ void ncl_mqtt_client_destroy(ncl_mqtt_client *client)
         }
     }
     for (i = 0; i < client->subscription_count; i++) {
-        free(client->subscriptions[i].filter);
+        ncl_mem_free(client->subscriptions[i].filter);
     }
-    free(client->url);
-    free(client->host);
-    free(client->tls_ca_file);
-    free(client->tls_client_cert);
-    free(client->tls_client_key);
-    free(client->tls_server_name);
-    free(client->client_id);
-    free(client->username);
-    free(client->password);
-    free(client->last_error);
+    ncl_mem_free(client->url);
+    ncl_mem_free(client->host);
+    ncl_mem_free(client->tls_ca_file);
+    ncl_mem_free(client->tls_client_cert);
+    ncl_mem_free(client->tls_client_key);
+    ncl_mem_free(client->tls_server_name);
+    ncl_mem_free(client->client_id);
+    ncl_mem_free(client->username);
+    ncl_mem_free(client->password);
+    ncl_mem_free(client->last_error);
     ncl_cond_destroy(client->cond);
     ncl_mutex_destroy(client->send_mutex);
     ncl_mutex_destroy(client->mutex);
-    free(client);
+    ncl_mem_free(client);
 }
 
 ncl_err ncl_mqtt_client_connect(ncl_mqtt_client *client)
@@ -1201,6 +1201,20 @@ ncl_err ncl_mqtt_client_connect(ncl_mqtt_client *client)
     }
     client->stopping = false;
     client->user_disconnect = false;
+
+    /*
+     * A reader that ended on its own (server DISCONNECT, network failure) leaves
+     * a finished thread object behind: nothing joins it until the client is
+     * destroyed. Starting a new reader would overwrite the slot and leak the
+     * object - and on POSIX a finished thread keeps its stack until it is
+     * joined, so a device that reconnects for days would grow without bound.
+     * Anything still running returned above, so this join cannot block on a
+     * live session.
+     */
+    if (client->reader != NULL) {
+        ncl_thread_join(client->reader);
+        client->reader = NULL;
+    }
 
     /* Handshake synchronously so the caller observes connect failures, then
      * hand the socket over to the reader thread. */

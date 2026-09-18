@@ -241,7 +241,7 @@ NCL_TEST_MAIN_BEGIN()
     {
         char *topic = ncl_topic_event(TEST_SN, NULL);
         NCL_CHECK_EQ_STR(topic, "Event/" TEST_SN);
-        free(topic);
+        ncl_free_safe(topic);
         NCL_CHECK_EQ_STR(NCL_TOPIC_EVENT_PREFIX, "Event/");
     }
 
@@ -265,7 +265,7 @@ NCL_TEST_MAIN_BEGIN()
         NCL_CHECK(strstr(text, "\"time\":\"") != NULL);
         NCL_CHECK(strstr(text, "\"event\":{\"key\":\"STATUS\",\"value\":7}") !=
                   NULL);
-        free(text);
+        ncl_free_safe(text);
 
         /* Round trip. */
         text = ncl_message_write_string(message);
@@ -282,7 +282,7 @@ NCL_TEST_MAIN_BEGIN()
                 ncl_message_free(parsed);
             }
         }
-        free(text);
+        ncl_free_safe(text);
         ncl_message_free(message);
     }
 

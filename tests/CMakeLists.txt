@@ -6,6 +6,46 @@ add_executable(ncl_test_common test_common.c)
 target_link_libraries(ncl_test_common PRIVATE nclink_core)
 add_test(NAME common COMMAND ncl_test_common)
 
+# Allocation seam: the same binary passes with the runtime allocator and with
+# the NCL_STATIC_MEM pool (the pooling specific checks need NCL_STATIC_MEM).
+add_executable(ncl_test_mem test_mem.c)
+target_link_libraries(ncl_test_mem PRIVATE nclink_core)
+if(NCLINK_STATIC_MEM)
+    target_compile_definitions(ncl_test_mem PRIVATE
+            NCL_STATIC_MEM=1
+            NCL_MEM_POOL_BYTES=${NCLINK_MEM_POOL_BYTES})
+endif()
+add_test(NAME mem COMMAND ncl_test_mem)
+
+# Monte Carlo pressure test: random sizes and random operation sequences, with
+# a replay of every seed to catch drift. Runs against the pool in
+# NCLINK_STATIC_MEM builds and against the runtime allocator otherwise.
+add_executable(ncl_test_mem_mc test_mem_mc.c)
+target_link_libraries(ncl_test_mem_mc PRIVATE nclink_core)
+if(NCLINK_STATIC_MEM)
+    target_compile_definitions(ncl_test_mem_mc PRIVATE
+            NCL_STATIC_MEM=1
+            NCL_MEM_POOL_BYTES=${NCLINK_MEM_POOL_BYTES})
+endif()
+add_test(NAME mem_mc COMMAND ncl_test_mem_mc)
+set_tests_properties(mem_mc PROPERTIES TIMEOUT 300)
+
+# Multithreaded pressure test: several threads hammering one pool, handing
+# ownership of blocks across threads, with the main thread checking the pool
+# invariants while they run. NCL_MEM_MT_SECONDS turns it into a soak.
+add_executable(ncl_test_mem_mt test_mem_mt.c)
+target_link_libraries(ncl_test_mem_mt PRIVATE nclink_core)
+if(NCLINK_STATIC_MEM)
+    target_compile_definitions(ncl_test_mem_mt PRIVATE
+            NCL_STATIC_MEM=1
+            NCL_MEM_POOL_BYTES=${NCLINK_MEM_POOL_BYTES})
+    if(NCLINK_MEM_SINGLE_THREAD)
+        target_compile_definitions(ncl_test_mem_mt PRIVATE NCL_MEM_SINGLE_THREAD=1)
+    endif()
+endif()
+add_test(NAME mem_mt COMMAND ncl_test_mem_mt)
+set_tests_properties(mem_mt PROPERTIES TIMEOUT 600)
+
 add_executable(ncl_test_topic test_topic.c)
 target_link_libraries(ncl_test_topic PRIVATE nclink_core)
 add_test(NAME topic COMMAND ncl_test_topic)

@@ -143,13 +143,13 @@ static ncl_schema *ncl_server_intern_schema(ncl_server *server,
     if (schema == NULL) {
         ncl_log_error("工具 %s 的方法 %s 参数 schema 无效: %s", tool_name,
                       method_name, error != NULL ? error : "?");
-        free(error);
+        ncl_mem_free(error);
         return NULL;
     }
     if (server->schema_count == server->schema_capacity) {
         size_t capacity =
             server->schema_capacity == 0 ? 8 : server->schema_capacity * 2;
-        ncl_interned_schema *grown = (ncl_interned_schema *)realloc(
+        ncl_interned_schema *grown = (ncl_interned_schema *)ncl_mem_realloc(
             server->schemas, capacity * sizeof(ncl_interned_schema));
         if (grown == NULL) {
             ncl_schema_free(schema);
@@ -182,7 +182,7 @@ static ncl_err ncl_server_add_method(ncl_server *server, const char *tool_name,
     if (server->binding_count == server->binding_capacity) {
         size_t capacity = server->binding_capacity == 0 ? 16
                                                         : server->binding_capacity * 2;
-        ncl_binding *grown = (ncl_binding *)realloc(
+        ncl_binding *grown = (ncl_binding *)ncl_mem_realloc(
             server->bindings, capacity * sizeof(ncl_binding));
         if (grown == NULL) {
             return NCL_ERR_NOMEM;
@@ -199,9 +199,9 @@ static ncl_err ncl_server_add_method(ncl_server *server, const char *tool_name,
     binding->fn = fn;
     binding->params_schema = params_schema;
     if (binding->key == NULL || binding->method_name == NULL) {
-        free(binding->key);
-        free(binding->method_name);
-        free(binding->tool_name);
+        ncl_mem_free(binding->key);
+        ncl_mem_free(binding->method_name);
+        ncl_mem_free(binding->tool_name);
         return NCL_ERR_NOMEM;
     }
     server->binding_count++;
@@ -274,7 +274,7 @@ ncl_err ncl_server_register_tool(ncl_server *server, const char *tool_name,
         }
     }
 
-    free(server->last_tool_name);
+    ncl_mem_free(server->last_tool_name);
     server->last_tool_name = ncl_strdup(tool_name);
     server->last_tool_instance = instance;
     return NCL_OK;
@@ -401,7 +401,7 @@ ncl_json *ncl_server_openapi_schema(ncl_server *server, const char *base_url)
         }
         ncl_json_obj_set_string(entry, "url", url != NULL ? url : "/api");
         ncl_json_obj_set_string(entry, "description", "MCP API Server");
-        free(url);
+        ncl_mem_free(url);
         ncl_json_arr_push(servers, entry);
     }
     ncl_json_obj_set(document, "servers", servers);
@@ -479,7 +479,7 @@ ncl_server *ncl_server_create(const ncl_server_options *options)
     if (options == NULL || options->sn == NULL) {
         return NULL;
     }
-    server = (ncl_server *)calloc(1, sizeof(ncl_server));
+    server = (ncl_server *)ncl_mem_calloc(1, sizeof(ncl_server));
     if (server == NULL) {
         return NULL;
     }
@@ -507,7 +507,7 @@ void ncl_server_free(ncl_server *server)
     }
     /* Sampling tasks must be stopped (and joined) first: their collect cycle
      * queries the tool bindings and the model, so releasing either while a task
-     * is still running is a use-after-free (seen as a rare SIGSEGV in
+     * is still running is a use-after-ncl_mem_free(seen as a rare SIGSEGV in
      * ncl_server_lookup on a sampler thread). */
     ncl_server_stop_all_samples(server);
     if (server->user_cleanup != NULL) {
@@ -516,21 +516,21 @@ void ncl_server_free(ncl_server *server)
         server->user_cleanup = NULL;
     }
     for (i = 0; i < server->binding_count; i++) {
-        free(server->bindings[i].key);
-        free(server->bindings[i].method_name);
-        free(server->bindings[i].tool_name);
+        ncl_mem_free(server->bindings[i].key);
+        ncl_mem_free(server->bindings[i].method_name);
+        ncl_mem_free(server->bindings[i].tool_name);
     }
-    free(server->bindings);
+    ncl_mem_free(server->bindings);
     for (i = 0; i < server->schema_count; i++) {
-        free(server->schemas[i].text);
+        ncl_mem_free(server->schemas[i].text);
         ncl_schema_free(server->schemas[i].schema);
     }
-    free(server->schemas);
-    free(server->last_tool_name);
+    ncl_mem_free(server->schemas);
+    ncl_mem_free(server->last_tool_name);
     ncl_node_free(server->root_node);
-    free(server->sn);
+    ncl_mem_free(server->sn);
     ncl_mutex_destroy(server->mutex);
-    free(server);
+    ncl_mem_free(server);
 }
 
 ncl_err ncl_server_set_user_data(ncl_server *server, void *data,
@@ -609,7 +609,7 @@ ncl_err ncl_server_save_model(ncl_server *server)
         return NCL_ERR_NOMEM;
     }
     rc = ncl_file_write_all(path, text, strlen(text));
-    free(text);
+    ncl_mem_free(text);
     return rc;
 }
 
@@ -715,7 +715,7 @@ ncl_message *ncl_server_invoke_query(ncl_server *server,
                 ncl_json_free(value);
             }
         }
-        free(path);
+        ncl_mem_free(path);
         if (ncl_message_add_query_response_item(response, result_item) != NCL_OK) {
             break;
         }
@@ -782,7 +782,7 @@ ncl_message *ncl_server_invoke_set(ncl_server *server,
                 ncl_json_free(value);
             }
         }
-        free(path);
+        ncl_mem_free(path);
         if (ncl_message_add_set_response_item(response, result_item) != NCL_OK) {
             break;
         }
@@ -857,7 +857,7 @@ ncl_message *ncl_server_check_method_call(ncl_server *server,
         /* An unknown path answers "没有找到方法". */
         ncl_message_set_code(response, NCL_KW_CODE_NG);
         ncl_message_set_reason(response, "没有找到方法");
-        free(parsed);
+        ncl_mem_free(parsed);
         return response;
     }
     if (binding->params_schema != NULL) {
@@ -868,7 +868,7 @@ ncl_message *ncl_server_check_method_call(ncl_server *server,
             char *reason = ncl_schema_join_errors(&errors);
             ncl_message_set_code(response, NCL_KW_CODE_NG);
             ncl_message_set_reason(response, reason);
-            free(reason);
+            ncl_mem_free(reason);
         } else {
             ncl_message_set_code(response, NCL_KW_CODE_OK);
         }
@@ -885,7 +885,7 @@ ncl_message *ncl_server_check_method_call(ncl_server *server,
             ncl_message_set_reason(response, "参数数量不匹配");
         }
     }
-    free(parsed);
+    ncl_mem_free(parsed);
     return response;
 }
 
@@ -957,8 +957,8 @@ ncl_message *ncl_server_invoke_method_call(ncl_server *server,
     if (binding == NULL) {
         ncl_message_set_code(response, NCL_KW_CODE_NG);
         ncl_message_set_reason(response, "未找到方法");
-        free(method_copy);
-        free(tool_copy);
+        ncl_mem_free(method_copy);
+        ncl_mem_free(tool_copy);
         return response;
     }
 
@@ -975,11 +975,11 @@ ncl_message *ncl_server_invoke_method_call(ncl_server *server,
     } else {
         ncl_message_set_code(response, NCL_KW_CODE_NG);
         ncl_message_set_reason(response, reason != NULL ? reason : ncl_err_name(rc));
-        free(reason);
+        ncl_mem_free(reason);
         ncl_json_free(value);
     }
-    free(method_copy);
-    free(tool_copy);
+    ncl_mem_free(method_copy);
+    ncl_mem_free(tool_copy);
     return response;
 }
 
@@ -1042,7 +1042,7 @@ ncl_message *ncl_server_dispatch(ncl_server *server, const char *topic,
         schema = ncl_server_openapi_schema_json(server, NULL);
         if (schema != NULL) {
             ncl_message_set_open_api_schema(response, schema);
-            free(schema);
+            ncl_mem_free(schema);
         }
         return response;
     }
@@ -1071,7 +1071,7 @@ ncl_err ncl_server_publish(ncl_server *server, const char *topic,
         }
         rc = server->publish_sink(server->publish_user, topic, payload,
                                   strlen(payload));
-        free(payload);
+        ncl_mem_free(payload);
         return rc;
     }
     if (server->mqtt == NULL) {
@@ -1089,7 +1089,7 @@ ncl_err ncl_server_publish(ncl_server *server, const char *topic,
     if (rc != NCL_OK) {
         ncl_log_error("应答发布失败: %s", topic);
     }
-    free(payload);
+    ncl_mem_free(payload);
     return rc;
 }
 
@@ -1159,7 +1159,7 @@ ncl_err ncl_server_subscribe(ncl_server *server)
         }
     }
     for (i = 0; i < 6; i++) {
-        free(topics[i]);
+        ncl_mem_free(topics[i]);
     }
     return rc;
 }
@@ -1189,8 +1189,8 @@ static void ncl_server_task_run(void *arg)
             ncl_message_free(response);
         }
     }
-    free(task->topic);
-    free(task);
+    ncl_mem_free(task->topic);
+    ncl_mem_free(task);
 }
 
 void ncl_server_on_message(ncl_server *server, const char *topic,
@@ -1211,7 +1211,7 @@ void ncl_server_on_message(ncl_server *server, const char *topic,
      * not run on the MQTT reader thread, because publishing the response from
      * there would deadlock waiting for acknowledgements the reader itself
      * still has to process. */
-    task = (ncl_server_task *)calloc(1, sizeof(ncl_server_task));
+    task = (ncl_server_task *)ncl_mem_calloc(1, sizeof(ncl_server_task));
     if (task == NULL) {
         ncl_message_free(request);
         return;
@@ -1220,7 +1220,7 @@ void ncl_server_on_message(ncl_server *server, const char *topic,
     task->topic = ncl_strdup(topic);
     task->request = request;
     if (task->topic == NULL) {
-        free(task);
+        ncl_mem_free(task);
         ncl_message_free(request);
         return;
     }
@@ -1271,7 +1271,7 @@ ncl_err ncl_server_push_event_ex(ncl_server *server, const char *event_id,
         server->events++;
         ncl_mutex_unlock(server->mutex);
     }
-    free(topic);
+    ncl_mem_free(topic);
     ncl_message_free(message);
     return rc;
 }
@@ -1300,13 +1300,13 @@ static void ncl_sample_task_free(ncl_sample_task *task)
     if (task == NULL) {
         return;
     }
-    free(task->id);
-    free(task->topic);
+    ncl_mem_free(task->id);
+    ncl_mem_free(task->topic);
     ncl_node_free(task->config);
     ncl_strvec_free(&task->paths);
     ncl_mutex_destroy(task->mutex);
     ncl_cond_destroy(task->cond);
-    free(task);
+    ncl_mem_free(task);
 }
 
 /** Sleep that wakes early when the task is asked to stop. */
@@ -1508,7 +1508,7 @@ static ncl_err ncl_sample_task_create(ncl_server *server,
         return NCL_ERR_INVALID_ARG;
     }
 
-    task = (ncl_sample_task *)calloc(1, sizeof(ncl_sample_task));
+    task = (ncl_sample_task *)ncl_mem_calloc(1, sizeof(ncl_sample_task));
     if (task == NULL) {
         return NCL_ERR_NOMEM;
     }
@@ -1560,11 +1560,11 @@ static ncl_err ncl_sample_task_create(ncl_server *server,
             return NCL_ERR_NOT_FOUND;
         }
         if (ncl_strvec_push(&task->paths, path) != NCL_OK) {
-            free(path);
+            ncl_mem_free(path);
             ncl_sample_task_free(task);
             return NCL_ERR_NOMEM;
         }
-        free(path);
+        ncl_mem_free(path);
     }
 
     /* 表头在构造阶段就已完整：paths 的项数 == 采样项个数。 */
@@ -1635,7 +1635,7 @@ ncl_err ncl_server_start_sample(ncl_server *server, const ncl_node *config)
     if (server->sample_count == server->sample_capacity) {
         size_t capacity = server->sample_capacity == 0 ? 4
                                                        : server->sample_capacity * 2;
-        ncl_sample_task **grown = (ncl_sample_task **)realloc(
+        ncl_sample_task **grown = (ncl_sample_task **)ncl_mem_realloc(
             server->samples, capacity * sizeof(ncl_sample_task *));
         if (grown == NULL) {
             ncl_mutex_unlock(server->mutex);
@@ -1704,7 +1704,7 @@ void ncl_server_stop_all_samples(ncl_server *server)
     for (i = 0; i < count; i++) {
         ncl_sample_task_stop(tasks[i]);
     }
-    free(tasks);
+    ncl_mem_free(tasks);
 }
 
 ncl_err ncl_server_init_samples(ncl_server *server)

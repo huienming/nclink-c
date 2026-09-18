@@ -69,11 +69,11 @@ static ncl_err ncl_config_read(const char *path, size_t max_bytes, char **out,
         return NCL_ERR_IO;
     }
     if (len > max_bytes) {
-        free(text);
+        ncl_mem_free(text);
         return NCL_ERR_RANGE;
     }
     if (ncl_str_is_blank(text)) {
-        free(text);
+        ncl_mem_free(text);
         return NCL_ERR_NOT_FOUND;
     }
     *out = text;
@@ -102,7 +102,7 @@ static char *ncl_config_random_sn(void)
     if (ncl_uuid4(uuid, sizeof(uuid)) != NCL_OK) {
         return NULL;
     }
-    out = (char *)malloc(33);
+    out = (char *)ncl_mem_alloc(33);
     if (out == NULL) {
         return NULL;
     }
@@ -160,19 +160,19 @@ ncl_err ncl_config_init(const char *sn, char **out_sn)
     {
         const char *sn_file = ncl_env_sn_file();
         if (sn_file == NULL) {
-            free(serial);
+            ncl_mem_free(serial);
             return NCL_ERR_IO;
         }
         rc = ncl_file_write_all(sn_file, serial, strlen(serial));
         if (rc != NCL_OK) {
-            free(serial);
+            ncl_mem_free(serial);
             return rc;
         }
     }
     if (out_sn != NULL) {
         *out_sn = serial;
     } else {
-        free(serial);
+        ncl_mem_free(serial);
     }
     return NCL_OK;
 }
@@ -196,7 +196,7 @@ ncl_json *ncl_config_get_model(void)
         return NULL;
     }
     document = ncl_json_parse_cstr(text, NULL);
-    free(text);
+    ncl_mem_free(text);
     return document;
 }
 
@@ -216,7 +216,7 @@ ncl_err ncl_config_set_model(const char *json)
             ncl_asprintf(&model_dir, "%s%cmodel", conf, NCL_PATH_SEP);
             if (model_dir != NULL) {
                 ncl_mkdir_p(model_dir);
-                free(model_dir);
+                ncl_mem_free(model_dir);
             }
         }
         return ncl_file_write_all(path, json, strlen(json));
@@ -236,7 +236,7 @@ ncl_json *ncl_config_get_driver(void)
         return NULL;
     }
     document = ncl_json_parse_cstr(text, NULL);
-    free(text);
+    ncl_mem_free(text);
     return document;
 }
 
@@ -257,7 +257,7 @@ ncl_err ncl_config_set_driver(const char *json)
             ncl_asprintf(&driver_dir, "%s%cdriver", conf, NCL_PATH_SEP);
             if (driver_dir != NULL) {
                 ncl_mkdir_p(driver_dir);
-                free(driver_dir);
+                ncl_mem_free(driver_dir);
             }
         }
     }
@@ -275,9 +275,9 @@ ncl_json *ncl_config_get_server_list(void)
     if (path != NULL &&
         ncl_config_read(path, NCL_CONFIG_MAX_FILE_BYTES, &text, NULL) == NCL_OK) {
         document = ncl_json_parse_cstr(text, NULL);
-        free(text);
+        ncl_mem_free(text);
     }
-    free(path);
+    ncl_mem_free(path);
     if (document != NULL) {
         return document;
     }
@@ -316,12 +316,12 @@ ncl_err ncl_config_set_server_list(const char *json)
             ncl_asprintf(&driver_dir, "%s%cdriver", conf, NCL_PATH_SEP);
             if (driver_dir != NULL) {
                 ncl_mkdir_p(driver_dir);
-                free(driver_dir);
+                ncl_mem_free(driver_dir);
             }
         }
     }
     rc = ncl_file_write_all(path, json, strlen(json));
-    free(path);
+    ncl_mem_free(path);
     return rc;
 }
 
@@ -343,7 +343,7 @@ ncl_json *ncl_config_get_mqtt(void)
     }
     config = ncl_json_new_object();
     if (config == NULL) {
-        free(text);
+        ncl_mem_free(text);
         return NULL;
     }
     {
@@ -373,7 +373,7 @@ ncl_json *ncl_config_get_mqtt(void)
             cursor = line_end + 1;
         }
     }
-    free(text);
+    ncl_mem_free(text);
     return config;
 }
 
@@ -421,9 +421,9 @@ ncl_json *ncl_config_get_ip_conf(void)
     if (path != NULL &&
         ncl_config_read(path, NCL_CONFIG_MAX_FILE_BYTES, &text, NULL) == NCL_OK) {
         document = ncl_json_parse_cstr(text, NULL);
-        free(text);
+        ncl_mem_free(text);
     }
-    free(path);
+    ncl_mem_free(path);
     return document;
 }
 
@@ -446,6 +446,6 @@ ncl_err ncl_config_set_ip_conf(const char *json)
         }
     }
     rc = ncl_file_write_all(path, json, strlen(json));
-    free(path);
+    ncl_mem_free(path);
     return rc;
 }

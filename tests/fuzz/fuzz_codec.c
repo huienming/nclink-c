@@ -34,7 +34,7 @@ static void run_json(const uint8_t *data, size_t size) {
     value = ncl_json_parse((const char *)data, size, &err);
     if (value != NULL) {
         char *text = ncl_json_write_string(value);
-        free(text);
+        ncl_free_safe(text);
         ncl_json_free(value);
     }
     ncl_strbuf_free(&err);
@@ -50,7 +50,7 @@ static void run_message(const uint8_t *data, size_t size) {
     if (msg != NULL) {
         char *text = ncl_message_write_string(msg);
         (void)ncl_message_is_valid(msg);
-        free(text);
+        ncl_free_safe(text);
         ncl_message_free(msg);
     }
 }

@@ -135,7 +135,7 @@ ncl_server_file_tool *ncl_server_file_tool_create(const char *ip, unsigned port,
     if (ip == NULL || sn == NULL) {
         return NULL;
     }
-    tool = (ncl_server_file_tool *)calloc(1, sizeof(*tool));
+    tool = (ncl_server_file_tool *)ncl_mem_calloc(1, sizeof(*tool));
     if (tool == NULL) {
         return NULL;
     }
@@ -173,14 +173,14 @@ void ncl_server_file_tool_free(ncl_server_file_tool *tool)
         return;
     }
     ncl_server_file_tool_disconnect(tool);
-    free(tool->ip);
-    free(tool->user);
-    free(tool->password);
-    free(tool->sn);
+    ncl_mem_free(tool->ip);
+    ncl_mem_free(tool->user);
+    ncl_mem_free(tool->password);
+    ncl_mem_free(tool->sn);
     if (tool->lock != NULL) {
         ncl_mutex_destroy(tool->lock);
     }
-    free(tool);
+    ncl_mem_free(tool);
 }
 
 /** A live session is validated with NOOP. */

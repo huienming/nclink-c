@@ -59,7 +59,7 @@ static ncl_err ncl_client_replace_topic(char **slot, char *topic)
     if (topic == NULL) {
         return NCL_ERR_NOMEM;
     }
-    free(*slot);
+    ncl_mem_free(*slot);
     *slot = topic;
     return NCL_OK;
 }
@@ -71,7 +71,7 @@ ncl_client *ncl_client_create(const char *sn, ncl_message_channel *channel)
     if (sn == NULL || channel == NULL) {
         return NULL;
     }
-    client = (ncl_client *)calloc(1, sizeof(ncl_client));
+    client = (ncl_client *)ncl_mem_calloc(1, sizeof(ncl_client));
     if (client == NULL) {
         return NULL;
     }
@@ -104,7 +104,7 @@ ncl_client *ncl_client_create(const char *sn, ncl_message_channel *channel)
             ncl_asprintf(&filter, "%s/#", base) == NCL_OK) {
             ncl_client_replace_topic(&client->sample_topic, filter);
         }
-        free(base);
+        ncl_mem_free(base);
     }
 
     if (client->query_response == NULL || client->probe_response == NULL ||
@@ -124,19 +124,19 @@ void ncl_client_free(ncl_client *client)
     }
     ncl_client_unsubscribe(client);
     ncl_node_free(client->root_node);
-    free(client->sn);
-    free(client->query_response);
-    free(client->probe_response);
-    free(client->set_response);
-    free(client->probe_set_response);
-    free(client->method_call_response);
-    free(client->edge_response);
-    free(client->event_topic);
-    free(client->sample_topic);
+    ncl_mem_free(client->sn);
+    ncl_mem_free(client->query_response);
+    ncl_mem_free(client->probe_response);
+    ncl_mem_free(client->set_response);
+    ncl_mem_free(client->probe_set_response);
+    ncl_mem_free(client->method_call_response);
+    ncl_mem_free(client->edge_response);
+    ncl_mem_free(client->event_topic);
+    ncl_mem_free(client->sample_topic);
     ncl_cache_free(client->message_map);
     ncl_cond_destroy(client->cond);
     ncl_mutex_destroy(client->mutex);
-    free(client);
+    ncl_mem_free(client);
 }
 
 const char *ncl_client_sn(const ncl_client *client)
@@ -356,7 +356,7 @@ ncl_err ncl_client_ping(ncl_client *client, unsigned timeout_ms, ncl_message **o
     topic = ncl_topic_ping(client->sn);
     request = ncl_message_new(NCL_MSG_PING);
     if (topic == NULL || request == NULL) {
-        free(topic);
+        ncl_mem_free(topic);
         ncl_message_free(request);
         return NCL_ERR_NOMEM;
     }
@@ -367,7 +367,7 @@ ncl_err ncl_client_ping(ncl_client *client, unsigned timeout_ms, ncl_message **o
     } else {
         ncl_message_free(request);
     }
-    free(topic);
+    ncl_mem_free(topic);
     return rc;
 }
 
@@ -389,7 +389,7 @@ ncl_err ncl_client_query(ncl_client *client, ncl_message *request,
     topic = ncl_topic_query_request(client->sn, NULL);
     rc = ncl_client_do_request(client, topic, NULL, request,
                                timeout_ms, out);
-    free(topic);
+    ncl_mem_free(topic);
     return rc;
 }
 
@@ -411,7 +411,7 @@ ncl_err ncl_client_set(ncl_client *client, ncl_message *request,
     topic = ncl_topic_set_request(client->sn, NULL);
     rc = ncl_client_do_request(client, topic, NULL, request,
                                timeout_ms, out);
-    free(topic);
+    ncl_mem_free(topic);
     return rc;
 }
 
@@ -427,7 +427,7 @@ ncl_err ncl_client_probe(ncl_client *client, unsigned timeout_ms, ncl_message **
     request_topic = ncl_topic_probe_query_request(client->sn, NULL);
     request = ncl_message_new(NCL_MSG_PROBE_QUERY_REQUEST);
     if (request_topic == NULL || request == NULL) {
-        free(request_topic);
+        ncl_mem_free(request_topic);
         ncl_message_free(request);
         return NCL_ERR_NOMEM;
     }
@@ -439,7 +439,7 @@ ncl_err ncl_client_probe(ncl_client *client, unsigned timeout_ms, ncl_message **
     } else {
         ncl_message_free(request);
     }
-    free(request_topic);
+    ncl_mem_free(request_topic);
     return rc;
 }
 
@@ -456,7 +456,7 @@ ncl_err ncl_client_probe_set(ncl_client *client, ncl_message *request,
     topic = ncl_topic_probe_set_request(client->sn, NULL);
     rc = ncl_client_do_request(client, topic, NULL, request,
                                timeout_ms, out);
-    free(topic);
+    ncl_mem_free(topic);
     return rc;
 }
 
@@ -478,7 +478,7 @@ ncl_err ncl_client_method_call(ncl_client *client, ncl_message *request,
     topic = ncl_topic_method_call_request(client->sn, NULL);
     rc = ncl_client_do_request(client, topic, NULL, request,
                                timeout_ms, out);
-    free(topic);
+    ncl_mem_free(topic);
     return rc;
 }
 
@@ -695,7 +695,7 @@ ncl_err ncl_client_method_call_file(ncl_client *client, ncl_message *request,
             local = ncl_file_client_tool_read(client->file_tool, token);
             if (local != NULL) {
                 ncl_json_obj_set(data, key, ncl_json_new_string(local));
-                free(local);
+                ncl_mem_free(local);
             } else {
                 ncl_json_obj_set(data, key, ncl_json_new_null());
             }

@@ -344,7 +344,7 @@ static void broker_session(fake_broker *broker, ncl_socket *sock)
 
         if (broker_read_packet(sock, 200, &type, &flags, &body, &body_len)) {
             broker_service(broker, sock, type, flags, body, body_len);
-            free(body);
+    free(body);
             if (type == NCL_MQTT_PKT_DISCONNECT) {
                 break;
             }
@@ -421,14 +421,22 @@ static void broker_start(fake_broker *broker)
 static void broker_stop(fake_broker *broker)
 {
     broker->stop = true;
+    /* Two phase teardown, the same shape as fake_nclink_server.c: shut the
+     * listener down to wake the blocked accept(), join the thread, and only
+     * then release the socket the thread was still looking at. Calling
+     * ncl_socket_close() here instead frees the object under accept() - that is
+     * a use-after-free (caught by ASan at -O0). */
     if (broker->listener != NULL) {
-        ncl_socket *listener = broker->listener;
-        broker->listener = NULL;
-        ncl_socket_close(listener); /* unblocks accept/recv */
+        ncl_socket_shutdown(broker->listener);
     }
     if (broker->thread != NULL) {
         ncl_thread_join(broker->thread);
         broker->thread = NULL;
+    }
+    if (broker->listener != NULL) {
+        ncl_socket *listener = broker->listener;
+        broker->listener = NULL;
+        ncl_socket_close(listener);
     }
     ncl_cond_destroy(broker->cond);
     ncl_mutex_destroy(broker->mutex);
@@ -871,21 +879,21 @@ static void test_invalid_url(void)
         NCL_CHECK_EQ_STR(host, "iot.hz2025.com");
         NCL_CHECK_EQ_INT(port, 1883);
         NCL_CHECK(tls == false);
-        free(host);
+        ncl_free_safe(host);
 
         NCL_CHECK_EQ_INT(ncl_socket_parse_url("mqtt://localhost", &host, &port,
                                               &tls),
                          NCL_OK);
         NCL_CHECK_EQ_STR(host, "localhost");
         NCL_CHECK_EQ_INT(port, 1883);
-        free(host);
+        ncl_free_safe(host);
 
         NCL_CHECK_EQ_INT(ncl_socket_parse_url("ssl://secure:8883", &host, &port,
                                               &tls),
                          NCL_OK);
         NCL_CHECK(tls == true);
         NCL_CHECK_EQ_INT(port, 8883);
-        free(host);
+        ncl_free_safe(host);
     }
 }
 

@@ -44,9 +44,9 @@ static void ncl_pattern_entry_free(void *element)
     if (entry == NULL) {
         return;
     }
-    free(entry->pattern);
+    ncl_mem_free(entry->pattern);
     ncl_regex_free(entry->regex);
-    free(entry);
+    ncl_mem_free(entry);
 }
 
 /* --------------------------------------------------------------- helpers -- */
@@ -95,7 +95,7 @@ static void ncl_schema_error(ncl_strvec *errors, const char *path,
     ncl_strbuf_puts(&sb, path != NULL ? path : "#");
     ncl_strbuf_puts(&sb, ": ");
     ncl_strbuf_puts(&sb, body != NULL ? body : "");
-    free(body);
+    ncl_mem_free(body);
     ncl_strvec_push(errors, ncl_strbuf_cstr(&sb));
     ncl_strbuf_free(&sb);
 }
@@ -284,7 +284,7 @@ static ncl_regex *ncl_schema_pattern(ncl_schema *schema, const char *pattern)
     }
     if (regex == NULL) {
         ncl_pattern_entry *entry =
-            (ncl_pattern_entry *)calloc(1, sizeof(*entry));
+            (ncl_pattern_entry *)ncl_mem_calloc(1, sizeof(*entry));
         if (entry != NULL) {
             entry->pattern = ncl_strdup(pattern);
             entry->regex = ncl_regex_compile(pattern, NULL);
@@ -660,14 +660,14 @@ static void ncl_validate_array(ncl_validate_ctx *ctx, const ncl_json *rule,
                                  "array index %u is not permitted",
                                  (unsigned)i);
             }
-            free(child);
+            ncl_mem_free(child);
         }
         return;
     }
     for (i = 0; i < length; i++) {
         char *child = ncl_pointer_push_index(path, i);
         ncl_validate_value(ctx, items, ncl_json_arr_get(value, i), child);
-        free(child);
+        ncl_mem_free(child);
     }
 }
 
@@ -727,7 +727,7 @@ static void ncl_validate_object(ncl_validate_ctx *ctx, const ncl_json *rule,
                                  "extraneous key [%s] is not permitted", name);
             }
         }
-        free(child);
+        ncl_mem_free(child);
     }
 }
 
@@ -828,7 +828,7 @@ static void ncl_validate_enum(ncl_validate_ctx *ctx, const ncl_json *rule,
             ncl_schema_error(ctx->errors, path,
                              "value %s is not defined in the enum",
                              rendered != NULL ? rendered : "?");
-            free(rendered);
+            ncl_mem_free(rendered);
         }
     }
     keyword = ncl_json_obj_get(rule, "const");
@@ -838,8 +838,8 @@ static void ncl_validate_enum(ncl_validate_ctx *ctx, const ncl_json *rule,
         ncl_schema_error(ctx->errors, path, "expected: %s, found: %s",
                          expected != NULL ? expected : "?",
                          actual != NULL ? actual : "?");
-        free(expected);
-        free(actual);
+        ncl_mem_free(expected);
+        ncl_mem_free(actual);
     }
 }
 
@@ -890,7 +890,7 @@ static void ncl_validate_value(ncl_validate_ctx *ctx, const ncl_json *rule,
         ncl_schema_error(ctx->errors, path, "expected type: %s, found: %s",
                          rendered != NULL ? rendered : "?",
                          ncl_json_type_label(value));
-        free(rendered);
+        ncl_mem_free(rendered);
         return; /* the remaining keywords assume the type matched */
     }
 
@@ -982,7 +982,7 @@ ncl_schema *ncl_schema_compile(const ncl_json *schema, char **error)
         }
         return NULL;
     }
-    compiled = (ncl_schema *)calloc(1, sizeof(*compiled));
+    compiled = (ncl_schema *)ncl_mem_calloc(1, sizeof(*compiled));
     if (compiled == NULL) {
         return NULL;
     }
@@ -1033,7 +1033,7 @@ void ncl_schema_free(ncl_schema *schema)
     if (schema->mutex != NULL) {
         ncl_mutex_destroy(schema->mutex);
     }
-    free(schema);
+    ncl_mem_free(schema);
 }
 
 const ncl_json *ncl_schema_root(const ncl_schema *schema)
@@ -1097,7 +1097,7 @@ ncl_err ncl_json_schema_validate(const char *json_text, const char *schema_text,
             ncl_strvec_push(errors, ncl_strbuf_cstr(&message));
             ncl_strbuf_free(&message);
         }
-        free(error);
+        ncl_mem_free(error);
         return NCL_ERR_PARSE;
     }
     rc = ncl_schema_validate_text(schema, json_text, strlen(json_text), errors);

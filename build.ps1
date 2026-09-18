@@ -8,6 +8,7 @@
 #   .\build.ps1 -Arch x86 -BuildDir build-x86   # 32-bit (Win32/x86) build
 #   .\build.ps1 -Target test # build and run ctest only
 #   .\build.ps1 -Tls         # also enable MQTT over ssl:// (needs OpenSSL)
+#   .\build.ps1 -StaticMem -MemPoolBytes 65536  # no heap: one 64 KiB pool
 #
 [CmdletBinding()]
 param(
@@ -18,6 +19,11 @@ param(
     [string]$BuildDir = "build",
     [switch]$NoTest,
     [switch]$Tls,
+    [switch]$StaticMem,
+    [string]$MemPoolBytes = "",
+    [string]$MemClassBytes = "",
+    [switch]$MemReport,
+    [switch]$MemFirstFit,
     [string]$OpenSslRoot = ""
 )
 
@@ -99,6 +105,20 @@ if ($Tls) {
     }
     Write-Host "TLS enabled, OpenSSL root: $OpenSslRoot"
     $configure += " -DNCLINK_WITH_TLS=ON -DOPENSSL_ROOT_DIR=`"$OpenSslRoot`""
+}
+if ($StaticMem) {
+    $poolBytes = if ($MemPoolBytes -ne "") { $MemPoolBytes } else { "20971520" }
+    Write-Host "allocation: static pool, $poolBytes bytes"
+    $configure += " -DNCLINK_STATIC_MEM=ON -DNCLINK_MEM_POOL_BYTES=$poolBytes"
+    if ($MemReport) {
+        $configure += " -DNCLINK_MEM_REPORT=ON"
+    }
+    if ($MemClassBytes -ne "") {
+        $configure += " -DNCLINK_MEM_CLASS_BYTES=$MemClassBytes"
+    }
+    if ($MemFirstFit) {
+        $configure += " -DNCLINK_MEM_FIRST_FIT=ON"
+    }
 }
 Invoke-VsEnv $configure
 Invoke-VsEnv "`"$cmake`" --build `"$build`""

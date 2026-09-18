@@ -152,28 +152,28 @@ static void test_result_envelope(void)
     envelope = ncl_result_success(ncl_json_new_string("V1"));
     text = ncl_json_write_string(envelope);
     NCL_CHECK_EQ_STR(text, "{\"status\":true,\"data\":\"V1\"}");
-    free(text);
+    ncl_free_safe(text);
     ncl_json_free(envelope);
 
     NCL_TEST_CASE("an answer without data omits the member");
     envelope = ncl_result_success(NULL);
     text = ncl_json_write_string(envelope);
     NCL_CHECK_EQ_STR(text, "{\"status\":true}");
-    free(text);
+    ncl_free_safe(text);
     ncl_json_free(envelope);
 
     NCL_TEST_CASE("a failed answer carries status=false");
     envelope = ncl_result_failed("bad request");
     text = ncl_json_write_string(envelope);
     NCL_CHECK_EQ_STR(text, "{\"status\":false,\"data\":\"bad request\"}");
-    free(text);
+    ncl_free_safe(text);
     ncl_json_free(envelope);
 
     NCL_TEST_CASE("typed helpers");
     envelope = ncl_result_success_bool(false);
     text = ncl_json_write_string(envelope);
     NCL_CHECK_EQ_STR(text, "{\"status\":true,\"data\":false}");
-    free(text);
+    ncl_free_safe(text);
     ncl_json_free(envelope);
 }
 
@@ -237,7 +237,7 @@ static void test_openapi_document(void)
         }
         text = ncl_json_write_string(document);
         NCL_CHECK(text != NULL && strlen(text) > 100);
-        free(text);
+        ncl_free_safe(text);
         ncl_json_free(document);
     }
 
@@ -246,7 +246,7 @@ static void test_openapi_document(void)
     NCL_CHECK(text != NULL);
     NCL_CHECK(strstr(text, "\"url\":\"http://127.0.0.1:9008/api\"") != NULL);
     NCL_CHECK(strstr(text, "/nclinkServer/removeSample") != NULL);
-    free(text);
+    ncl_free_safe(text);
 
     ncl_server_free(server);
 }

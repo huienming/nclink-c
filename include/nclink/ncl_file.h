@@ -167,7 +167,8 @@ bool ncl_server_file_tool_write(ncl_server_file_tool *tool,
 
 /**
  * Download "/<sn>/<remoteFilePath>" to <root>/uploadFile/<remoteFilePath> and
- * return that heap path (NULL on failure). Free with free().
+ * return that library owned path (NULL on failure). Release it with
+ * ncl_free_safe().
  */
 char *ncl_server_file_tool_read(ncl_server_file_tool *tool,
                                 const char *remote_file_path);

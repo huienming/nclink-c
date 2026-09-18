@@ -61,7 +61,7 @@ char *ncl_strdup(const char *s)
         return NULL;
     }
     len = strlen(s);
-    copy = (char *)malloc(len + 1);
+    copy = (char *)ncl_mem_alloc(len + 1);
     if (copy == NULL) {
         return NULL;
     }
@@ -75,7 +75,7 @@ char *ncl_strndup(const char *s, size_t len)
     if (s == NULL) {
         return NULL;
     }
-    copy = (char *)malloc(len + 1);
+    copy = (char *)ncl_mem_alloc(len + 1);
     if (copy == NULL) {
         return NULL;
     }
@@ -106,7 +106,7 @@ ncl_err ncl_vasprintf(char **out, const char *fmt, va_list ap)
     if (needed < 0) {
         return NCL_ERR;
     }
-    *out = (char *)malloc((size_t)needed + 1);
+    *out = (char *)ncl_mem_alloc((size_t)needed + 1);
     if (*out == NULL) {
         return NCL_ERR_NOMEM;
     }
@@ -206,7 +206,7 @@ char *ncl_str_trim_dup(const char *s)
 void ncl_free_safe(void *ptr)
 {
     if (ptr != NULL) {
-        free(ptr);
+        ncl_mem_free(ptr);
     }
 }
 
@@ -255,7 +255,7 @@ void ncl_strbuf_free(ncl_strbuf *sb)
     if (sb == NULL) {
         return;
     }
-    free(sb->data);
+    ncl_mem_free(sb->data);
     sb->data = NULL;
     sb->len = 0;
     sb->cap = 0;
@@ -292,7 +292,7 @@ ncl_err ncl_strbuf_reserve(ncl_strbuf *sb, size_t additional)
         }
         cap *= 2;
     }
-    grown = (char *)realloc(sb->data, cap);
+    grown = (char *)ncl_mem_realloc(sb->data, cap);
     if (grown == NULL) {
         return NCL_ERR_NOMEM;
     }
@@ -381,7 +381,7 @@ ncl_err ncl_strbuf_printf(ncl_strbuf *sb, const char *fmt, ...)
         return ncl_strbuf_append(sb, stack_buf, (size_t)needed);
     }
 
-    heap_buf = (char *)malloc((size_t)needed + 1);
+    heap_buf = (char *)ncl_mem_alloc((size_t)needed + 1);
     if (heap_buf == NULL) {
         va_end(ap);
         return NCL_ERR_NOMEM;
@@ -390,7 +390,7 @@ ncl_err ncl_strbuf_printf(ncl_strbuf *sb, const char *fmt, ...)
     va_end(ap);
 
     rc = ncl_strbuf_append(sb, heap_buf, (size_t)needed);
-    free(heap_buf);
+    ncl_mem_free(heap_buf);
     return rc;
 }
 
@@ -460,7 +460,7 @@ void ncl_ptrvec_free(ncl_ptrvec *v)
         return;
     }
     ncl_ptrvec_clear(v);
-    free(v->items);
+    ncl_mem_free(v->items);
     v->items = NULL;
     v->cap = 0;
 }
@@ -472,7 +472,7 @@ ncl_err ncl_ptrvec_push(ncl_ptrvec *v, void *item)
     }
     if (v->len == v->cap) {
         size_t cap = v->cap == 0 ? 8 : v->cap * 2;
-        void **grown = (void **)realloc(v->items, cap * sizeof(void *));
+        void **grown = (void **)ncl_mem_realloc(v->items, cap * sizeof(void *));
         if (grown == NULL) {
             return NCL_ERR_NOMEM;
         }
@@ -536,7 +536,7 @@ void ncl_strvec_clear(ncl_strvec *v)
         return;
     }
     for (i = 0; i < v->len; i++) {
-        free(v->items[i]);
+        ncl_mem_free(v->items[i]);
     }
     v->len = 0;
 }
@@ -547,7 +547,7 @@ void ncl_strvec_free(ncl_strvec *v)
         return;
     }
     ncl_strvec_clear(v);
-    free(v->items);
+    ncl_mem_free(v->items);
     v->items = NULL;
     v->cap = 0;
 }
@@ -560,7 +560,7 @@ ncl_err ncl_strvec_push(ncl_strvec *v, const char *s)
     }
     if (v->len == v->cap) {
         size_t cap = v->cap == 0 ? 8 : v->cap * 2;
-        char **grown = (char **)realloc(v->items, cap * sizeof(char *));
+        char **grown = (char **)ncl_mem_realloc(v->items, cap * sizeof(char *));
         if (grown == NULL) {
             return NCL_ERR_NOMEM;
         }

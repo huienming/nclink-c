@@ -25,7 +25,7 @@ static const char *const k_compress_extensions[] = {
 ncl_file_attribute *ncl_file_attribute_new(void)
 {
     ncl_file_attribute *attribute =
-        (ncl_file_attribute *)calloc(1, sizeof(*attribute));
+        (ncl_file_attribute *)ncl_mem_calloc(1, sizeof(*attribute));
     return attribute;
 }
 
@@ -34,10 +34,10 @@ void ncl_file_attribute_free(ncl_file_attribute *attribute)
     if (attribute == NULL) {
         return;
     }
-    free(attribute->file_name);
-    free(attribute->checksum);
-    free(attribute->parant_dir);
-    free(attribute);
+    ncl_mem_free(attribute->file_name);
+    ncl_mem_free(attribute->checksum);
+    ncl_mem_free(attribute->parant_dir);
+    ncl_mem_free(attribute);
 }
 
 void ncl_file_attribute_release(void *attribute)
@@ -356,8 +356,8 @@ void ncl_ftp_info_free(ncl_ftp_response *info)
     if (info == NULL) {
         return;
     }
-    free(info->user_name);
-    free(info->password);
+    ncl_mem_free(info->user_name);
+    ncl_mem_free(info->password);
     ncl_json_free(info->ip_map);
     memset(info, 0, sizeof(*info));
 }
@@ -378,7 +378,7 @@ ncl_err ncl_ftp_info_read(ncl_ftp_response *out)
     if (ncl_path_exists(path) &&
         ncl_file_read_all(path, &text, NULL) == NCL_OK && text != NULL) {
         json = ncl_json_parse_cstr(text, NULL);
-        free(text);
+        ncl_mem_free(text);
     }
     if (json != NULL) {
         const char *value;
@@ -409,7 +409,7 @@ ncl_err ncl_ftp_info_read(ncl_ftp_response *out)
     {
         char *map = ncl_net_ip_map_json();
         out->ip_map = map != NULL ? ncl_json_parse_cstr(map, NULL) : NULL;
-        free(map);
+        ncl_mem_free(map);
     }
     if (out->user_name == NULL || out->password == NULL) {
         ncl_ftp_info_free(out);
@@ -453,6 +453,6 @@ ncl_err ncl_ftp_info_write(const ncl_ftp_response *info)
     snprintf(path, sizeof(path), "%s%cftp.txt", dir, NCL_PATH_SEP);
     ncl_mkdir_p(dir);
     rc = ncl_file_write_all(path, text, strlen(text));
-    free(text);
+    ncl_mem_free(text);
     return rc;
 }

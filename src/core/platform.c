@@ -40,7 +40,7 @@ struct ncl_mutex {
 
 ncl_mutex *ncl_mutex_create(void)
 {
-    ncl_mutex *m = (ncl_mutex *)calloc(1, sizeof(ncl_mutex));
+    ncl_mutex *m = (ncl_mutex *)ncl_mem_calloc(1, sizeof(ncl_mutex));
     if (m == NULL) {
         return NULL;
     }
@@ -49,7 +49,7 @@ ncl_mutex *ncl_mutex_create(void)
     m->initialised = true;
 #else
     if (pthread_mutex_init(&m->handle, NULL) != 0) {
-        free(m);
+        ncl_mem_free(m);
         return NULL;
     }
 #endif
@@ -68,7 +68,7 @@ void ncl_mutex_destroy(ncl_mutex *m)
 #else
     pthread_mutex_destroy(&m->handle);
 #endif
-    free(m);
+    ncl_mem_free(m);
 }
 
 void ncl_mutex_lock(ncl_mutex *m)
@@ -219,20 +219,20 @@ struct ncl_cond {
 
 ncl_cond *ncl_cond_create(void)
 {
-    ncl_cond *c = (ncl_cond *)calloc(1, sizeof(ncl_cond));
+    ncl_cond *c = (ncl_cond *)ncl_mem_calloc(1, sizeof(ncl_cond));
     if (c == NULL) {
         return NULL;
     }
 #if defined(NCL_OS_WINDOWS)
     c->sem = CreateSemaphoreW(NULL, 0, 0x7fffffffL, NULL);
     if (c->sem == NULL) {
-        free(c);
+        ncl_mem_free(c);
         return NULL;
     }
     InitializeCriticalSection(&c->lock);
 #else
     if (pthread_cond_init(&c->handle, NULL) != 0) {
-        free(c);
+        ncl_mem_free(c);
         return NULL;
     }
 #endif
@@ -250,7 +250,7 @@ void ncl_cond_destroy(ncl_cond *c)
 #else
     pthread_cond_destroy(&c->handle);
 #endif
-    free(c);
+    ncl_mem_free(c);
 }
 
 void ncl_cond_wait(ncl_cond *c, ncl_mutex *m)
@@ -397,7 +397,7 @@ ncl_thread *ncl_thread_start(ncl_thread_fn fn, void *arg)
     if (fn == NULL) {
         return NULL;
     }
-    t = (ncl_thread *)calloc(1, sizeof(ncl_thread));
+    t = (ncl_thread *)ncl_mem_calloc(1, sizeof(ncl_thread));
     if (t == NULL) {
         return NULL;
     }
@@ -407,12 +407,12 @@ ncl_thread *ncl_thread_start(ncl_thread_fn fn, void *arg)
 #if defined(NCL_OS_WINDOWS)
     t->handle = (HANDLE)_beginthreadex(NULL, 0, ncl_thread_trampoline, t, 0, NULL);
     if (t->handle == NULL) {
-        free(t);
+        ncl_mem_free(t);
         return NULL;
     }
 #else
     if (pthread_create(&t->handle, NULL, ncl_thread_trampoline, t) != 0) {
-        free(t);
+        ncl_mem_free(t);
         return NULL;
     }
 #endif
@@ -430,7 +430,7 @@ ncl_err ncl_thread_join(ncl_thread *t)
 #else
     pthread_join(t->handle, NULL);
 #endif
-    free(t);
+    ncl_mem_free(t);
     return NCL_OK;
 }
 
@@ -444,7 +444,7 @@ void ncl_thread_detach(ncl_thread *t)
 #else
     pthread_detach(t->handle);
 #endif
-    free(t);
+    ncl_mem_free(t);
 }
 
 int64_t ncl_time_millis(void)
@@ -576,12 +576,12 @@ static wchar_t *ncl_utf8_to_wide(const char *text, int *out_len)
     if (len <= 1) { /* 空串或转换失败 */
         return NULL;
     }
-    wide = (wchar_t *)malloc((size_t)len * sizeof(wchar_t));
+    wide = (wchar_t *)ncl_mem_alloc((size_t)len * sizeof(wchar_t));
     if (wide == NULL) {
         return NULL;
     }
     if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, len) <= 0) {
-        free(wide);
+        ncl_mem_free(wide);
         return NULL;
     }
     *out_len = len;
@@ -597,17 +597,17 @@ static bool ncl_wide_to_ansi(const wchar_t *wide, int wide_len)
     if (len <= 0) {
         return false;
     }
-    ansi = (char *)malloc((size_t)len);
+    ansi = (char *)ncl_mem_alloc((size_t)len);
     if (ansi == NULL) {
         return false;
     }
     if (WideCharToMultiByte(CP_ACP, 0, wide, wide_len, ansi, len, NULL, NULL) <= 0) {
-        free(ansi);
+        ncl_mem_free(ansi);
         return false;
     }
     fwrite(ansi, 1, (size_t)len, stderr);
     fflush(stderr);
-    free(ansi);
+    ncl_mem_free(ansi);
     return true;
 }
 
@@ -635,14 +635,14 @@ void ncl_console_write(const char *text)
                     /* 真控制台：宽字符直写，任何代码页下中文都对 */
                     WriteConsoleW(handle, wide, (DWORD)(wide_len - 1), &written,
                                   NULL);
-                    free(wide);
+                    ncl_mem_free(wide);
                     return;
                 }
                 if (ncl_wide_to_ansi(wide, wide_len - 1)) {
-                    free(wide);
+                    ncl_mem_free(wide);
                     return;
                 }
-                free(wide);
+                ncl_mem_free(wide);
             }
         }
         fputs(text, stderr);

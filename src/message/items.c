@@ -195,13 +195,13 @@ ncl_err ncl_params_indexes(const ncl_json *params, long long **out, size_t *coun
             continue;
         }
         total += strchr(text, '-') != NULL ? 2 : 1;
-        free(text);
+        ncl_mem_free(text);
     }
     if (total == 0) {
         return NCL_ERR_NOT_FOUND;
     }
 
-    result = (long long *)malloc(total * sizeof(long long));
+    result = (long long *)ncl_mem_alloc(total * sizeof(long long));
     if (result == NULL) {
         return NCL_ERR_NOMEM;
     }
@@ -220,7 +220,7 @@ ncl_err ncl_params_indexes(const ncl_json *params, long long **out, size_t *coun
         } else {
             result[pos++] = strtoll(text, NULL, 10);
         }
-        free(text);
+        ncl_mem_free(text);
     }
     *out = result;
     *count = pos;
@@ -232,14 +232,14 @@ ncl_err ncl_params_indexes(const ncl_json *params, long long **out, size_t *coun
 ncl_query_request_item *ncl_query_request_item_new(const char *id)
 {
     ncl_query_request_item *item =
-        (ncl_query_request_item *)calloc(1, sizeof(*item));
+        (ncl_query_request_item *)ncl_mem_calloc(1, sizeof(*item));
     if (item == NULL) {
         return NULL;
     }
     if (id != NULL) {
         item->id = ncl_strdup(id);
         if (item->id == NULL) {
-            free(item);
+            ncl_mem_free(item);
             return NULL;
         }
     }
@@ -251,9 +251,9 @@ void ncl_query_request_item_free(ncl_query_request_item *item)
     if (item == NULL) {
         return;
     }
-    free(item->id);
+    ncl_mem_free(item->id);
     ncl_json_free(item->params);
-    free(item);
+    ncl_mem_free(item);
 }
 
 bool ncl_query_request_item_is_valid(const ncl_query_request_item *item)
@@ -283,13 +283,13 @@ ncl_err ncl_query_request_item_indexes(const ncl_query_request_item *item,
 ncl_query_response_item *ncl_query_response_item_new(const char *id)
 {
     ncl_query_response_item *item =
-        (ncl_query_response_item *)calloc(1, sizeof(*item));
+        (ncl_query_response_item *)ncl_mem_calloc(1, sizeof(*item));
     if (item == NULL) {
         return NULL;
     }
     item->values = ncl_json_new_array();
     if (item->values == NULL) {
-        free(item);
+        ncl_mem_free(item);
         return NULL;
     }
     if (id != NULL) {
@@ -307,12 +307,12 @@ void ncl_query_response_item_free(ncl_query_response_item *item)
     if (item == NULL) {
         return;
     }
-    free(item->id);
-    free(item->code);
-    free(item->reason);
+    ncl_mem_free(item->id);
+    ncl_mem_free(item->code);
+    ncl_mem_free(item->reason);
     ncl_json_free(item->params);
     ncl_json_free(item->values);
-    free(item);
+    ncl_mem_free(item);
 }
 
 bool ncl_query_response_item_is_valid(const ncl_query_response_item *item)
@@ -439,8 +439,8 @@ bool ncl_query_response_item_matches(const ncl_query_response_item *item,
             }
         }
     }
-    free(request_indexes);
-    free(response_indexes);
+    ncl_mem_free(request_indexes);
+    ncl_mem_free(response_indexes);
     if (!matched) {
         return false;
     }
@@ -461,14 +461,14 @@ bool ncl_query_response_item_matches(const ncl_query_response_item *item,
 
 ncl_set_request_item *ncl_set_request_item_new(const char *id)
 {
-    ncl_set_request_item *item = (ncl_set_request_item *)calloc(1, sizeof(*item));
+    ncl_set_request_item *item = (ncl_set_request_item *)ncl_mem_calloc(1, sizeof(*item));
     if (item == NULL) {
         return NULL;
     }
     if (id != NULL) {
         item->id = ncl_strdup(id);
         if (item->id == NULL) {
-            free(item);
+            ncl_mem_free(item);
             return NULL;
         }
     }
@@ -480,9 +480,9 @@ void ncl_set_request_item_free(ncl_set_request_item *item)
     if (item == NULL) {
         return;
     }
-    free(item->id);
+    ncl_mem_free(item->id);
     ncl_json_free(item->params);
-    free(item);
+    ncl_mem_free(item);
 }
 
 bool ncl_set_request_item_is_valid(const ncl_set_request_item *item)
@@ -502,14 +502,14 @@ const char *ncl_set_request_item_operation(const ncl_set_request_item *item)
 
 ncl_set_response_item *ncl_set_response_item_new(const char *id)
 {
-    ncl_set_response_item *item = (ncl_set_response_item *)calloc(1, sizeof(*item));
+    ncl_set_response_item *item = (ncl_set_response_item *)ncl_mem_calloc(1, sizeof(*item));
     if (item == NULL) {
         return NULL;
     }
     if (id != NULL) {
         item->id = ncl_strdup(id);
         if (item->id == NULL) {
-            free(item);
+            ncl_mem_free(item);
             return NULL;
         }
     }
@@ -521,12 +521,12 @@ void ncl_set_response_item_free(ncl_set_response_item *item)
     if (item == NULL) {
         return;
     }
-    free(item->id);
-    free(item->code);
-    free(item->reason);
+    ncl_mem_free(item->id);
+    ncl_mem_free(item->code);
+    ncl_mem_free(item->reason);
     ncl_json_free(item->params);
     ncl_json_free(item->result);
-    free(item);
+    ncl_mem_free(item);
 }
 
 bool ncl_set_response_item_is_valid(const ncl_set_response_item *item)
@@ -609,13 +609,13 @@ bool ncl_set_response_item_matches(const ncl_set_response_item *item,
 
 ncl_sample_item *ncl_sample_item_new(void)
 {
-    ncl_sample_item *item = (ncl_sample_item *)calloc(1, sizeof(*item));
+    ncl_sample_item *item = (ncl_sample_item *)ncl_mem_calloc(1, sizeof(*item));
     if (item == NULL) {
         return NULL;
     }
     item->data = ncl_json_new_array();
     if (item->data == NULL) {
-        free(item);
+        ncl_mem_free(item);
         return NULL;
     }
     return item;
@@ -626,9 +626,9 @@ void ncl_sample_item_free(ncl_sample_item *item)
     if (item == NULL) {
         return;
     }
-    free(item->encoding);
+    ncl_mem_free(item->encoding);
     ncl_json_free(item->data);
-    free(item);
+    ncl_mem_free(item);
 }
 
 ncl_sample_item *ncl_sample_item_clone(const ncl_sample_item *item)

@@ -173,7 +173,7 @@ ncl_err ncl_sha256_hex(const void *data, size_t len, char **out_hex)
         return NCL_ERR_INVALID_ARG;
     }
     *out_hex = NULL;
-    hex = (char *)malloc(65);
+    hex = (char *)ncl_mem_alloc(65);
     if (hex == NULL) {
         return NCL_ERR_NOMEM;
     }

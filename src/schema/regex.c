@@ -64,7 +64,7 @@ static bool re_emit(ncl_regex *regex, re_op op, int *out_index)
 {
     if (regex->len == regex->cap) {
         size_t cap = regex->cap == 0 ? 32 : regex->cap * 2;
-        re_inst *grown = (re_inst *)realloc(regex->prog, cap * sizeof(re_inst));
+        re_inst *grown = (re_inst *)ncl_mem_realloc(regex->prog, cap * sizeof(re_inst));
         if (grown == NULL) {
             return false;
         }
@@ -316,7 +316,7 @@ static re_inst *re_take_tail(re_parser *p, size_t atom_start,
                              size_t *out_len)
 {
     size_t count = p->regex->len - atom_start;
-    re_inst *saved = (re_inst *)malloc(count * sizeof(re_inst));
+    re_inst *saved = (re_inst *)ncl_mem_alloc(count * sizeof(re_inst));
 
     if (saved == NULL) {
         re_fail(p, "out of memory");
@@ -471,11 +471,11 @@ static bool re_parse_quantifier(re_parser *p, int atom_start, int atom_end)
         size_t base = 0;
         if (!re_emit(p->regex, RE_SPLIT, &split)) {
             re_fail(p, "out of memory");
-            free(atom);
+            ncl_mem_free(atom);
             return false;
         }
         if (!re_append_block(p, atom, repeat_len, repeat_start, &base)) {
-            free(atom);
+            ncl_mem_free(atom);
             return false;
         }
         p->regex->prog[split].x = (int)base;
@@ -486,16 +486,16 @@ static bool re_parse_quantifier(re_parser *p, int atom_start, int atom_end)
         size_t base = 0;
         if (!re_emit(p->regex, RE_SPLIT, &split)) {
             re_fail(p, "out of memory");
-            free(atom);
+            ncl_mem_free(atom);
             return false;
         }
         if (!re_append_block(p, atom, repeat_len, repeat_start, &base)) {
-            free(atom);
+            ncl_mem_free(atom);
             return false;
         }
         if (!re_emit(p->regex, RE_JMP, NULL)) {
             re_fail(p, "out of memory");
-            free(atom);
+            ncl_mem_free(atom);
             return false;
         }
         p->regex->prog[split].x = (int)base;
@@ -506,12 +506,12 @@ static bool re_parse_quantifier(re_parser *p, int atom_start, int atom_end)
         int split = -1;
         size_t base = 0;
         if (!re_append_block(p, atom, repeat_len, repeat_start, &base)) {
-            free(atom);
+            ncl_mem_free(atom);
             return false;
         }
         if (!re_emit(p->regex, RE_SPLIT, &split)) {
             re_fail(p, "out of memory");
-            free(atom);
+            ncl_mem_free(atom);
             return false;
         }
         p->regex->prog[split].x = (int)base;
@@ -565,7 +565,7 @@ static bool re_parse_quantifier(re_parser *p, int atom_start, int atom_end)
             }
         }
     }
-    free(atom);
+    ncl_mem_free(atom);
     return ok;
 }
 
@@ -649,7 +649,7 @@ static bool re_parse_alternation(re_parser *p)
         }
         if (jump_count == jump_cap) {
             size_t cap = jump_cap == 0 ? 4 : jump_cap * 2;
-            size_t *grown = (size_t *)realloc(jumps, cap * sizeof(size_t));
+            size_t *grown = (size_t *)ncl_mem_realloc(jumps, cap * sizeof(size_t));
             if (grown == NULL) {
                 re_fail(p, "out of memory");
                 ok = false;
@@ -682,7 +682,7 @@ static bool re_parse_alternation(re_parser *p)
             p->regex->prog[jumps[i]].x = (int)p->regex->len; /* past FAIL */
         }
     }
-    free(jumps);
+    ncl_mem_free(jumps);
     return ok;
 }
 
@@ -778,7 +778,7 @@ ncl_regex *ncl_regex_compile(const char *pattern, char **error)
     if (pattern == NULL) {
         return NULL;
     }
-    regex = (ncl_regex *)calloc(1, sizeof(*regex));
+    regex = (ncl_regex *)ncl_mem_calloc(1, sizeof(*regex));
     if (regex == NULL) {
         return NULL;
     }
@@ -833,8 +833,8 @@ void ncl_regex_free(ncl_regex *regex)
     if (regex == NULL) {
         return;
     }
-    free(regex->prog);
-    free(regex);
+    ncl_mem_free(regex->prog);
+    ncl_mem_free(regex);
 }
 
 bool ncl_regex_search(const ncl_regex *regex, const char *text, size_t len)
