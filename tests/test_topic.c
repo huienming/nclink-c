@@ -4,6 +4,7 @@
 /* Unit tests for the topic builders and the serial number extraction. */
 #include "ncl_test.h"
 
+#include "nclink/ncl_common.h"
 #include "nclink/ncl_topic.h"
 
 static void test_builders(void)

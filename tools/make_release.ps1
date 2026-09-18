@@ -82,6 +82,9 @@ foreach ($required in @($msvcLib, $gccLib)) {
 }
 
 if (Test-Path -LiteralPath $pkg) { Remove-Item -LiteralPath $pkg -Recurse -Force }
+# An assembly that reuses a half deleted directory would silently ship whatever
+# survived (a locked csharp obj/ made that happen once): make sure it is gone.
+if (Test-Path -LiteralPath $pkg) { throw "could not clear the previous package: $pkg" }
 New-Item -ItemType Directory -Path $pkg -Force | Out-Null
 
 function Copy-Tree([string]$from, [string]$to, [string[]]$include,
@@ -288,6 +291,19 @@ if (Test-Path -LiteralPath $docx) {
     }
 }
 Write-Host "  content guard: clean"
+
+# Build output must never travel: the include filters already say what to copy,
+# but -Filter matches short (8.3) names on Windows as well, so a stray
+# obj/Debug or bin/Debug next to the sources can still ride along. Only the
+# bindings are swept - examples/bin holds the packaged executables.
+foreach ($junk in @("obj", "bin", "__pycache__")) {
+    Get-ChildItem -Path (Join-Path $pkg "bindings") -Directory -Recurse -Filter $junk -ErrorAction SilentlyContinue |
+        Sort-Object { $_.FullName.Length } -Descending |
+        ForEach-Object {
+            Write-Host ("  - pruned build output: {0}" -f $_.FullName.Substring($pkg.Length + 1))
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force
+        }
+}
 
 # checksums
 $lines = @()

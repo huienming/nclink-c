@@ -135,6 +135,27 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   `failure_*` 快照、小池压 NOMEM）、一把全局锁与 `ncl_mem_check()` 的代价、进程级单例与
   退出顺序，末尾附一张"验收清单"表，可直接搬进宿主 CI。
 
+### mingw 复验（Windows 目标的 GCC 16）
+
+- **`build-linux.sh` 在 mingw 目标下会自动补 Windows 系统库**（`-lws2_32 -liphlpapi
+  -lwinmm`）。此前按 `tools/stage-go-libs.sh` 里写的
+  `CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw` 跑，库能出来，但示例与
+  测试在链接期报一片 `undefined reference to __imp_WSAGetLastError` 之类——MSVC 靠源码
+  里的 `#pragma comment(lib, ...)`，mingw 没有这个机制，于是那条"官方配方"实际是半截的。
+  判据取 `$CC -dumpmachine`，不影响非 mingw 的构建。
+- **三处测试缺 include 被 GCC 14+ 抓出来**（隐式声明在新版 GCC 里是 error，不再是
+  warning）：`tests/fake_nclink_server.c` 少了 `<stdio.h>`（`snprintf`，连带
+  `test_client` / `test_server` 编不过）、`tests/test_message.c` 少了
+  `nclink/ncl_env.h`（`ncl_file_read_all`）、`tests/test_topic.c` 少了
+  `nclink/ncl_common.h`（`ncl_free_safe`）。补齐后 mingw 侧 **25/25**。
+- 复验结果：库 / 示例 / 测试在 **mingw-w64 gcc 16.2.0（UCRT、posix-threads）下全量
+  25/25 通过**；**Go 绑定的 `go test ./...` 在 Windows 上用 cgo + mingw 也跑通**
+  （此前只有 Linux gcc 那一遍的记录）。
+- 发布包与文档跟上：`build-mingw/libnclink_core.a` 现在随包提供
+  （`lib/windows-amd64-mingw/`）；RELEASE 里"未带 mingw 库"的两处改成实况（仍然不带的是
+  Windows 的 `-tags nclink_tls` 变体，那需要另编一份带 TLS 的 mingw 库）；手册 2.2 补了
+  mingw 这条已验证链路，2.4.2 的 Go 链接说明也点明系统库由脚本自动补。
+
 ## 3.2.0
 
 三种托管绑定补齐 HTTP/REST、设备端与文件通道，并加上 TLS 选项；顺带修掉

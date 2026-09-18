@@ -42,6 +42,12 @@ CFLAGS="$CFLAGS -D_POSIX_C_SOURCE=200809L"
 # GCC 的 -Wformat-truncation 会对这类定长拼接给出大量保守告警，这里显式关闭。
 CFLAGS="$CFLAGS -Wno-format-truncation"
 LDLIBS="-lpthread"
+# mingw 目标（给 Go 的 cgo 用，见 tools/stage-go-libs.sh）要在链接时显式给出
+# Windows 的系统库：MSVC 下源码里的 #pragma comment(lib, ...) 会做这件事，
+# mingw 不会，所以示例与测试会在链接期报 __imp_WSAGetLastError 之类的未定义。
+case "$("$CC" -dumpmachine 2>/dev/null)" in
+    *mingw*|*w64*) LDLIBS="$LDLIBS -lws2_32 -liphlpapi -lwinmm" ;;
+esac
 
 # TLS 是可选的：默认零依赖，打开后链接系统 OpenSSL，用于 MQTT over ssl://。
 if [ "${NCL_WITH_TLS:-0}" = "1" ]; then

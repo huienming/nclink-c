@@ -79,6 +79,10 @@ build-linux.sh      Linux 免 cmake 构建
 .\build.ps1 -Arch x86 -BuildDir build-x86   # 32 位（Win32）：库 + 示例 + 测试
 ```
 
+除了 MSVC，**mingw-w64（GCC）在 Windows 目标上也整套验证过**（16.2.0 / UCRT /
+posix-threads）：`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw` 编出的库、
+示例与测试 **25/25 通过**（Go 绑定的 cgo 走的就是这条链，见 2.4.2）。
+
 脚本会自动定位 Visual Studio 2022 Build Tools 自带的 CMake/Ninja，并按架构调用对应的
 `vcvars64.bat` / `vcvars32.bat`，不用先开 VS 命令行；`-Arch x86` 出的就是 32 位
 
@@ -191,7 +195,9 @@ client.SubscribeSamples(2, func(topic string, msg *nclink.Message) {
 `build-mingw/libnclink_core.a`（Windows）暂存到 `bindings/go/lib/<goos>-<goarch>/`
 （不入库）。**Windows 上 cgo 只认 mingw 工具链，且必须链 mingw 编的库**——
 MSVC 的 `nclink_core.lib` 链不上；装 mingw 后用
-`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw` 编一份即可。
+`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw` 编一份即可（`build-linux.sh`
+在 mingw 目标下会自动补上 `-lws2_32 -liphlpapi -lwinmm`）；发布包的
+`lib/windows-amd64-mingw/` 里已经带了一份 mingw 编的 x64 库，可以直接暂存或链过去。
 TLS 用 `-tags nclink_tls`。
 
 ### 2.4.3 Java 绑定（JNI）

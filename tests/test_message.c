@@ -7,6 +7,7 @@
  */
 #include "ncl_test.h"
 
+#include "nclink/ncl_env.h"
 #include "nclink/ncl_message.h"
 #include "nclink/ncl_topic.h"
 
