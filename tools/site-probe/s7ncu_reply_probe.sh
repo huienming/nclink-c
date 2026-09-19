@@ -118,12 +118,19 @@ def raw_for(value):
 ask_raw(raw_for(1234.5), "raw: 1234.5")
 ask_raw(raw_for(41.5), "raw: 41.5")
 
-# The seven items whose shape is still open: feed a data section of distinct
-# bytes and let the answer say where each one reads.
-distinct = bytes(range(0x10, 0x80))
-for item in ("Alarm", "PlcType", "S1Load", "FeedActual", "Execution", "Mode",
-             "CoordinateName"):
-    ask_raw(distinct, "map " + item, "/S7NCU/" + item)
+# FeedActual reads a double somewhere past the start: put 42.0 at a few offsets
+# and see which one comes back.
+for offset in (0, 8, 16, 24, 32, 40, 48, 56, 64):
+    data = bytearray(128)
+    data[offset:offset + 8] = raw_for(42.0)
+    ask_raw(bytes(data), "FeedActual: 42.0 at %d" % offset, "/S7NCU/FeedActual")
+
+# Execution and Mode ask for two items: answer with one and two items of a few
+# lengths (S7S = item headers + markers, one per requested item).
+for item in ("Execution", "Mode"):
+    for n in (2, 4, 8, 16):
+        ask(bytes(range(0x10, 0x10 + n)), "%s: %d byte items" % (item, n),
+            "/S7NCU/" + item)
 
 print()
 print("=== what the gateway sent (last 1000 bytes of the mock log) ===")
