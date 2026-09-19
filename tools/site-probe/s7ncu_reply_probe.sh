@@ -122,15 +122,21 @@ ask_raw(raw_for(41.5), "raw: 41.5")
 for v in (42.0, 24.0, 100.0, 10.0, 1.0):
     ask_raw(raw_for(v), "FeedActual in %g" % v, "/S7NCU/FeedActual")
 
-# (*S7).Execution compares a byte of the answer against 0 and 2 before it maps a
-# state, so the *content* matters: give the second item a recognised code.
-for a in (1, 2, 4, 8):
-    for code in (0, 1, 2, 3):
-        spec = ("S7S:" + (b"\x10" * a).hex() + "," + bytes([code]).hex())
+# Siemens documents the codes: mode (opMode) 0=JOG 1=MDI 2=AUTO, program status
+# (progStatus) 1=interrupted 2=stopped 3=running 4=waiting 5=cancelled. The
+# module must be seeing our garbage codes as invalid, so feed it real ones.
+def le32(value):
+    return value.to_bytes(4, "little")
+
+
+for mode in (0, 1, 2):
+    for status in (1, 2, 3, 4, 5):
+        spec = "S7S:" + le32(mode).hex() + "," + le32(status).hex()
         with open(reply_file, "w") as handle:
             handle.write(spec)
         out = post("/S7NCU/Execution", {"connectionId": conn})
-        print("--- Execution %d+1 bytes, code %d  %s" % (a, code, out[:110]))
+        print("--- Execution mode=%d status=%d  %s"
+              % (mode, status, out[:120]))
 
 for n in range(1, 3):
     spec = ("S7S:" + (bytes([0x10 + (n & 0x0F)]) * n).hex() + "," +
