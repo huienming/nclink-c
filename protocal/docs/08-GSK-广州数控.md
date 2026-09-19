@@ -140,12 +140,12 @@ GSK 部分型号（如 GSK988/980 系列）支持 Modbus TCP —— **无需 SDK
 | `TOOL_NUMBER` | `17` | 载荷 [11..12] = **u16 ToolNo**、[13..14] = **u16 OffsetNo** → `{'ToolNo':33152,'OffsetNo':33666}` ✅ |
 | `STATUS` | `11` | 载荷 **[11]** = 状态字节：`0`/`1` → `'free'`、`2` → `'running'`、`3` → `'holding'`、其余 `'unknown'` ✅ |
 | `FEED_SPEED`/`FEED_OVERRIDE`/`SPDL_SPEED`/`SPDL_OVERRIDE`/`RAPID_OVERRIDE` | `1a` | 载荷 **[11..14] = float32** → 摆 12.5 就回 12.5 ✅（五项共用同一解码） |
-| `WARNING` | `81` | 数据全 0 → `[]` ✅；非空表的条目布局还没定 |
+| `WARNING` | `81` + `82` | 先回 0x81 的"条数"（载荷 [11..14] = u32，全 0 → `[]` ✅），再对每条回 0x82：载荷 [11..14] = **u32 报警号** → `[{'number':'4660','text':''}]` ✅（文本由驱动按号查自己的表，报文里没有） |
 
-**还差**：① `PROGRAM`——它按"长度字节 + 名字"的猜法会 panic
-（`slice bounds out of range [:20234] with capacity 52`），名字的编码要再读一遍
-`GetRunCncProgName`（`0x61d6fc`）；② `WARNING` 非空表的条目；③ `cmd` 写命令那条路
-（`Init` 已经能看到帧，但"写"的语义没试）。
+**还差**：① `PROGRAM`——名字长度读的是"数据 [3..4] 的 u16"、名字在 [5] 起
+（这样不再 panic，但回出来是空串，说明还有一处偏移/编码没对，`GetRunCncProgName`
+`0x61d6fc` 0x61d7d8-0x61d830 再细读一遍）；② `cmd` 写命令那条路
+（`Init` 已经能看到帧 `... 3f 03 00 01 00 00`，但"写"的语义没试）。
 
 ---
 

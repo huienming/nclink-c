@@ -105,25 +105,20 @@ CMDS = {
     "WARNING": 0x81,
 }
 
-print("=== 速度/倍率类：数据摆法试三种（float64 / float32 / u32 1234）")
-for label, data in (("float64 12.5", struct.pack("<d", 12.5)),
-                    ("float32 12.5", struct.pack("<f", 12.5)),
-                    ("u32 1234", struct.pack("<I", 1234)),
-                    ("u32 1234+u32 5678", struct.pack("<II", 1234, 5678))):
-    row = []
-    for item in ("FEED_SPEED", "SPDL_SPEED", "FEED_OVERRIDE", "SPDL_OVERRIDE",
-                 "RAPID_OVERRIDE"):
-        row.append("%s=%s" % (item.split("_")[0],
-                              brief(once(item, frame(0x1A, data)))))
-    print("  %-18s %s" % (label, "  ".join(row)))
+print("=== PROGRAM：长度 = 数据 [3..4]（u16），名字从 [5] 起，总长要 ≥ 5+长度")
+for name, tail in ((b"O1000", b"\x00"), (b"O1000", b""), (b"ABC", b"\x00")):
+    data = (b"\x00\x00" + struct.pack("<H", len(name)) + name + tail)
+    print("  %-6s tail=%-3s %s" % (name.decode(), tail.hex() or "-",
+                                   brief(once("PROGRAM", frame(0x12, data)))))
 
-print("=== STATUS：数据第 0 字节 = 0..4")
-for value in range(0, 5):
-    print("  %-3d %s" % (value, brief(once("STATUS", frame(0x11,
-                                                          bytes([value]))))))
-
-print("=== WARNING：数据 = 16 个 0（应为空表）")
-print("  %s" % brief(once("WARNING", frame(0x81, bytes(16)))))
+print("=== WARNING：先回 0x81（条数），再回 0x82（条目）")
+count = frame(0x81, struct.pack("<I", 1) + bytes(8))
+for label, info in (("号 0x1234 + 全 0", struct.pack("<I", 0x1234) + bytes(12)),
+                    ("全 0", bytes(16)),
+                    ("号 0x1234 + 文本", struct.pack("<I", 0x1234)
+                     + b"ALARM\0" + bytes(6))):
+    spec = "SEQ:%s|%s" % (count, frame(0x82, info))
+    print("  %-14s %s" % (label, brief(once("WARNING", spec))))
 PY
 
 echo "=== 请求"
