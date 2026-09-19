@@ -122,17 +122,15 @@ ask_raw(raw_for(41.5), "raw: 41.5")
 for v in (42.0, 24.0, 100.0, 10.0, 1.0):
     ask_raw(raw_for(v), "FeedActual in %g" % v, "/S7NCU/FeedActual")
 
-# Execution asks for two items and rejects most shapes: sweep the item length to
-# find the one it wants (Mode turned out to want exactly four).
+# (*S7).Execution compares a byte of the answer against 0 and 2 before it maps a
+# state, so the *content* matters: give the second item a recognised code.
 for a in (1, 2, 4, 8):
-    for b in (1, 2, 4, 8):
-        n = a
-        spec = ("S7S:" + (bytes([0x10 + (a & 0x0F)]) * a).hex() + "," +
-                (bytes([0x20 + (b & 0x0F)]) * b).hex())
+    for code in (0, 1, 2, 3):
+        spec = ("S7S:" + (b"\x10" * a).hex() + "," + bytes([code]).hex())
         with open(reply_file, "w") as handle:
             handle.write(spec)
         out = post("/S7NCU/Execution", {"connectionId": conn})
-        print("--- Execution %d+%d bytes  %s" % (a, b, out[:110]))
+        print("--- Execution %d+1 bytes, code %d  %s" % (a, code, out[:110]))
 
 for n in range(1, 3):
     spec = ("S7S:" + (bytes([0x10 + (n & 0x0F)]) * n).hex() + "," +
