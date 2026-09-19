@@ -91,6 +91,17 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   ReportMethodProgress`，Java 的 `DeviceClient.methodCallAsync/methodStatus/methodResult`、
   `Server.invokeMethodCallAsync/invokeMethodStatus/invokeMethodResult/reportMethodProgress`。
   Python 自检加了异步端到端用例（47 项）、C# 106 项、Java 107 项均 0 失败。
+- **Go 绑定补齐方法调用面**：`bindings/go/method.go` 的 `MethodCall` /
+  `MethodCallCheck` / `MethodCallAsync` / `MethodStatus` / `MethodResult`，以及
+  `method_server.go` 的离线驱动 `Server.InvokeMethodCallAsync` /
+  `InvokeMethodStatus` / `InvokeMethodResult` / `ReportMethodProgress`；单测
+  `TestAsyncMethodCall` 覆盖"立刻拿句柄 → 查状态 → 轮询结果 → 句柄释放 → 失败方法
+  NG+error → 同步调用无 handler"。Windows（mingw + cgo）与 Linux（容器）两侧
+  `go test ./...` 全绿。
+- **跨语言异步实测**：Go 设备端示例（`bindings/go/example/device`，新增 `slow`
+  方法）连 EMQX，Python 客户端用 `bindings/python/examples/async_client.py` 异步调用
+  `/plc/slow` —— 实测输出：受理 `code=OK` + handler → 状态 `executing` →
+  结果 `code=OK` / `result=finished` / `return={"done":true,...}`。
 - **文件传输改成流式 + 可续传**（`ncl_ftp_client_upload()` /
   `ncl_ftp_client_download()`，设备端 file 工具直接用这两个）：
   - **流式**：上传按 256 KiB 从本地文件读着发（对端没有就 `STOR`）、下载按 64 KiB 收着写盘，

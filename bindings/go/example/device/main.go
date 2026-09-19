@@ -102,6 +102,12 @@ func (m *machine) vibration(axis, dir string) []float64 {
 }
 
 func (m *machine) handle(method string, params any) (any, error) {
+	if method == "slow" {
+		/* 异步方法调用的示例：跑 0.3 s 再返回值（请求带 async 时库会立刻回
+		 * handler，客户端随后用 Method/Status、Method/Result 查）。 */
+		time.Sleep(300 * time.Millisecond)
+		return map[string]any{"done": true, "parts": m.partCount}, nil
+	}
 	if method == "setValue" {
 		if object, ok := params.(map[string]any); ok {
 			if value, ok := object["value"].(float64); ok {
@@ -264,6 +270,8 @@ func main() {
 	}
 
 	work := newMachine()
+	/* 异步方法调用演示：慢方法（方法调用专用，不绑数据点路径）。 */
+	methods = append(methods, nclink.ToolMethod{Name: "slow"})
 	options := nclink.ServerOptions{SN: sn, Model: model}
 	if offline {
 		options.Publish = func(topic string, payload []byte) error {
