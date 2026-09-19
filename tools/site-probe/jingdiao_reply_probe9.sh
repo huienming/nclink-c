@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 huienming
 
-# 北京精雕第七轮：用"递增字节"当载荷，一次问出各数据项的取值偏移。
-#   载荷第 k 字节 = k（k mod 256），所以返回值里的字节序列就指明了偏移：
-#   例如 LINE_NUMBER 回 0x03020100 就是取载荷 [0..3]，回 0x07060504 就是 [4..7]。
+# 北京精雕第九轮：STATUS 码表 + WARNING 条目布局。
+#   STATUS：状态值 = 载荷 [0..3] 的 u32（0 → 'free'，1234 → 'unknown'）。
+#   WARNING：条目像"u32 号 + 文本"，这一轮换几种摆法试。
 #
 #   /hp2x  read-only mount of .../app1/hp2x
 set -e
@@ -77,23 +77,35 @@ def spec(payload):
                payload.hex()))
 
 
-PATTERN = bytes(index % 256 for index in range(2500))
-print("=== 载荷 = 第 k 字节是 k（2500 字节）")
-for item in ("FEED_SPEED", "STATUS", "WARNING"):
-    print("  %-16s %s" % (item, brief(once(item, spec(PATTERN)))))
+def blank(size=2500):
+    return bytearray(size)
 
-print("=== 载荷 = 全 0，只在 [0..3] 放 1234")
-zero = bytearray(2500)
-zero[0:4] = struct.pack("<I", 1234)
-for item in ("FEED_SPEED", "STATUS", "WARNING"):
-    print("  %-16s %s" % (item, brief(once(item, spec(bytes(zero))))))
 
-print("=== 载荷 = 全 0，只在 [200..203] 放 1234（验证 FEED_SPEED 是不是读这儿）")
-far = bytearray(2500)
-far[200:204] = struct.pack("<I", 1234)
-for item in ("FEED_SPEED", "STATUS"):
-    print("  %-16s %s" % (item, brief(once(item, spec(bytes(far))))))
+print("=== STATUS 码表（载荷 [0..3] = 值）")
+for value in range(0, 12):
+    body = blank()
+    struct.pack_into("<I", body, 0, value)
+    print("  %-3d %s" % (value, brief(once("STATUS", spec(bytes(body))))))
+
+print("=== WARNING：只动 [0..3]，看条目数怎么跟着变")
+for value in range(0, 6):
+    body = blank()
+    struct.pack_into("<I", body, 0, value)
+    out = once("WARNING", spec(bytes(body)))
+    try:
+        entries = json.loads(out)["data"]["value"] or []
+        shown = len(entries) if isinstance(entries, list) else entries
+    except Exception:                             # noqa: BLE001
+        shown = brief(out)
+    print("  [0..3]=%-3d 条目数=%s" % (value, shown))
+
+print("=== WARNING：[0..3]=1，[4..7]=0x11111111，[8..11]=0x22222222")
+body = blank()
+struct.pack_into("<I", body, 0, 1)
+struct.pack_into("<I", body, 4, 0x11111111)
+struct.pack_into("<I", body, 8, 0x22222222)
+print("  %s" % brief(once("WARNING", spec(bytes(body)))))
 PY
 
 echo "=== 请求"
-grep -A6 -- "--- request" "$work/mock.log" | head -12 || true
+grep -A6 -- "--- request" "$work/mock.log" | head -10 || true

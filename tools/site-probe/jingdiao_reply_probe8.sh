@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 huienming
 
-# 北京精雕第七轮：用"递增字节"当载荷，一次问出各数据项的取值偏移。
-#   载荷第 k 字节 = k（k mod 256），所以返回值里的字节序列就指明了偏移：
-#   例如 LINE_NUMBER 回 0x03020100 就是取载荷 [0..3]，回 0x07060504 就是 [4..7]。
+# 北京精雕第八轮：收尾三项
+#   FEED_SPEED（GetBasicModalInfo 里还用到 float32 类型）→ 用 float32 扫偏移；
+#   STATUS → 状态枚举字节在 ~200 附近（[200..203] 动一下就从 unknown 变 free）；
+#   WARNING → 载荷 2500 字节，条目像 (u32 号 + 文本)。
 #
 #   /hp2x  read-only mount of .../app1/hp2x
 set -e
@@ -77,23 +78,40 @@ def spec(payload):
                payload.hex()))
 
 
-PATTERN = bytes(index % 256 for index in range(2500))
-print("=== 载荷 = 第 k 字节是 k（2500 字节）")
-for item in ("FEED_SPEED", "STATUS", "WARNING"):
-    print("  %-16s %s" % (item, brief(once(item, spec(PATTERN)))))
+def blank(size=2500):
+    return bytearray(size)
 
-print("=== 载荷 = 全 0，只在 [0..3] 放 1234")
-zero = bytearray(2500)
-zero[0:4] = struct.pack("<I", 1234)
-for item in ("FEED_SPEED", "STATUS", "WARNING"):
-    print("  %-16s %s" % (item, brief(once(item, spec(bytes(zero))))))
 
-print("=== 载荷 = 全 0，只在 [200..203] 放 1234（验证 FEED_SPEED 是不是读这儿）")
-far = bytearray(2500)
-far[200:204] = struct.pack("<I", 1234)
-for item in ("FEED_SPEED", "STATUS"):
-    print("  %-16s %s" % (item, brief(once(item, spec(bytes(far))))))
+print("=== FEED_SPEED：float32 = 12.5 逐档试偏移")
+for offset in (0, 4, 8, 12, 16, 20, 24, 28, 32):
+    body = blank()
+    struct.pack_into("<f", body, offset, 12.5)
+    print("  off=%-3d %s" % (offset, brief(once("FEED_SPEED", spec(bytes(body))))))
+
+print("=== STATUS：第 200 字节扫值")
+for value in range(0, 8):
+    body = blank()
+    body[200] = value
+    print("  [200]=%-2d %s" % (value, brief(once("STATUS", spec(bytes(body))))))
+print("=== STATUS：第 201/202/203 字节各试一个值")
+for offset in (201, 202, 203, 204):
+    body = blank()
+    body[offset] = 1
+    print("  [%d]=1   %s" % (offset, brief(once("STATUS", spec(bytes(body))))))
+
+print("=== WARNING：全 0 载荷")
+print("  %s" % brief(once("WARNING", spec(bytes(blank())))))
+print("=== WARNING：[0..3]=2 且 [4..6]='ABC'")
+body = blank()
+struct.pack_into("<I", body, 0, 2)
+body[4:7] = b"ABC"
+print("  %s" % brief(once("WARNING", spec(bytes(body)))))
+print("=== WARNING：[0..3]=2 且 [8..10]='ABC'")
+body = blank()
+struct.pack_into("<I", body, 0, 2)
+body[8:11] = b"ABC"
+print("  %s" % brief(once("WARNING", spec(bytes(body)))))
 PY
 
 echo "=== 请求"
-grep -A6 -- "--- request" "$work/mock.log" | head -12 || true
+grep -A6 -- "--- request" "$work/mock.log" | head -10 || true
