@@ -81,6 +81,7 @@ adapters/
 | 三菱 MC/SLMP | `mc_tcp` | TCP 5534 | 设备名 + 号：`D100`、`M10`、`M10.3`（字软元件的位） | ✅ 二进制 3E/4E |
 | 欧姆龙 FINS | `fins_tcp` | TCP 9600 | 区名 + 字：`D100`、`CIO12.3`、`E0_0`… | ✅ 内存区读写 |
 | 西门子 S7comm | `s7_tcp` | TCP 102 | 区名 + 字节偏移：`M10.3`、`DB1`、`MB10` | ✅ ISO-TSAP + COTP |
+| MTConnect | `mtconnect` | HTTP 7878 | **数据项 id 就是区名**：`{"area":"Xabs","offset":0}` | ✅ 只读 |
 
 其余协议按 `protocal/docs/README.md` 的优先级推进
 （MC/SLMP → FINS → S7 → MTConnect → …）。
@@ -209,6 +210,36 @@ S7 PDU，PDU 引用回显校验；协商出的 PDU 尺寸决定一次 Read Var �
 **实机前记得**：S7-1200/1500 默认禁止 PUT/GET（TIA 里要勾"允许来自远程对象的
 PUT/GET 通信访问"），DB 关了"优化块访问"才能按绝对地址读 —— 03 册 §7.1/§7.2 说的
 那两条，90% 的"连得上读不到"都是它们。
+
+### MTConnect
+
+```json
+{
+  "id": "cnc", "path": "/CNC", "type": "mtconnect",
+  "parameters": { "host": "10.0.0.9", "port": 7878, "timeoutMs": 3000 },
+  "points": [
+    { "path": "/CNC/X",    "addr": {"area":"Xabs","offset":0,"dtype":"float64"} },
+    { "path": "/CNC/EXEC", "addr": {"area":"exec","offset":0,"dtype":"string"} },
+    { "path": "/CNC/ALARM","addr": {"area":"alarm","offset":0,"dtype":"string"} }
+  ]
+}
+```
+
+MTConnect 是**只读**标准接口（§1）：写操作返回"不支持"。点位用数据项的 id 寻址，
+所以统一地址模型里**区名就是 dataItemId**，偏移恒为 0（id 只含字母时可以写成
+字符串简写，含数字的用对象形式）。
+
+实现：会话建立时读一次 `/probe`（拿到数据项表，于是每个点位的 category 是"知道"
+而不是"猜"），每次读发一个 `GET /current`；`/probe` 不可用的 agent 也能用（category
+退化为按元素名判断，且只问一次）。HTTP 客户端支持 `Content-Length`、`chunked` 与
+"读到连接关闭"三种正文形态，可带 Basic 认证。`UNAVAILABLE` 的点位返回 JSON null
+（§6.1：不要假设每帧都有全部点位，缺项也是 null）；CONDITION 变成 Fault/Warning 时
+**推一次事件**（记住上次状态，轮询不重复报）。方法有 `probe`（数据项表）与
+`sequence`（最后一次读到的 sequence）；原始报文逃生舱的入参是 HTTP 路径，返回文档
+本身。
+
+**还没做**：流式 `/sample`（§5 推荐用于高频）与 `/assets`；`/current` 的按行
+增量缓存（现在每读一次就全量解析一次，点位多时值得加）。
 
 ## 配置与守护进程
 

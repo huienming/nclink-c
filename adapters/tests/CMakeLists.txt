@@ -39,3 +39,9 @@ target_link_libraries(ncl_test_s7 PRIVATE nclink_drivers)
 target_include_directories(ncl_test_s7 PRIVATE
         "${CMAKE_SOURCE_DIR}/tests")
 add_test(NAME s7 COMMAND ncl_test_s7)
+
+add_executable(ncl_test_mtconnect test_mtconnect.c)
+target_link_libraries(ncl_test_mtconnect PRIVATE nclink_drivers)
+target_include_directories(ncl_test_mtconnect PRIVATE
+        "${CMAKE_SOURCE_DIR}/tests")
+add_test(NAME mtconnect COMMAND ncl_test_mtconnect)

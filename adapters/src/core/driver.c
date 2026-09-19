@@ -26,6 +26,7 @@
 #include "mock/ncl_mock_driver.h"
 #include "fins/ncl_fins_driver.h"
 #include "mc/ncl_mc_driver.h"
+#include "mtconnect/ncl_mtconnect_driver.h"
 #include "modbus/ncl_modbus_driver.h"
 #include "s7/ncl_s7_driver.h"
 
@@ -608,6 +609,7 @@ void ncl_driver_register_builtin(void)
     (void)ncl_driver_register_protocol("mc_tcp", ncl_mc_tcp_create);
     (void)ncl_driver_register_protocol("fins_tcp", ncl_fins_tcp_create);
     (void)ncl_driver_register_protocol("s7_tcp", ncl_s7_tcp_create);
+    (void)ncl_driver_register_protocol("mtconnect", ncl_mtconnect_create);
 }
 
 ncl_driver *ncl_driver_create(const char *protocol)
