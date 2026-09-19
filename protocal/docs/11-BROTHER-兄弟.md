@@ -78,6 +78,11 @@ CRLF + CRLF + 计数 + `%`）：
 `GetMaintenanceData` 需要额外参数（网关报 `The Param field is required`），
 `GetFileList`/文件类命令按同一排法带参数即可。
 
+**应答（未完成）**：拿候选文本回给网关，它只回
+`request error, response: <我们发的内容>`——不像科德那样会点名期望的元素，
+所以兄弟这一家的应答形状暂时只能靠真机抓一次（探针留在
+`tools/site-probe/brother_reply_probe.sh`）。
+
 ---
 
 ## 4. 常用数据点（通过 `%CLOD` 读）
