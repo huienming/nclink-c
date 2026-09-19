@@ -536,3 +536,26 @@ COUNTER_COUNT=19  DEV_AX_VARIABLE=20  NOT_DEFINE=-1
 {"area": "KrnlAPI", "offset": 43, "length": 4, "dtype": "int32"}   # 工件计数
 {"area": "KrnlAPI", "offset": 41, "length": 4, "dtype": "int32"}   # CNC 状态
 ```
+
+### 10.12 每个 API 用到的代码（从客户端 worker 桩里取）
+
+客户端的 150 个 API 只是薄壳，真正干活的是 `_GB` 里的 worker；这些 worker 大多
+是**七条指令的桩**（`ldc.i4 <码>` 之后转调），所以每个 API 用到的代码可以机械取出：
+
+```
+READ_part_count   → 1000, 1002, 1004       （总/好/坏计数）
+READ_time         → 1010, 1011, 1012, 10020
+READ_spindle      → 700, 771 （另有两次取数不带常量，应为轴号/通道号参数）
+READ_status       → 1, 1, 5
+READ_alm_current  → 0
+READ_position     → 0, 1 （同上）
+READ_useTime      → 无常量（取值由入参传入）
+```
+
+这些数看着是**设备号/数据号**（1000 段是计数与时间、700 段是主轴），与
+`EDataType`、`EDevice_Type` 是**两套不同的编号**：`EDataType` 用于事件触发那一路，
+这组是"读设备数据"那一路。**它到底是 `dwCode` 还是随包 `TDevice` 里的设备号，
+需要一次实机验证**——`MMI_Request_KrnlAPI` 里两者都有。
+
+取法可复现：读客户端 `SyntecRemoteCNC::READ_*` 的 IL → 看它调用了 `_GB` 的哪些
+worker → 每个 worker 的 IL 里只有一个 `ldc.i4` 常量（脚本在参考架上，不进仓库）。
