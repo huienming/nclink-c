@@ -161,17 +161,23 @@ def handle(conn, reply):
                         # S7): declare the byte length and see what the value
                         # comes back as.
                         n = len(value)
-                        param = bytes([0x04, 0x01, 0xFF, 0x04,
-                                       (n >> 8) & 0xFF, n & 0xFF])
-                        # S7R: the data section is exactly the bytes given (this
-                        # module reverses the first eight of them into a float64,
-                        # so feeding reverse(double) makes it return that double).
-                        blob = (bytes(value) if raw_only else
-                                bytes([0xFF, 0x04, (n >> 8) & 0xFF, n & 0xFF]) +
-                                value)
-                        if len(value) % 2:
-                            blob += b"\x00"
-                        blob += value
+                        # The request says how many items it wants (04 <count>):
+                        # answer exactly that many, each marked with its own
+                        # number so the answers say which item a field came from.
+                        count = s7[11] if len(s7) > 11 else 1
+                        if count == 0 or count > 32:
+                            count = 1
+                        if raw_only:
+                            blob = bytes(value)
+                        else:
+                            blob = b""
+                            for index in range(count):
+                                marker = bytes([0x10 + (index & 0x0F)]) * n
+                                blob += bytes([0xFF, 0x04,
+                                               (n >> 8) & 0xFF, n & 0xFF]) + marker
+                        # one parameter entry per item the request asked for
+                        entry = bytes([0xFF, 0x04, (n >> 8) & 0xFF, n & 0xFF])
+                        param = bytes([0x04, count]) + entry * count
                         body = (b"\x32\x03\x00\x00" + pdu +
                                 bytes([0, len(param)]) +
                                 bytes([0, len(blob)]) + b"\x00\x00" +

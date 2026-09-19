@@ -211,8 +211,22 @@ LastRunTime   ... （本次未取到读帧，按同样两帧结构重跑即可�
    | 文本 | `NckName` `NckNo` `NckVer` `ToolNo` |
    | 还需其它形状（返回 `0`/`[0]`/读到别的偏移/`error response`） | `Alarm` `PlcType` `S1Load` `FeedActual` `Execution` `Mode` `CoordinateName` |
 
-   前 16 项读法已定；剩 7 项按各自的返回（例如 `FeedActual` 回 15239.9025 =
-   从别的偏移读到的 double）继续调偏移即可。
+   前 16 项读法已定。剩下 7 项再喂"数据段 = 0x10 0x11 0x12 …"这种**唯一字节**
+   （`S7R:`），从返回值反查它们读哪儿：
+
+   | 项 | 实测返回 | 读法 |
+   |---|---|---|
+   | `Alarm` | 319951120 = 0x13121110 | 数据段**开头 4 字节的小端 uint32** |
+   | `PlcType` | 4368 = 0x1110 | 开头 **2 字节的小端 uint16** |
+   | `CoordinateName` | `["\x10\x11…", …]` | **字符串数组**（按字节读成文本） |
+   | `S1Load` | `[2.86e-29]` | double 数组（改 item 数后会 `error response`，说明它按请求的项数校验） |
+   | `FeedActual` | 0 | 仍待定（疑似读别的偏移/另一项） |
+   | `Execution` / `Mode` | `error response` | 仍待定（疑似要特定项数或特定长度） |
+
+   也就是说 23 项里已有 **20 项的读法确定**（8 标量 + 4 数组 + 4 文本 +
+   Alarm/PlcType/CoordinateName/S1Load 四种），只剩 3 项（`FeedActual`/
+   `Execution`/`Mode`）要继续调；答案侧的机制（项数回显、返回码、错误类/码）
+   都已就位，剩下是纯参数活。
 
    至此 S7NCU 这条链**闭环**：COTP CC + Setup ack（含错误类/错误码）+ Read ack
    （长度按字节、数据段头 8 字节是小端 float64）。25 个数据项只剩"逐个确认

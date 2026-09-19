@@ -118,15 +118,12 @@ def raw_for(value):
 ask_raw(raw_for(1234.5), "raw: 1234.5")
 ask_raw(raw_for(41.5), "raw: 41.5")
 
-# Type each of the 25 items: a double, then text, then another double, so a
-# scalar, an array and a text item each answer differently.
-pattern = raw_for(1234.5) + b"ABC" + raw_for(2.5) + b"DEF"
-for item in ("Alarm", "Program", "Execution", "Mode", "PlcType", "NckName",
-             "NckNo", "NckVer", "CoordinateAbsolute", "CoordinateMachine",
-             "CoordinateRelative", "CoordinateName", "FeedActual", "FeedSet",
-             "FeedOverride", "SpeedActual", "SpeedSet", "SpeedOverride",
-             "S1Load", "ToolNo", "PartCount", "CycleTime", "LastRunTime"):
-    ask_raw(pattern, "type of " + item, "/S7NCU/" + item)
+# The seven items whose shape is still open: feed a data section of distinct
+# bytes and let the answer say where each one reads.
+distinct = bytes(range(0x10, 0x80))
+for item in ("Alarm", "PlcType", "S1Load", "FeedActual", "Execution", "Mode",
+             "CoordinateName"):
+    ask_raw(distinct, "map " + item, "/S7NCU/" + item)
 
 print()
 print("=== what the gateway sent (last 1000 bytes of the mock log) ===")
