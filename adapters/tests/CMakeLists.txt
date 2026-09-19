@@ -21,3 +21,9 @@ target_link_libraries(ncl_test_modbus PRIVATE nclink_drivers)
 target_include_directories(ncl_test_modbus PRIVATE
         "${CMAKE_SOURCE_DIR}/tests")
 add_test(NAME modbus COMMAND ncl_test_modbus)
+
+add_executable(ncl_test_mc test_mc.c)
+target_link_libraries(ncl_test_mc PRIVATE nclink_drivers)
+target_include_directories(ncl_test_mc PRIVATE
+        "${CMAKE_SOURCE_DIR}/tests")
+add_test(NAME mc COMMAND ncl_test_mc)

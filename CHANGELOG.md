@@ -24,7 +24,8 @@ PLC 自己的协议读写，并把点位映射成设备模型上的操作。构�
   没有给模型文件时按点位表生成（数据项 `source` 取点位路径父级，模型路径与
   配置里的点位路径严格一致）。`--once` 可做一次读全部点位的自检。
 - **协议**：`mock`（内存靶机：点位模型 + 错误注入 + 事件）、
-  `modbus_tcp` / `modbus_rtu` / `modbus_rtu_tcp`（含跨平台串口层）。
+  `modbus_tcp` / `modbus_rtu` / `modbus_rtu_tcp`（含跨平台串口层）、
+  `mc_tcp`（三菱 MC/SLMP，二进制 3E/4E）。
   其余协议按 `protocal/docs/README.md` 的优先级推进。
 
 ## 3.4.0

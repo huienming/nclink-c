@@ -24,6 +24,7 @@
 
 /* The drivers built into this library; more join in P1. */
 #include "mock/ncl_mock_driver.h"
+#include "mc/ncl_mc_driver.h"
 #include "modbus/ncl_modbus_driver.h"
 
 #define NCL_ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
@@ -602,6 +603,7 @@ void ncl_driver_register_builtin(void)
     (void)ncl_driver_register_protocol("modbus_rtu", ncl_modbus_rtu_create);
     (void)ncl_driver_register_protocol("modbus_rtu_tcp",
                                        ncl_modbus_rtu_tcp_create);
+    (void)ncl_driver_register_protocol("mc_tcp", ncl_mc_tcp_create);
 }
 
 ncl_driver *ncl_driver_create(const char *protocol)

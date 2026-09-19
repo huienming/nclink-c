@@ -78,6 +78,7 @@ adapters/
 | Modbus TCP | `modbus_tcp` | TCP 502 | `coil`/`discrete`/`input`/`holding`，或 `0x`/`1x`/`3x`/`4x` | ✅ 完成 |
 | Modbus RTU | `modbus_rtu` | RS-485/232 | 同上 | ✅ 完成 |
 | RTU over TCP | `modbus_rtu_tcp` | TCP 任意 | 同上 | ✅ 完成 |
+| 三菱 MC/SLMP | `mc_tcp` | TCP 5534 | 设备名 + 号：`D100`、`M10`、`M10.3`（字软元件的位） | ✅ 二进制 3E/4E |
 
 其余协议按 `protocal/docs/README.md` 的优先级推进
 （MC/SLMP → FINS → S7 → MTConnect → …）。
@@ -113,6 +114,35 @@ RTU 用 `"serial": "COM3"` / `"/dev/ttyUSB0"` 加 `baud`/`parity`/`dataBits`/
 所有交换串行化（485 总线半双工，TCP 设备也不希望两个请求交叉）。
 `loopback` 方法对应诊断功能 0x08/0x0000，用来判断"线还活着"。
 原始报文逃生舱收发的是 PDU（功能码 + 数据）。
+
+### 三菱 MC / SLMP
+
+```json
+{
+  "id": "plc1", "path": "/PLC1", "type": "mc_tcp",
+  "parameters": { "host": "10.0.0.5", "port": 5534, "frame": "3e",
+                  "timeoutMs": 1000, "network": 0, "plc": 255, "station": 0 },
+  "points": [
+    { "path": "/PLC1/TEMP",  "addr": "D100" },
+    { "path": "/PLC1/READY", "addr": "M10" },
+    { "path": "/PLC1/FLAG",  "addr": "D100.3" },
+    { "path": "/PLC1/SPEED", "addr": {"area":"D","offset":200,
+                                      "dtype":"float32"}, "writable": true }
+  ]
+}
+```
+
+二进制 3E（Q/L/FX）与 4E（iQ-R，多一个序列号字段）都实现了；命令码覆盖成批读
+0x0401、成批写 0x1401（字/位子命令都走），方法有 `loopback`（0x0619，适合做保活）、
+`remoteRun`/`remoteStop`/`clearError`/`cpuType`/`cpuStatus`。数据是小端：
+32 位值低字在前，字符串每字两个字符、低字节在前。位软元件按"一点一字节"
+（0x00/0x01）传输；**字软元件的位**按 `号 × 16 + 位` 编码（`D100.3` → 1603），
+这正是 06 册 §8.2 的那条坑。单次读 ≤960 字，超了分片；相邻点位间隔 ≤ `mergeGap`
+（默认 8）合并成一次请求。设备返回的结束代码按 §7 分级映射（地址越界/命令未找到
+→ 协议层；CPU 错误、远程 RUN/STOP 未受理 → 业务层）。
+
+**还没做**：ASCII 编码（06 册里没有字节级原始样本，等一次抓包再补）、UDP
+（核心的 socket 层目前只有 TCP）。端点字节序转换等长尾项也留到实机验证时再定。
 
 ## 配置与守护进程
 
