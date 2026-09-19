@@ -359,3 +359,22 @@ TCPError         : ShutDown, UnKnownErr, S_OK, CloseConnection,
 待取：`EFunctionID`（`TCP_NcShutdown` … `TCP_KrnlAPI`，7 项）与
 `TCPUpdateService::ReceiveUpdate` 的基数——那两处的 `switch` 前面还隔着别的指令，
 要按跳转表反查 case 值，或直接读业务请求里设的 `uFuncID`。
+
+### 10.7 命令号空间是全局的（Dipole 分派读通了）
+
+`TCPDipoleService::DispatchPacketByFunctionID` 的形状是
+`switch (命令号 - 178)` **再加**一条 `if (命令号 == 200)`，也就是
+**命令号不是每个服务从 0 开始，而是全设备一套编号**：
+
+```
+文件传输服务 : 1 .. 17        （基数 1，17 个 case）
+Dipole 服务  : 178, 179, 180   （基数 178，3 个 case）+ 200（单独的相等判断）
+```
+
+Dipole 的第 4 条命令（200）那条分支里调用的是 `TCPDipoleService::KrnlAPI`
+（IL 偏移 180 处 `call TCPDipoleService::KrnlAPI`）——也就是承载
+`MMI_Request_KrnlAPI{uFuncID, dwCode, dwSizeIn, dwSizeOut, pBufferIn}` 的处理函数。
+
+> 读命令号的方法（已固定下来）：**先找分派方法的 `switch`，看它前面减掉的基数；
+> 再看分派体里有没有 `ldc.i4 <值>; bne.un/beq` 这类"额外命令"比较**。
+> 两条都读了，命令号才不漏。
