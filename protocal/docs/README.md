@@ -21,7 +21,7 @@
 | 07 | [海德汉 HEIDENHAIN（LSV2）](07-HEIDENHAIN-LSV2.md) | 19000 | TCP | 🟢 45命令 | pyLSV2 |
 | 08 | [广州数控 GSK](08-GSK-广州数控.md) | 6000 | TCP | 🟡 | GSKRM.dll |
 | 09 | [凯恩帝 KND（REST + DLL）](09-KND-凯恩帝.md) | 80 | HTTP | 🟢 面 | KAPI |
-| 10 | [**新代 SYNTEC（RemoteCNC）**](10-SYNTEC-新代-RemoteCNC.md) | 8000 | TCP | 🟢 150方法 | SyntecRemoteAPI |
+| 10 | [**新代 SYNTEC（RemoteCNC）**](10-SYNTEC-新代-RemoteCNC.md) | 8000 | TCP | 🟢 150方法 + **设备侧 9 项全闭环**（§3.1/§3.2） | SyntecRemoteAPI / 裸帧 |
 | 11 | [兄弟 Brother](11-BROTHER-兄弟.md) | 10000 | TCP | 🟢 10命令 | — |
 | 12 | [欧姆龙 Omron（FINS）](12-OMRON-FINS.md) | 9600 | TCP/UDP | 🟢 19函数 | omronfins |
 | 13 | [安川 Yaskawa（HSES）](13-YASKAWA-HSES.md) | 10040 | UDP | 🟢 173方法 | underautomation / HSES |
@@ -42,7 +42,7 @@
 | 28 | [**交付包现场 API 清单**](28-交付包现场API清单.md) | — | — | 🟢 现场二进制/Lua | 现场 iNC-BOX-200 的模块与数据项对照 |
 | 29 | [**现场模型与驱动定义（cfg + 插件符号）**](29-现场模型与驱动定义.md) | 按品牌 | — | 🟢 现场 cfg/Lua/.dynsym | 逐品牌的模型项、连接参数、插件方法与项键；缺口的真正闭合 |
 | 30 | [**外部资料：这批数据到底是什么（NC-Link 与西门子）**](30-外部资料-NC-Link与西门子.md) | — | — | 🟡 公开问答 · 🔵 团体标准 | NC-Link（T/CMTBA 1008.1…7-2020）出处、数据项对照、progStatus/opMode 取值表 |
-| 31 | [**待真机抓包清单（活文档）**](31-待真机抓包清单.md) | — | — | 🔴 现场 | 本地推不出来、必须现场抓一次的项；扫一轮更新一次 |
+| 31 | [**待真机抓包清单（活文档）**](31-待真机抓包清单.md) | — | — | 🔴 现场 | **§0 总表（每家到哪一步）+ §1 必须真机 + §2 还能本地推**；扫一轮更新一次 |
 
 ---
 
