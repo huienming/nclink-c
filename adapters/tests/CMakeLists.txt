@@ -57,3 +57,9 @@ target_link_libraries(ncl_test_lsv2 PRIVATE nclink_drivers)
 target_include_directories(ncl_test_lsv2 PRIVATE
         "${CMAKE_SOURCE_DIR}/tests")
 add_test(NAME lsv2 COMMAND ncl_test_lsv2)
+
+add_executable(ncl_test_syntec test_syntec.c)
+target_link_libraries(ncl_test_syntec PRIVATE nclink_drivers)
+target_include_directories(ncl_test_syntec PRIVATE
+        "${CMAKE_SOURCE_DIR}/tests")
+add_test(NAME syntec COMMAND ncl_test_syntec)
