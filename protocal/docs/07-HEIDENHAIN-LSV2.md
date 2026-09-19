@@ -71,10 +71,11 @@
 | `GetProgramStatus` | DNC | `R_RI` + `00 1a`（26） | `S_RI` + u16 | ✅ `{state:2, text:"FINISHED"}`（2 = `PgmState.FINISHED`） |
 | `GetErrorMessages` | DNC | `R_RI` + `00 1b`（27）→ 循环 `00 1c`（28） | `S_RI` + 报文；**结束时回 `T_ER` + `00 39`** | ✅ `{errors:[{Class:1,Group:2,Number:3,Text:"TEXT"}]}` |
 | `GetSpindleToolStatus` | DNC | `R_RI` + `00 33`（51） | `S_RI` + u32 + 2×u16 + 2×double(**小端**) | 形状对（`Number/Index/Axis`），`Length/Radius` 用 `<d` |
-| `GetDirectoryInfo` | FILE | `R_DI`（无载荷） | `S_DI` | 请求已抓到 |
-| `GetDirectoryContent` | FILE | `R_DR` + `00`（`ParRDR.SINGLE`） | `S_DR`（可能要 `_block` 多帧） | 请求已抓到 |
-| `GetFileInfo` | FILE | `R_FI` + 路径串 | `S_FI` | 请求已抓到（文件不存在时网关回 `T_ER` + `T_ER_NO_FILE=32` 并给空结构） |
-| `ChangeDirectory` / `GetFileList` | FILE | `C_DC` + 路径串（`TNC:\0`）→ `R_DI` | `T_OK` | 请求已抓到 |
+| `GetDirectoryInfo` | FILE | `R_DI` | `S_DI` | ✅ `{Path:"TNC:/", FreeSize:65536, DirectoryAttributes:["READ","WRIT"], Attributes:"AAAA…="}`（§2.2） |
+| `GetDirectoryContent` | FILE | `R_DR` + `00`（`ParRDR.SINGLE`）+ 收一条回一条 `T_OK` | `S_DR` 多条，最后用 `T_FD` 收尾 | ✅ `{fileInfos:[{Name:"TEST.H",Size:12345,…}]}`（§2.2） |
+| `GetFileInfo` | FILE | `R_FI` | `S_FI` | ✅ `{Name:"TEST.H", Size:12345, Timestamp:"2021-01-14T08:25:36Z", Attributes:98, IsDirectory:true}` |
+| `ChangeDirectory` | FILE | `C_DC` + `00` | `T_OK` | ✅ `value: None`（成功） |
+| `GetFileList` | FILE | `C_DC` + 路径串（`TNC:\0`）→ `R_DI` → 递归 `walkDir` | `T_OK`/`S_DI`/`S_DR` | 请求链已抓到（walk 是递归的，按 C_DC 换目录逐层取） |
 | `ReadPLC` | **PLCDEBUG** | `A_LG "PLCDEBUG\0"` 之后**不再发报文** | — | 🔴 **这条路径在本包里没跑通**（`values` 恒为 `[]`；没有 connectionId 时还 panic） |
 
 注：`R_RI` 的参数码与 pyLSV2 `ParRRI` 完全对上（16=22 AXIS_LOCATION、17=23 EXEC_STATE、
@@ -87,6 +88,41 @@
    别把偏移 8 当成块名（用 `mock.py` 的 `MAP:4:6:…` 才挑得中）。
 2. **`MAP` 的键长要等于"块名 + 参数"的实际字节数**：`A_LG` 16B → 键含用户名，
    `R_VR` 9B → 键 5 字节，`R_PR` 8B → 键 4 字节，`R_RI` 10B → 键 6 字节。
+
+### 2.2 文件类应答（🟢 2026-09 第七轮，`lsv2_probe6.sh`）
+
+三条应答的载荷布局（与 pyLSV2 `misc.decode_directory_info` / `decode_file_system_info`
+逐字节对得上）：
+
+```
+S_DI = free_size(u32 大端) | 32 × 4 字节属性串 | 32 字节属性位图 | 路径串（NUL 结尾）
+       → {Path, FreeSize, DirectoryAttributes[], Attributes(base64 的 32 字节)}
+S_FI = size(u32) | timestamp(u32) | attributes(u32) | 名字串（NUL 结尾）
+       → {Path, Name, Size, Timestamp, Attributes, IsFile, IsDirectory, IsWriteProtected}
+S_DR = 同 S_FI，一条一个文件项
+```
+
+实测（`lsv2_probe6.sh`，S_DI 给 `free_size=65536`、属性串 `READ`/`WRIT`、路径 `TNC:\0`）：
+
+```
+GetDirectoryInfo   → {Path:"TNC:/", FreeSize:65536,
+                      DirectoryAttributes:["READ","WRIT"], Attributes:"AAAA…="}
+GetFileInfo        → {Name:"TEST.H", Size:12345, Timestamp:"2021-01-14T08:25:36Z",
+                      Attributes:98, IsDirectory:true, IsFile:false,
+                      IsWriteProtected:false}          # 98 = 0x62 = 0x02|0x20|0x40
+GetDirectoryContent→ {fileInfos:[{…同上一条…}]}
+ChangeDirectory    → None（成功）
+```
+
+**块传输的真实节奏**（`R_DR` 那条，🟢 实测）：网关发 `R_DR 00` → 收一条 `S_DR` →
+**回一条 `T_OK` 请求** → 再收 `S_DR` → …；控制侧用**非 `S_DR` 的响应**（`T_FD`）结束整段。
+探针里只要让 `MAP` 把 `T_OK` 请求答成 `T_FD`，就只回一条 `S_DR` 且干净收尾。
+
+两个已记下的细节：
+
+- 路径里的反斜杠会被换成 `/`（`TNC:\` → `TNC:/`）；`Attributes` 是 32 字节位图，JSON 里是 base64。
+- `IsWriteProtected` 的位**不在** `{0x02,0x20,0x40}` 里（喂 `0x62` 时为 `false`，
+  而 `IsDirectory` 已由 `0x20` 命中为 `true`）——现场若要看写保护，按真机对一次这一位。
 
 ---
 
