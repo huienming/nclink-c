@@ -33,3 +33,9 @@ target_link_libraries(ncl_test_fins PRIVATE nclink_drivers)
 target_include_directories(ncl_test_fins PRIVATE
         "${CMAKE_SOURCE_DIR}/tests")
 add_test(NAME fins COMMAND ncl_test_fins)
+
+add_executable(ncl_test_s7 test_s7.c)
+target_link_libraries(ncl_test_s7 PRIVATE nclink_drivers)
+target_include_directories(ncl_test_s7 PRIVATE
+        "${CMAKE_SOURCE_DIR}/tests")
+add_test(NAME s7 COMMAND ncl_test_s7)

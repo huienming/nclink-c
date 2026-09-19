@@ -80,6 +80,7 @@ adapters/
 | RTU over TCP | `modbus_rtu_tcp` | TCP 任意 | 同上 | ✅ 完成 |
 | 三菱 MC/SLMP | `mc_tcp` | TCP 5534 | 设备名 + 号：`D100`、`M10`、`M10.3`（字软元件的位） | ✅ 二进制 3E/4E |
 | 欧姆龙 FINS | `fins_tcp` | TCP 9600 | 区名 + 字：`D100`、`CIO12.3`、`E0_0`… | ✅ 内存区读写 |
+| 西门子 S7comm | `s7_tcp` | TCP 102 | 区名 + 字节偏移：`M10.3`、`DB1`、`MB10` | ✅ ISO-TSAP + COTP |
 
 其余协议按 `protocal/docs/README.md` 的优先级推进
 （MC/SLMP → FINS → S7 → MTConnect → …）。
@@ -174,6 +175,40 @@ CPU 忙或被拒（0xA5 等）算业务层。
 
 **还没做**：FINS/UDP、HostLink/C-Mode；`run`/`stop` 的两个参数字节按 "00 00"
 发出，实机若要求运行模式需再调。
+
+### 西门子 S7comm
+
+```json
+{
+  "id": "plc1", "path": "/PLC1", "type": "s7_tcp",
+  "parameters": { "host": "10.0.0.5", "port": 102, "rack": 0, "slot": 2,
+                  "timeoutMs": 1000, "pduSize": 960 },
+  "points": [
+    { "path": "/PLC1/READY", "addr": "M10.0" },
+    { "path": "/PLC1/BYTE",  "addr": "MB10" },
+    { "path": "/PLC1/WORD",  "addr": "MW20" },
+    { "path": "/PLC1/REAL",  "addr": {"area":"DB1","offset":0,
+                                      "dtype":"float32"}, "writable": true },
+    { "path": "/PLC1/NAME",  "addr": {"area":"DB1","offset":40},
+      "dtype": "string", "length": 8 }
+  ]
+}
+```
+
+三层握手都实现了：TCP → COTP 连接请求/确认（TSAP = 0x0300 + rack×0x20 + slot，
+所以 S7-300/400 是 `slot:2`、S7-1200/1500 是 `slot:1`）→ Setup Communication
+协商 PDU 尺寸（默认要 960，取设备给的上限）。之后每个请求都是 TPKT + COTP DT +
+S7 PDU，PDU 引用回显校验；协商出的 PDU 尺寸决定一次 Read Var 能带多少个 Item
+（本项目里一个批读就是**一次请求**，不是一点一次）。
+
+区名可写 `I`/`Q`/`M`/`T`/`C` 或 `DB1`（DB 号写在区名里），也可以写带宽度后缀的
+`MB`/`MW`/`MD`/`IB`/`QW`… —— 后缀同时定下读写类型（B 字节、W 字、D 双字、X 位）。
+数据大端；REAL 是 IEEE754 大端；字符串按 S7 格式带两个头字节（最大长度/当前长度）。
+地址是"字节偏移 × 8 + 位号"。
+
+**实机前记得**：S7-1200/1500 默认禁止 PUT/GET（TIA 里要勾"允许来自远程对象的
+PUT/GET 通信访问"），DB 关了"优化块访问"才能按绝对地址读 —— 03 册 §7.1/§7.2 说的
+那两条，90% 的"连得上读不到"都是它们。
 
 ## 配置与守护进程
 

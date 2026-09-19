@@ -26,7 +26,8 @@ PLC 自己的协议读写，并把点位映射成设备模型上的操作。构�
 - **协议**：`mock`（内存靶机：点位模型 + 错误注入 + 事件）、
   `modbus_tcp` / `modbus_rtu` / `modbus_rtu_tcp`（含跨平台串口层）、
   `mc_tcp`（三菱 MC/SLMP，二进制 3E/4E）、`fins_tcp`（欧姆龙 FINS/TCP，
-  含节点地址分配握手）。
+  含节点地址分配握手）、`s7_tcp`（西门子 S7comm/ISO-TSAP，含 COTP 与 PDU
+  尺寸协商）。
   其余协议按 `protocal/docs/README.md` 的优先级推进。
 
 ## 3.4.0

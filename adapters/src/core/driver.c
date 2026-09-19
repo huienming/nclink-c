@@ -27,6 +27,7 @@
 #include "fins/ncl_fins_driver.h"
 #include "mc/ncl_mc_driver.h"
 #include "modbus/ncl_modbus_driver.h"
+#include "s7/ncl_s7_driver.h"
 
 #define NCL_ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 #define NCL_DRIVER_MAX_PROTOCOLS 64
@@ -606,6 +607,7 @@ void ncl_driver_register_builtin(void)
                                        ncl_modbus_rtu_tcp_create);
     (void)ncl_driver_register_protocol("mc_tcp", ncl_mc_tcp_create);
     (void)ncl_driver_register_protocol("fins_tcp", ncl_fins_tcp_create);
+    (void)ncl_driver_register_protocol("s7_tcp", ncl_s7_tcp_create);
 }
 
 ncl_driver *ncl_driver_create(const char *protocol)
