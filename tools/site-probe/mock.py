@@ -42,7 +42,9 @@ def http_200(body):
 
 
 def handle(conn, reply):
-    conn.settimeout(5.0)
+    # Long idle timeout: the caller may want the connection to stay open while it
+    # fires a whole sequence of requests (we only log them, we do not answer).
+    conn.settimeout(60.0)
     try:
         while True:
             data = conn.recv(65536)
@@ -53,6 +55,8 @@ def handle(conn, reply):
             if reply:
                 if reply.startswith("HTTP200:"):
                     conn.sendall(http_200(reply[len("HTTP200:"):]))
+                elif reply.startswith("TEXT:"):
+                    conn.sendall(reply[len("TEXT:"):].encode())
                 else:
                     conn.sendall(bytes.fromhex(reply))
                 print("--- replied", flush=True)

@@ -17,8 +17,14 @@ mkdir -p "$work/log"
 cp -r /hp2x "$work/hp2x"
 cd "$work/hp2x"
 
-# $1 (optional) is the hex reply the fake machine sends to every frame.
-python3 /work/mock.py 6000 "${1:-}" >"$work/mock.log" 2>&1 &
+# $1 hex reply for every frame, $2 open path, $3 comma-separated item paths.
+# "-" stands for "no reply": PowerShell drops empty arguments.
+reply=${1:-}
+[ "$reply" = "-" ] && reply=""
+open_path=${2:-/GSK/CNC/Open/TCP}
+items=${3:-/GSK/CNC/STATUS,/GSK/CNC/PART_COUNT,/GSK/CNC/PROGRAM,/GSK/CNC/LINE_NUMBER,/GSK/CNC/FEED_SPEED,/GSK/CNC/SPDL_SPEED,/GSK/CNC/FEED_OVERRIDE,/GSK/CNC/SPDL_OVERRIDE,/GSK/CNC/RAPID_OVERRIDE,/GSK/CNC/TOOL_NUMBER,/GSK/CNC/WARNING}
+
+python3 /work/mock.py 6000 "$reply" >"$work/mock.log" 2>&1 &
 mock_pid=$!
 sleep 1
 
@@ -27,14 +33,12 @@ echo "== starting hp2x_box200 (the device protocol gateway)"
 gw_pid=$!
 sleep 4
 
-python3 - "$2" <<'PY'
+python3 - "$open_path" "$items" <<'PY'
 import json, sys, urllib.request
 
 base = "http://127.0.0.1:33123"
-items = ["/GSK/CNC/STATUS", "/GSK/CNC/PART_COUNT", "/GSK/CNC/PROGRAM",
-         "/GSK/CNC/LINE_NUMBER", "/GSK/CNC/FEED_SPEED", "/GSK/CNC/SPDL_SPEED",
-         "/GSK/CNC/FEED_OVERRIDE", "/GSK/CNC/SPDL_OVERRIDE",
-         "/GSK/CNC/RAPID_OVERRIDE", "/GSK/CNC/TOOL_NUMBER", "/GSK/CNC/WARNING"]
+open_path = sys.argv[1]
+items = [p for p in sys.argv[2].split(",") if p]
 
 
 def post(path, body):
@@ -61,7 +65,7 @@ def frames():
     return text.count("--- request")
 
 
-opened = post("/GSK/CNC/Open/TCP",
+opened = post(open_path,
               {"ipAddress": "127.0.0.1", "port": 6000, "timeout": 5})
 conn = None
 if opened and isinstance(opened.get("data"), dict):
