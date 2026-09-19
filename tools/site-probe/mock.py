@@ -124,11 +124,12 @@ def handle(conn, reply):
                         if index + len(raw) <= len(out):
                             out[index:index + len(raw)] = raw
                     conn.sendall(bytes(out))
-                elif reply.startswith("S7S:"):
+                elif reply.startswith("S7S:") or reply.startswith("S7R:"):
                     # A minimal ISO-on-TCP / S7comm server: confirm the COTP
                     # connection, answer Setup Communication, and answer Read Var
                     # with the given value (echoing the request's PDU reference).
-                    value = bytes.fromhex(reply[len("S7S:"):])
+                    raw_only = reply.startswith("S7R:")
+                    value = bytes.fromhex(reply[4:])
                     cotp_type = data[5] if len(data) > 5 else 0
                     if cotp_type == 0xE0:                # COTP Connection Request
                         params = data[8:]                # echo the CR parameters
@@ -162,8 +163,12 @@ def handle(conn, reply):
                         n = len(value)
                         param = bytes([0x04, 0x01, 0xFF, 0x04,
                                        (n >> 8) & 0xFF, n & 0xFF])
-                        blob = bytes([0xFF, 0x04,
-                                      (n >> 8) & 0xFF, n & 0xFF])
+                        # S7R: the data section is exactly the bytes given (this
+                        # module reverses the first eight of them into a float64,
+                        # so feeding reverse(double) makes it return that double).
+                        blob = (bytes(value) if raw_only else
+                                bytes([0xFF, 0x04, (n >> 8) & 0xFF, n & 0xFF]) +
+                                value)
                         if len(value) % 2:
                             blob += b"\x00"
                         blob += value

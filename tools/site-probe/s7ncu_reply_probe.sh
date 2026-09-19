@@ -86,6 +86,15 @@ def ask(value_bytes, label, item="/S7NCU/PartCount"):
     print("--- %-28s %s" % (label, out[:200]))
 
 
+def ask_raw(value_bytes, label, item="/S7NCU/PartCount"):
+    """Data section is exactly these bytes: the module reverses the first eight
+    of them into a float64, so feeding reverse(double) should return it."""
+    with open(reply_file, "w") as handle:
+        handle.write("S7R:" + value_bytes.hex())
+    out = post(item, {"connectionId": conn})
+    print("--- %-28s %s" % (label, out[:200]))
+
+
 ask(bytes([0x12, 0x34]), "value = 0x1234")
 ask(bytes([0x00, 0x2A]), "value = 42")
 # The module wanted at least 68 bytes of data (its own panic said so): send that
@@ -94,6 +103,24 @@ ask(bytes.fromhex("4045000000000000"), "double 42.0 (8 bytes)")
 ask(bytes.fromhex("000000000000002A"), "int64 42 (BE, 8 bytes)")
 ask(bytes.fromhex("0000000000000002"), "int64 2 (BE, 8 bytes)")
 ask(bytes(range(1, 69)), "68 bytes, values 1..68")
+ask_raw(bytes.fromhex("4045000000000000"), "raw: bits of 42.0")
+ask_raw(bytes.fromhex("0000000000004540"), "raw: bits of 42.0 (LE order)")
+
+import struct
+
+
+def raw_for(value):
+    """The data section's first eight bytes are the value as a little-endian
+    float64 — verified: sending pack('<d', 42.0) came back as 42."""
+    return struct.pack("<d", value)
+
+
+ask_raw(raw_for(1234.5), "raw: 1234.5")
+ask_raw(raw_for(41.5), "raw: 41.5")
+for item, label in (("/S7NCU/ToolNo", "ToolNo"),
+                    ("/S7NCU/CycleTime", "CycleTime"),
+                    ("/S7NCU/LastRunTime", "LastRunTime")):
+    ask_raw(raw_for(7.25), "raw: 7.25 via " + label, item)
 
 print()
 print("=== what the gateway sent (last 1000 bytes of the mock log) ===")
