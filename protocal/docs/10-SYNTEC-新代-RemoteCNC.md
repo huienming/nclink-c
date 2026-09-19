@@ -78,9 +78,27 @@
 07 04 00 00 04 00 00 00 08 00 00 00 04 00 00 00 01 00 00 00
 ```
 
-**应答侧还没通**（🟡）：假机床什么都不回 → 各项 `EOF`；回一段长文本 →
-`error response length`。说明应答也带长度/结构校验，下一步按 WARNING 那条
-`error response length` 的触发条件（`mock.py` 逐长度试）迭代。
+### 3.2 应答形状（🟢 2026-09，`tools/site-probe/syntec_reply_probe.sh`）
+
+反汇编 `(*SyntecCnc).GetResponse`（`0x64d1e0`）与 `RRegister`（`0x64d6b4`）：
+应答被切成 **`[0..19]` 头 + `[20..]` 正文**（`GetResponse` 的偏移参数就是 20），
+正文比偏移还短就报 `error response length`。**所以最小应答 = 请求回声 + 正文**。
+
+各数据项在正文里的读法（`mock.py` 用 `EREP:20:<hex>` 就能试）：
+
+| 项 | 正文读法 | 实测 |
+|---|---|---|
+| `PART_COUNT`（寄存器 1000） | `[0..1]` = u16 | 回 1234 / 7 / 65535 原样得同值 ✅ |
+| `LINE_NUMBER`（寄存器 10） | `[0..1]` = u16 | 4321 ✅ |
+| `SPDL_SPEED`（寄存器 771） | `[0..1]` = u16 | 4321 ✅ |
+| `FEED_OVERRIDE`（寄存器 19）· `SPDL_OVERRIDE`（寄存器 21） | `[0..1]` = u16 | 4321 ✅ |
+| `STATUS`（状态索引 4） | `[0..1]` = u16 枚举 → `0/1/4` = `free`、`2` = `running`、`3` = `holding`、其余 `unknown` | 0..5 实测 ✅ |
+| `PROGRAM` | 正文整段当**字符串** | `EREP:20:4f31303030` 回出对应文本 ✅（编码按机器） |
+| `FEED_SPEED` | **算出来的**：先读寄存器 700、再读状态 12 与 76；状态 76 == 70 时 = `float64(寄存器700)`，否则按状态 12 查**单位换算表**（`>>5` 取整数档、`&31` 取小数档） | 三次读的返回值要分别摆（`SEQ:`），目前仍回 0 |
+| `WARNING` | 列表（`getWarning`/`getWarningContent`） | 未试出 |
+
+> 会话模型：`Open/TCP` 拿不到 `connectionId`（`None`），但**每个数据项调用会自己建连接**，
+> 一个数据项内部可能连发多帧（如 `FEED_SPEED` 三帧）——用 `mock.py` 的 `SEQ:` 摆。
 
 > 顺带一个观察：`Open/TCP` 返回的 `connectionId` 是 `None`（Open 本身没成功），
 > 但每个数据项调用仍会**自己建连接**——这一家的会话模型与 M70/精雕不同。
