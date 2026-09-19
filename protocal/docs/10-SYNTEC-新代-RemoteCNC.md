@@ -307,3 +307,55 @@ CTCPCMD_PacketStart   (12 字节，LayoutKind.Sequential 默认对齐)
 **下一步**：把业务薄壳（`READ_status` / `READ_position`…）对应的 `uFuncID`
 取出来，并从 `ProcessPacket` 的分派表读出命令号全集；再确认 32/64 位指针宽度
 （客户端是 x86，指针 4 字节）。
+
+### 10.5 命令号与服务分层（名字已确证，数值待取）
+
+服务端把连接**按用途分成 5 个服务**（枚举 `OCAPIServer.EServiceName`）：
+
+```
+Dipole · Alarm · Update · FileTransfer · AutoConnect
+```
+
+每个服务有自己的分派方法，各自按包头的命令号跳转（IL 里就是 `switch`）：
+
+| 服务 | 分派方法 | case 数 |
+|---|---|---|
+| 文件传输 | `TCPFileTransferService::DispatchPacketByFunctionID` | 17 |
+| 固件更新 | `TCPUpdateService::ReceiveUpdate` | 21 |
+| Dipole（直连/中继） | `TCPDipoleService::DispatchPacketByFunctionID` | 3 |
+| 服务查找 | `ServiceManager::GetService` | 4 |
+
+> 这一层结构对上 §1 里"实测另见到 5566-5572"那条坑：**不是一个端口一个协议，
+> 而是同一套 TCP 包跑在多个服务端口上**（`EInternetProtocol` 另有 TCP/UDP 之分）。
+
+命令号枚举（成员名已读出，**数值待取**）：
+
+```
+EFunctionID      : TCP_NcShutdown, TCP_NcRestartCNC, TCP_NcRequestUpdate,
+                   TCP_NcStartControlSystem, TCP_ResMgr_RemoteLookup,
+                   TCP_RemoteProgExecute, TCP_KrnlAPI
+FileTransferCmd  : FileSendStart, FileSending, FileRecvStart, FileRecving,
+                   GetAllFileList, Install, FileExist, DirExist, FileNew,
+                   FileDelete, FileCopy, FileMove, DirCreate
+AlarmCmd         : TCPALARM_OnEventCall
+TCPError         : ShutDown, UnKnownErr, S_OK, CloseConnection,
+                   ReceiveLengthTooShort, WSAEINTR, WSAECONNRESET …
+```
+
+命令号的数值下一次直接**从 IL 的比较指令里取**（`ldc.i4 N` → 比较 → `switch`），
+不再走 `Constant` 表：那个堆在 dnfile 里解出来的编码索引对不上（同一批 49 行里
+多行解出同一个 field rid），会得到假值，不如从代码里读。
+
+### 10.6 命令号已取到的部分（出处：分派方法的 IL）
+
+分派方法的开头是 `命令号 - 基数; switch`，基数就是该服务命令号的起点：
+
+| 服务 | 代码里的基数 | 推出 |
+|---|---|---|
+| 文件传输 `TCPFileTransferService` | `arg - 1`，17 个 case | 命令号 **1..17**（`FileTransferCmd` 13 项都落在这个区间） |
+| `TCPUpdateService::ProcessStringDevice` | `arg - 1`，3 个 case | 命令号 1..3 |
+| Dipole `TCPDipoleService` | `arg - 178`，3 个 case | 命令号 **178..180** |
+
+待取：`EFunctionID`（`TCP_NcShutdown` … `TCP_KrnlAPI`，7 项）与
+`TCPUpdateService::ReceiveUpdate` 的基数——那两处的 `switch` 前面还隔着别的指令，
+要按跳转表反查 case 值，或直接读业务请求里设的 `uFuncID`。
