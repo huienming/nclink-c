@@ -238,10 +238,14 @@ LastRunTime   ... （本次未取到读帧，按同样两帧结构重跑即可�
    同一个 x，于是表现为平方除以 100。要让它回一个指定进给，把倍率字段填 100 即可
    （两项分别给不同的值，用 `S7S:<hex1>,<hex2>`）。
 
-   `Mode` 则是"4 字节整数码 → 模式名"（`AUTO` 已见到），用不同的 4 字节值扫一遍
-   就能把码表补全；`Execution` 到本轮为止仍未找到它能接受的两项形状（等长 1~32、
-   以及 1/2/4/8 的各种组合都回 `error response`），它请求里的两个 SZL 子项不同
-   （`…0b…` 与 `…0d…`），下一步按请求里的子项自行推导长度即可。
+   `Mode` 的两个子项**都必须正好 4 字节**（5/6/8 字节一律 `error response`），但
+   返回的模式名**与这 4 字节的取值无关**：0..13、位模式（1/2/4/8/…/0xFFFF）、
+   文本（JOG/MDI/AUTO/TEACH/REPOS/REF）、大小端，以及"只改第一项/只改第二项"
+   三种组合各扫一遍，**每次都回 `AUTO`**（`tools/site-probe/s7ncu_mode_exec_probe.sh`）。
+   所以这一项在网关里是**半成品**：形状校验有了、码表没接上，`AUTO` 是常量出口
+   ——之前"4 字节码 → 模式名"的说法只对了一半。`Execution` 到本轮为止仍未找到
+   它能接受的两项形状（等长 1~32、以及 1/2/4/8 的各种组合都回 `error response`），
+   它请求里的两个 SZL 子项不同（`…0b…` 与 `…0d…`），下一步按请求里的子项推导长度。
 
    顺手把 `Execution` 的**请求**也从网关自己的构造函数里读了出来
    （`hp2x/protocols/siemens/plc/s7v2.(*S7).Execution`，0x648074）：TPKT 总长
@@ -289,17 +293,45 @@ LastRunTime   ... （本次未取到读帧，按同样两帧结构重跑即可�
 | `Execution` | `/Channel/State/progStatus[u1]`（程序运行状态） | **1 中断 / 2 停止 / 3 运行 / 4 等待 / 5 取消** |
 | `Mode` | `/Bag/State/opMode[u1]`（CNC 当前方式） | **0 JOG / 1 MDI / 2 AUTO** |
 
-这一下把三件事解释通了：
+用实测校一遍（`tools/site-probe/s7ncu_mode_exec_probe.sh`）：
 
-1. `Mode` 为什么必须 **4 字节**、且网关解析代码里反复 `cmp …,#0` / `cmp …,#2`
-   —— 它就在判 **JOG(0) / AUTO(2)**；
-2. 网关二进制里能找到的状态词 **`Auto` / `Stopped` / `waiting`** 正是这两张表的
-   文案（`Stopped` = progStatus 2、`waiting` = 4）；
-3. `FeedActual` 的 `x²/100`（**实际进给 = 设定进给 × 进给倍率%**）——我们只喂了
-   一段数据、两个字段读到同一个 x，于是表现为 x²/100。
+1. `Execution` 的请求确实是**两个** SZL 子项，应答也必须回两项——用 `S7R:`
+   （参数里只声明 1 项）打它一定 `error response`。这解释了为什么早先"单项形状"
+   怎么试都不通：**项数必须一致**。
+2. `Mode` 的形状要求与"两项各 4 字节"吻合（`0/1/2` 恰好是 4 字节整型），
+   但**码表没接上**：取值怎么变都回 `AUTO`（见上）。
+3. `FeedActual` 的 `x²/100` = **实际进给 = 设定进给 × 进给倍率%**——只喂一段
+   数据时两个字段读到同一个 x，于是表现为 x²/100。
+
+⚠️ **一处更正**：早先拿"网关二进制里有 `Auto` / `Stopped` / `waiting` 这几个词"
+当作这两张状态表的文案，是**误判**。它们分别来自 Go 运行时的通用字符串
+（`AutoClose` / `SetAutoWrapText` / `Debugmode`…、`syscall.WaitStatus.Stopped`、
+`gcwaiting` 等），与西门子状态表无关；真正的码表不在这些字符串里，本文档下面
+也不再拿它当证据。
 
 同一问答还给"机床状态"的 DB21 信号组合（`DB21.DBX35.0`+`DB21.DBX35.5` = 运行、
 `DB21.DBX35.4` = 待机），可作交叉验证。
+
+注意 `0=JOG / 1=MDI / 2=AUTO` 出自**网友问答**（西门子"找答案"，非官方手册）。
+另一路流传的 840D 接口信号表写的是**位序**：`DB11.DBB0.0 = AUTOMATIC`、
+`.1 = MDA`、`.2 = JOG`、`.3 = TEACH IN`（`DB11.DBB6.x` 同序，NC→PLC）。
+两者数值排列不同，真机确认前以问答为准、以位序表作旁证。
+
+**这些项在标准里叫什么**：交付包的模型文件 `cfg/models/s7_ncu.json` 用的是
+**NC-Link 标准**的类型名——`STATUS`（机床状态 `010302`）、`FEED_OVERRIDE`（进给倍率
+`010303`）、`FEED_SET`（进给设定值）、`FEED_SPEED`（进给速度）、`SPINDLE_OVERRIDE`
+（主轴倍率）、`PART_COUNT`（加工件数）、`SPEED_SET`/`SPINDLE_SPEED`（主轴设定值/
+转速）、`CYCLE_TIME`/`LAST_RUN_TIME`、`PLCTYPE`、`S1LOAD`（主轴参数，`LIST`）、
+`NCK_NAME`/`NCK_NO`/`NCK_VER`（名称/编号/版本）、`PROGRAM`（主程序名）、`WARNING`
+（报警）、`TOOL_NUMBER`（刀具号）、`MODE`（模式），坐标类则是 `NAME`/`ABSOLUTE`/
+`RELATIVE`/`MACHINE`。
+
+标准本身：**T/CMTBA 1008.1…1008.7-2020《数控装备工业互联通讯协议》（NC-Link）**，
+中国机床工具工业协会（CMTBA）团体标准，2020-12-01 发布、2021-01-01 实施；其中
+**第 4 部分《数据项定义》就是"数据字典"**（给出设备对象/组件对象/数据对象的数据项）。
+标准里的三层角色"**数控装备 → 适配器 → 代理器 → 应用系统**"正好对应本交付包：
+`nclink-service` + 各家 `lib*.so` 插件 = 适配器，`hp2x_box200`（:33123）= 代理器。
+出处与原文摘录见 `30-外部资料-NC-Link与西门子.md`。
 
 按这些真值（mode 0/1/2、progStatus 1..5）再打一遍 `Execution` 仍是
 `error response`——说明这一项剩的不是取值问题，而是**它两个子项的形状**；
