@@ -34,6 +34,8 @@ option(NCLINK_WITH_ZLIB "Enable zlib based compress codec" OFF)
 option(NCLINK_WITH_MQTT "Build the MQTT 5.0 transport layer" ON)
 option(NCLINK_WITH_TLS "Enable TLS (OpenSSL) for MQTT over ssl://" OFF)
 option(NCLINK_BUILD_CPP "Build the C++ wrapper sample/test (C++17)" ON)
+option(NCLINK_BUILD_ADAPTERS
+        "Build the vendor protocol drivers and the adapter daemon" ON)
 
 # Static memory: every allocation the library makes is served from one pool
 # inside a static array, so a build with this ON never calls malloc() and can
@@ -149,4 +151,9 @@ endif()
 # --------------------------------------------------------------- examples ----
 if(NCLINK_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+# --------------------------------------------------------------- adapters ----
+if(NCLINK_BUILD_ADAPTERS)
+    add_subdirectory(adapters)
 endif()

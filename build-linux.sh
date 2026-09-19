@@ -75,6 +75,20 @@ done
 $AR rcs "$OUT/libnclink_core.a" "$OUT"/obj/*.o
 echo "   -> $OUT/libnclink_core.a"
 
+# 适配器：厂商协议驱动（libnclink_drivers.a）。与核心库分开，设备端不带驱动
+# 时可以不编译这一段。测试也跟着驱动库一起编。
+DRV_CFLAGS="-Iadapters/include -Iadapters/drivers"
+DRV_OBJDIR="$OUT/obj-adapters"
+rm -rf "$DRV_OBJDIR"
+mkdir -p "$DRV_OBJDIR"
+echo "== 编译适配器驱动 =="
+for src in $(find adapters/src adapters/drivers -name '*.c' | sort); do
+    obj="$DRV_OBJDIR/$(echo "$src" | tr '/' '_').o"
+    $CC $CFLAGS $DRV_CFLAGS -c "$src" -o "$obj"
+done
+$AR rcs "$OUT/libnclink_drivers.a" "$DRV_OBJDIR"/*.o
+echo "   -> $OUT/libnclink_drivers.a"
+
 echo "== 编译示例 =="
 for ex in examples/*.c; do
     # device_model.c 不是程序：它是设备模型（被示例与垫片 #include 进去的）
@@ -115,6 +129,24 @@ for t in tests/test_*.c; do
     # shellcheck disable=SC2086
     if ! $CC $CFLAGS "$t" $extra -o "$OUT/bin/$name" \
             "$OUT/libnclink_core.a" $LDLIBS 2>"$OUT/bin/$name.build.log"; then
+        echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"; fail=$((fail+1)); continue
+    fi
+    if (cd "$OUT/bin" && ./"$name" >"$name.log" 2>&1); then
+        echo "   [通过] $name"
+        pass=$((pass+1))
+    else
+        echo "   [失败] $name"; tail -8 "$OUT/bin/$name.log"; fail=$((fail+1))
+    fi
+done
+
+# 适配器测试：链接驱动库 + 核心库。
+for t in adapters/tests/test_*.c; do
+    [ -e "$t" ] || continue
+    name=$(basename "$t" .c)
+    # shellcheck disable=SC2086
+    if ! $CC $CFLAGS $DRV_CFLAGS -Itests "$t" -o "$OUT/bin/$name" \
+            "$OUT/libnclink_drivers.a" "$OUT/libnclink_core.a" $LDLIBS \
+            2>"$OUT/bin/$name.build.log"; then
         echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"; fail=$((fail+1)); continue
     fi
     if (cd "$OUT/bin" && ./"$name" >"$name.log" 2>&1); then

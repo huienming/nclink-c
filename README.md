@@ -52,7 +52,13 @@ nclink-c/
 ├── src/ftp/               # FTP 协议两端（RFC 959/2389 子集）
 ├── src/file/              # 文件属性/SHA-256/FTP 文件工具/临时目录交换
 ├── src/schema/            # JSON Schema 校验器 + 正则引擎
-└── tests/                 # 单元测试 + 协议黄金样本
+├── tests/                 # 单元测试 + 协议黄金样本
+└── adapters/              # 厂商协议适配器（驱动 + 采集守护进程）
+    ├── include/nclink_adapter/  # 驱动接口、地址模型、响应信封
+    ├── src/core/                # 与协议无关的驱动骨架
+    ├── drivers/<协议>/          # 每协议一个目录：帧构造/解析 + 会话
+    ├── tests/                   # 报文字节级黄金样本 + mock 靶机
+    └── docs/                    # 接入指南
 ```
 
 ## 构建与测试
