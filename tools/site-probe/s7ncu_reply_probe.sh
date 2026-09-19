@@ -117,10 +117,16 @@ def raw_for(value):
 
 ask_raw(raw_for(1234.5), "raw: 1234.5")
 ask_raw(raw_for(41.5), "raw: 41.5")
-for item, label in (("/S7NCU/ToolNo", "ToolNo"),
-                    ("/S7NCU/CycleTime", "CycleTime"),
-                    ("/S7NCU/LastRunTime", "LastRunTime")):
-    ask_raw(raw_for(7.25), "raw: 7.25 via " + label, item)
+
+# Type each of the 25 items: a double, then text, then another double, so a
+# scalar, an array and a text item each answer differently.
+pattern = raw_for(1234.5) + b"ABC" + raw_for(2.5) + b"DEF"
+for item in ("Alarm", "Program", "Execution", "Mode", "PlcType", "NckName",
+             "NckNo", "NckVer", "CoordinateAbsolute", "CoordinateMachine",
+             "CoordinateRelative", "CoordinateName", "FeedActual", "FeedSet",
+             "FeedOverride", "SpeedActual", "SpeedSet", "SpeedOverride",
+             "S1Load", "ToolNo", "PartCount", "CycleTime", "LastRunTime"):
+    ask_raw(pattern, "type of " + item, "/S7NCU/" + item)
 
 print()
 print("=== what the gateway sent (last 1000 bytes of the mock log) ===")

@@ -202,6 +202,18 @@ LastRunTime   ... （本次未取到读帧，按同样两帧结构重跑即可�
    | `CycleTime` | `[7.25]` | **数组**（读多个 double，这也解释了之前 68 字节的越界） |
    | `ToolNo` | 字符串 | **文本项**（把字节按文字读） |
 
+   用一段"double + 文本 + double + 文本"的模式把 23 个项一次过完（`S7R:`）：
+
+   | 读法 | 项 |
+   |---|---|
+   | 单个 float64 | `Program` `FeedSet` `FeedOverride` `SpeedActual` `SpeedSet` `SpeedOverride` `PartCount` `LastRunTime` |
+   | 数组（`[x]`） | `CoordinateAbsolute` `CoordinateMachine` `CoordinateRelative` `CycleTime` |
+   | 文本 | `NckName` `NckNo` `NckVer` `ToolNo` |
+   | 还需其它形状（返回 `0`/`[0]`/读到别的偏移/`error response`） | `Alarm` `PlcType` `S1Load` `FeedActual` `Execution` `Mode` `CoordinateName` |
+
+   前 16 项读法已定；剩 7 项按各自的返回（例如 `FeedActual` 回 15239.9025 =
+   从别的偏移读到的 double）继续调偏移即可。
+
    至此 S7NCU 这条链**闭环**：COTP CC + Setup ack（含错误类/错误码）+ Read ack
    （长度按字节、数据段头 8 字节是小端 float64）。25 个数据项只剩"逐个确认
    类型（double/数组/文本）"，用 `S7R:<bytes>` 换值即可。
