@@ -118,19 +118,29 @@ def raw_for(value):
 ask_raw(raw_for(1234.5), "raw: 1234.5")
 ask_raw(raw_for(41.5), "raw: 41.5")
 
-# FeedActual reads a double somewhere past the start: put 42.0 at a few offsets
-# and see which one comes back.
-for offset in (0, 8, 16, 24, 32, 40, 48, 56, 64):
-    data = bytearray(128)
-    data[offset:offset + 8] = raw_for(42.0)
-    ask_raw(bytes(data), "FeedActual: 42.0 at %d" % offset, "/S7NCU/FeedActual")
+# FeedActual: measure the transform by feeding known doubles at offset 0.
+for v in (42.0, 24.0, 100.0, 10.0, 1.0):
+    ask_raw(raw_for(v), "FeedActual in %g" % v, "/S7NCU/FeedActual")
 
-# Execution and Mode ask for two items: answer with one and two items of a few
-# lengths (S7S = item headers + markers, one per requested item).
-for item in ("Execution", "Mode"):
-    for n in (2, 4, 8, 16):
-        ask(bytes(range(0x10, 0x10 + n)), "%s: %d byte items" % (item, n),
-            "/S7NCU/" + item)
+# Execution asks for two items and rejects most shapes: sweep the item length to
+# find the one it wants (Mode turned out to want exactly four).
+for a in (1, 2, 4, 8):
+    for b in (1, 2, 4, 8):
+        n = a
+        spec = ("S7S:" + (bytes([0x10 + (a & 0x0F)]) * a).hex() + "," +
+                (bytes([0x20 + (b & 0x0F)]) * b).hex())
+        with open(reply_file, "w") as handle:
+            handle.write(spec)
+        out = post("/S7NCU/Execution", {"connectionId": conn})
+        print("--- Execution %d+%d bytes  %s" % (a, b, out[:110]))
+
+for n in range(1, 3):
+    spec = ("S7S:" + (bytes([0x10 + (n & 0x0F)]) * n).hex() + "," +
+            (bytes([0x20 + (n & 0x0F)]) * n).hex())
+    with open(reply_file, "w") as handle:
+        handle.write(spec)
+    out = post("/S7NCU/Execution", {"connectionId": conn})
+    print("--- Execution %d byte items  %s" % (n, out[:110]))
 
 print()
 print("=== what the gateway sent (last 1000 bytes of the mock log) ===")
