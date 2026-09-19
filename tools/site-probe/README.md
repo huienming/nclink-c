@@ -32,6 +32,26 @@ docker run --rm --platform linux/arm/v7 \
 （`protocal/docs/08-GSK-广州数控.md` §4.5）。换模块名/项键就能抓科德、三菱、
 S7、Modbus、FOCAS、840D 的对应帧。
 
+## 读网关自己的代码（Go 二进制，strip 过也不怕）
+
+现场网关是 Go 编的，`hp2x_box200` 里 `.gopclntab` 完好，所以**函数名 + 起止地址**
+都能还原；配上 objdump 就能读它的判定逻辑，比抓包猜快得多。
+
+```sh
+python go_pclntab.py <bin> --list 's7v2\.\(\*S7\)'      # 列函数
+python go_pclntab.py <bin> --dump '(*S7).Mode' --out fn.bin   # 导出机器码
+python elf_vaddr.py <bin> --words 0xdec9a8 4            # 看字面量池/全局变量
+python elf_vaddr.py <bin> --gostr 0x64852c              # 池中 (ptr,len) → 字符串
+
+docker run --rm --platform linux/arm/v7 -v <现场包>/app1/hp2x:/hp2x:ro \
+  -v $PWD:/work ncl-arm-probe sh /work/arm_analyze.sh '(*S7).Mode'
+```
+
+`arm_analyze.sh` 会把 `runtime.memequal` 的比较、字面量池以及被页面的地址都列出来
+（`Mode` 的 `JOG`/`REPOS`/`REFPOINT`/`AUTO` 表就是这么读出来的）。
+`gateway_meta.py` 则从二进制里抽 `Meta=path:"…" tags:"…"` 这类路由元数据；
+`websearch.py` 是查本机 SearXNG（找标准/手册出处）用的小脚本。
+
 ## 已经拿到什么
 
 1. **FOCAS2 握手字节**（🟢 实测，`focas_run.sh`）。`cnc_allclibhndl3()` 对假机床
