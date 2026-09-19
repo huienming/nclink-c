@@ -78,10 +78,40 @@ CRLF + CRLF + 计数 + `%`）：
 `GetMaintenanceData` 需要额外参数（网关报 `The Param field is required`），
 `GetFileList`/文件类命令按同一排法带参数即可。
 
-**应答（未完成）**：拿候选文本回给网关，它只回
-`request error, response: <我们发的内容>`——不像科德那样会点名期望的元素，
-所以兄弟这一家的应答形状暂时只能靠真机抓一次（探针留在
-`tools/site-probe/brother_reply_probe.sh`）。
+### 3.2 应答形状（🟢 2026-09，`tools/site-probe/brother_reply_probe2.sh`）
+
+反汇编 `hp2x/protocols/brother/cnc.responseIsOk`（`0x617704`）与 `filterResData`
+（`0x617324`，里面那句 `request error,response: %s` 就是之前一直看到的报错）——
+应答的判定只有三条：
+
+```
+① 按 \r\n 切开后至少 2 段；
+② 第 1 段 ≥ 19 字节，且**以 ASCII "00" 结尾**（就是请求第一行的排法，19 字节正好）；
+③ 整包的**最后一个字节是 `%`**。
+```
+
+**应答模板**：
+
+```
+<请求第一行原样 19 字节> \r\n <数据> \r\n %
+```
+
+（19 = `%` + 8 字符命令 + 8 字符参数 + `00`；照抄请求的前 19 字节即可。）
+
+实测（同一套探针）：
+
+| 项 | 数据区摆法 | 返回 |
+|---|---|---|
+| `PWD` | `/` · `/O1000` | `'/'` · `'/O1000'` ✅（整段文本） |
+| `GetCurProgName` | `ABCD` · `ABCDE` · `ABCDEF` | 都是 `'ABCD'` —— 这一项驱动**只取数据前 4 字节**（<4 字节直接 panic `[:4] with length N`） |
+| `LS` | `DIR1…DIR2` | `['<整段>']`（列表里一项） |
+| `GetToolList` | `T01,1;T02,2` / `1,T01;2,T02` / `T01=1;…` | `{}` —— 工具表的字段排法还没试出来 |
+
+**注意**：`request error,response: <内容>` 只说明上面 ①② 没过（第 1 段尾巴不是
+`00`、或第 1 段太短），**不是**报文内容错——之前就是卡在这里。
+
+**还没闭环**：`GetToolList`（工具表）与 `GetMaintenanceData`（保养数据）的字段排法，
+继续用同一个探针扫数据区即可。
 
 ---
 
