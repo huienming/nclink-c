@@ -17,6 +17,9 @@ may take several forms:
                           24 bytes copied in, then patched
     SEQ:<spec>|<spec>|... the n-th request gets the n-th frame (each part may
                           be any other form here, or raw hex)
+    MAP:off:len:<hex>=<spec>|...  pick by the request's bytes [off,off+len):
+                          entries with "=" match that hex, a trailing entry
+                          without "=" is the default
     S7S:<hex>[,<hex>...]  act as an ISO-on-TCP / S7 server (COTP CC + Setup ack
                           + Read ack); one value per requested item
     S7R:<hex>             the same, but the data section is exactly these bytes
@@ -126,6 +129,19 @@ def respond(conn, data, reply):
         return
     if reply.startswith("SEQ:"):
         return                       # 由 handle 处理（要按请求序号挑）
+    if reply.startswith("MAP:"):
+        _, off, size, rest = reply.split(":", 3)
+        key = data[int(off):int(off) + int(size)].hex()
+        chosen = None
+        for item in rest.split("|"):
+            if "=" in item:
+                match, candidate = item.split("=", 1)
+                if match.strip() == key:
+                    chosen = candidate
+                    break
+            else:
+                chosen = item             # 兜底（放最后）
+        return respond(conn, data, chosen or "")
     if reply.startswith(("S7S:", "S7R:")):
         conn.sendall(s7_reply(data, reply))
     elif reply.startswith("HTTP200:"):

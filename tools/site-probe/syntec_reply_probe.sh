@@ -110,6 +110,26 @@ units = "SEQ:%s|%s|%s" % (echo(4321), echo(0), echo(1))
 print("  v3=1（单位换算）   %s" % brief(once("FEED_SPEED", units)))
 units2 = "SEQ:%s|%s|%s" % (echo(4321), echo(32), echo(1))
 print("  v2=32（换算表次档）%s" % brief(once("FEED_SPEED", units2)))
+print("  ---- 用 mock.py 的 MAP: 按请求里的寄存器号分别回")
+# 请求 [28..29] = 寄存器号：700 = bc02、12 = 0c00、76 = 4c00
+reg_map = ("MAP:28:2:bc02=%s|0c00=%s|4c00=%s|%s"
+           % (echo(4321), echo(0), echo(70), echo(0)))
+print("  700=4321, 12=0, 76=70 %s" % brief(once("FEED_SPEED", reg_map)))
+reg_map2 = ("MAP:28:2:bc02=%s|0c00=%s|4c00=%s|%s"
+            % (echo(1234), echo(0), echo(70), echo(0)))
+print("  700=1234, 12=0, 76=70 %s" % brief(once("FEED_SPEED", reg_map2)))
+reg_map3 = ("MAP:28:2:bc02=%s|0c00=%s|4c00=%s|%s"
+            % (echo(4321), echo(0), echo(1), echo(0)))
+print("  700=4321, 12=0, 76=1  %s" % brief(once("FEED_SPEED", reg_map3)))
+print("  ---- 上面这几次在设备侧长什么样（连接/请求数）")
+log = open("/tmp/run/mock.log", encoding="utf-8", errors="replace").read()
+print("       connect 次数 = %d，request 次数 = %d"
+      % (log.count("--- connect from"), log.count("--- request")))
+for block in log.split("--- request")[-6:]:
+    line = block.split("\n")
+    if len(line) > 1:
+        print("       %s | %s" % (line[0].strip(),
+                                  line[1][6:53].replace("  ", " ").strip()))
 
 print("=== PROGRAM / WARNING：先用同一个回声试试")
 print("  PROGRAM        %s" % brief(once("PROGRAM", echo(0x4F31))))
