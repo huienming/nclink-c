@@ -105,11 +105,12 @@ CMDS = {
     "WARNING": 0x81,
 }
 
-print("=== PROGRAM：长度 = 数据 [3..4]（u16），名字从 [5] 起，总长要 ≥ 5+长度")
-for name, tail in ((b"O1000", b"\x00"), (b"O1000", b""), (b"ABC", b"\x00")):
-    data = (b"\x00\x00" + struct.pack("<H", len(name)) + name + tail)
-    print("  %-6s tail=%-3s %s" % (name.decode(), tail.hex() or "-",
-                                   brief(once("PROGRAM", frame(0x12, data)))))
+print("=== PROGRAM：名字长度 = 数据 [3..4] 的 u16，名字从数据 [5] 起，总长 ≥ 5+长度")
+for name in (b"O1000", b"ABC"):
+    for pad in (3, 6):
+        data = struct.pack("<H", len(name)) + name + bytes(pad)
+        print("  %-6s pad=%d %s" % (name.decode(), pad,
+                                    brief(once("PROGRAM", frame(0x12, data)))))
 
 print("=== WARNING：先回 0x81（条数），再回 0x82（条目）")
 count = frame(0x81, struct.pack("<I", 1) + bytes(8))
