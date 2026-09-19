@@ -32,6 +32,11 @@ def serve(port, reply_hex=None):
         threading.Thread(target=handle, args=(conn, reply_hex), daemon=True).start()
 
 
+def listen(port, reply=None):
+    """Serve on one port in the background."""
+    threading.Thread(target=serve, args=(port, reply), daemon=True).start()
+
+
 def http_200(body):
     raw = body.encode()
     head = ("HTTP/1.1 200 OK\r\n"
@@ -69,6 +74,20 @@ def handle(conn, reply):
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8193
+    # The port may be a list ("7080,7081") or a range ("7080-7090"): some modules
+    # probe a small range before they settle on one (JINGDIAO walks 7080, 7081...).
+    spec = sys.argv[1] if len(sys.argv) > 1 else "8193"
+    ports = []
+    for part in spec.split(","):
+        if "-" in part:
+            first, last = part.split("-", 1)
+            ports.extend(range(int(first), int(last) + 1))
+        else:
+            ports.append(int(part))
     reply = sys.argv[2] if len(sys.argv) > 2 else None
-    serve(port, reply)
+    if len(ports) == 1:
+        serve(ports[0], reply)
+    else:
+        for extra in ports[1:]:
+            listen(extra, reply)
+        serve(ports[0], reply)

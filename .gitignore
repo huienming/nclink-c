@@ -69,3 +69,5 @@ tools/site-probe/run/
 tools/site-probe/drive
 tools/site-probe/probe
 tools/site-probe/*.log
+tools/site-probe/routes.txt
+/*-capture.log
