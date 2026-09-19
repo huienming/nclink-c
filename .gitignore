@@ -70,4 +70,5 @@ tools/site-probe/drive
 tools/site-probe/probe
 tools/site-probe/*.log
 tools/site-probe/routes.txt
+tools/site-probe/reply.txt
 /*-capture.log
