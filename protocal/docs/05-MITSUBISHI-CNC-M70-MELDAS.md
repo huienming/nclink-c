@@ -127,8 +127,7 @@
 
 结论：**M70 的数据项 = `mochaGetData(代码, 索引…)` 的两个整数**，Y/Z 轴与
 其余时间项按同样办法再抓一次即可补齐（`gateway_probe.sh` 换个项名就行）。
-应答侧的字段语义（值怎么编码）仍需把应答构造对之后确认——那是这一册目前
-唯一还缺的一格。
+应答侧的字段语义（值怎么编码）见 §4.1.3——**已闭环**。
 
 #### 4.1.1 应答侧实测（🟢 2026-09 第二轮，`tools/site-probe/m70_reply_probe.sh`）
 
@@ -170,14 +169,76 @@ HTTP 500 exception recovered: runtime error: slice bounds out of range
 顺带两个副产品：① `GetResponse3` 的缓冲区 **capacity = 64**；② "IDL 标记"
 （`[28..30]="IDL"`）打不打都不影响 CString 的解析。
 
-**还没通的**：数值类（`GetPartCount`/`GetLineNumber`/`GetFeedSpeed`/
-`GetRelativePositionX`）。它们的**总长必须是 40**（只有 40 能过长度检查，36 或 44+
-都报 `error response length`——注意 `GetProgramName` 是"40+len"），长度过了之后恒
-报 `error response data`：扫过 `[8..11]` 的 GIOP size（0x1c/0x20/0x24/0x28/0x2c/
-0x44）、`[12..15]` 保留位、`[28..30]="IDL"`、`[32..35]`（0/1/2/4/8/13/16/20/24）
-都不动。**下一步**：按 §3.3 的"类型标记 `data[28]` + 尺寸 `data[32]`"再试一轮
-（把 `[28]` 设成 0x01/0x02/0x03/0x05 与 `[32]` 设成 1/2/4/8 组合），以及把值放
-`[36]`/`[40]` 两处对比。
+数值类的"最后一格"见 §4.1.3（已闭环）。
+
+#### 4.1.3 数值类全部闭环：应答模板规则（🟢 2026-09 第三轮）
+
+反汇编 `(*MitsubishiCncM70).GetPartCount`（`0x6355f8-0x635bb4`）把"最后一步"读透：
+
+```
+635864  bl hp2x/common.(*NetConn).GetResponse3   ; 收包
+6359c4  响应长度 == 驱动自己拼的应答模板长度      ; 不等 → "error response length"
+635a10  bl runtime.memequal                      ; 比模板前 N 字节，不等 → "error response data"
+635a20  runtime.newobject + 组装 *bytes.Reader   ; 窗口 = 响应 [36..40)
+635ac4  bl encoding/binary.Read                  ; 目标 = 0x749e48 = uint32（size=4, kind=10）
+635ac8  成功路径
+```
+
+即：**网关比的是一个"应答模板"**（`bytes.Buffer` 里先写 24 字节 GIOP 头、再写每项
+固定的尾巴，共 40/52/544 字节），响应必须**逐字节相同**（末 4 或 8 字节是取值槽，
+不参与比较）。模板的头 24 字节 = **请求的前 24 字节**，只改 3 处：
+
+| 偏移 | 应答要写 | 请求里的值 |
+|---|---|---|
+| 7 | `01`（消息类型 = Reply） | `00` |
+| 8..11 | 总长 − 12（LE） | `44 00 00 00`（68） |
+| 20..23 | `00 00 00 00` | 每项不同的运行时值（如 `01 5d 34 77`） |
+
+`[12..15]` 两边都是 0；`[16..19]` 两边同值 = **数据项码**（工件计数 `3c 1f`、行号
+`d0 00`、进给/坐标 `24 c1`、时间 `b8 62`、报警 `3c 1f`）。所以造应答最省事的办法
+就是 `EREP:` 回声请求 + 打补丁（`m70_num_probe*.sh` 就是这么干的）。
+
+**各数据项的应答（都已实测闭环）**：
+
+| 数据项 | 请求方法 | 码 `[16..19]` | 应答总长 | 固定尾巴（`[24..]`） | 取值槽 | 实测 |
+|---|---|---|---|---|---|---|
+| 工件计数 `GetPartCount` | `mochaGetData` | `3c 1f 00 00` | 40 | `00 00 00 00 03 00 00 00 04 00 00 00` | **u32 @36** | 回 7/1234/1751347053 即得同值 ✅ |
+| 行号 `GetLineNumber` | `mochaGetData` | `d0 00 00 00` | 40 | 同上 | **u32 @36** | 回 7/1234/10 ✅ |
+| 开机/累计/加工时间 `GetTime*` | `mochaGetData` | `b8 62 00 00` | 40 | 同上 | **u32 @36**（秒，`0xFFFFFFFF` → 4294967295） | 三项各回 3600 ✅ |
+| 状态 `GetStatus` | `getStartStatus` + `getPauseStatus` | `3c 1f 00 00` | 40 ×2 | 同上 | **u32 @36**（1 = 是） | 见下表 ✅ |
+| 程序名 `GetProgramName` | `mochaGetData` | — | **40 + len** | 长度 `[36..39]`、字符 `[40..]` | CString | `'ABCDEFG'` ✅（§4.1.2） |
+| 进给速度 `GetFeedSpeed` | `mochaGetData` | `24 c1 00 00` | 52 | `00 00 00 00 06 00 00 00 10 00 00 00 07 00 02 00 00 00 00 00` | **double @44** | 回 123.5 / −1.25 ✅ |
+| 相对坐标 `GetRelativePositionX/Y/Z` | `mochaGetData` | `24 c1 00 00` | 52 | 同上，但 `[36..39] = 05 00 03 00` | **double @44** | X/Y/Z 各回 12.5 ✅ |
+| 报警 `GetWarning` | `mochaGetCurrentAlarmMsgFirst` | `3c 1f 00 00` | **544**（`[8..11]=14 02 00 00`） | 载荷全 0 = 无报警 | — | 返回 `[]` ✅ |
+
+**进给/坐标那 4 个字节是判定位**：`[36..39]` 换成另一项的值就报
+`error response data`（`07000200` 只喂得动 `GetFeedSpeed`，`05000300` 只喂得动
+`GetRelativePosition*`），所以这四个字节是"这一帧是哪个数据项的应答"的第二重校验。
+
+**状态 `GetStatus`**：网关连发两帧查询（先 `getStartStatus` 再 `getPauseStatus`，
+请求方法名同为 `mochaGetData`、码同为 `3c 1f`，靠请求 `[0x38]` 的 `0x14`/`0x16`
+区分），两帧都回同值时：
+
+| start | pause | 返回 |
+|---|---|---|
+| 1 | 0 | `'running'` |
+| 0 | 0 | `'free'` |
+| 0 / 1 | 1 | `'holding'` |
+| 其它（任一查询失败） | | `'free'`（枚举 0） |
+
+**时间三项的选择位**：请求 `[0x38]`（=偏移 56）的 u32 = 1/2/3 分别对应
+`GetTimePowerOn`/`GetTimeCumulative`/`GetTimeMachining`，三者的应答模板完全相同。
+
+**顺带修正 §4.1.1 的一处理解**：请求里那些"看起来固定的字节"其实多半是运行时值。
+反汇编里能读到一份"骨架字面量"（`7e 00 00 00 42 1f 00 00 …`），但真机发出来的是
+`02 00 00 00 64 00 00 00 …`、工件计数码 `e4 ed 05 00`、进给码 `1b 55 05 00`——骨架
+只是模板，逐项数据（轴号/速率/数据码）在发送前被打进去。**要请求的准确字节，抓
+mock 的日志比读反汇编可靠**。
+
+探针：`tools/site-probe/m70_num_probe.sh`（工件计数）、`m70_num_probe2.sh`
+（行号/进给/坐标 + 判定位互斥性）、`m70_num_probe3.sh`（时间/状态）、
+`m70_status_warn_probe.sh`（状态四组合 + 报警）。`mock.py` 这一轮新增
+`ZREP:N:off:hex,…`（零填充 N 字节再补丁）和 `SEQ:` 里可嵌套其它规格。
 
 | 命令码 | 子码 | 语义 | 返回类型 | 备注 |
 |---|---|---|---|---|
@@ -243,6 +304,34 @@ HTTP 500 exception recovered: runtime error: slice bounds out of range
 | `mochaFSRemoveFile` | 删除（**危险**） |
 | `mochaFSIoctlFile` | IO 控制（程序信息） |
 | `mochaSetData` | 通用写 |
+
+**这一层的应答帧（🟡 2026-09 反汇编 + 假机床实测，`m70_fs_probe*.sh`）**：
+
+和 §4.1.3 同构——24 字节 GIOP 头 + 16 字节块 + **载荷**，但**不比对模板**
+（没有 `memequal`），只看两件事：
+
+| 检查 | 位置 | 说明 |
+|---|---|---|
+| 长度 ≥ 24 / ≥ 40 | `mochaFSReadDirectory` `0x63a144`/`0x63a178` | < 24 或 < 40 直接报错 |
+| 状态码 | 应答 `[20..23]`（LE u32） | **0 = 正常**，非 0 = 出错（`0x63a170`） |
+| 载荷 | 应答 `[40..]` | 从 `[40]` 起**扫到第一个 `00`** 为止当文件名（`0x63a294` 的循环） |
+
+目录枚举的会话顺序（`GetFileList`，`0x638b3c`）：
+`mochaFSStatFile` → `mochaFSOpenDirectory` → `mochaFSReadDirectory`（**循环**，
+每轮 append 一个文件名）→ 出错时 `mochaFSCloseDirectory` 并返回已收集的列表。
+
+实测（假机床）：
+
+| 试法 | 结果 |
+|---|---|
+| 全部回"40 字节、状态 0、载荷空" | `GetFileList` **一直轮询 `mochaFSReadDirectory`**（空名字不算结束） |
+| 载荷给 `O1000`（`[40..44]`，无 `00` 结尾） | 名字取到（扫到载荷末尾），但下一帧出错后 http 层交付 `null` |
+| 状态码改 1 | `GetFileList` → `null`（`GetWarning` 同款错误路径） |
+| `ReadFile` 回"状态 0、载荷 `HELLO`" | 返回 `''`（内容不在 `[40..]`） |
+
+**未闭环**：`GetFileList`/`ReadFile` 的**载荷**约定（文件名/文件内容具体放哪、
+`[24..39]` 那 16 字节里哪一格是"还有下一条"）——试了 `[24..39]` 四格置 1 都不
+结束循环。要一次真机的"列目录/读文件"会话抓包（已记入 31 册）。
 
 ---
 

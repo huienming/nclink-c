@@ -13,7 +13,10 @@ may take several forms:
     XSUB:<template>       fill {uid} / {req} / {reqflip} from the request
     EREP:off:hex,...      echo the request, replacing these bytes
     EREP:...,cut:N        same, then truncate the echo to N bytes
-    SEQ:<hex>|<hex>|...   the n-th request gets the n-th frame
+    ZREP:N:off:hex,...    a zero-filled N-byte frame with the request's first
+                          24 bytes copied in, then patched
+    SEQ:<spec>|<spec>|... the n-th request gets the n-th frame (each part may
+                          be any other form here, or raw hex)
     S7S:<hex>[,<hex>...]  act as an ISO-on-TCP / S7 server (COTP CC + Setup ack
                           + Read ack); one value per requested item
     S7R:<hex>             the same, but the data section is exactly these bytes
@@ -117,6 +120,49 @@ def s7_reply(request, spec):
     return s7_ack(pdu_ref, bytes(params), bytes(data))
 
 
+def respond(conn, data, reply):
+    """Send one reply for one received chunk (specs may nest inside SEQ)."""
+    if not reply:
+        return
+    if reply.startswith("SEQ:"):
+        return                       # 由 handle 处理（要按请求序号挑）
+    if reply.startswith(("S7S:", "S7R:")):
+        conn.sendall(s7_reply(data, reply))
+    elif reply.startswith("HTTP200:"):
+        conn.sendall(http_200(reply[8:]))
+    elif reply.startswith("XSUB:"):
+        conn.sendall((substitute(data, reply[5:]) + "\n").encode())
+    elif reply.startswith("EREP:"):
+        out = bytearray(data)
+        cut = None
+        for item in reply[5:].split(","):
+            if item.startswith("cut:"):
+                cut = int(item[4:])
+                continue
+            off, hexbytes = item.split(":", 1)
+            raw = bytes.fromhex(hexbytes)
+            index = int(off)
+            if index + len(raw) <= len(out):
+                out[index:index + len(raw)] = raw
+        if cut is not None:
+            out = out[:cut]
+        conn.sendall(bytes(out))
+    elif reply.startswith("ZREP:"):
+        out = bytearray(int(reply[5:].split(",")[0]))
+        out[:min(24, len(data))] = data[:24]
+        for item in reply[5:].split(",")[1:]:
+            off, hexbytes = item.split(":", 1)
+            raw = bytes.fromhex(hexbytes)
+            index = int(off)
+            if index + len(raw) <= len(out):
+                out[index:index + len(raw)] = raw
+        conn.sendall(bytes(out))
+    elif reply.startswith("TEXT:"):
+        conn.sendall(reply[5:].encode())
+    else:
+        conn.sendall(bytes.fromhex(reply))
+
+
 def handle(conn, spec):
     conn.settimeout(60.0)
     step = 0
@@ -140,33 +186,9 @@ def handle(conn, spec):
                 parts = reply[4:].split("|")
                 chosen = parts[step] if step < len(parts) else parts[-1]
                 step += 1
-                if chosen:
-                    conn.sendall(bytes.fromhex(chosen))
-            elif reply.startswith(("S7S:", "S7R:")):
-                conn.sendall(s7_reply(data, reply))
-            elif reply.startswith("HTTP200:"):
-                conn.sendall(http_200(reply[8:]))
-            elif reply.startswith("XSUB:"):
-                conn.sendall((substitute(data, reply[5:]) + "\n").encode())
-            elif reply.startswith("EREP:"):
-                out = bytearray(data)
-                cut = None
-                for item in reply[5:].split(","):
-                    if item.startswith("cut:"):
-                        cut = int(item[4:])
-                        continue
-                    off, hexbytes = item.split(":", 1)
-                    raw = bytes.fromhex(hexbytes)
-                    index = int(off)
-                    if index + len(raw) <= len(out):
-                        out[index:index + len(raw)] = raw
-                if cut is not None:
-                    out = out[:cut]
-                conn.sendall(bytes(out))
-            elif reply.startswith("TEXT:"):
-                conn.sendall(reply[5:].encode())
+                respond(conn, data, chosen)
             else:
-                conn.sendall(bytes.fromhex(reply))
+                respond(conn, data, reply)
             print("--- replied", flush=True)
     except socket.timeout:
         print("--- idle, closing", flush=True)

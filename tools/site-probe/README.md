@@ -64,6 +64,19 @@ python go_pclntab.py <bin> --xstring "error response length"
 `mock.py` 的 `EREP:` 还支持 `cut:N`（回声后截断到 N 字节），用来扫"应答该多长"——
 三菱 M70 的"正确应答 = 40 字节"就是这么试出来的（`m70_reply_probe.sh`）。
 
+`arm_bytes.py` 更进一步：把函数反汇编里那串 `mov rX,#imm` + `strb rX,[sp,#off]`
+当成**栈上拼出来的字面量**读回来——Go 编译器就是这么落地 `[...]byte{…}` 的。
+三菱 M70 的"应答模板"（`47 49 4f 50 01 00 01 01 …`）就是这么拿到的：
+
+```sh
+sh /work/arm_literals.sh '(*MitsubishiCncM70).GetPartCount'   # 只打"字面量"那一段
+SECTION=逐字节 sh /work/arm_literals.sh '<函数名>'            # 每个 strb 的偏移与值
+```
+
+配合 `mock.py` 的 `ZREP:N:off:hex,…`（零填充 N 字节、拷进请求前 24 字节、再补丁）
+和"`SEQ:` 里可以嵌套别的规格"，就能拼出**比请求长的应答**（M70 报警的 544 字节帧
+就是这么发的）。
+
 ## 已经拿到什么
 
 1. **FOCAS2 握手字节**（🟢 实测，`focas_run.sh`）。`cnc_allclibhndl3()` 对假机床
