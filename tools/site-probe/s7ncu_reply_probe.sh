@@ -1,0 +1,98 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
+
+# S7NCU answers in standard S7comm: a Setup Communication ack, then a Read Var
+# ack whose data block carries the value. Build both by hand (03 册 documents the
+# layout) and put a recognisable number in the data: whatever comes back tells us
+# where the gateway reads it from.
+#
+#   /hp2x    read-only mount of .../app1/hp2x
+set -e
+
+work=/tmp/run
+rm -rf "$work/hp2x"
+mkdir -p "$work/log"
+cp -r /hp2x "$work/hp2x"
+cd "$work/hp2x"
+
+printf '' >"$work/reply.txt"
+python3 /work/mock.py 102 "@$work/reply.txt" >"$work/mock.log" 2>&1 &
+mock_pid=$!
+sleep 1
+
+./hp2x_box200 >"$work/hp2x.log" 2>&1 &
+gw_pid=$!
+sleep 4
+
+python3 - <<'PY'
+import json, urllib.error, urllib.request
+
+base = "http://127.0.0.1:33123"
+reply_file = "/tmp/run/reply.txt"
+
+
+def post(path, body):
+    req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        return urllib.request.urlopen(req, timeout=10).read().decode("utf-8",
+                                                                     "replace")
+    except urllib.error.HTTPError as exc:
+        return "HTTP %d %s" % (exc.code, exc.read().decode("utf-8", "replace"))
+    except Exception as exc:                  # noqa: BLE001
+        return "ERR %s" % exc
+
+
+def s7_frame(pdu_ref, payload):
+    """TPKT + COTP + S7 header (Ack_Data) around a payload (param+data)."""
+    total = 4 + 3 + 10 + len(payload)
+    head = bytes([0x03, 0x00, total >> 8, total & 0xFF,  # TPKT
+                  0x02, 0xF0, 0x80,                      # COTP Data
+                  0x32, 0x03, 0x00, 0x00,                # S7 Ack_Data
+                  pdu_ref >> 8, pdu_ref & 0xFF])
+    return head + payload
+
+
+def read_ack(value_bytes, pdu_ref=1):
+    # parameters: Ack_Data, 1 item, success, transfer size, bit length
+    param = bytes([0x04, 0x01, 0xFF, 0x04, 0x00, len(value_bytes) * 8])
+    # data item: return code 0xFF = success, transport size, bit length, fill
+    data = bytes([0xFF, 0x04, 0x00, len(value_bytes) * 8])
+    if len(value_bytes) % 2:
+        data += b"\x00"
+    data += value_bytes
+    header = bytes([0x32, 0x03, 0x00, 0x00,
+                    pdu_ref >> 8, pdu_ref & 0xFF,
+                    len(param) >> 8, len(param) & 0xFF,
+                    len(data) >> 8, len(data) & 0xFF])
+    body = header + param + data
+    total = 4 + 3 + len(body)
+    return (bytes([0x03, 0x00, total >> 8, total & 0xFF, 0x02, 0xF0, 0x80]) +
+            body)
+
+
+opened = json.loads(post("/S7NCU/Open/TCP",
+                         {"ipAddress": "127.0.0.1", "port": 102, "timeout": 3}))
+conn = (opened.get("data") or {}).get("connectionId")
+print("connectionId = %s" % conn)
+
+
+def ask(value_bytes, label, item="/S7NCU/PartCount"):
+    # The mock plays a minimal S7 server, echoing the PDU reference it saw.
+    with open(reply_file, "w") as handle:
+        handle.write("S7S:" + value_bytes.hex())
+    out = post(item, {"connectionId": conn})
+    print("--- %-28s %s" % (label, out[:200]))
+
+
+ask(bytes([0x12, 0x34]), "value = 0x1234")
+ask(bytes([0x00, 0x2A]), "value = 42")
+
+print()
+print("=== what the gateway sent (last 1000 bytes of the mock log) ===")
+print(open("/tmp/run/mock.log", encoding="utf-8", errors="replace").read()[-1000:])
+PY
+
+kill $gw_pid $mock_pid 2>/dev/null || true
+wait 2>/dev/null || true

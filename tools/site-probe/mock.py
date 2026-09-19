@@ -74,6 +74,7 @@ def handle(conn, reply):
     # fires a whole sequence of requests (we only log them, we do not answer).
     conn.settimeout(60.0)
     spec = reply
+    step = 0
     try:
         while True:
             data = conn.recv(65536)
@@ -85,18 +86,85 @@ def handle(conn, reply):
             # sweep can change the answer between two requests on one
             # connection.
             reply = spec
+            # "@path" re-reads the reply from a file on every request, so a
+            # sweep can change the answer between two requests on one
+            # connection. Resolve it *before* dispatching on the prefix.
             if reply and reply.startswith("@"):
                 try:
                     with open(reply[1:], encoding="utf-8") as handle:
                         reply = handle.read().strip()
                 except OSError:
                     reply = ""
+            if reply and reply.startswith("SEQ:"):
+                # SEQ:<hex>|<hex>|... answers the n-th request with the n-th frame
+                # (protocols that hand-shake first, like S7: setup, then the read).
+                parts = reply[len("SEQ:"):].split("|")
+                # Past the end of the list, keep answering with the last frame:
+                # many modules re-read on the same connection.
+                chosen = parts[step] if step < len(parts) else parts[-1]
+                step += 1
+                if chosen:
+                    conn.sendall(bytes.fromhex(chosen))
+                    print("--- replied (step %d)" % step, flush=True)
+                continue
             if reply:
                 if reply.startswith("HTTP200:"):
                     conn.sendall(http_200(reply[len("HTTP200:"):]))
                 elif reply.startswith("XSUB:"):
                     conn.sendall((substitute(data, reply[len("XSUB:"):]) +
                                   "\n").encode())
+                elif reply.startswith("EREP:"):
+                    # Echo the request with a few bytes replaced:
+                    #   EREP:2:02,16:0102ff   -> buf[2]=0x02, buf[16..18]=01 02 ff
+                    out = bytearray(data)
+                    for item in reply[len("EREP:"):].split(","):
+                        off, hexbytes = item.split(":", 1)
+                        raw = bytes.fromhex(hexbytes)
+                        index = int(off)
+                        if index + len(raw) <= len(out):
+                            out[index:index + len(raw)] = raw
+                    conn.sendall(bytes(out))
+                elif reply.startswith("S7S:"):
+                    # A minimal ISO-on-TCP / S7comm server: confirm the COTP
+                    # connection, answer Setup Communication, and answer Read Var
+                    # with the given value (echoing the request's PDU reference).
+                    value = bytes.fromhex(reply[len("S7S:"):])
+                    cotp_type = data[5] if len(data) > 5 else 0
+                    if cotp_type == 0xE0:                # COTP Connection Request
+                        params = data[8:]                # echo the CR parameters
+                        cc = (bytes([0x11, 0xD0]) + data[6:8] + b"\x00\x01" +
+                              params)
+                        total = 4 + len(cc)
+                        conn.sendall(bytes([0x03, 0x00, total >> 8, total & 0xFF]) +
+                                     cc)
+                        print("--- replied (COTP CC)", flush=True)
+                        continue
+                    # COTP DT: TPKT(4) + COTP(3) + S7 header(10)
+                    s7 = data[7:]
+                    pdu = s7[4:6] if len(s7) >= 6 else b"\x00\x00"
+                    function = s7[10] if len(s7) > 10 else 0
+                    if function == 0xF0:                 # Setup Communication
+                        params = bytes.fromhex("f0000001 0001 01e0".replace(" ", ""))
+                        body = (b"\x32\x03\x00\x00" + pdu +
+                                bytes([0, len(params)]) + b"\x00\x00" + params)
+                        total = 7 + len(body)
+                        conn.sendall(bytes([0x03, 0x00, total >> 8, total & 0xFF,
+                                            0x02, 0xF0, 0x80]) + body)
+                    else:                                # Read Var
+                        param = bytes([0x04, 0x01, 0xFF, 0x04, 0x00,
+                                       len(value) * 8])
+                        blob = bytes([0xFF, 0x04, 0x00, len(value) * 8])
+                        if len(value) % 2:
+                            blob += b"\x00"
+                        blob += value
+                        body = (b"\x32\x03\x00\x00" + pdu +
+                                bytes([0, len(param)]) +
+                                bytes([0, len(blob)]) + param + blob)
+                        total = 7 + len(body)
+                        conn.sendall(bytes([0x03, 0x00, total >> 8, total & 0xFF,
+                                            0x02, 0xF0, 0x80]) + body)
+                    print("--- replied (S7 ack, function 0x%02x)" % function,
+                          flush=True)
                 elif reply.startswith("TEXT:"):
                     conn.sendall(reply[len("TEXT:"):].encode())
                 else:

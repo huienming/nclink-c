@@ -50,8 +50,12 @@ print("connectionId = %s" % conn)
 
 
 def ask(frame_bytes, label, item="/JINGDIAO/CNC/PART_COUNT"):
+    if isinstance(frame_bytes, str):
+        spec = frame_bytes                       # an EREP: spec, not raw bytes
+    else:
+        spec = frame_bytes.hex()
     with open(reply_file, "w") as handle:
-        handle.write(frame_bytes.hex())
+        handle.write(spec)
     out = post(item, {"connectionId": conn})
     data = (out or {}).get("data") or {}
     print("--- %-40s value=%-8r msg=%s" % (label, data.get("value"),
@@ -67,13 +71,16 @@ def with_type(body, ptype=0x02):
     return bytes(frame)
 
 
-ask(with_type(range(1, 25)), "type=2, rest 1..24")
-ask(with_type(bytes(24)), "type=2, rest zero")
-ask(with_type(bytes.fromhex("050000031000000018000000000000000000000000")),
-    "type=2, rest of the request")
-ask(with_type(bytes.fromhex("050000031000000018000000000000000000000000")[:12] +
-              bytes([1, 0, 0, 0]) + bytes([2, 0]) + bytes(6),
-              ), "type=2, counter=1 code=2")
+# Echo the request with a few bytes replaced (EREP: keeps the counter identical,
+# which these protocols usually check).
+ask("EREP:2:02", "echo + type=2")
+ask("EREP:2:02,16:0102030405060708", "echo + type=2 + distinct tail")
+ask("EREP:2:02,12:01000000", "echo + type=2 + counter=1")
+ask("EREP:2:02,12:0a000000,16:0102030405060708", "counter=10, tail distinct")
+
+print()
+print("=== what the gateway sent to the fake machine ===")
+print(open("/tmp/run/mock.log", encoding="utf-8", errors="replace").read()[-1200:])
 PY
 
 kill $gw_pid $mock_pid 2>/dev/null || true
