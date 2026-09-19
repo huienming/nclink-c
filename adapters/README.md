@@ -70,6 +70,50 @@ adapters/
 `drivers/mock/` 是最小样板：内存点位模型 + 错误注入 + 事件触发，没有一行
 网络代码，测试里可以直接用（`ncl_mock_driver_create()`）。
 
+## 已实现的协议
+
+| 协议 | 注册名 | 传输 | 点位地址写法 | 状态 |
+|---|---|---|---|---|
+| 内存靶机 | `mock` | 无 | 任意 `area` + 偏移 | ✅ 完成 |
+| Modbus TCP | `modbus_tcp` | TCP 502 | `coil`/`discrete`/`input`/`holding`，或 `0x`/`1x`/`3x`/`4x` | ✅ 完成 |
+| Modbus RTU | `modbus_rtu` | RS-485/232 | 同上 | ✅ 完成 |
+| RTU over TCP | `modbus_rtu_tcp` | TCP 任意 | 同上 | ✅ 完成 |
+
+其余协议按 `protocal/docs/README.md` 的优先级推进
+（MC/SLMP → FINS → S7 → MTConnect → …）。
+
+### Modbus
+
+```json
+{
+  "id": "plc1", "path": "/PLC1", "type": "modbus_tcp",
+  "parameters": {
+    "host": "10.0.0.5", "port": 502, "unit": 1,
+    "timeoutMs": 1000, "retries": 1, "wordOrder": "CDAB", "base1": false
+  },
+  "points": [
+    { "path": "/PLC1/TEMP",  "addr": "4x12" },
+    { "path": "/PLC1/SPEED", "addr": {"area":"holding","offset":30,
+                                      "dtype":"float32"}, "writable": true },
+    { "path": "/PLC1/READY", "addr": "0x3" },
+    { "path": "/PLC1/NAME",  "addr": {"area":"holding","offset":40},
+      "dtype": "string", "length": 8 }
+  ]
+}
+```
+
+RTU 用 `"serial": "COM3"` / `"/dev/ttyUSB0"` 加 `baud`/`parity`/`dataBits`/
+`stopBits`/`interFrameMs`（3.5 字符静默的近似），RTU over TCP 用 `host`/`port`
+但保留 RTU 的 CRC 帧（串口服务器场景）。
+
+实现上遵循 15 册：单次 ≤125 寄存器（位区 2000），相邻点位间隔 ≤ `mergeGap`
+（默认 8）合并成一次请求，传输层失败按 `retries` 重发（RTU 默认 2 次、TCP 1 次），
+异常码按 §6 分级（非法地址/功能码 → 协议层；从站忙/确认 → 业务层不重连），
+多寄存器数值按 `wordOrder` 的 ABCD/CDAB/BADC/DCBA 组装，1x/3x 区写操作直接拒绝。
+所有交换串行化（485 总线半双工，TCP 设备也不希望两个请求交叉）。
+`loopback` 方法对应诊断功能 0x08/0x0000，用来判断"线还活着"。
+原始报文逃生舱收发的是 PDU（功能码 + 数据）。
+
 ## 配置与守护进程
 
 一条「链路」= 一个驱动实例。配置文件（单个文件、目录里的多个 `*.json`，或

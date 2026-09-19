@@ -24,6 +24,7 @@
 
 /* The drivers built into this library; more join in P1. */
 #include "mock/ncl_mock_driver.h"
+#include "modbus/ncl_modbus_driver.h"
 
 #define NCL_ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 #define NCL_DRIVER_MAX_PROTOCOLS 64
@@ -231,7 +232,9 @@ char *ncl_address_to_text(const ncl_address *address)
 
 /*
  * "D100", "M10.3", "DB1" - the area is the leading run of letters, then the
- * offset, then an optional ".bit". Case is preserved; drivers compare areas
+ * offset, then an optional ".bit". Modbus also writes its areas as "4x12"
+ * (the traditional 4x/3x/1x/0x numbering), so a leading run of digits closed
+ * by "x" is an area as well. Case is preserved; drivers compare areas
  * case-insensitively.
  */
 static ncl_err address_parse_shorthand(const char *text, ncl_address *out)
@@ -241,6 +244,19 @@ static ncl_err address_parse_shorthand(const char *text, ncl_address *out)
 
     while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) {
         p++;
+    }
+    if (p == text) {
+        /* "4x12": digits closed by an 'x' name the area. */
+        const char *digits = p;
+
+        while (*p >= '0' && *p <= '9') {
+            p++;
+        }
+        if (p != digits && (*p == 'x' || *p == 'X')) {
+            p++;
+        } else {
+            p = text;
+        }
     }
     if (p != text) {
         out->area = ncl_strndup(text, (size_t)(p - text));
@@ -582,6 +598,10 @@ void ncl_driver_register_builtin(void)
 
     /* Idempotent: NCL_ERR_EXISTS means an embedder registered its own. */
     (void)ncl_driver_register_protocol("mock", ncl_mock_driver_create);
+    (void)ncl_driver_register_protocol("modbus_tcp", ncl_modbus_tcp_create);
+    (void)ncl_driver_register_protocol("modbus_rtu", ncl_modbus_rtu_create);
+    (void)ncl_driver_register_protocol("modbus_rtu_tcp",
+                                       ncl_modbus_rtu_tcp_create);
 }
 
 ncl_driver *ncl_driver_create(const char *protocol)
@@ -593,6 +613,7 @@ ncl_driver *ncl_driver_create(const char *protocol)
     if (ncl_str_is_blank(protocol)) {
         return NULL;
     }
+    ncl_driver_register_builtin(); /* the built-ins are always available */
     lock = registry_lock();
     ncl_mutex_lock(lock);
     index = registry_find(protocol);

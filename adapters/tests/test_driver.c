@@ -180,6 +180,20 @@ static void test_address(void)
     NCL_CHECK_EQ_INT(addr.offset, 0);
     ncl_address_clear(&addr);
 
+    /* Modbus writes its areas the traditional way: 4x = holding registers */
+    NCL_CHECK_EQ_INT(parse_addr("\"4x12\"", &addr), NCL_OK);
+    NCL_CHECK_EQ_STR(addr.area, "4x");
+    NCL_CHECK_EQ_INT(addr.offset, 12);
+    ncl_address_clear(&addr);
+    NCL_CHECK_EQ_INT(parse_addr("\"1x8\"", &addr), NCL_OK);
+    NCL_CHECK_EQ_STR(addr.area, "1x");
+    NCL_CHECK_EQ_INT(addr.offset, 8);
+    ncl_address_clear(&addr);
+    NCL_CHECK_EQ_INT(parse_addr("\"4\"", &addr), NCL_OK);
+    NCL_CHECK(addr.area == NULL);
+    NCL_CHECK_EQ_INT(addr.offset, 4);
+    ncl_address_clear(&addr);
+
     NCL_CHECK_EQ_INT(parse_addr("\"\"", &addr), NCL_ERR_PARSE);
     NCL_CHECK_EQ_INT(parse_addr("\"D1x\"", &addr), NCL_ERR_PARSE);
     NCL_CHECK_EQ_INT(parse_addr("\"D1.\"", &addr), NCL_ERR_PARSE);
@@ -229,10 +243,12 @@ static void test_address(void)
 static void test_registry(void)
 {
     ncl_driver *driver;
+    size_t before;
 
     NCL_TEST_CASE("protocol registry");
     ncl_driver_register_builtin();
-    NCL_CHECK(ncl_driver_protocol_count() >= 1);
+    before = ncl_driver_protocol_count();
+    NCL_CHECK(before >= 1);
 
     driver = ncl_driver_create("mock");
     NCL_CHECK(driver != NULL);
@@ -258,7 +274,7 @@ static void test_registry(void)
     NCL_CHECK_EQ_INT(ncl_driver_register_protocol("test_only",
                                                   ncl_mock_driver_create),
                      NCL_OK);
-    NCL_CHECK_EQ_INT(ncl_driver_protocol_count(), 2);
+    NCL_CHECK_EQ_INT(ncl_driver_protocol_count(), before + 1);
     NCL_CHECK(ncl_driver_create("test_only") != NULL);
 }
 
