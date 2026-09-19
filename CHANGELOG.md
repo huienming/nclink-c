@@ -3,6 +3,30 @@
 本文件记录 NC-Link C 实现（`nclink-core-c`）的版本变更。版本号跟随
 NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
+## 未发布
+
+### 新增：适配器（`adapters/`）
+
+厂商协议接入层：核心库只认 NC-Link 主题与消息，适配器负责另一侧——按机床/
+PLC 自己的协议读写，并把点位映射成设备模型上的操作。构建目标是独立的静态库
+`libnclink_drivers.a` 与守护进程 `ncl_adapter`（`-DNCLINK_BUILD_ADAPTERS=OFF`
+可以整个不编）。
+
+- **驱动接口**（`nclink_adapter/ncl_driver.h`）：统一地址模型
+  `{area, offset, bit, length, dtype}`、统一七种数据类型、三类错误分级
+  （传输 0x1xxx / 协议 0x2xxx / 业务 0x3xxx）、统一响应信封
+  `{code, success, value, message, raw}`。
+- **配置与分派**（`nclink_adapter/ncl_driver_manager.h`）：一条链路 = 一个驱动
+  实例 + 一张点位表；点位按最长路径前缀分派，`"/"` 为兜底链路；点位默认只读
+  （`writable` 显式开），可 `sample: false` 排除出采样。
+- **守护进程**（`ncl_adapter`）：读配置 → 建驱动 → 建/载入模型 → 每个点位注册
+  `get_value#<路径>`（可写点位再加 `set_value#<路径>`）→ 起采样与 REST；
+  没有给模型文件时按点位表生成（数据项 `source` 取点位路径父级，模型路径与
+  配置里的点位路径严格一致）。`--once` 可做一次读全部点位的自检。
+- **协议**：`mock`（内存靶机：点位模型 + 错误注入 + 事件）、
+  `modbus_tcp` / `modbus_rtu` / `modbus_rtu_tcp`（含跨平台串口层）。
+  其余协议按 `protocal/docs/README.md` 的优先级推进。
+
 ## 3.4.0
 
 文件通道换成**显式握手**：字节仍然走 FTP、MQTT 只传 `/temp/<名字>` 令牌，但设备不再
