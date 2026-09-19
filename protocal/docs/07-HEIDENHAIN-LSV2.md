@@ -215,6 +215,6 @@ TYPE0..TYPE4 = 0..4, TYPE5 = 10, UNKNOWN = -1
 
 | 来源 | 说明 |
 |---|---|
-| `pyLSV2`（本仓库 `supp/pylsv2-1.7.0-py3-none-any.whl`） | 完整实现：`low_level_com.py`（分帧）+ `client.py`（业务）+ `const.py`（命令表） |
+| `pyLSV2`（参考架 `pylsv2-1.7.0-py3-none-any.whl`） | 完整实现：`low_level_com.py`（分帧）+ `client.py`（业务）+ `const.py`（命令表） |
 | 数据 | CMD 45 条带说明 · RSP 23 条 · LSV2StatusCode 99 错误码 · MemoryType/ExecState/PgmState/ControlType（原始素材未随本目录提供） |
 | 参考实现侧 | `驱动定义目录/` 中 LSV2 驱动定义（端口 19000） |

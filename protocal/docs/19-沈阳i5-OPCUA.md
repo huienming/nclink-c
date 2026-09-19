@@ -53,6 +53,6 @@
 
 | 来源 | 说明 |
 |---|---|
-| `supp/asyncua-2.0.1` | Python OPC UA 客户端 |
+| `asyncua-2.0.1` | Python OPC UA 客户端 |
 | 参考实现侧 | `libi5-opcua.so` + 4840 端口扫描记录 |
 | 说明 | 与 [04-西门子840D-OPCUA](04-SIEMENS-840D-OPCUA.md) 共用实现栈，仅节点模型不同 |

@@ -73,7 +73,7 @@
 | `FRC_WriteUFrameData` / `FRC_WriteUToolData` | 写坐标系数据 |
 | `FRC_WaitTime` | 等待 |
 
-> 指令清单来源：`supp/fanuc_rmi-0.3.1`（client.py / motions.py / pose_reader.py）
+> 指令清单来源：`fanuc_rmi-0.3.1`（client.py / motions.py / pose_reader.py）
 
 ---
 
@@ -123,8 +123,8 @@
 
 | 来源 | 说明 |
 |---|---|
-| `supp/fanuc_rmi-0.3.1-py3-none-any.whl` | 24 指令的完整 Python 封装（报文构造可直接抄） |
-| `supp/fanucpy-0.1.14-py3-none-any.whl` | 另一套 Python 实现 |
+| `fanuc_rmi-0.3.1-py3-none-any.whl` | 24 指令的完整 Python 封装（报文构造可直接抄） |
+| `fanucpy-0.1.14-py3-none-any.whl` | 另一套 Python 实现 |
 | 商业库（.NET，未随本目录提供） | RMI/SNPX/FTP-TP/KAREL 全接口 |
 | 商业库对照 | `FanucInterfaceNet`（PC Interface / R-30iB mate plus 实测通过） |
 | 参考实现侧 | `/Fanuc/Robot/*` 端点 |

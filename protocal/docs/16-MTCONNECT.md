@@ -147,6 +147,6 @@
 
 | 来源 | 说明 |
 |---|---|
-| `supp/mtconnect-0.3.3` | Python 客户端 |
+| `mtconnect-0.3.3` | Python 客户端 |
 | 参考实现侧 | DMG MORI 驱动（端口 7878）· `dmg_mori_mtconnect_driver.json` |
 | 公开规范 | MTConnect Standard v1.4/v2.0（mtconnect.org） |

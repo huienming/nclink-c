@@ -185,7 +185,7 @@ short err = cnc_getdtailerr(h, &ODBERR);   // ODBERR 结构 getdtailerrkind/dta1
 
 | 来源 | 说明 |
 |---|---|
-| `supp/pyfocas` / `supp/pyfanuc` | ctypes 绑定 + fwlib 头文件（可直接抄结构体定义） |
+| `pyfocas` / `pyfanuc` | ctypes 绑定 + fwlib 头文件（可直接抄结构体定义） |
 | **881 个函数原名**（按前缀分类） | 原始素材未随本目录提供 |
 | 商业库对照 `FanucSeries0i` | 高层 API 分组参考（59 成员，坐标/报警/负载/刀补/宏变量/程序列表） |
 | 参考实现侧 | `驱动定义目录/` FANUC 驱动（端口 8193） |

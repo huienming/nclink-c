@@ -160,7 +160,7 @@
 
 | 来源 | 说明 |
 |---|---|
-| `supp/python_snap7-3.1.2` | 完整实现：`connection.py`（COTP/TPKT 分帧）· `client.py`（业务，135 个 `Cli_*` 函数）· `error.py`（错误码表） |
-| `supp/pycomm3-1.2.16` | 纯 Python 实现（含 CIP，可对照） |
+| `python_snap7-3.1.2` | 完整实现：`connection.py`（COTP/TPKT 分帧）· `client.py`（业务，135 个 `Cli_*` 函数）· `error.py`（错误码表） |
+| `pycomm3-1.2.16` | 纯 Python 实现（含 CIP，可对照） |
 | 商业库对照 | `SiemensS7Net`（含 S7-200/300/400/1200/1500 语义差异处理） |
 | 参考实现侧 | `/Siemens/S7/*` 驱动（端口 102） |

@@ -158,6 +158,6 @@ RTU 特有：
 
 | 来源 | 说明 |
 |---|---|
-| `supp/pymodbus-3.15.0` | 完整实现（TCP/RTU/ASCII/UDP + 服务端） |
+| `pymodbus-3.15.0` | 完整实现（TCP/RTU/ASCII/UDP + 服务端） |
 | 参考实现侧 | 多个驱动的底层（`libmodbus`、`ModbusComm.dll` 于新代包内） |
 | 商业库对照 | 7 个类（TCP/UDP/RTU/ASCII/双透传 + 服务器） |

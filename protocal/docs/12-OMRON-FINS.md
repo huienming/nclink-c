@@ -178,6 +178,6 @@ FINS 帧:
 
 | 来源 | 说明 |
 |---|---|
-| `supp/omronfins-1.0.3` | Python FINS 实现（帧构造可直接抄） |
+| `omronfins-1.0.3` | Python FINS 实现（帧构造可直接抄） |
 | 参考实现侧 | `libomron-fins.so` / `libfins.so`（19 个函数）+ `/Omron/*` 驱动 |
 | 商业库对照 | 13 个类（FinsNet/FinsUdp/HostLink/HostLinkCMode/CIP） |

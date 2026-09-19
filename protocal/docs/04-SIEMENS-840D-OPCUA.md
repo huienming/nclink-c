@@ -14,7 +14,7 @@
 | 端点 | `opc.tcp://<ip>:4840` |
 | 认证 | 匿名 / 用户名密码 / 证书（840D sl 默认允许匿名读） |
 | 命名空间 | 西门子专用（机床数据按 NCK/通道/轴 树状组织） |
-|参考实现| `asyncua`（Python，本仓库 `supp/asyncua-2.0.1`） |
+|参考实现| `asyncua`（Python，参考架 `asyncua-2.0.1`） |
 | 参考实现侧 | `/Siemens/840D/*` + `libsinumerik-arm` 库 |
 
 ---
@@ -90,6 +90,6 @@ Root
 
 | 来源 | 说明 |
 |---|---|
-| `supp/asyncua-2.0.1` | Python OPC UA 客户端（异步，功能全） |
+| `asyncua-2.0.1` | Python OPC UA 客户端（异步，功能全） |
 | 参考实现侧 | `libsinumerik-arm.so` / `libsinumerik-arm-readvar.so` + `/Siemens/840D/*` 驱动 |
 | 西门子文档 | SINUMERIK 840D sl OPC UA Server 手册（节点清单） |

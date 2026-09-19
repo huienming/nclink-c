@@ -190,8 +190,8 @@
 
 | 来源 | 说明 |
 |---|---|
-| `supp/pymcprotocol-0.3.0` | 3E/4E/1E/Binary/ASCII 全帧型实现（`type3e.py` 等） |
-| `supp/melsec_mc_protocol-1.1.0` | 轻量实现（0x0401/0x1401） |
-| `supp/pymelsec-0.2.5` | 另一实现 |
+| `pymcprotocol-0.3.0` | 3E/4E/1E/Binary/ASCII 全帧型实现（`type3e.py` 等） |
+| `melsec_mc_protocol-1.1.0` | 轻量实现（0x0401/0x1401） |
+| `pymelsec-0.2.5` | 另一实现 |
 | 商业库对照 | 18 个类（MC/A1E/3C/FX/CIP/R 系列） |
 | 参考实现侧 |参考实现`melsec.McFrame/McBinary/McCommand`（Go 实现，0x0401/0x1401） |

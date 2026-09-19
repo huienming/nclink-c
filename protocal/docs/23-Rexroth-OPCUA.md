@@ -15,7 +15,7 @@
 | 通信口 | 多路以太网，实测用 **X7E5** 口做采集（详见机床手册确认） |
 | 节点模型 | 统一 **NodeID** 标识；数据类型/访问权限标准化 |
 | 安全 | X.509 证书认证 · Sign & Encrypt 加密传输 |
-| 实现库 | `asyncua`（Python，本仓库 `supp/asyncua-2.0.1`）—— **与 04/19 册共用** |
+| 实现库 | `asyncua`（Python，参考架 `asyncua-2.0.1`）—— **与 04/19 册共用** |
 
 ---
 
@@ -82,6 +82,6 @@ async with Client(url="opc.tcp://192.168.1.10:4840") as client:
 
 | 来源 | 说明 |
 |---|---|
-| `supp/asyncua-2.0.1` | Python OPC UA 客户端（与 04/19 册同一套） |
+| `asyncua-2.0.1` | Python OPC UA 客户端（与 04/19 册同一套） |
 | 案例 | CSDN《创新五轴加工中心博世力士乐系统 OPCUA 数据采集项目案例》（IndraControl + X7E5 口） |
 | 官方 | ctrlX CORE OPC UA Server 文档 · IndraControl 通信手册 |
