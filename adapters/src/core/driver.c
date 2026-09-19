@@ -25,6 +25,7 @@
 /* The drivers built into this library; more join in P1. */
 #include "mock/ncl_mock_driver.h"
 #include "fins/ncl_fins_driver.h"
+#include "knd/ncl_knd_driver.h"
 #include "mc/ncl_mc_driver.h"
 #include "lsv2/ncl_lsv2_driver.h"
 #include "meldas/ncl_meldas_driver.h"
@@ -249,9 +250,20 @@ static ncl_err address_parse_shorthand(const char *text, ncl_address *out)
     const char *p = text;
     long long offset = 0;
 
-    /* Letters, and '_' so a name like "part_count" (a protocol's own reading)
-     * can be an area; digits start the offset either way. */
-    while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_') {
+    /*
+     * A name that carries a qualifier - protocols spell their own items like
+     * "/AXIS@0/SCREW/POSITION" - is taken verbatim: the '@' always belongs to
+     * the name, so the digits after it are not an offset.
+     */
+    if (strchr(text, '@') != NULL) {
+        out->area = ncl_strdup(text);
+        return out->area != NULL ? NCL_OK : NCL_ERR_NOMEM;
+    }
+    /* Letters, plus '_' and '/' so a protocol can name its own items the way
+     * the field does ("part_count", "/PART_COUNT"); digits still start the
+     * offset either way. */
+    while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_' ||
+           *p == '/') {
         p++;
     }
     if (p == text) {
@@ -629,6 +641,7 @@ void ncl_driver_register_builtin(void)
     (void)ncl_driver_register_protocol("meldas", ncl_meldas_create);
     (void)ncl_driver_register_protocol("lsv2", ncl_lsv2_create);
     (void)ncl_driver_register_protocol("syntec", ncl_syntec_create);
+    (void)ncl_driver_register_protocol("knd", ncl_knd_create);
 }
 
 ncl_driver *ncl_driver_create(const char *protocol)

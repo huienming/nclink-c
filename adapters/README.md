@@ -119,6 +119,7 @@ ncl_json *stats = ncl_audit_stats();       /* 计数、直方图、最近 8 条�
 | 三菱 CNC M70/M80 | `meldas` | TCP 683 | **命令名就是区名**，偏移是轴号/IO 地址 | ✅ 只读 |
 | 海德汉 LSV2 | `lsv2` | TCP 19000 | **区名是要读的东西**，偏移是地址 | ✅ 版本/状态/PLC 内存 |
 | 新代 SYNTEC RemoteCNC | `syntec` | TCP 8000 | **命令号就是区名**（名字或裸号）+ 偏移是 `dwCode`；也认 §10.12 的具名读数 | ✅ 只读（服务端无写端点） |
+| 凯恩帝 KND | `knd` | HTTP 80 | **模型项名就是区名**：`STATUS`、`/PART_COUNT`、`/AXIS@0/SCREW/POSITION` | ✅ 只读（现场只映射了 get_value） |
 
 其余协议按 `protocal/docs/README.md` 的优先级推进
 （第一批 MC/SLMP → FINS → S7 → MTConnect 已完成；第二批 MELDAS → 新代 → LSV2
@@ -411,6 +412,47 @@ PLC 内存的大端解释同样待实机确认。
 **只读**：服务端的 `EFunctionID` 只有 7 个命令号，没有写数据的路径，所以
 `write` 返回"不支持"。要写 PLC 寄存器时走控制器自带的 Modbus 从站，
 用本仓库的 `modbus_tcp` 就行。
+
+### 凯恩帝 KND（机床自带 HTTP/JSON）
+
+```json
+{
+  "id": "knd1", "path": "/CNC", "type": "knd",
+  "parameters": { "host": "10.0.0.40", "port": 80, "timeoutMs": 3000 },
+  "points": [
+    { "path": "/CNC/STATE", "addr": "STATUS" },
+    { "path": "/CNC/COUNT", "addr": "/PART_COUNT" },
+    { "path": "/CNC/X",     "addr": "/AXIS@0/SCREW/POSITION" }
+  ]
+}
+```
+
+这台机床不需要帧编解码：控制器自己跑一个小 REST 服务，**每个端点回一个扁平
+JSON**（`GET /workcounts/total` → `{"count": 1234}`），所以驱动里是一张表：
+模型项 → 端点 → 取值字段 → 规整方式。表来自现场交付包的映射层
+（`lua_mod/knd_mod.lua`，[09 册](../protocal/docs/09-KND-凯恩帝.md) §3），共 16 个
+端点、17 个模型项 + 9 轴两路坐标。
+
+**区名就是模型项**（`STATUS`、`PART_COUNT`、`CONTROLLER/PROGRAM`、
+`VARIABLE@CUT_TIME`、`AXIS@2/SCREW/POSITION`…），前导 `/`、大小写随意。
+地址里的 `/` 与 `@` 都算名字的一部分（`{"addr": "/AXIS@0/SCREW/POSITION"}` 里的
+`@0` 不会被当成偏移）。
+
+现场的三条规整规则直接写在代码里，别按直觉改：
+
+- 倍率类（`/overrides/*`、`/sp/overrides/1`）机床给的是 0..2 的比值，模型要
+  百分比，所以 **×100**；
+- `run-status` 是 `0/1/2`，映射成 `free` / `holding` / `running`；
+- `/CONTROLLER/WARNING` 是"报警类别 → 文本"的字典，按固定类别顺序展开成
+  `[{number, text}]`，号码是 `100%02d`（第 8 类 `servo` → `10008`）。
+
+**只读**：现场只注册了 `get_value`，没有写端点，所以 `write` 返回"不支持"。
+读是 **HTTP GET**，不需要会话，`open()` 只是拿 `/status` 探一次（连错主机会在
+开工前就报错）。同一个端点的多个点位（9 个轴都在 `/coors/machine`）在一次批量读里
+**只请求一次**。
+
+HTTP 客户端（`drivers/http/ncl_http_client.c`）与 MTConnect 驱动共用：一次请求
+一个连接，支持 `Content-Length`、chunked 和"读到关闭"三种回包。
 
 ## 配置与守护进程
 

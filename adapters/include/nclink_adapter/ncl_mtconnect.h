@@ -33,26 +33,8 @@
 extern "C" {
 #endif
 
-/* ============================================================== HTTP GET == */
-
-/** One GET request. */
-typedef struct {
-    const char *host;
-    unsigned    port;     /**< 7878 when 0 */
-    const char *path;     /**< "/probe", "/current", ...                */
-    const char *user;     /**< optional, for Basic authentication       */
-    const char *password;
-    unsigned    timeout_ms; /**< per socket operation (default 3000)    */
-    size_t      max_body;   /**< refuse a body larger than this         */
-} ncl_mtconnect_http;
-
-/**
- * GET @p request->path and hand back the response body.
- * *body is a heap buffer (NUL terminated, so it can be scanned as text);
- * the caller releases it with ncl_free_safe().
- */
-ncl_err ncl_mtconnect_get(const ncl_mtconnect_http *request, char **body,
-                          size_t *body_len, char *err, size_t err_len);
+/* The HTTP GET the driver uses lives in drivers/http/ncl_http_client.h: it is
+ * shared with the KND driver, which talks JSON instead of XML. */
 
 /* ============================================================== XML scan == */
 

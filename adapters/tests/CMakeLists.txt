@@ -73,3 +73,8 @@ target_link_libraries(ncl_test_audit PRIVATE nclink_drivers)
 target_include_directories(ncl_test_audit PRIVATE
         "${CMAKE_SOURCE_DIR}/tests")
 add_test(NAME audit COMMAND ncl_test_audit)
+add_executable(ncl_test_knd test_knd.c)
+target_link_libraries(ncl_test_knd PRIVATE nclink_drivers)
+target_include_directories(ncl_test_knd PRIVATE
+        "${CMAKE_SOURCE_DIR}/tests")
+add_test(NAME knd COMMAND ncl_test_knd)

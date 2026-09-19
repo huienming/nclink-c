@@ -2,13 +2,14 @@
 /* Copyright (c) 2026 huienming */
 
 /*
- * NC-Link adapter - the HTTP GET an MTConnect agent answers (see
- * ncl_mtconnect.h). A minimal client: one request per call, no keep-alive,
- * and the three body shapes an agent may use - Content-Length, chunked, or
- * read until the connection closes.
+ * NC-Link adapter - a minimal HTTP GET client, shared by the drivers that talk
+ * to a device over HTTP: MTConnect's agent and KND's REST interface (see
+ * ncl_http_client.h). One request per call, no keep-alive, and the three body
+ * shapes a device may use - Content-Length, chunked, or read until the
+ * connection closes.
  */
 
-#include "nclink_adapter/ncl_mtconnect.h"
+#include "ncl_http_client.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -225,7 +226,7 @@ static ncl_err read_chunked_body(ncl_socket *socket, ncl_strbuf *pending,
     }
 }
 
-ncl_err ncl_mtconnect_get(const ncl_mtconnect_http *request, char **body,
+ncl_err ncl_http_get(const ncl_http_request *request, char **body,
                           size_t *body_len, char *err, size_t err_len)
 {
     ncl_socket *socket;

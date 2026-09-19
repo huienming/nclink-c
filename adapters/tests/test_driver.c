@@ -208,6 +208,20 @@ static void test_address(void)
     NCL_CHECK_EQ_INT(addr.dtype, NCL_DTYPE_INT32);
     ncl_address_clear(&addr);
 
+    /* A slash is part of the name too, for the protocols that name their items
+     * the way the field does ("/PART_COUNT"). */
+    NCL_CHECK_EQ_INT(parse_addr("\"/PART_COUNT\"", &addr), NCL_OK);
+    NCL_CHECK_EQ_STR(addr.area, "/PART_COUNT");
+    NCL_CHECK_EQ_INT(addr.offset, 0);
+    ncl_address_clear(&addr);
+
+    /* With a qualifier the name is taken verbatim: the digits in "AXIS@0" are
+     * not an offset. */
+    NCL_CHECK_EQ_INT(parse_addr("\"/AXIS@0/SCREW/POSITION\"", &addr), NCL_OK);
+    NCL_CHECK_EQ_STR(addr.area, "/AXIS@0/SCREW/POSITION");
+    NCL_CHECK_EQ_INT(addr.offset, 0);
+    ncl_address_clear(&addr);
+
     NCL_CHECK_EQ_INT(parse_addr("\"\"", &addr), NCL_ERR_PARSE);
     NCL_CHECK_EQ_INT(parse_addr("\"D1x\"", &addr), NCL_ERR_PARSE);
     NCL_CHECK_EQ_INT(parse_addr("\"D1.\"", &addr), NCL_ERR_PARSE);

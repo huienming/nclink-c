@@ -20,6 +20,7 @@
 
 #include "nclink/ncl_platform.h"
 #include "nclink_adapter/ncl_mtconnect.h"
+#include "http/ncl_http_client.h"
 #include "mtconnect/ncl_mtconnect_driver.h"
 
 #define MT_MAX_STATES 64
@@ -103,7 +104,7 @@ static bool text_to_number(const char *text, double *out)
 static ncl_err mt_get(mt_ctx *ctx, const char *document, char **body,
                       size_t *body_len, char *err, size_t err_len)
 {
-    ncl_mtconnect_http request;
+    ncl_http_request request;
     char *path = mt_path(ctx, document);
     ncl_err result;
 
@@ -117,7 +118,7 @@ static ncl_err mt_get(mt_ctx *ctx, const char *document, char **body,
     request.user = ctx->user;
     request.password = ctx->password;
     request.timeout_ms = ctx->timeout_ms;
-    result = ncl_mtconnect_get(&request, body, body_len, err, err_len);
+    result = ncl_http_get(&request, body, body_len, err, err_len);
     ncl_free_safe(path);
     return result;
 }
@@ -446,7 +447,7 @@ static ncl_err mt_raw(ncl_driver *self, const void *frame, size_t frame_len,
     }
     message[0] = '\0';
     {
-        ncl_mtconnect_http request;
+        ncl_http_request request;
 
         memset(&request, 0, sizeof(request));
         request.host = ctx->host;
@@ -455,8 +456,8 @@ static ncl_err mt_raw(ncl_driver *self, const void *frame, size_t frame_len,
         request.user = ctx->user;
         request.password = ctx->password;
         request.timeout_ms = ctx->timeout_ms;
-        result = ncl_mtconnect_get(&request, &body, &body_len, message,
-                                   sizeof(message));
+        result = ncl_http_get(&request, &body, &body_len, message,
+                              sizeof(message));
     }
     if (result != NCL_OK) {
         return result;

@@ -39,6 +39,7 @@
 | 25 | [哈斯 Haas（MDC）](25-哈斯Haas.md) | 参数143 | TCP | 🟡 参数+数据点已确认 | — |
 | 26 | [**马扎克 MAZAK（Smart/Smooth）**](26-马扎克MAZAK.md) | 50100 | TCP | 🟡 免授权直连 | 纯 Socket |
 | 27 | [**发格 Fagor（宏程序上报）**](27-发格Fagor.md) | 8899(自定) | TCP | 🟡 官方宏函数 | 无授权 |
+| 28 | [**交付包现场 API 清单**](28-交付包现场API清单.md) | — | — | 🟢 现场二进制/Lua | 现场 iNC-BOX-200 的模块与数据项对照 |
 
 ---
 
@@ -74,7 +75,18 @@ Universal Robots RTDE · 力士乐 Rexroth · 宝元 LNC · 哈斯 Haas —— �
 > 收录准则（三条硬门槛：跨平台 / 免授权 / 可自实现）见 [21 册 §4.5](21-品牌缺口盘点.md)
 
 ### 缺口（需外部资源）
-科德 GNC62 · 精雕 JD50 · 海康 HCNetSDK · 马扎克 MAZAK（MT 授权）· 大隈 OKUMA（DevelopKit）· 发格 Fagor（FCOM SDK）
+
+| 缺口 | 现在缺什么 | 已补什么 |
+|---|---|---|
+| 科德 GNC62 | 八个请求族的字节布局 | 🟡 能力面 + 端点面见 [20 册 §1](20-缺口-科德-精雕-海康.md) |
+| 精雕 JD50 | 帧格式与 `Bind` 载荷 | 🟡 端点面见 [20 册 §2](20-缺口-科德-精雕-海康.md) |
+| 海康 HCNetSDK | 相机 SDK 头文件 | 🟡 现场是 `libcamera.so`（`CAMERA::getFeature/getCV2`），非 HCNetSDK |
+| GSK | 报文布局 | 🟡 端点与数据项见 [28 册 §5.4](28-交付包现场API清单.md) |
+| 马扎克 MAZAK | MT 授权 | — |
+| 大隈 OKUMA | DevelopKit（Windows） | — |
+| 发格 Fagor | FCOM SDK | — |
+
+> KND 已从缺口移出：09 册 §3 已按现场映射层改成实测端点表（原 `/api/v1.2/*` 是猜的）。
 
 ### 品牌缺口（详见 [21 册](21-品牌缺口盘点.md)）★
 
