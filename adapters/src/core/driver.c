@@ -31,6 +31,7 @@
 #include "mtconnect/ncl_mtconnect_driver.h"
 #include "modbus/ncl_modbus_driver.h"
 #include "s7/ncl_s7_driver.h"
+#include "syntec/ncl_syntec_driver.h"
 
 #define NCL_ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 #define NCL_DRIVER_MAX_PROTOCOLS 64
@@ -614,6 +615,7 @@ void ncl_driver_register_builtin(void)
     (void)ncl_driver_register_protocol("mtconnect", ncl_mtconnect_create);
     (void)ncl_driver_register_protocol("meldas", ncl_meldas_create);
     (void)ncl_driver_register_protocol("lsv2", ncl_lsv2_create);
+    (void)ncl_driver_register_protocol("syntec", ncl_syntec_create);
 }
 
 ncl_driver *ncl_driver_create(const char *protocol)
