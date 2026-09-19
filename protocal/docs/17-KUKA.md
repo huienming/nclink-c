@@ -1,6 +1,8 @@
 # 17 · 库卡 KUKA 实现规格书
 
-> **证据**：🟡 协议名级（KUKAVARPROXY / EKI）· ✅ 商业库 `KukaAvarProxyNet` / `KukaTcpNet` 可对照
+> **证据**：🟢 **本交付包实际实现 = 那智（Nachi）ASCII 命令**（`nclink-service/lua/lua_mod/kuka_task.lua`
+> 与 `kuka_mod.lua` 全文可读）；下面 §2/§3/§4 的 KUKAVARPROXY / EKI / RSI 是
+> **官方通道**（本包没用），留作换通道时的参考。
 > **定位**：KUKA KRC4 控制器 —— **官方无开放数据接口，靠第三方 KUKAVARPROXY 或 EKI**
 
 ---
@@ -55,6 +57,37 @@ $ALARM_STOP   急停状态
 $PRO_STATE1   程序状态
 $TIMER[1]     定时器
 ```
+
+---
+
+## 2.5 本交付包实际实现：那智（Nachi）ASCII 命令 🟢 2026-09
+
+交付包的 `lua/lua_mod/kuka_task.lua`（5.4 KB，纯 Lua，可直接读）里，KUKA 这一路
+**实际走的是那智（Nachi）机器人的 ASCII 命令**——`nclink-service` 侧复用
+`/Foxconn/Chengdu/Robot/Nachi/*` 这条 HTTP 路由，把结果按 `KUKA/*` 的键塞进共享内存，
+再由 `kuka_mod.lua` 映射成模型项。也就是说：**这一家的"设备侧"是行文本协议**。
+
+```
+连接：POST /Foxconn/Chengdu/Robot/Nachi/Open/TCP   {ipAddress, port, timeout}
+读值：POST /Foxconn/Chengdu/Robot/Nachi/GetResponse {connectionId, data:"XH\r\n"}
+      → data.value = 一行文本，字段用逗号分隔
+```
+
+任务循环里依次发 4 条命令（每条 `\r\n` 结尾），失败就 Close + 重连：
+
+| 命令 | 字段（逗号分隔，下标从 1 开始） | 映射到 |
+|---|---|---|
+| `XH` | [1] 型号 · [2] 控制器版本 | `/TYPE` · `/CONTROLLER/VERSION` |
+| `JSL` | [1] CT · [2] WT · [3] 总工件数（取整）· [4] NG（取整）· [5] 线体状态 · [6] 工位状态 · [7] 料架状态 | `/VARIABLE@CT` `/WT` `/TOTAL_PART_COUNT` `/NG` `/WITH_LINE_STATUS` `/WITH_STAGE_STATUS` `/WITH_MAG_STATUS` |
+| `TPM` | [1] 状态 · [2] 报警号（`"0"` = 无报警）· [3..8] 轴 0..5 马达位置 · [9] 当前程序名（去掉 `\r\n`） | `/STATUS@FSK` `/CONTROLLER/WARNING` `/AXIS@N/MOTOR/POSITION` `/CONTROLLER/PROGRAM` |
+| `JK` | [1..6] 轴 0..5 马达电流 · [7..12] 轴 0..5 马达力矩 · [13] 自动倍率（取整） | `/AXIS@N/MOTOR/CURRENT` `/TORQUE` `/VARIABLE@AUTO_OVERRIDE` |
+
+复现要点：
+
+1. 四个命令在**同一个 TCP 会话**里轮流发，每条一个请求-应答；
+2. 应答是**一行文本**（逗号分隔），驱动只做 `tonumber` / `math.floor`，没有二进制结构；
+3. 报警：`TPM` 的第 2 个字段不为 `"0"` 才算一条报警（`number` = 该字段、`text` 恒空）；
+4. 位置/电流/力矩的**轴序**就是 `AXIS@0..5`，与 KUKA 的 A1..A6 对应关系要现场核一次。
 
 ---
 
