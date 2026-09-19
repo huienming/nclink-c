@@ -32,7 +32,16 @@ def serve(port, reply_hex=None):
         threading.Thread(target=handle, args=(conn, reply_hex), daemon=True).start()
 
 
-def handle(conn, reply_hex):
+def http_200(body):
+    raw = body.encode()
+    head = ("HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: %d\r\n"
+            "Connection: close\r\n\r\n" % len(raw))
+    return head.encode() + raw
+
+
+def handle(conn, reply):
     conn.settimeout(5.0)
     try:
         while True:
@@ -41,9 +50,12 @@ def handle(conn, reply_hex):
                 break
             print("--- request %d bytes" % len(data), flush=True)
             print(hexdump(data), flush=True)
-            if reply_hex:
-                conn.sendall(bytes.fromhex(reply_hex))
-                print("--- replied %s" % reply_hex, flush=True)
+            if reply:
+                if reply.startswith("HTTP200:"):
+                    conn.sendall(http_200(reply[len("HTTP200:"):]))
+                else:
+                    conn.sendall(bytes.fromhex(reply))
+                print("--- replied", flush=True)
     except socket.timeout:
         print("--- idle, closing", flush=True)
     except Exception as exc:               # noqa: BLE001

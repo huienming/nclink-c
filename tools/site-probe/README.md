@@ -37,18 +37,41 @@ docker run --rm --platform linux/arm/v7 \
    要往下拿数据调用（`cnc_statinfo` / `cnc_rdparam` …）得先把这四条回应答对；
    真实应答需要一台 FANUC 抓一次，或按 Fwlib32 手册补全。
 
-2. **插件的 C 入口点与签名**（🟢 `.dynsym` + 反汇编）：
+2. **插件的 C 入口点与签名**（🟢 `.dynsym` + 反汇编）。导出的四个 C 名字是
+   `create` / `call` / `destroy` / `get_version`，真正转发到的是：
 
    ```c
-   void *create(nlohmann::json *params, spdlog::logger *logger);   /* 见下 */
-   int   call(void *instance, const char *method, const char *params,
-              std::string *out);
+   void *create(nlohmann::json *params, spdlog::logger *logger);
+   int   call(void *instance, int op /*OperationType*/,
+              const char *method,          /* 转发时转成 std::string */
+              nlohmann::json *request, nlohmann::json *response,
+              nlohmann::json *extra);
    void  destroy(void *instance);
    const char *get_version(void);
    ```
 
-   `create` 的第一个参数是 `nlohmann::json`（反汇编里直接 `operator[]`），
-   `call` 把第二个参数当 `const char *` 造成 `std::string`。
+   `call` 的转发目标在 `libbase.so` 里，签名（🟢 修饰名）是
+   `BaseMod::call(std::string, OperationType, json*, json*, json*)` ——
+   `_ZN7BaseMod4callESs13OperationTypePN8nlohmann10basic_json…ES9_S9_`。
+   也就是说 **C 侧的 4 个参数顺序是 `(实例, 操作类型, 方法名, 请求json, 响应json,
+   附加json)`**，第一版 harness 按 `(实例, 方法名, 参数文本, out)` 传，直接把
+   `const char*` 当成 `OperationType`、把参数文本当成 json 解引用，所以段错误。
+
+3. **插件是"旧 string ABI + 自带第三方库"编的**（🟢 导入表/符号）：
+
+   - 导入的是 `_ZNSsC1EPKcRKSaIcE`（旧 ABI 的 `std::string`），不是
+     `_ZNSt7__cxx1112basic_string…` —— harness 必须加
+     **`-D_GLIBCXX_USE_CXX11_ABI=0`**，否则字符串跨边界就把堆写坏
+     （症状是 `free(): invalid pointer`）。
+   - HTTP 用的是 **cpp-httplib**（`httplib::Client::set_connection_timeout` 等导入），
+     日志用的是 **spdlog**（导入 `spdlog::logger::debug<const char*&, const char*&>(
+     fmt::v8::basic_format_string<…>)`）。
+   - json 是 **nlohmann**，但它的 map 比较器是 `std::less<std::string>`
+     （修饰名里的 `St4lessISsE`），而 Debian 的 3.11.2 用 `std::less<void>` ——
+     这就是目前过不去的那道坎（见下）。
+
+4. **logger 可以造假**：插件只用它打日志，一个全零、虚表全是空函数的假对象就够
+   （`plugin_drive.cpp` 里的 `fake_logger_make()`），构造因此能成功。
 
 3. **依赖顺序**：`libstdc++.so.6` → `libbase64.so` → `libLogApi.so`（还要
    `libboost_thread.so`）→ `libbase.so` → 具体插件。现场库是 C++ 但 **NEEDED 里
@@ -57,28 +80,34 @@ docker run --rm --platform linux/arm/v7 \
 
 ## 还差什么
 
-`plugin_drive.cpp` 现在能加载插件、解析出入口点，但 `create()` 会崩：
-插件用的是它自己那份 nlohmann/spdlog（`../../thirdparty/nlohmann/json.hpp`），
-与 Debian 的 3.11.2 头文件的模板实例（`std::less<void>` 比较器）**ABI 不一致**。
-两条路：
+`plugin_drive.cpp` 现在能：加载插件 → 造出实例（`ctor -> 0x…`）→ 调 `call`。
+卡在最后一步：**`call` 要的 `nlohmann::json*` 必须是插件那一版的类型**
+（`std::less<std::string>` 比较器，即 nlohmann < 3.11），我们的 3.11.2 是
+`std::less<void>`，把我们的对象当它的对象解引用就会段错误。三条路：
 
-1. 找到插件构建时的 nlohmann/spdlog 版本（`.dynsym` 里的 `json_abi_v3_11_2` 之类
-   命名空间后缀能确认版本），用同一份头文件编 harness；
-2. 或者直接跑现场自己的宿主 `nclink-service`（它按正确顺序加载插件），
-   用 `driver_def` 把 `ipAddress` 指向假机床，再想办法触发一次读。
+1. 用**插件那一版的 nlohmann**（把版本试出来，或干脆用 3.9/3.10 的头文件）编
+   harness，`json*` 就通了；
+2. 或者直接跑现场宿主 `nclink-service`（它自己那版 json，天然对齐），把
+   `driver_def` 的 `ipAddress` 指向假机床再触发一次读——见下面的进展；
+3. 或者绕开 json：插件里凡是接受 JSON *文本* 的入口（如
+   `GSKHTTP::GSKHTTP(spdlog::logger*, std::string)`）都能直接调，只是它不做业务。
 
 任一条通了，GSK / KEDE / Mitsubishi-HTTP / 相机这几家的**设备侧请求形状**就能
 在本地补齐，不用等现场（`protocal/docs/29-现场模型与驱动定义.md` §6）。
 
-第 2 条已经试到中途（`ncl_service.sh`）：
+第 2 条（跑现场宿主）也已经试到中途（`ncl_service.sh`）：
 
 - ✅ 宿主能在 armv7 容器里起来；
 - ✅ spdlog 的 `Failed getting file size from fd: Value too large for defined data
   type` 是 32 位进程 `fstat()` 一个 Windows bind-mount 上的文件报 EOVERFLOW——
   把工作目录与日志都放到容器自己的文件系统（`/tmp`）就好了；
-- ❌ 接着它要求当前目录下有 `./nclink.cfg`（`nclink_cfg.json` 之外的另一份），
-  包里没有，随后在 qemu 下 Bus error。要接着走就得把 `nclink.cfg` 的格式凑出来，
-  或者回到第 1 条。
+- ✅ `./nclink.cfg` 是**老的键值配置**（`-C nclink_cfg.json` 之外的另一份），
+  键名从二进制里抄出来了（`server_ip` / `server_port` / `reconnect_sec` /
+  `user_name` / `password` / `log_level` / `log_file` / `log_limit` / `model` /
+  `device_id` / 各主题的 `_qos`），空文件会让它 **SIGBUS**（读一个 0 字节文件），
+  写全键之后不再报"打开失败"；
+- ❌ 但紧接着仍然是在 qemu 下的 SIGBUS（日志一个字都没写出来，崩在很早），
+  这一条暂时走不通。
 
 另外：`INCBOX200/log/` 里那几份**现场运行日志**能告诉我们运行期的形态
 （每项一个 data_driver、重试节奏），但那份日志里 FOCAS 一次都没连上机床

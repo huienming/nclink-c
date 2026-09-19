@@ -10,7 +10,7 @@ echo "== arch: $(uname -m)"
 echo "== libstdc++: $(ls /usr/lib/arm-linux-gnueabihf/libstdc++.so.6 2>/dev/null || echo missing)"
 
 cd /work
-gcc -O0 -g -o probe probe.c -ldl
+gcc -O0 -g -o probe focas_probe.c -ldl
 echo "== built probe"
 
 # FOCAS wants its log file (fwlibeth.log) in the working directory; the box

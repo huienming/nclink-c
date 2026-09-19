@@ -15,6 +15,39 @@
 typedef void *(*create_fn)(nlohmann::json *, void *);
 typedef int (*call_fn)(void *, const char *, const char *, std::string *);
 typedef void (*destroy_fn)(void *);
+/* The C++ ctor takes the parameters as JSON *text* (old-ABI std::string by
+ * value), so it can be called without ever handing our nlohmann object to the
+ * plugin's own, differently-versioned nlohmann. */
+typedef void *(*ctor_fn)(void *logger, std::string params);
+
+/* A stand-in for spdlog::logger. The plugins are built with their own copy of
+ * spdlog (header only), so we cannot hand them a logger built from our headers.
+ * What they do with it is log through it, so a zeroed object whose vtable is a
+ * table of no-ops is enough: should_log() reads level_ (0 = trace, so logging
+ * runs), the sink loop walks a zeroed vector (size 0, so nothing happens), and
+ * every virtual call lands on a no-op. */
+static void fake_logger_noop(void)
+{
+}
+
+struct fake_logger {
+    void **vtable;
+    unsigned char rest[512];
+};
+
+static void *g_noop_vtable[64];
+
+static void *fake_logger_make(void)
+{
+    static fake_logger logger;
+    size_t i;
+
+    for (i = 0; i < sizeof(g_noop_vtable) / sizeof(g_noop_vtable[0]); i++) {
+        g_noop_vtable[i] = (void *)fake_logger_noop;
+    }
+    logger.vtable = g_noop_vtable;
+    return &logger;
+}
 
 int main(int argc, char **argv)
 {
@@ -22,6 +55,8 @@ int main(int argc, char **argv)
     const char *host = argc > 2 ? argv[2] : "127.0.0.1";
     int port = argc > 3 ? atoi(argv[3]) : 6000;
     const char *method = argc > 4 ? argv[4] : "/GSK/CNC/Open/TCP";
+    const char *ctor_name = argc > 5 ? argv[5] : NULL;
+    const char *call_params = argc > 6 ? argv[6] : "{}";
     void *lib, *obj;
     create_fn create;
     call_fn call;
@@ -32,6 +67,9 @@ int main(int argc, char **argv)
 
     /* Unbuffered: if a plugin aborts we still want to see how far we got. */
     setvbuf(stdout, NULL, _IONBF, 0);
+    if (ctor_name != NULL && ctor_name[0] == '\0') {
+        ctor_name = NULL;
+    }
 
     /* The plugin stack has to be preloaded in dependency order: the vendor libs
      * are C++ and do not declare libstdc++ in NEEDED, libbase.so needs
@@ -69,14 +107,25 @@ int main(int argc, char **argv)
     params["server"] = "http://127.0.0.1:33123";
     params["path"] = "//CNC_MEM/USER/PATH1";
 
-    obj = create(&params, NULL);
+    if (ctor_name != NULL) {
+        ctor_fn ctor = (ctor_fn)dlsym(lib, ctor_name);
+
+        printf("ctor(%s) = %p\n", ctor_name, (void *)ctor);
+        obj = ctor != NULL ? ctor(fake_logger_make(), params.dump()) : NULL;
+        if (obj != NULL) {
+            printf("ctor -> %p (params %s)\n", obj, params.dump().c_str());
+        }
+    } else {
+        obj = create(&params, fake_logger_make());
+    }
     printf("create -> %p\n", obj);
     if (obj == NULL) {
         return 0;
     }
 
-    rc = call(obj, method, "{}", &out);
-    printf("call(%s) -> rc=%d out=%s\n", method, rc, out.c_str());
+    rc = call(obj, method, call_params, &out);
+    printf("call(%s, %s) -> rc=%d out=%s\n", method, call_params, rc,
+           out.c_str());
 
     if (destroy != NULL) {
         destroy(obj);
