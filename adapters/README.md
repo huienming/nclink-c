@@ -79,6 +79,7 @@ adapters/
 | Modbus RTU | `modbus_rtu` | RS-485/232 | 同上 | ✅ 完成 |
 | RTU over TCP | `modbus_rtu_tcp` | TCP 任意 | 同上 | ✅ 完成 |
 | 三菱 MC/SLMP | `mc_tcp` | TCP 5534 | 设备名 + 号：`D100`、`M10`、`M10.3`（字软元件的位） | ✅ 二进制 3E/4E |
+| 欧姆龙 FINS | `fins_tcp` | TCP 9600 | 区名 + 字：`D100`、`CIO12.3`、`E0_0`… | ✅ 内存区读写 |
 
 其余协议按 `protocal/docs/README.md` 的优先级推进
 （MC/SLMP → FINS → S7 → MTConnect → …）。
@@ -143,6 +144,36 @@ RTU 用 `"serial": "COM3"` / `"/dev/ttyUSB0"` 加 `baud`/`parity`/`dataBits`/
 
 **还没做**：ASCII 编码（06 册里没有字节级原始样本，等一次抓包再补）、UDP
 （核心的 socket 层目前只有 TCP）。端点字节序转换等长尾项也留到实机验证时再定。
+
+### 欧姆龙 FINS
+
+```json
+{
+  "id": "plc1", "path": "/PLC1", "type": "fins_tcp",
+  "parameters": { "host": "10.0.0.5", "port": 9600, "clientNode": 1,
+                  "timeoutMs": 1000 },
+  "points": [
+    { "path": "/PLC1/TEMP",  "addr": "D100" },
+    { "path": "/PLC1/READY", "addr": {"area":"CIO","offset":12,"dtype":"bit"} },
+    { "path": "/PLC1/FLAG",  "addr": "D100.3" },
+    { "path": "/PLC1/SPEED", "addr": {"area":"D","offset":200,
+                                      "dtype":"float32"}, "writable": true }
+  ]
+}
+```
+
+FINS/TCP 会**先做节点地址分配握手**（§2：`FINS` 头 + 命令 0x00000000，PLC 回
+分配到的客户端节点号与自己的节点号），之后每个请求都是"传输头 + FINS 帧"。
+命令覆盖内存区读 `01 01`、写 `01 02`，方法有 `run`/`stop`/`controllerStatus`/
+`readClock`/`cycleTime`；区码含 CIO/W/H/A/D/P/C/T/TS/CS/CF/IR/DR/TK 与 EM 库
+`E0_0`–`E0_15`、`E1_0`–`E1_15`（§4，别按 0x90 硬编码）。全部大端；位访问时
+"位号"字节填实际位号（字访问填 0x00），位读回一点一字节。单次 ≤999 字，
+相邻点位间隔 ≤ `mergeGap`（默认 8）合并。结束码分级映射：重发超限/超时
+（0x03/0x04）算传输层（重连重发），读写不可能/越界（0x20/0x21/0x24）算协议层，
+CPU 忙或被拒（0xA5 等）算业务层。
+
+**还没做**：FINS/UDP、HostLink/C-Mode；`run`/`stop` 的两个参数字节按 "00 00"
+发出，实机若要求运行模式需再调。
 
 ## 配置与守护进程
 
