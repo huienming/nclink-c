@@ -83,6 +83,7 @@ adapters/
 | 西门子 S7comm | `s7_tcp` | TCP 102 | 区名 + 字节偏移：`M10.3`、`DB1`、`MB10` | ✅ ISO-TSAP + COTP |
 | MTConnect | `mtconnect` | HTTP 7878 | **数据项 id 就是区名**：`{"area":"Xabs","offset":0}` | ✅ 只读 |
 | 三菱 CNC M70/M80 | `meldas` | TCP 683 | **命令名就是区名**，偏移是轴号/IO 地址 | ✅ 只读 |
+| 海德汉 LSV2 | `lsv2` | TCP 19000 | **区名是要读的东西**，偏移是地址 | ✅ 版本/状态/PLC 内存 |
 
 其余协议按 `protocal/docs/README.md` 的优先级推进
 （第一批 MC/SLMP → FINS → S7 → MTConnect 已完成；第二批 MELDAS → 新代 → LSV2
@@ -294,6 +295,42 @@ MELDAS 是 **CORBA GIOP 1.0 之上的私有 mocha 操作集**：请求固定 80 
 **只读**：`mochaSetData` 在交付材料里没有抓到帧格式，§8.7 也要求生产环境默认
 禁用写，所以写操作返回"不支持"，等一次抓包再补。**未验证**：10 字节扩展
 double（`0x06`）按 x87 布局解析，需要实机确认；坐标建议用 CString 形式读。
+
+### 海德汉 HEIDENHAIN（LSV2）
+
+```json
+{
+  "id": "tnc", "path": "/TNC", "type": "lsv2",
+  "parameters": { "host": "10.0.0.20", "port": 19000, "user": "INSPECT",
+                  "timeoutMs": 3000 },
+  "points": [
+    { "path": "/TNC/VER",  "addr": {"area":"version","offset":0,
+                                    "dtype":"string"} },
+    { "path": "/TNC/ST",   "addr": {"area":"remote_status","offset":0,
+                                    "dtype":"string"} },
+    { "path": "/TNC/M100", "addr": {"area":"plc_memory","offset":100,
+                                    "dtype":"int16"} }
+  ]
+}
+```
+
+帧格式是本项目里最友好的一个：`[4 字节大端 payload 长度][4 字符命令名][payload]`，
+请求与应答同形，所以一个构造函数一个拆分函数就够。§7 的坑都在代码里：长度是
+大端（与 PLC 类协议相反）、payload 里的字符串含结尾 NUL 且长度算上它、大文件靠
+`S_FL` 分块循环。
+
+会话按 §7.4 建：连上先 `R_VR` 问型号（成功即证明链路可用），配置了登录名再发
+`A_LG` + 用户名 + NUL（可选口令）。登录名只接受 §4.1 的分级名单
+（INSPECT/FILE/MONITOR/DIAGNOSTICS/PLCDEBUG），写错了是配置错误而不是发出去试。
+已实现的能力：版本（R_VR/S_VR）、远程状态保活（R_ST/S_ST，`keepAlive` 方法）、
+**PLC 内存读**（R_MB：4 字节地址 + 1 字节长度）、登录状态查询、`A_LO` 登出，
+以及 raw 逃生舱（4 字符命令 + payload → 原样返回应答）。PLC 内存的字节数由点位
+类型与长度决定（`int16` 读 2 字节、`"abc"` 读 3 字节）。
+
+**只读**：§7.6 明确 `C_EK`（模拟按键）与 `C_MC`（改机器参数）要挡在权限墙后，
+而抓包材料里没有它们的 payload，所以写操作返回"不支持"。**没做**：`R_RI`
+（采集主命令）的 16 位选择码与 `S_RI` 的布局在 07 册里没有列出，需要一次抓包；
+PLC 内存的大端解释同样待实机确认。
 
 ## 配置与守护进程
 

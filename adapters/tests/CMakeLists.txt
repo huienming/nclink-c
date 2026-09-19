@@ -51,3 +51,9 @@ target_link_libraries(ncl_test_meldas PRIVATE nclink_drivers)
 target_include_directories(ncl_test_meldas PRIVATE
         "${CMAKE_SOURCE_DIR}/tests")
 add_test(NAME meldas COMMAND ncl_test_meldas)
+
+add_executable(ncl_test_lsv2 test_lsv2.c)
+target_link_libraries(ncl_test_lsv2 PRIVATE nclink_drivers)
+target_include_directories(ncl_test_lsv2 PRIVATE
+        "${CMAKE_SOURCE_DIR}/tests")
+add_test(NAME lsv2 COMMAND ncl_test_lsv2)
