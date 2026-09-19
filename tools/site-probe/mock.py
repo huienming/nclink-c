@@ -50,6 +50,7 @@ def handle(conn, reply):
     # Long idle timeout: the caller may want the connection to stay open while it
     # fires a whole sequence of requests (we only log them, we do not answer).
     conn.settimeout(60.0)
+    spec = reply
     try:
         while True:
             data = conn.recv(65536)
@@ -57,6 +58,16 @@ def handle(conn, reply):
                 break
             print("--- request %d bytes" % len(data), flush=True)
             print(hexdump(data), flush=True)
+            # "@path" re-reads the reply from a file on every request, so a
+            # sweep can change the answer between two requests on one
+            # connection.
+            reply = spec
+            if reply and reply.startswith("@"):
+                try:
+                    with open(reply[1:], encoding="utf-8") as handle:
+                        reply = handle.read().strip()
+                except OSError:
+                    reply = ""
             if reply:
                 if reply.startswith("HTTP200:"):
                     conn.sendall(http_200(reply[len("HTTP200:"):]))
