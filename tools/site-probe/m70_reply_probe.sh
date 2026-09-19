@@ -85,24 +85,41 @@ for name, spec in CASES:
     print("  %-32s %s" % (name, brief(once("GetPartCount", spec))))
 
 # "error response length" 是 hp2x/common 里的传输层错误 → 先扫长度：
-print("=== GetPartCount：把回声截断到 N 字节（消息类型=Reply，值 INT32=7 在 36）")
-for cut in range(36, 85, 4):
-    spec = "EREP:7:01,36:%s,cut:%d" % (INT32_7, cut)
-    print("  cut=%-3d %s" % (cut, brief(once("GetPartCount", spec))))
+print("=== GetPartCount：逐个长度找能过长度检查的那个（回声 + 消息类型=Reply）")
+passing = []
+for cut in range(36, 65):
+    out = brief(once("GetPartCount", "EREP:7:01,cut:%d" % cut))
+    if "length" not in out:
+        passing.append((cut, out))
+        print("  cut=%-3d %s" % (cut, out))
+print("  过长度检查的长度：%s" % ([c for c, _ in passing] or "无"))
 
-print("=== GetPartCount：改 offset 8 的 GIOP 长度字段")
-for size, cut in [(0x28, 40), (0x2c, 56), (0x44, 80)]:
-    spec = "EREP:7:01,8:%s,36:%s,cut:%d" % (
-        struct.pack("<I", size).hex(), INT32_7, cut)
-    print("  size=0x%-3x cut=%-3d %s" % (size, cut,
-                                         brief(once("GetPartCount", spec))))
+# GetProgramName 的 panic 已经证明：[36..39] = 字符串长度(LE)，[40..] = 字符
+# （cut=40 时它按 [36..39]="moch" 去取 [40:40+0x68636F6D]，越界信息就是 40+长度）。
+# GetPartCount 在 cut=40 已经过了长度检查，剩下的是"数据"检查 → 扫 GIOP size 与保留位。
+print("=== GetPartCount @cut=40：扫 [8..11] 的 GIOP size 与 [12..15] 保留位")
+for size in [0x1c, 0x20, 0x24, 0x28, 0x2c, 0x44]:
+    spec = "EREP:7:01,8:%s,36:%s,cut:40" % (
+        struct.pack("<I", size).hex(), INT32_7)
+    print("  size=0x%-3x %s" % (size, brief(once("GetPartCount", spec))))
+for extra, name in [("12:00000000", "[12..15]=0"),
+                    ("28:49444c", "[28..30]=IDL")]:
+    spec = "EREP:7:01,%s,36:%s,cut:40" % (extra, INT32_7)
+    print("  %-14s %s" % (name, brief(once("GetPartCount", spec))))
 
-print("=== GetStatus：逐字节找哪个 byte 决定状态名（36..48 每个偏移各喂 0..4）")
-for offset in range(36, 49):
-    row = []
-    for value in (0, 1, 2, 3, 4):
-        row.append(brief(once("GetStatus", "EREP:7:01,%d:%02x" % (offset, value))))
-    print("  offset %-3d %s" % (offset, "  ".join(row)))
+# 推测：长度检查用的就是 [36..39] 那个数（= 数据长度），总长必须是 40 + 它。
+print("=== 按 [36]=数据长度、[40..]=数据 造（总长 = 40 + 长度）")
+print("  GetProgramName len=7      %s" % brief(once(
+    "GetProgramName", "EREP:7:01,36:%s,40:41424344454647"
+    % struct.pack("<I", 7).hex())))
+for item, hexvalue in [("GetPartCount", INT32_7),
+                       ("GetLineNumber", INT32_7),
+                       ("GetStatus", "01" + "00" * 3)]:
+    spec = "EREP:7:01,36:04000000,40:%s,cut:44" % hexvalue
+    print("  %-22s len=4 %s" % (item, brief(once(item, spec))))
+for item in ["GetFeedSpeed", "GetRelativePositionX"]:
+    spec = "EREP:7:01,36:08000000,40:%s,cut:48" % DOUBLE_42
+    print("  %-22s len=8 double %s" % (item, brief(once(item, spec))))
 PY
 
 echo "=== mock.log 里第一次 GetPartCount 的请求（80 字节 GIOP）"

@@ -148,9 +148,36 @@
 `hp2x/common.init`，即包级错误变量）：`error response length` = 传输层长度不符，
 `error response data` = 长度对了但数据区不符。
 
-**下一步（纯本地，不用真机）**：固定 `cut:40`，扫 `[32..35]`（回声里这 4 字节是
-请求的"方法名长度 13"，很可能是应答的**数据长度**字段），以及把 INT32 值分别放在
-`[36]` / `[40]` 两位上，看哪种组合能把 `error response data` 变成真值。
+#### 4.1.2 应答闭环：CString 全通了（🟢）
+
+`GetProgramName` 那条 panic 把布局直接交了出来：
+
+```
+HTTP 500 exception recovered: runtime error: slice bounds out of range
+[:1751347093] with capacity 64
+```
+
+1751347093 = 40 + 0x68636F6D（回声里 `[36..39]` = `6d 6f 63 68` = "moch" 的 LE），
+即代码做的是 **`data[40 : 40+len]`**，`len` 取自 `[36..39]`（LE uint32），字符从
+`[40]` 起——**§3.3 的 CString 那一行完全正确**。顺着造应答即闭环：
+
+| 造的应答 | 网关返回 |
+|---|---|
+| `[36..39]=7`、`[40..46]="ABCDEFG"` | **`'ABCDEFG'`** ✅ |
+| `[36..39]=0` | `''` ✅ |
+| 不打补丁（长度字段 = "moch" 的 ASCII） | `slice bounds out of range [:1751347093]`（就是上面那条 panic） |
+
+顺带两个副产品：① `GetResponse3` 的缓冲区 **capacity = 64**；② "IDL 标记"
+（`[28..30]="IDL"`）打不打都不影响 CString 的解析。
+
+**还没通的**：数值类（`GetPartCount`/`GetLineNumber`/`GetFeedSpeed`/
+`GetRelativePositionX`）。它们的**总长必须是 40**（只有 40 能过长度检查，36 或 44+
+都报 `error response length`——注意 `GetProgramName` 是"40+len"），长度过了之后恒
+报 `error response data`：扫过 `[8..11]` 的 GIOP size（0x1c/0x20/0x24/0x28/0x2c/
+0x44）、`[12..15]` 保留位、`[28..30]="IDL"`、`[32..35]`（0/1/2/4/8/13/16/20/24）
+都不动。**下一步**：按 §3.3 的"类型标记 `data[28]` + 尺寸 `data[32]`"再试一轮
+（把 `[28]` 设成 0x01/0x02/0x03/0x05 与 `[32]` 设成 1/2/4/8 组合），以及把值放
+`[36]`/`[40]` 两处对比。
 
 | 命令码 | 子码 | 语义 | 返回类型 | 备注 |
 |---|---|---|---|---|
