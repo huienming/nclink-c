@@ -205,6 +205,35 @@ http.close();                    // 幂等；device.close() 也会替你收
 - 设备端示例会把它挂起来：`DeviceDemo ... [HTTP端口]`，然后
   `curl -X POST http://127.0.0.1:9008/api/plc/getCount -d '{}'` 就能调工具方法。
 
+### 异步方法调用（长方法）
+
+设备端方法可能跑很久，所以请求可以带 `async`：设备立刻回 `code=OK` + `handler`
+（方法句柄，代表那个线程/任务），方法在设备端线程池里跑，随后按句柄查进度与结果。
+
+```java
+try (DeviceClient client = Nclink.getDevice("V2JAVA00001")) {
+    try (Json ack = client.methodCallAsync("/plc/grind", "{\"depth\":3}", 5000)) {
+        String handler = ack.get("handler").asString();              // code=OK + handler
+        try (Json status = client.methodStatus(client.sn(), handler, 5000)) {
+            System.out.println(status.get("status").asString());     // executing / stopped / ...
+        }
+        Json result;
+        while ((result = client.methodResult(client.sn(), handler, 5000)) != null
+                && "PENDING".equals(result.get("code").asString())) {
+            result.close();
+            Thread.sleep(50);
+        }
+        System.out.println(result.get("result").asString());         // finished / error
+        result.close();
+    }
+}
+```
+
+- 结果取走后句柄就释放了（再查同句柄是 `NG`）。
+- 设备侧不用做异步的事：工具方法就是普通函数；想报进度用
+  `server.reportMethodProgress(handler, process, status)`（可选），离线自检用
+  `invokeMethodCallAsync` / `invokeMethodStatus` / `invokeMethodResult`。
+
 ### 文件通道（上传 / 下载）
 
 MQTT 报文里只传 `/temp/<名字>` 这样的**令牌**，字节走 FTP。方向要记住：**设备是

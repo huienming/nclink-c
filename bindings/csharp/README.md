@@ -169,6 +169,39 @@ using (NclServer device = new NclServer("V2CS0000001"))
 匹配规则）。**关端点要在关服务器之前**（路由回调还挂在服务器上），`device.Dispose()`
 已经按这个顺序做了。
 
+### 异步方法调用（长方法）
+
+设备端方法可能跑很久，所以请求可以带 `async`：设备立刻回 `code=OK` + `handler`
+（方法句柄，代表那个线程/任务），方法在设备端线程池里跑，随后按句柄查进度与结果。
+
+```csharp
+using (NclDeviceClient client = Nclink.GetDevice("V2CS0000001"))
+{
+    using (NclJson ack = client.MethodCallAsync("/plc/grind", "{\"depth\":3}"))
+    {
+        string handler = ack.Get("handler").AsString();          // code=OK + handler
+        using (NclJson status = client.MethodStatus(client.Sn, handler))
+        {
+            Console.WriteLine(status.Get("status").AsString());  // executing / stopped / ...
+        }
+        NclJson result;
+        while ((result = client.MethodResult(client.Sn, handler)) != null &&
+               result.Get("code").AsString() == "PENDING")        // 还在跑
+        {
+            result.Dispose();
+            Thread.Sleep(50);
+        }
+        Console.WriteLine(result.Get("result").AsString());      // finished / error
+        result.Dispose();
+    }
+}
+```
+
+- 结果取走后句柄就释放了（再查同句柄是 `NG`）。
+- 设备侧不用做异步的事：工具方法就是普通函数；想报进度用
+  `server.ReportMethodProgress(handler, process, status)`（可选），离线自检用
+  `InvokeMethodCallAsync` / `InvokeMethodStatus` / `InvokeMethodResult`。
+
 ### 文件通道（上传 / 下载）
 
 MQTT 报文里只传 `/temp/<名字>` 这样的**令牌**，字节走 FTP。方向要记住：**设备是

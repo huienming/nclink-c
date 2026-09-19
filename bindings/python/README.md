@@ -200,6 +200,32 @@ http.close()                                         # 幂等；device.close() �
 - 设备端示例会把它挂起来：`python examples/device_demo.py ... 30 9008`，然后
   `curl -X POST http://127.0.0.1:9008/api/plc/getCount -d '{}'` 就能调工具方法。
 
+### 异步方法调用（长方法）
+
+设备端方法可能跑很久，所以请求可以带 `async`：设备立刻回 `code=OK` + `handler`
+（方法句柄，代表那个线程/任务），方法在设备端线程池里跑，随后按句柄查进度与结果。
+
+```python
+with nclink.get_device("V2JAVA00001") as client:
+    ack = client.method_call_async("/plc/grind", {"depth": 3})   # Json：code=OK + handler
+    handler = ack.get("handler")
+    status = client.method_status(client.sn, handler)            # process / status / code
+    print(status.get("status"))                                  # executing / stopped / ...
+    while True:
+        result = client.method_result(client.sn, handler)
+        if result.get("code") != "PENDING":                      # 没跑完就是 PENDING
+            break
+        time.sleep(0.05)
+    print(result.get("result"), result.get("return"))            # finished / error + 返回值
+```
+
+- 结果取走后句柄就释放了（再查同句柄是 `NG`）；`Method/Status` 与 `Method/Result`
+  两对主题见手册 4.1。
+- 设备侧不用做异步的事：工具方法就是普通函数；想报进度用
+  `device.report_method_progress(handler, process, status)`（可选）。
+- 不接 broker 也能自检这条链路：`device.invoke_method_call_async()` /
+  `invoke_method_status()` / `invoke_method_result()`（见 `tests/test_nclink.py`）。
+
 ### 文件通道（上传 / 下载）
 
 MQTT 报文里只传 `/temp/<名字>` 这样的**令牌**，字节走 FTP。方向要记住：**设备是

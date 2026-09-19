@@ -82,10 +82,12 @@ class BrokerE2ETest(unittest.TestCase):
         self.addCleanup(device.close)
         device.register_tool(
             "plc",
-            methods={"getStatus": None, "getCount": None, "setCount": None},
+            methods={"getStatus": None, "getCount": None, "setCount": None,
+                     "slow": None},
             handlers={"getStatus": lambda params: state["status"],
                       "getCount": lambda params: state["count"],
-                      "setCount": lambda params: self._set_count(state, params)},
+                      "setCount": lambda params: self._set_count(state, params),
+                      "slow": lambda params: (time.sleep(0.15), {"ok": True})[1]},
             bindings=[("/STATUS", nclink.Operation.GET_VALUE, "getStatus"),
                       ("/PART_COUNT", nclink.Operation.GET_VALUE, "getCount"),
                       ("/PART_COUNT", nclink.Operation.SET_VALUE, "setCount")])
@@ -124,6 +126,27 @@ class BrokerE2ETest(unittest.TestCase):
                 self.assertEqual(state["count"], 21)
             with client.method_call("/plc/getStatus", None, check=True) as reply:
                 self.assertEqual(reply.to_python()["code"], "OK")
+
+            # 异步方法调用（真 MQTT 往返）：立刻拿句柄 → 查状态 → 轮询结果
+            with client.method_call_async("/plc/slow") as ack:
+                body = ack.to_python()
+                self.assertEqual(body["code"], "OK", body)
+                handler = body.get("handler")
+                self.assertTrue(handler, body)
+            with client.method_status(SN, handler) as status:
+                body = status.to_python()
+                self.assertEqual(body["code"], "OK", body)
+                self.assertEqual(body["handler"], handler)
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                with client.method_result(SN, handler) as result:
+                    body = result.to_python()
+                if body["code"] != "PENDING":
+                    break
+                time.sleep(0.05)
+            self.assertEqual(body["code"], "OK", body)
+            self.assertEqual(body["result"], "finished")
+            self.assertEqual(body["return"], {"ok": True})
 
             # 采样与事件：设备端每 200 ms 推一次，等到就走
             samples = []
