@@ -22,7 +22,7 @@
 | 08 | [广州数控 GSK](08-GSK-广州数控.md) | 6000 | TCP | 🟢 数据项 12/12 + `Init` 闭环（§4.6/§4.7） | GSKRM.dll |
 | 09 | [凯恩帝 KND（REST + DLL）](09-KND-凯恩帝.md) | 80 | HTTP | 🟢 面 | KAPI |
 | 10 | [**新代 SYNTEC（RemoteCNC）**](10-SYNTEC-新代-RemoteCNC.md) | 8000 | TCP | 🟢 150方法 + **设备侧 9 项全闭环**（§3.1/§3.2） | SyntecRemoteAPI / 裸帧 |
-| 11 | [兄弟 Brother](11-BROTHER-兄弟.md) | 10000 | TCP | 🟢 10命令 | — |
+| 11 | [兄弟 Brother](11-BROTHER-兄弟.md) | 10000 | TCP | 🟢 10命令 + **工具表/保养数据闭环**（§3.3） | — |
 | 12 | [欧姆龙 Omron（FINS）](12-OMRON-FINS.md) | 9600 | TCP/UDP | 🟢 19函数 | omronfins |
 | 13 | [安川 Yaskawa（HSES）](13-YASKAWA-HSES.md) | 10040 | UDP | 🟢 173方法 | underautomation / HSES |
 | 14 | [华数机器人 HSR（Hsc3）](14-HSR-华数-Hsc3.md) | 23234 | UDP | 🟢 ~170方法 | Hsc3Api |
