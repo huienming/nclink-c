@@ -85,4 +85,6 @@ Modbus 应答即可（`tools/site-probe/mock.py` 的裸 `hex` 应答够用）。
 |---|---|
 | 商业库 | `ER7BC10` / `ER7BC10Previous`（新旧两版报文实现，可作格式对照） |
 | 参考实现侧 | `驱动定义目录/efort_driver.json`（Modbus 连接定义） |
-| 待补 | 埃夫特 Modbus 地址表 + ER7B-C10 协议文档 |
+| ~~待补~~ | ~~埃夫特 Modbus 地址表 + ER7B-C10 协议文档~~ —— **2026-09 清账**：地址表已在 §2.1 从
+`lua/lua_mod/efort_task.lua` 解出（FC3 / 寄存器 44-45 大端 float + 38），本包 **不使用**
+ER7B-C10 定制协议；该协议只在"直连 ER7B-C10 控制器"时才需要，属外部资料 |

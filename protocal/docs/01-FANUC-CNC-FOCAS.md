@@ -53,9 +53,10 @@ cnc_freelibhndl(h);
 
 - 没有应答时 SDK 返回 **-16（EW_SOCKET）**，并且**会重试一次**（所以抓到两次
   TCP 连接、四条消息）。
-- 应答格式（🟢 2026-09 第九轮，反汇编 `libfwlib32.so` 的 `Pdu::send`/`Pdu::receive`
-  + 假机床实测 `tools/site-probe/focas_handshake_probe.sh`）见 §2.2；**还差最后一格**：
-  应答体里那几个字段的取值（判据已经全在了，缺的是一台真机的回包来对号）。
+- 应答格式（🟢 2026-09 第九/十轮，反汇编 `libfwlib32.so` 的 `Pdu::send`/`Pdu::receive`/
+  `getRbPos`/`getRb` + 假机床实测）：帧格式与四道判据见 §2.2，
+  **应答体取值见 §2.3** —— 第十轮已把"体 = 块个数 + 变长块"这套结构解出来并实测
+  `cnc_allclibhndl3` **rc=0**，本册**不再需要真机**。
 - 现场（`cfg/driver_def.json`）用的就是这一家：`module: focas`、`8193`。
 
 ### 2.2 帧格式与校验规则（🟢 2026-09 第九轮反汇编）
@@ -120,8 +121,91 @@ cnc_freelibhndl(h);
 | 方向 `[7]` 改 `01`（其余同 A） | -16 |
 
 结论：**格式与判据已经全解**，剩下的是"应答体里那 16/32 字节放什么"——
-要么真机抓一次握手（四条请求的回包），要么按 Fwlib32 的 PDU 结构补全。
-本册按"🟡 只差应答体取值"记录。
+**这一格 2026-09 第十轮已经补上**，见 §2.3（不需要真机了：按解出来的块结构回，
+`cnc_allclibhndl3` 实测 **rc=0**）。
+
+### 2.3 应答体的取值（🟢 2026-09 第十轮：反汇编 + 假机床实测 rc=0）
+
+**体不是一块连续数据，而是一串"块"。** `Pdu::getRbPos`（`0x26ab0`）就是靠块自己的
+长度字段往后走的：
+
+```
+体
+  [0..2)   块个数 N（BE16）—— Pdu::getRbPos 的第一道检查：i 必须 < N
+  [2..)    N 个块，逐个首尾相接：
+             [0..2)   本块字节数 L（BE16，getRbPos 用 i 走到第 i 块就是靠它累加）
+             [2..4)   ecode
+             [8..10)  返回码（BE16，**非 0 → Pdu::getRb 抛 ErrObj**）
+             [10..12) detail1      [12..14) detail2
+             [14..16) 载荷字节数（数据块才有意义）
+             [16..)   载荷
+```
+
+**三条硬规则（全部实测）**：
+
+1. **块个数 = 请求里 Cb 的个数**。请求体的 `[0..2)` 就是这个数，应答必须一致——
+   少一个，驱动取 `getRb(最后一个)` 时 `N <= i` 直接抛 → 上层看到 **-17**。
+   无体的 10 字节请求（0 个 Cb）按 **1** 个块回（`Pdu::receive` 判据 6 也要求
+   `0x21` 的应答块个数非 0）。
+2. **块长 ≥ 34 字节**：`SockPair::system_info_v1` 要读块 `[16..34)`，
+   `cnc_statinfo` 要读块 `[14..16)` 与 `[16..]`。
+3. 每个块的 `[8..10)` 必须是 0，否则 `getRb(i)` 抛异常。
+
+**func 01 的应答是另一套布局**（不是块，是"8 字节记录表"）：
+
+```
+[0..2) → this+116      [2..4) → this+118（==2 / ==3 走特殊分支）
+[4..6) → this+122/144  [6..8) → this+124
+[8..10) = 记录数 n     [10..12) [12..14) [14..16) → this+138/146/148
+[16..)  n 个 8 字节记录（每条 4 个 BE16：A/B/C/D）
+```
+
+长度必须 `== 16 + 8n`（`Pdu::receive` 判据 5）。记录 A != 0 时驱动会为它加一个
+`Cb(1, i, 24)` 并 `getRb(顺序号)`，所以"记录数 / 记录 A"要和后面的 Cb 个数对上。
+`this+118 == 3` 时分支里会**段错误**（驱动自身的坑，实测必崩），填 0 或 2 都能走通。
+
+**实测结果**（`tools/site-probe/focas_data_probe.sh`；`mock.py` 新增了 `CBREP:` 规格，
+按请求的 Cb 个数自动生成同样多个块）：
+
+| SDK 调用 | 结果 |
+|---|---|
+| `cnc_allclibhndl3` | **rc=0**，handle=32769 |
+| `cnc_statinfo` · `cnc_rdcount` · `cnc_actf` · `cnc_acts` · `cnc_rdparam` · `cnc_rdtofs` · `cnc_exeprgname2` · `cnc_rdlife` | **rc=0** |
+| `cnc_rdaxisdata` / `cnc_rdalmmsg2` / `cnc_rdexecprog` / `cnc_rdblkcount` | rc=1/2/6/6 —— 假机床给的是全零载荷，形状不够，不是协议不明 |
+| `cnc_rdmacro` | 载荷长度 0 时驱动段错误（真机有真实长度，不会） |
+| `cnc_machine` | 探针的调用签名不对（少一个 axis 参数），rc=4，与协议无关 |
+
+**数据是怎么切的（以 `cnc_statinfo` 为例，反汇编 `0x27a38`，110 行读完）**：
+
+```
+Cb(1, hd[0x8c0], 25) → addCb        Cb(1, hd[0x8c0], 225) → addCb
+Cb(1, hd[0x8c0], 152) → addCb       Handle::request(hd, pdu, 0x21)
+st[0] = 0; if (getRbCode(1) == 0) st[0] = be16(块1[16..18))
+st[2] = 0; if (getRbCode(2) == 0) st[2] = be16(块2[16..18))
+n = be16(块0[14..16)) / 2 ; 从 块0[16..] 拷 n 个 u16 到 st[4..]     ← getRb(0)
+```
+
+对上 `ODBST { dummy, aut, manual, run, edit, motion, mstb, emergency, alarm,
+spindle, oper }`：**块 1 = dummy、块 2 = aut、块 0 的载荷 = manual…oper 这 9 个
+u16**。也就是"标量各占一个块、数组走块 0 的载荷"——这就是 FOCAS 应答的通用切法。
+（块 1/2 的返回码非 0 只是把该字段填 0，**不抛异常**；块 0 的返回码非 0 才抛。）
+
+**Cb 码表**（每个数据项发的就是**一条** func `0x21` 请求，`c` 字段是它的码）：
+
+| SDK 调用 | 请求条数 | Cb 的 `c` | d/e 取值 |
+|---|---|---|---|
+| 握手 `system_info_v1` 第 3 条 | 1 | `0x0e` | d=e=`0x26f0` |
+| `cnc_statinfo` | 3 | `25` / `225` / `152` | 0 |
+| `cnc_rdcount` | 1 | `0x8b`(139) | d=e=1 |
+| `cnc_rdlife` | 1 | `0x8b`(139) | d=e=1 |
+| `cnc_actf` | 1 | `0x24`(36) | 0 |
+| `cnc_acts` | 1 | `0x25`(37) | 0 |
+| `cnc_rdparam` | 1 | `0x0e`(14) | d=e=1，载荷含 `40 7f fc 90` |
+| `cnc_rdmacro` | 1 | `0x15`(21) | d=e=1 |
+| `cnc_rdtofs` | 1 | `0x08`(8) | d=e=1，另带 `0x78`(120) |
+| `cnc_rdprogdir3` | 1 | `0x06`(6) | d=`0x13`, e=1 |
+| `cnc_exeprgname2` | 1 | `0xfc`(252) | 0 |
+| `cnc_rdaxisdata` `cnc_rdalmmsg2` `cnc_rdexecprog` `cnc_rdblkcount` | 0 | — | 本地先失败，没进到协议层 |
 
 **这家实际用到的 29 个 SDK 调用**（`libfocas.so` 的导入表，🟢）：
 

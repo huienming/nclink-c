@@ -42,10 +42,16 @@ python go_pclntab.py <bin> --list 's7v2\.\(\*S7\)'      # 列函数
 python go_pclntab.py <bin> --dump '(*S7).Mode' --out fn.bin   # 导出机器码
 python elf_vaddr.py <bin> --words 0xdec9a8 4            # 看字面量池/全局变量
 python elf_vaddr.py <bin> --gostr 0x64852c              # 池中 (ptr,len) → 字符串
+sh arm_range.sh <bin> 0x648074 0x648400                # pclntab 认不出时直接按地址反汇编
 
 docker run --rm --platform linux/arm/v7 -v <现场包>/app1/hp2x:/hp2x:ro \
   -v $PWD:/work ncl-arm-probe sh /work/arm_analyze.sh '(*S7).Mode'
 ```
+
+> ⚠️ **本机有好几份现场包，别摸错**：`protocal/docs` 里的地址（如 `(*S7).Mode`
+> `0x648074`）对应的是 **`D:\03-开发代码\incbox200\app1\hp2x\hp2x_box200`（14.5 MB）**；
+> 另一份 17.9 MB 的 `hp2x_box200` 在这些地址上没有代码，`go_pclntab.py` 也解不了它的
+> pclntab。`hp2x_pick.sh <候选...>` 一比对就知道是哪份。
 
 `arm_analyze.sh` 会把 `runtime.memequal` 的比较、字面量池以及被页面的地址都列出来
 （`Mode` 的 `JOG`/`REPOS`/`REFPOINT`/`AUTO` 表就是这么读出来的）。
@@ -131,8 +137,41 @@ LOOPQ:6d6f6368614653526561644469726563746f7279/<填充帧>/<第1帧>|<第2帧>|�
   所以 **-16 vs -17 正好能区分"没收到"和"收到了但字段不对"**）；体长的两条
   额外公式：`[6]==1 && [7]==2` 时体长必须 `n*8+16`（`n=be16(体[8..10))`），
   `[6]==0x21` 时体长必须 `> 1` 且 `be16(体[0..2)) != 0`。
-  要往下拿数据调用（`cnc_statinfo` / `cnc_rdparam` …）得先把应答体的字段对上；
-  那一步需要一台真机抓一次，或按 Fwlib32 的 PDU 结构补全。
+  要往下拿数据调用（`cnc_statinfo` / `cnc_rdparam` …）得先把应答体的字段对上——
+  这一步 **2026-09 第十轮已经做完，不用真机了**：
+
+  **应答体 = 块个数 + 一串变长块**（`Pdu::getRbPos` `0x26ab0` / `Pdu::getRb` `0x26b78`）：
+
+  ```
+  体 [0..2)  = 块个数 N（BE16）；i 必须 < N，否则 getRbPos 抛 ErrObj
+  体 [2..)   = N 个块首尾相接，每块：
+                 [0..2)  本块字节数（BE16，getRbPos 靠它累加走到第 i 块）
+                 [2..4)  ecode       [8..10) 返回码（非 0 → getRb 抛异常）
+                 [10..12) / [12..14) detail1 / detail2
+                 [14..16) 载荷字节数 [16..)  载荷
+  ```
+
+  **三条硬规则**：① **块个数 = 请求里 Cb 的个数**（请求体 `[0..2)` 就是它；
+  无体的 10 字节请求按 1 个块回）；② 块长 ≥ 34（`system_info_v1` 要读块 `[16..34)`）；
+  ③ 每块 `[8..10)` 必须是 0。
+
+  `func 01` 的应答是另一套：16 字节头 + n 个 8 字节记录，体长必须是 `16 + 8n`
+  （`n = be16(体[8..10))`）。`func == 2` 的应答 `[6]` 必须是 2（`SockPair::request`
+  会轮询到 `[6]==2` 为止）。
+
+  实测（`focas_handshake_probe2.sh` + `focas_data_probe.sh`）：`cnc_allclibhndl3`
+  **rc=0**，`cnc_statinfo` / `cnc_rdcount` / `cnc_actf` / `cnc_acts` / `cnc_rdparam` /
+  `cnc_rdtofs` / `cnc_exeprgname2` / `cnc_rdlife` 也都 **rc=0**。
+
+  `mock.py` 为此加了 **`CBREP:<块长 hex>[:<载荷 hex>]`**：按请求的 Cb 个数自动生成
+  同样多个应答块（块长 / 载荷可调），所以新数据项不用手搓应答：
+
+  ```
+  MAP:6:1:01=<16 字节体的应答>|21=CBREP:22|02=CBREP:22|<兜底>
+  ```
+
+  反汇编用 `focas_dis.sh`（`handshake|calls|full|sym|who|at|range|hs|lines`，
+  `OUT=` 可写文件）——`libfwlib32.so.1` 是纯静态符号，直接 `objdump` 就行。
 
 2. **插件的 C 入口点与签名**（🟢 `.dynsym` + 反汇编）。导出的四个 C 名字是
    `create` / `call` / `destroy` / `get_version`，真正转发到的是：

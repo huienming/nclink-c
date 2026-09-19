@@ -12,7 +12,7 @@
 | # | 协议分册 | 端口 | 传输 | 证据 | 现成参考实现 |
 |---|---|---|---|---|---|
 | 00 | [通用-实现约定](00-通用-实现约定.md) | — | — | — | — |
-| 01 | [FANUC CNC（FOCAS/Fwlib32）](01-FANUC-CNC-FOCAS.md) | 8193 | TCP | 🟢 881 函数 | pyfocas / pyfanuc |
+| 01 | [FANUC CNC（FOCAS/Fwlib32）](01-FANUC-CNC-FOCAS.md) | 8193 | TCP | 🟢 881 函数 + **握手/应答体/块语义/Cb 码表全闭环**（§2.3） | pyfocas / pyfanuc |
 | 02 | [FANUC 机器人（RMI + 老接口）](02-FANUC-机器人-RMI.md) | 8193 | TCP | 🟢 24 指令 | fanuc_rmi / fanucpy |
 | 03 | [西门子 S7 PLC（S7comm）](03-SIEMENS-S7-PLC.md) | 102 | TCP/ISO-TSAP | 🟢 | python-snap7 |
 | 04 | [西门子 840D sl（OPC UA）](04-SIEMENS-840D-OPCUA.md) | 4840 | TCP | 🟢 | asyncua |

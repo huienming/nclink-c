@@ -27,6 +27,8 @@ may take several forms:
     S7S:<hex>[,<hex>...]  act as an ISO-on-TCP / S7 server (COTP CC + Setup ack
                           + Read ack); one value per requested item
     S7R:<hex>             the same, but the data section is exactly these bytes
+    CBREP:<size>:<payload>  FOCAS: answer with as many response blocks as the
+                          request carried Cbs (size in hex, >= 34)
 
 Usage: mock.py <port>|<port>-<port>|<p1,p2,...> [reply]
 """
@@ -73,6 +75,35 @@ def substitute(request_bytes, template):
 def tpkt(cotp):
     total = 4 + len(cotp)
     return bytes([0x03, 0x00, total >> 8, total & 0xFF]) + cotp
+
+
+def focas_cbrep(request, spec):
+    """FOCAS：按请求里的 Cb 个数生成应答块。
+
+    Pdu::getRbPos(i) 在"体 [0..2) = 块个数、块 [0..2) = 本块字节数、块 [8..10) =
+    返回码（非 0 抛异常）"这套布局上走，而驱动会按请求的 Cb 个数去取块
+    （`cnc_statinfo` 就发 3 个 Cb、要 3 个块），所以个数必须与请求一致。
+
+        CBREP:<块长 hex>[:<载荷 hex>]
+
+    块长至少 34（system_info_v1 会读块 [16..34)）；载荷从块 [16..) 开始铺。
+    请求 [10..12) 是 Cb 个数（10 字节的"无体请求"算 0 → 取 1，因为
+    Pdu::receive 要求 0x21 的应答块个数非 0）。
+    """
+    parts = spec[6:].split(":")
+    size = int(parts[0], 16)
+    payload = bytes.fromhex(parts[1]) if len(parts) > 1 and parts[1] else b""
+    count = int.from_bytes(request[10:12], "big") if len(request) >= 12 else 0
+    if count < 1:
+        count = 1
+    block = bytearray(size)
+    block[0:2] = size.to_bytes(2, "big")
+    room = max(0, size - 16)
+    block[16:16 + min(len(payload), room)] = payload[:room]
+    body = count.to_bytes(2, "big") + bytes(block) * count
+    head = b"\xa0\xa0\xa0\xa0\x00\x01" + bytes([request[6], 0x02]) + \
+        len(body).to_bytes(2, "big")
+    return head + body
 
 
 def s7_ack(pdu_ref, params, data):
@@ -150,6 +181,8 @@ def respond(conn, data, reply):
         return respond(conn, data, chosen or "")
     if reply.startswith(("S7S:", "S7R:")):
         conn.sendall(s7_reply(data, reply))
+    elif reply.startswith("CBREP:"):
+        conn.sendall(focas_cbrep(data, reply))
     elif reply.startswith("HTTP200:"):
         conn.sendall(http_200(reply[8:]))
     elif reply.startswith("XSUB:"):

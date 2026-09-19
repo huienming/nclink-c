@@ -30,6 +30,9 @@ int main(int argc, char **argv)
 {
     const char *host = argc > 1 ? argv[1] : "127.0.0.1";
     unsigned short port = argc > 2 ? (unsigned short)atoi(argv[2]) : 8193;
+    /* argv[3] 只跑这一个 SDK 函数（不传就跑全部）——这样 mock.log 里的报文
+     * 能一对一地对上是哪个调用发的。 */
+    const char *filter = argc > 3 ? argv[3] : NULL;
     unsigned char buf[4096];
     unsigned short handle = 0;
     allclibhndl3_fn allclibhndl3;
@@ -82,7 +85,11 @@ int main(int argc, char **argv)
     }
 
     for (i = 0; i < (int)(sizeof(calls) / sizeof(calls[0])); i++) {
-        void *fp = sym(calls[i].name);
+        void *fp;
+        if (filter != NULL && strcmp(filter, calls[i].name) != 0) {
+            continue;
+        }
+        fp = sym(calls[i].name);
         if (fp == NULL) {
             continue;
         }

@@ -335,10 +335,17 @@ FileNew / FileDelete / FileCopy / FileMove / DirCreate；`AlarmCmd` 里含
 `TCPALARM_OnEventCall`。
 
 另有 CRC：客户端程序集里有 256 项 CRC-16 表、多项式 **0xA001**（`BitConverter` 取字节，
-即小端）。**它是给哪一段算的、放在报文哪个位置，待补**——只在文件类路径上被引用，
-业务读写路径目前没看到。
+即小端）。**2026-09 结清**：它**只在文件传输路径被引用**（`TCPFile*` /
+`MMI_Request_FileSending` 那一族），**业务读写路径不带校验**——所以驱动实现里
+只有"传程序文件"要做 CRC，坐标/状态/计数那些 `KrnlAPI` 调用不用。位置与覆盖范围
+按文件块（`nFileOffset` + `pBufferIn`）算，属文件类实现细节，不影响数据采集。
 
-### 10.3 下一步（按此顺序补齐，每步都留出处）
+### 10.3 下一步（**已全部完成**，见 §10.4–§10.11；本节留作存档）
+
+> 四步都做完了：1 → §10.4（12 字节包头 + 结构体镜像）、§10.9（`uFuncID` 即 `CmdID`）；
+> 2 → §10.10/§10.11（结构体与枚举数值全取到）；3 → §10.7 + §10.11（命令号表，
+> 两条独立路径互证）；4 → 靶机与驱动骨架现在可以直接写。
+> 下面原文保留，便于回溯当时的推断顺序。
 
 1. 读 `OCAPIServer.TCPService::ReceivePackets` 与 `ByteArrayToStructure` 的 IL：
    确定 `Length` / `CmdID` / `Reserved` 的宽度与字节序、包头→命令体的分派方式、

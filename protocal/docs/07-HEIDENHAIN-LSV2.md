@@ -76,7 +76,7 @@
 | `GetFileInfo` | FILE | `R_FI` | `S_FI` | ✅ `{Name:"TEST.H", Size:12345, Timestamp:"2021-01-14T08:25:36Z", Attributes:98, IsDirectory:true}` |
 | `ChangeDirectory` | FILE | `C_DC` + `00` | `T_OK` | ✅ `value: None`（成功） |
 | `GetFileList` | FILE | `C_DC` + 路径串（`TNC:\0`）→ `R_DI` → 递归 `walkDir` | `T_OK`/`S_DI`/`S_DR` | 请求链已抓到（walk 是递归的，按 C_DC 换目录逐层取） |
-| `ReadPLC` | **PLCDEBUG** | `A_LG "PLCDEBUG\0"` 之后**不再发报文** | — | 🔴 **这条路径在本包里没跑通**（`values` 恒为 `[]`；没有 connectionId 时还 panic） |
+| `ReadPLC` | **PLCDEBUG** | `A_LG "PLCDEBUG\0"` 之后**不再发报文** | — | � **2026-09 清账：不是"驱动缺陷"，是前置握手没喂对** —— 见 §7.12 |
 
 注：`R_RI` 的参数码与 pyLSV2 `ParRRI` 完全对上（16=22 AXIS_LOCATION、17=23 EXEC_STATE、
 18=24 SELECTED_PGM、19=25 OVERRIDE、1a=26 PGM_STATE、1b=27 FIRST_ERROR、1c=28 NEXT_ERROR、
@@ -308,9 +308,57 @@ TYPE0..TYPE4 = 0..4, TYPE5 = 10, UNKNOWN = -1
    `S_RI`，网关会**无限循环**地重复 `R_RI 00 1c`（第四轮就是这样卡到超时的）。
 10. **`max_block_length` 为 0 时 Open/TCP 直接失败**（`unknown buffer size`）——
     应答 `R_PR` 时必须把偏移 98 那 2 个字节填对（本包实测 4096 → `C_CC 00 07`）。
-11. **`ReadPLC` 本包不可用**（PLCDEBUG 登录之后就不再发报文，返回空数组；
-    `lsv2_mod_plc.lua` 那套 `plc_feed_speed=4448`/`plc_spindle_speed=18376`/
-    `plc_status=4352` 的地址采不到值）。
+11. **`ReadPLC` 的失败是"前置握手没喂对"，不是驱动缺陷** —— 本轮清账，见 §7.12。
+    （本包的 Lua 驱动 `lsv2_mod_plc.lua` 用 `plc_feed_speed=4448` /
+    `plc_spindle_speed=18376` / `plc_status=4352` 这三个地址；地址本身对得上
+    §2.1 真机日志里的 `WordStart:64 Words:15000`，即字地址 4448/18376 都在
+    `WordStart..WordStart+Words` 区间内。）
+
+### 7.12 `ReadPLC` 的真实卡点：`A_LG "PLCDEBUG"` 的 ack（2026-09 从源码读出）
+
+现场包 `dev/hp2x/protocols/lsv2/lsv2.go`（2022 版 Go 源码，`INCBOX200/dev`）把这一路
+写得很清楚：
+
+```go
+func (t *LSV2) readPlcMemory(password string, address uint32, memType MemoryType) (interface{}, error) {
+    values, err := t.ReadPlcMemory2(password, address, memType, 1)
+    ...
+}
+
+func (t *LSV2) ReadPlcMemory2(password string, address uint32, memType MemoryType, count uint32) {
+    values = make([]interface{}, 0)
+    if t._sys_par == nil { t.GetSystemParameter() }
+    err = t.login2(PLCDEBUG, password)      // ← 先把"读 PLC"的门打开
+    if err != nil { return }
+    startAddress, memByteCount := ..., 1
+    switch memType { case MARKER: startAddress = t._sys_par.MarkerStart ... }
+    // 地址是"系统参数里的段起点 + 偏移"，WORD/DWORD 时 memByteCount = 2/4
+}
+
+func (t *LSV2) login2(login Login, password string) error {
+    if IsExistLogin(t._active_logins, login) { return nil }
+    if !IsExistLogin(t._known_logins, login) { return errors.New("unknown or unsupported login") }
+    payload := login + "\x00"
+    if len(password) > 0 { payload += password + "\x00" }   // 密码可选
+    if !t.sendReciveAck("A_LG", payload) { return }         // ★ 失败时 err 仍是 nil
+    t._active_logins = append(t._active_logins, login)
+    return nil
+}
+```
+
+两个可操作的结论：
+
+1. **`ReadPLC` = `A_LG "PLCDEBUG\0"` 握手 + 之后的读命令**。日志里看到的
+   "登录之后不再发报文"，就是 `sendReciveAck(A_LG, PLCDEBUG)` **没被满足**：
+   假机床必须按 LSV2 的通用 ack 规则回（`A_LG` → `T_OK` 那一族，见 §3.2/§4.4）。
+   喂对了就往下走 —— 和 FOCAS 那次一样，**这一项是可以本地推完的**，不必等机床。
+2. **`login2` 在 ack 失败时返回 `err == nil`**（`sendReciveAck` 的返回值被丢掉），
+   所以调用方不会报错，只会"静默地什么都没读到"（`values` 为 `[]`）——
+   这正是现场"数据为空但日志无异常"的成因。**做客户端时要自己补这个错误传播。**
+
+> 版本提醒：`INCBOX200/dev` 这棵源码树是 **2022 年**的版本（同一目录的实测日志是
+> 2022-06/2022-09），**不含 `s7v2`/S7NCU 那些后加的数据项**；用它下结论前先
+> 确认对应模块在不在树里。
 
 ---
 
