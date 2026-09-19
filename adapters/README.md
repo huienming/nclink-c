@@ -13,19 +13,20 @@
 ```
 adapters/
 ├── include/nclink_adapter/   # 对外接口（驱动实现者要 include 的头）
-│   └── ncl_driver.h          # ncl_driver_ops / ncl_address / ncl_driver_result
+│   ├── ncl_driver.h          # ncl_driver_ops / ncl_address / ncl_driver_result
+│   ├── ncl_driver_manager.h  # 驱动配置、点位表、path→驱动 分派
+│   └── ncl_adapter.h         # 守护进程：配置 → 设备
 ├── src/core/                 # 与协议无关的骨架（类型、错误分级、地址解析、注册表）
+├── src/registry/             # 配置加载 + 点位表 + 最长前缀分派
+├── src/app/                  # 守护进程主体（模型生成、操作注册、轮询）
+├── src/main.c                # ncl_adapter 可执行文件
 ├── drivers/<协议>/           # 每个协议一个目录：帧构造/解析 + 会话状态
 └── tests/                    # 黄金报文 + mock 靶机的集成测试
 ```
 
-规划中的两块：`src/registry/`（读 `conf/driver/*.json`、按 `path` 把点位分派
-到驱动、`/` 兜底）与 `ncl_adapter` 守护进程（加载配置 → 建模型 → 注册工具 →
-起采样 → 起 REST）。
-
-构建产物是 `libnclink_drivers.a`（CMake 目标 `nclink::drivers`），与
-`nclink::core` 分开：设备端不带任何厂商驱动时可以直接不编译这一层
-（`-DNCLINK_BUILD_ADAPTERS=OFF`）。
+构建产物是 `libnclink_drivers.a`（CMake 目标 `nclink::drivers`）与可执行文件
+`ncl_adapter`，与 `nclink::core` 分开：设备端不带任何厂商驱动时可以直接不编译
+这一层（`-DNCLINK_BUILD_ADAPTERS=OFF`）。
 
 ## 驱动接口
 
@@ -69,13 +70,67 @@ adapters/
 `drivers/mock/` 是最小样板：内存点位模型 + 错误注入 + 事件触发，没有一行
 网络代码，测试里可以直接用（`ncl_mock_driver_create()`）。
 
+## 配置与守护进程
+
+一条「链路」= 一个驱动实例。配置文件（单个文件、目录里的多个 `*.json`，或
+直接内嵌 `drivers` 数组都行）：
+
+```json
+{
+  "id": "plc1",                     // 链路 id（唯一）
+  "path": "/PLC1",                  // 这条链路负责的模型路径前缀；"/" 为兜底
+  "type": "modbus_tcp",             // 驱动注册表里的协议名
+  "parameters": { "host": "10.0.0.5", "port": 502, "unit": 1 },
+  "points": [
+    { "path": "/PLC1/STATUS", "addr": "D100" },
+    { "id": "POWER", "addr": {"area": "D", "offset": 101},
+      "dtype": "float32", "writable": true }
+  ]
+}
+```
+
+- 点位路径可写绝对路径（`/PLC1/STATUS`）或相对路径（`STATUS`），内部统一
+  按「链路前缀之后的相对路径」存表；查找时先取最长前缀，再回退到 `"/"`
+  那条兜底链路（`/PLC10` 不会被 `/PLC1` 抢走）。
+- `writable` 默认 **false**（§7：默认只读，写能力要显式开）；`sample`
+  默认 true，设 false 可把高频/大流量点位排除在采样通道之外。
+
+适配器的配置：
+
+```json
+{
+  "sn": "V2AABBCCDD1",
+  "driverDir": "conf/driver",        // 或 "driverFile"，或内嵌 "drivers"
+  "model": "conf/model.json",        // 可选；不给就按点位表生成
+  "device": { "type": "MACHINE", "id": "01", "name": "数控机床" },
+  "methods": [ { "path": "/PLC1/START", "operation": "startProgram" } ],
+  "sample": { "intervalMs": 1000, "uploadMs": 1000 }
+}
+```
+
+守护进程为每个点位注册一条操作：`get_value#<路径>` 读、`set_value#<路径>` 写
+（只有 `writable` 的点位才注册），`call#<路径>` 走驱动自己的方法。核心的采样
+任务发的就是普通 Query，所以采样通道不需要额外机制。
+
+```sh
+./ncl_adapter -c conf/adapter.json            # MQTT + REST + 轮询
+./ncl_adapter -c conf/adapter.json --once     # 读一遍全部点位就退出（自检）
+```
+
+自动生成的模型里，每个数据项的 `source` 就是点位路径的父级，因此
+**模型路径与配置里的点位路径严格一致**，配置和模型不会漂移。
+可运行的配置样例见 `tests/test_adapter.c` 里的 `kConfig`。
+
 ## 测试
 
 ```sh
-.\build.ps1                      # Windows：配置 + 编译 + 26 个测试套件
+.\build.ps1                      # Windows：配置 + 编译 + 28 个测试套件
 sh build-linux.sh build-linux    # Linux：同样全跑一遍
 ```
 
-驱动层的测试在 `tests/test_driver.c`（注册表、地址解析、错误分级、mock 的
-读写/位寻址/批量/事件/原始报文）。协议驱动的测试以两段为主：报文级的
-黄金样本（字节级 diff），以及对着 mock 靶机的连接—读写—重连流程。
+适配器层的测试三件套：`tests/test_driver.c`（驱动接口：注册表、地址解析、
+错误分级、mock 的读写/位寻址/批量/事件/原始报文）、
+`tests/test_driver_manager.c`（配置加载、点位表、前缀分派）、
+`tests/test_adapter.c`（配置 → 设备：生成模型、操作、读写、方法、轮询）。
+协议驱动的测试以两段为主：报文级的黄金样本（字节级 diff），以及对着 mock
+靶机的连接—读写—重连流程。

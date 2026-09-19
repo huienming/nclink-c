@@ -77,17 +77,21 @@ echo "   -> $OUT/libnclink_core.a"
 
 # 适配器：厂商协议驱动（libnclink_drivers.a）。与核心库分开，设备端不带驱动
 # 时可以不编译这一段。测试也跟着驱动库一起编。
-DRV_CFLAGS="-Iadapters/include -Iadapters/drivers"
+DRV_CFLAGS="-Iadapters/include -Iadapters/drivers -Iadapters/src"
 DRV_OBJDIR="$OUT/obj-adapters"
 rm -rf "$DRV_OBJDIR"
 mkdir -p "$DRV_OBJDIR"
 echo "== 编译适配器驱动 =="
-for src in $(find adapters/src adapters/drivers -name '*.c' | sort); do
+for src in $(find adapters/src/core adapters/src/registry adapters/src/app \
+                  adapters/drivers -name '*.c' | sort); do
     obj="$DRV_OBJDIR/$(echo "$src" | tr '/' '_').o"
     $CC $CFLAGS $DRV_CFLAGS -c "$src" -o "$obj"
 done
 $AR rcs "$OUT/libnclink_drivers.a" "$DRV_OBJDIR"/*.o
 echo "   -> $OUT/libnclink_drivers.a"
+$CC $CFLAGS $DRV_CFLAGS adapters/src/main.c -o "$OUT/bin/ncl_adapter" \
+    "$OUT/libnclink_drivers.a" "$OUT/libnclink_core.a" $LDLIBS
+echo "   -> $OUT/bin/ncl_adapter"
 
 echo "== 编译示例 =="
 for ex in examples/*.c; do

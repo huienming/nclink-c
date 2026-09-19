@@ -7,6 +7,7 @@
 file(GLOB_RECURSE NCLINK_ADAPTER_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/registry/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/app/*.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/drivers/*/*.c")
 
 add_library(nclink_drivers STATIC ${NCLINK_ADAPTER_SOURCES})
@@ -31,4 +32,17 @@ endif()
 
 if(NCLINK_BUILD_TESTS)
     add_subdirectory(tests)
+endif()
+
+# The daemon itself: src/main.c is not part of the library.
+add_executable(ncl_adapter src/main.c)
+target_link_libraries(ncl_adapter PRIVATE nclink_drivers)
+
+if(MSVC)
+    target_compile_options(ncl_adapter PRIVATE /W4 /wd4996 /utf-8)
+    target_compile_definitions(ncl_adapter PRIVATE
+            _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+else()
+    target_compile_options(ncl_adapter PRIVATE -Wall -Wextra -Wshadow
+            -Wstrict-prototypes -Wmissing-prototypes)
 endif()

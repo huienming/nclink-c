@@ -56,9 +56,10 @@ nclink-c/
 └── adapters/              # 厂商协议适配器（驱动 + 采集守护进程）
     ├── include/nclink_adapter/  # 驱动接口、地址模型、响应信封
     ├── src/core/                # 与协议无关的驱动骨架
+    ├── src/registry/            # 驱动配置加载 + 点位表 + 路径分派
+    ├── src/app/                 # ncl_adapter 守护进程（配置 → 设备）
     ├── drivers/<协议>/          # 每协议一个目录：帧构造/解析 + 会话
-    ├── tests/                   # 报文字节级黄金样本 + mock 靶机
-    └── docs/                    # 接入指南
+    └── tests/                   # 报文字节级黄金样本 + mock 靶机
 ```
 
 ## 构建与测试
