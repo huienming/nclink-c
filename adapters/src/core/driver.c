@@ -443,6 +443,17 @@ const char *ncl_driver_protocol(const ncl_driver *driver)
     return driver->ops->protocol;
 }
 
+void ncl_driver_last_raw(const ncl_driver *driver, ncl_driver_raw *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (driver != NULL && driver->ops != NULL && driver->ops->last_raw != NULL) {
+        driver->ops->last_raw(driver, out);
+    }
+}
+
 /*
  * Open the session on demand. A driver that can lose its session implements
  * both open() and is_connected(); one that has no session at all (the mock,

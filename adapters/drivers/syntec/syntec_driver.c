@@ -35,6 +35,8 @@ typedef struct {
     ncl_mutex   *mutex;
     uint8_t      tx[SYNTEC_MAX_BODY + 32];
     uint8_t      rx[SYNTEC_MAX_BODY + 32];
+    size_t       last_tx_len; /**< the frame the audit should show */
+    size_t       last_rx_len;
 } syntec_ctx;
 
 static unsigned json_uint(const ncl_json *object, const char *key,
@@ -97,6 +99,8 @@ static ncl_err syntec_exchange(syntec_ctx *ctx, uint16_t cmd_id,
     if (frame_len == 0) {
         return NCL_ERR_RANGE;
     }
+    ctx->last_tx_len = frame_len;
+    ctx->last_rx_len = 0;
     if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x91);
     }
@@ -117,6 +121,7 @@ static ncl_err syntec_exchange(syntec_ctx *ctx, uint16_t cmd_id,
         ncl_socket_shutdown(ctx->socket);
         return NCL_DRV_ERR_TRANSPORT(0x93);
     }
+    ctx->last_rx_len = total;
     err = ncl_syntec_split(ctx->rx, total, view, NULL);
     if (err != NCL_OK) {
         return err;
@@ -476,6 +481,17 @@ static void syntec_attach_event(ncl_driver *self, ncl_driver_event_fn fn,
     (void)user;
 }
 
+/** The frames of the last exchange, for the audit trail (§6). */
+static void syntec_last_raw(const ncl_driver *self, ncl_driver_raw *out)
+{
+    const syntec_ctx *ctx = (const syntec_ctx *)self->ctx;
+
+    out->request = ctx->last_tx_len > 0 ? ctx->tx : NULL;
+    out->request_len = ctx->last_tx_len;
+    out->reply = ctx->last_rx_len > 0 ? ctx->rx : NULL;
+    out->reply_len = ctx->last_rx_len;
+}
+
 static void syntec_destroy(ncl_driver *self)
 {
     syntec_ctx *ctx;
@@ -502,6 +518,7 @@ static const ncl_driver_ops kSyntecOps = {
     syntec_write_batch, syntec_raw,
     syntec_raw,       syntec_call,
     syntec_attach_event, syntec_destroy,
+    syntec_last_raw,
 };
 
 ncl_driver *ncl_syntec_create(void)

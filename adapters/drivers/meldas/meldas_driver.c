@@ -34,6 +34,8 @@ typedef struct {
     ncl_mutex    *mutex;
     uint8_t       tx[NCL_MELDAS_REQUEST_BYTES];
     uint8_t       rx[MELDAS_MAX_REPLY];
+    size_t        last_tx_len; /**< the frame the audit should show */
+    size_t        last_rx_len;
 } meldas_ctx;
 
 static unsigned json_uint(const ncl_json *object, const char *key,
@@ -93,6 +95,8 @@ static ncl_err meldas_exchange(meldas_ctx *ctx, const char *operation,
     if (frame_len == 0) {
         return NCL_ERR_RANGE;
     }
+    ctx->last_tx_len = frame_len;
+    ctx->last_rx_len = 0;
     if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x31);
     }
@@ -115,6 +119,7 @@ static ncl_err meldas_exchange(meldas_ctx *ctx, const char *operation,
         ncl_socket_shutdown(ctx->socket);
         return NCL_DRV_ERR_TRANSPORT(0x33);
     }
+    ctx->last_rx_len = total;
     message[0] = '\0';
     err = ncl_meldas_parse_reply(ctx->rx, total, id, value, message,
                                  sizeof(message));
@@ -402,6 +407,17 @@ static ncl_err meldas_raw(ncl_driver *self, const void *frame, size_t frame_len,
     return NCL_OK;
 }
 
+/** The frames of the last exchange, for the audit trail (§6). */
+static void meldas_last_raw(const ncl_driver *self, ncl_driver_raw *out)
+{
+    const meldas_ctx *ctx = (const meldas_ctx *)self->ctx;
+
+    out->request = ctx->last_tx_len > 0 ? ctx->tx : NULL;
+    out->request_len = ctx->last_tx_len;
+    out->reply = ctx->last_rx_len > 0 ? ctx->rx : NULL;
+    out->reply_len = ctx->last_rx_len;
+}
+
 static void meldas_attach_event(ncl_driver *self, ncl_driver_event_fn fn,
                                 void *user)
 {
@@ -436,6 +452,7 @@ static const ncl_driver_ops kMeldasOps = {
     meldas_write_batch, meldas_raw,
     meldas_raw,       NULL,
     meldas_attach_event, meldas_destroy,
+    meldas_last_raw,
 };
 
 ncl_driver *ncl_meldas_create(void)

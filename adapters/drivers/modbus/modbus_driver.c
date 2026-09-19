@@ -52,6 +52,8 @@ typedef struct {
     ncl_mutex            *mutex; /**< one exchange at a time */
     uint8_t               tx[MB_MAX_FRAME];
     uint8_t               rx[MB_MAX_FRAME];
+    size_t                last_tx_len; /**< the frame the audit should show */
+    size_t                last_rx_len;
 } mb_ctx;
 
 static unsigned json_uint(const ncl_json *object, const char *key,
@@ -147,11 +149,19 @@ static ncl_err mb_rtu_read_reply(mb_ctx *ctx, const uint8_t **reply,
         }
         got += (size_t)rc;
     }
+    ctx->last_rx_len = got;
     return ncl_modbus_rtu_split(ctx->rx, got, (uint8_t)ctx->unit, reply,
                                 reply_len, NULL);
 }
 
 /* -------------------------------------------------------------- exchange -- */
+
+/** Remember the frame that is about to go out; the reply is not in yet. */
+static void mb_note_request(mb_ctx *ctx, size_t frame_len)
+{
+    ctx->last_tx_len = frame_len;
+    ctx->last_rx_len = 0;
+}
 
 /**
  * One request/response. On success @p reply points into the driver's receive
@@ -171,6 +181,7 @@ static ncl_err mb_exchange(mb_ctx *ctx, const uint8_t *pdu, size_t pdu_len,
         if (frame_len == 0) {
             return NCL_ERR_RANGE;
         }
+        mb_note_request(ctx, frame_len);
         if (ncl_serial_write(ctx->serial, ctx->tx, frame_len) != NCL_OK) {
             return NCL_DRV_ERR_TRANSPORT(0x15);
         }
@@ -188,6 +199,7 @@ static ncl_err mb_exchange(mb_ctx *ctx, const uint8_t *pdu, size_t pdu_len,
         if (frame_len == 0) {
             return NCL_ERR_RANGE;
         }
+        mb_note_request(ctx, frame_len);
         if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
             return NCL_DRV_ERR_TRANSPORT(0x16);
         }
@@ -220,6 +232,7 @@ static ncl_err mb_exchange(mb_ctx *ctx, const uint8_t *pdu, size_t pdu_len,
             }
             got += (size_t)rc;
         }
+        ctx->last_rx_len = got;
         return ncl_modbus_rtu_split(ctx->rx, got, (uint8_t)ctx->unit, reply,
                                     reply_len, NULL);
     }
@@ -230,6 +243,7 @@ static ncl_err mb_exchange(mb_ctx *ctx, const uint8_t *pdu, size_t pdu_len,
     if (frame_len == 0) {
         return NCL_ERR_RANGE;
     }
+    mb_note_request(ctx, frame_len);
     if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x18);
     }
@@ -249,6 +263,7 @@ static ncl_err mb_exchange(mb_ctx *ctx, const uint8_t *pdu, size_t pdu_len,
             ncl_socket_shutdown(ctx->socket);
             return NCL_DRV_ERR_TRANSPORT(0x1A);
         }
+        ctx->last_rx_len = length + 6u;
         return ncl_modbus_tcp_split(ctx->rx, length + 6u, ctx->transaction, reply,
                                     reply_len, NULL);
     }
@@ -893,6 +908,17 @@ static ncl_err mb_write_raw(ncl_driver *self, const void *frame, size_t frame_le
     return mb_raw(self, frame, frame_len, out);
 }
 
+/** The frames of the last exchange, for the audit trail (§6). */
+static void mb_last_raw(const ncl_driver *self, ncl_driver_raw *out)
+{
+    const mb_ctx *ctx = (const mb_ctx *)self->ctx;
+
+    out->request = ctx->last_tx_len > 0 ? ctx->tx : NULL;
+    out->request_len = ctx->last_tx_len;
+    out->reply = ctx->last_rx_len > 0 ? ctx->rx : NULL;
+    out->reply_len = ctx->last_rx_len;
+}
+
 /**
  * The one Modbus operation worth exposing as a method: the diagnostics
  * loop-back test (function 0x08, sub-function 0x0000). It answers with the data
@@ -1113,6 +1139,7 @@ ncl_driver *ncl_modbus_tcp_create(void)
         mb_write_batch, mb_read_raw,
         mb_write_raw,   mb_call,
         mb_attach_event, mb_destroy,
+        mb_last_raw,
     };
 
     return mb_create_driver(MB_MODE_TCP, &kOps);
@@ -1127,6 +1154,7 @@ ncl_driver *ncl_modbus_rtu_create(void)
         mb_write_batch, mb_read_raw,
         mb_write_raw,   mb_call,
         mb_attach_event, mb_destroy,
+        mb_last_raw,
     };
 
     return mb_create_driver(MB_MODE_RTU, &kOps);
@@ -1141,6 +1169,7 @@ ncl_driver *ncl_modbus_rtu_tcp_create(void)
         mb_write_batch,   mb_read_raw,
         mb_write_raw,     mb_call,
         mb_attach_event,  mb_destroy,
+        mb_last_raw,
     };
 
     return mb_create_driver(MB_MODE_RTU_TCP, &kOps);

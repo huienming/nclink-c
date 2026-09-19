@@ -34,6 +34,8 @@ typedef struct {
     ncl_mutex     *mutex;
     uint8_t        tx[MC_MAX_FRAME];
     uint8_t        rx[MC_MAX_FRAME];
+    size_t         last_tx_len; /**< the frame the audit should show */
+    size_t         last_rx_len;
 } mc_ctx;
 
 static unsigned json_uint(const ncl_json *object, const char *key,
@@ -93,6 +95,8 @@ static ncl_err mc_exchange(mc_ctx *ctx, uint16_t command, uint16_t subcommand,
     if (frame_len == 0) {
         return NCL_ERR_RANGE;
     }
+    ctx->last_tx_len = frame_len;
+    ctx->last_rx_len = 0;
     if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x11);
     }
@@ -114,6 +118,7 @@ static ncl_err mc_exchange(mc_ctx *ctx, uint16_t command, uint16_t subcommand,
         return NCL_DRV_ERR_TRANSPORT(0x13);
     }
     total = header_len + length;
+    ctx->last_rx_len = total;
     err = ncl_mc_split_reply(ctx->rx, total, ctx->header.frame,
                              ctx->header.serial, reply, &frame_len);
     if (err != NCL_OK) {
@@ -618,6 +623,17 @@ static ncl_err mc_write_raw(ncl_driver *self, const void *frame, size_t frame_le
     return mc_raw(self, frame, frame_len, out, true);
 }
 
+/** The frames of the last exchange, for the audit trail (§6). */
+static void mc_last_raw(const ncl_driver *self, ncl_driver_raw *out)
+{
+    const mc_ctx *ctx = (const mc_ctx *)self->ctx;
+
+    out->request = ctx->last_tx_len > 0 ? ctx->tx : NULL;
+    out->request_len = ctx->last_tx_len;
+    out->reply = ctx->last_rx_len > 0 ? ctx->rx : NULL;
+    out->reply_len = ctx->last_rx_len;
+}
+
 /**
  * The methods the protocol offers without touching a device address: the
  * loopback test (§2, good keep-alive), remote RUN/STOP, the CPU type and the
@@ -823,6 +839,7 @@ static const ncl_driver_ops kMcOps = {
     mc_write_batch_locked, mc_read_raw,
     mc_write_raw,   mc_call,
     mc_attach_event, mc_destroy,
+    mc_last_raw,
 };
 
 ncl_driver *ncl_mc_tcp_create(void)

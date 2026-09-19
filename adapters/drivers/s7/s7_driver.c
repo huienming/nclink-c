@@ -40,6 +40,8 @@ typedef struct {
     ncl_mutex   *mutex;
     uint8_t      tx[S7_MAX_FRAME];
     uint8_t      rx[S7_MAX_FRAME];
+    size_t       last_tx_len; /**< the frame the audit should show */
+    size_t       last_rx_len;
 } s7_ctx;
 
 static unsigned json_uint(const ncl_json *object, const char *key,
@@ -79,6 +81,7 @@ static ncl_err s7_read_tpkt(s7_ctx *ctx, const uint8_t **payload,
                               ctx->timeout_ms) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x32);
     }
+    ctx->last_rx_len = total;
     err = ncl_s7_tpkt_split(ctx->rx, total, payload, payload_len, NULL);
     return err;
 }
@@ -91,6 +94,8 @@ static ncl_err s7_send_pdu(s7_ctx *ctx, const uint8_t *pdu, size_t pdu_len)
     if (frame_len == 0) {
         return NCL_ERR_RANGE;
     }
+    ctx->last_tx_len = frame_len;
+    ctx->last_rx_len = 0;
     return ncl_socket_send(ctx->socket, ctx->tx, frame_len) == NCL_OK
                ? NCL_OK
                : NCL_DRV_ERR_TRANSPORT(0x33);
@@ -112,7 +117,12 @@ static ncl_err s7_cotp_connect(s7_ctx *ctx)
     if (frame_len == 0) {
         return NCL_ERR_RANGE;
     }
-    if (ncl_socket_send(ctx->socket, request, frame_len) != NCL_OK) {
+    /* Through ctx->tx rather than straight from the local buffer, so the audit
+     * trail can show the connect request like every other frame. */
+    memcpy(ctx->tx, request, frame_len);
+    ctx->last_tx_len = frame_len;
+    ctx->last_rx_len = 0;
+    if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x34);
     }
     err = s7_read_tpkt(ctx, &cotp, &cotp_len);
@@ -610,6 +620,17 @@ static ncl_err s7_write_raw(ncl_driver *self, const void *frame, size_t frame_le
     return s7_raw(self, frame, frame_len, out);
 }
 
+/** The frames of the last exchange, for the audit trail (§6). */
+static void s7_last_raw(const ncl_driver *self, ncl_driver_raw *out)
+{
+    const s7_ctx *ctx = (const s7_ctx *)self->ctx;
+
+    out->request = ctx->last_tx_len > 0 ? ctx->tx : NULL;
+    out->request_len = ctx->last_tx_len;
+    out->reply = ctx->last_rx_len > 0 ? ctx->rx : NULL;
+    out->reply_len = ctx->last_rx_len;
+}
+
 /**
  * PLC Stop (0x29) is the one controller command worth exposing, and it is a
  * dangerous one: the point map has to ask for it explicitly by name.
@@ -767,6 +788,7 @@ static const ncl_driver_ops kS7Ops = {
     s7_write_batch_locked, s7_read_raw,
     s7_write_raw,    s7_call,
     s7_attach_event, s7_destroy,
+    s7_last_raw,
 };
 
 ncl_driver *ncl_s7_tcp_create(void)

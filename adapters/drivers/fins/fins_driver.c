@@ -39,6 +39,8 @@ typedef struct {
     ncl_mutex      *mutex;
     uint8_t         tx[FINS_MAX_FRAME];
     uint8_t         rx[FINS_MAX_FRAME];
+    size_t          last_tx_len; /**< the frame the audit should show */
+    size_t          last_rx_len;
 } fins_ctx;
 
 static unsigned json_uint(const ncl_json *object, const char *key,
@@ -82,6 +84,7 @@ static ncl_err fins_read_frame(fins_ctx *ctx, uint32_t *command,
                               ctx->timeout_ms) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x22);
     }
+    ctx->last_rx_len = 8u + length;
     return ncl_fins_tcp_split(ctx->rx, 8u + length, command, error, payload,
                               payload_len, NULL);
 }
@@ -102,6 +105,8 @@ static ncl_err fins_handshake(fins_ctx *ctx)
     if (frame_len == 0) {
         return NCL_ERR_RANGE;
     }
+    ctx->last_tx_len = frame_len;
+    ctx->last_rx_len = 0;
     if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x23);
     }
@@ -180,6 +185,8 @@ static ncl_err fins_exchange(fins_ctx *ctx, uint16_t command,
     if (frame_len == 0) {
         return NCL_ERR_RANGE;
     }
+    ctx->last_tx_len = frame_len;
+    ctx->last_rx_len = 0;
     if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x24);
     }
@@ -699,6 +706,17 @@ static ncl_err fins_write_raw(ncl_driver *self, const void *frame, size_t frame_
     return fins_raw(self, frame, frame_len, out);
 }
 
+/** The frames of the last exchange, for the audit trail (§6). */
+static void fins_last_raw(const ncl_driver *self, ncl_driver_raw *out)
+{
+    const fins_ctx *ctx = (const fins_ctx *)self->ctx;
+
+    out->request = ctx->last_tx_len > 0 ? ctx->tx : NULL;
+    out->request_len = ctx->last_tx_len;
+    out->reply = ctx->last_rx_len > 0 ? ctx->rx : NULL;
+    out->reply_len = ctx->last_rx_len;
+}
+
 /** The controller's own commands: RUN, STOP, status, clock and cycle time. */
 static ncl_err fins_call(ncl_driver *self, const char *operation,
                          const ncl_json *params, ncl_json **result)
@@ -885,6 +903,7 @@ static const ncl_driver_ops kFinsOps = {
     fins_write_batch_locked, fins_read_raw,
     fins_write_raw,  fins_call,
     fins_attach_event, fins_destroy,
+    fins_last_raw,
 };
 
 ncl_driver *ncl_fins_tcp_create(void)

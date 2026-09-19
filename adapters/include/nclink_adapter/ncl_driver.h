@@ -113,6 +113,18 @@ void ncl_driver_result_fail(ncl_driver_result *result, int code,
 void ncl_driver_result_set_raw(ncl_driver_result *result, const void *data,
                                size_t len);
 
+/**
+ * The two frames of one exchange, borrowed from the driver: the request that
+ * went out and the reply that came back (either may be NULL). See
+ * ncl_driver_ops::last_raw.
+ */
+typedef struct {
+    const uint8_t *request;
+    size_t         request_len;
+    const uint8_t *reply;
+    size_t         reply_len;
+} ncl_driver_raw;
+
 /* ============================================================= addresses == */
 
 /** Release the strings @p address owns. Safe on a zeroed struct; idempotent. */
@@ -169,6 +181,17 @@ typedef struct ncl_driver_ops {
     void (*attach_event)(ncl_driver *self, ncl_driver_event_fn fn, void *user);
     /** Release the private state; the driver struct itself is freed here. */
     void (*destroy)(ncl_driver *self);
+    /**
+     * The bytes of the last exchange, for the audit trail (§6 of the spec asks
+     * for the raw frame of every request). Optional: a driver whose protocol
+     * has no frame of its own - the mock, or MTConnect's XML documents - leaves
+     * it out and the caller logs no bytes. It comes last so a driver that does
+     * not have one keeps its initialiser list untouched.
+     *
+     * The driver keeps the buffers until its next exchange, so a caller copies
+     * what it wants to keep; either frame may be NULL.
+     */
+    void (*last_raw)(const ncl_driver *self, ncl_driver_raw *out);
 } ncl_driver_ops;
 
 struct ncl_driver {
@@ -187,6 +210,12 @@ ncl_driver *ncl_driver_new(const ncl_driver_ops *ops, void *ctx);
 const ncl_driver_ops *ncl_driver_ops_of(const ncl_driver *driver);
 /** Protocol name of @p driver ("?" when unknown). */
 const char *ncl_driver_protocol(const ncl_driver *driver);
+
+/**
+ * The bytes of the last exchange of @p driver, zeroed when there is nothing to
+ * report (no callback, or no exchange yet). Safe to call on any driver.
+ */
+void ncl_driver_last_raw(const ncl_driver *driver, ncl_driver_raw *out);
 
 /**
  * Read one address as a JSON scalar, opening the session on demand. Helper for

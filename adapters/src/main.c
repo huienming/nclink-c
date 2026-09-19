@@ -10,6 +10,7 @@
  *
  *   ncl_adapter -c conf/adapter.json
  *   ncl_adapter -c conf/adapter.json --once      # read every point and exit
+ *   ncl_adapter -c conf/adapter.json --stats --raw  # ... then the §6 counters
  */
 
 #include <stdio.h>
@@ -21,12 +22,16 @@
 #include "nclink/ncl_logger.h"
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_rest.h"
+#include "nclink_adapter/ncl_audit.h"
 #include "nclink_adapter/ncl_adapter.h"
 
 typedef struct {
     const char *config;
     bool        offline;
     bool        once;
+    bool        stats;         /**< --stats: the §6 counters, then exit */
+    bool        raw;           /**< --raw: log the frames of each request */
+    const char *operator_name; /**< who is driving, for the write audit */
     unsigned    port;
     unsigned    interval_ms;
 } adapter_args;
@@ -37,6 +42,9 @@ static void usage(const char *program)
     printf("  -c, --config <文件>   适配器配置（默认 conf/adapter.json）\n");
     printf("      --offline         不连 MQTT，只跑 REST 与轮询\n");
     printf("      --once            轮询一次并打印，然后退出（自检）\n");
+    printf("      --stats           跑完 --once 再打印审计计数（§6），然后退出\n");
+    printf("      --raw             审计里带上每次请求的原始报文 hex（§6）\n");
+    printf("      --operator <名字> 写审计里的操作者（默认不写）\n");
     printf("      --port <端口>     REST 端口，0 表示随机（默认 8080）\n");
     printf("      --interval <毫秒> 轮询周期（默认 1000）\n");
 }
@@ -59,6 +67,17 @@ static bool parse_args(int argc, char **argv, adapter_args *args)
         } else if (strcmp(argv[i], "--once") == 0) {
             args->once = true;
             args->offline = true;
+        } else if (strcmp(argv[i], "--stats") == 0) {
+            args->stats = true;
+            args->once = true; /* the counters are only worth reading after a run */
+            args->offline = true;
+        } else if (strcmp(argv[i], "--raw") == 0) {
+            args->raw = true;
+        } else if (strcmp(argv[i], "--operator") == 0) {
+            if (++i >= argc) {
+                return false;
+            }
+            args->operator_name = argv[i];
         } else if (strcmp(argv[i], "--port") == 0) {
             if (++i >= argc) {
                 return false;
@@ -119,6 +138,14 @@ int main(int argc, char **argv)
                  ncl_env_conf_path());
         args.config = default_config;
     }
+    {
+        ncl_audit_options audit;
+
+        ncl_audit_options_default(&audit);
+        audit.raw = args.raw;                   /* §6: off unless asked for */
+        audit.operator_name = args.operator_name;
+        ncl_audit_init(&audit);
+    }
     ncl_strbuf_init(&err);
     adapter = ncl_adapter_create_from_file(args.config, &err);
     if (adapter == NULL) {
@@ -167,6 +194,19 @@ int main(int argc, char **argv)
         }
     }
     ncl_strbuf_free(&err);
+    if (args.stats) {
+        ncl_json *stats = ncl_audit_stats();
+        char *text = stats != NULL ? ncl_json_write_string(stats) : NULL;
+
+        if (text != NULL) {
+            printf("%s\n", text);
+            ncl_free_safe(text);
+        } else {
+            ncl_log_warn("审计计数取不到");
+            exit_code = 1;
+        }
+        ncl_json_free(stats);
+    }
     if (http != NULL) {
         ncl_http_server_stop(http);
     }

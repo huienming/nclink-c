@@ -263,6 +263,33 @@ static void test_read(void)
     NCL_CHECK_EQ_INT(mock->last_size_out, 4);
     NCL_CHECK_EQ_INT(mock->last_serial, 1);
 
+    NCL_TEST_CASE("§6: the driver hands the frames of the exchange to the audit");
+    {
+        ncl_driver_raw raw;
+        uint32_t length;
+
+        ncl_driver_last_raw(driver, &raw);
+        /* 12 byte packet header + 8 byte function header + the 14 byte body */
+        NCL_CHECK_EQ_INT(raw.request_len, 34);
+        NCL_CHECK(raw.request != NULL);
+        if (raw.request != NULL && raw.request_len == 34) {
+            length = get_u32(raw.request);
+            NCL_CHECK_EQ_INT(length, 22); /* §10.3: everything after the header */
+            NCL_CHECK_EQ_INT(get_u16(raw.request + 4), NCL_SYNTEC_CMD_KRML_API);
+            NCL_CHECK_EQ_INT(get_u16(raw.request + 12), NCL_SYNTEC_CMD_KRML_API);
+            NCL_CHECK_EQ_INT(raw.request[14], 1); /* the serial that went out */
+            /* §10.9 again: the body's uFuncID repeats the command number */
+            NCL_CHECK_EQ_INT(get_u16(raw.request + 20), NCL_SYNTEC_CMD_KRML_API);
+            NCL_CHECK_EQ_INT(get_u32(raw.request + 22), 1); /* dwCode */
+            NCL_CHECK_EQ_INT(get_u32(raw.request + 30), 4); /* dwSizeOut */
+        }
+        NCL_CHECK(raw.reply != NULL);
+        NCL_CHECK(raw.reply_len >= NCL_SYNTEC_PACKET_HEADER);
+        if (raw.reply != NULL && raw.reply_len >= NCL_SYNTEC_PACKET_HEADER) {
+            NCL_CHECK_EQ_INT(get_u16(raw.reply + 4), NCL_SYNTEC_CMD_KRML_API);
+        }
+    }
+
     NCL_TEST_CASE("the serial advances, and a bare command number is accepted");
     /* 1.5 as a big endian double, which is what this point asks for */
     mock->answer[0] = 0x3F;

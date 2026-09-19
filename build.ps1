@@ -5,6 +5,10 @@
 #
 #   .\build.ps1              # configure + build + run tests (MSVC x64)
 #   .\build.ps1 -Clean       # wipe the build directory first
+#
+# 注：Ninja 靠 rules.ninja 里的 msvc_deps_prefix 认 /showIncludes 的输出。老
+# 生成目录里这个前缀可能被双重编码，导致"改了头文件却不重编"（症状就是莫名其妙的
+# 崩溃），此时用 -Clean 重配一次即可。
 #   .\build.ps1 -Arch x86 -BuildDir build-x86   # 32-bit (Win32/x86) build
 #   .\build.ps1 -Target test # build and run ctest only
 #   .\build.ps1 -Tls         # also enable MQTT over ssl:// (needs OpenSSL)

@@ -23,6 +23,7 @@
 #include "nclink/ncl_platform.h"
 
 #include "core/adapter_text.h"
+#include "nclink_adapter/ncl_audit.h"
 
 #if defined(NCL_OS_WINDOWS)
 #include <windows.h>
@@ -733,11 +734,29 @@ bool ncl_driver_manager_point_sampled(const ncl_driver_manager *manager,
 
 /* -------------------------------------------------------------- traffic -- */
 
+/**
+ * The frames @p driver exchanged just now, or NULL when the audit is not
+ * collecting them: §6 of the spec wants the bytes only on demand, and reading
+ * them out is the caller's job so a driver keeps its single-exchange contract.
+ */
+static const ncl_driver_raw *audit_raw(const ncl_driver *driver,
+                                       ncl_driver_raw *scratch)
+{
+    if (!ncl_audit_wants_raw()) {
+        return NULL;
+    }
+    ncl_driver_last_raw(driver, scratch);
+    return scratch->request_len > 0 || scratch->reply_len > 0 ? scratch : NULL;
+}
+
 ncl_err ncl_driver_manager_read(ncl_driver_manager *manager, const char *path,
                                 ncl_json **value)
 {
     const ncl_address *address = NULL;
     driver_entry *entry;
+    ncl_driver_raw raw;
+    int64_t started;
+    ncl_err result;
 
     if (value != NULL) {
         *value = NULL;
@@ -747,12 +766,27 @@ ncl_err ncl_driver_manager_read(ncl_driver_manager *manager, const char *path,
     }
     entry = manager_lookup(manager, path, &address);
     if (entry == NULL) {
+        ncl_audit_request("-", path, "-", NCL_ERR_NOT_FOUND, 0, NULL);
         return NCL_ERR_NOT_FOUND; /* no link answers for this path */
     }
     if (address == NULL) {
+        ncl_audit_request(entry->id, path, "-", NCL_ERR_NOT_FOUND, 0, NULL);
         return NCL_ERR_NOT_FOUND; /* the link has no point mapped here */
     }
-    return ncl_driver_read_one(entry->driver, address, value);
+    started = ncl_time_monotonic_millis();
+    result = ncl_driver_read_one(entry->driver, address, value);
+    {
+        char text[64];
+        char *address_text = ncl_address_to_text(address);
+
+        snprintf(text, sizeof(text), "%s",
+                 address_text != NULL ? address_text : "?");
+        ncl_free_safe(address_text);
+        ncl_audit_request(entry->id, path, text, result,
+                          ncl_time_monotonic_millis() - started,
+                          audit_raw(entry->driver, &raw));
+    }
+    return result;
 }
 
 ncl_err ncl_driver_manager_write(ncl_driver_manager *manager, const char *path,
@@ -760,15 +794,38 @@ ncl_err ncl_driver_manager_write(ncl_driver_manager *manager, const char *path,
 {
     const ncl_address *address = NULL;
     driver_entry *entry;
+    ncl_json *old_value = NULL;
+    char text[64];
+    char *address_text;
+    ncl_driver_raw raw;
+    ncl_err result;
+    int64_t started;
 
     if (manager == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     entry = manager_lookup(manager, path, &address);
     if (entry == NULL || address == NULL) {
+        const char *link = entry != NULL ? entry->id : "-";
+
+        ncl_audit_write(link, path, "-", NULL, value, NCL_ERR_NOT_FOUND);
+        ncl_audit_request(link, path, "-", NCL_ERR_NOT_FOUND, 0, NULL);
         return NCL_ERR_NOT_FOUND;
     }
-    return ncl_driver_write_one(entry->driver, address, value);
+    /* The old value is read first so the audit line can say what changed (§6);
+     * a point that cannot be read just shows "-" as its previous value. */
+    (void)ncl_driver_read_one(entry->driver, address, &old_value);
+    started = ncl_time_monotonic_millis();
+    result = ncl_driver_write_one(entry->driver, address, value);
+    address_text = ncl_address_to_text(address);
+    snprintf(text, sizeof(text), "%s", address_text != NULL ? address_text : "?");
+    ncl_free_safe(address_text);
+    ncl_audit_write(entry->id, path, text, old_value, value, result);
+    ncl_audit_request(entry->id, path, text, result,
+                      ncl_time_monotonic_millis() - started,
+                      audit_raw(entry->driver, &raw));
+    ncl_json_free(old_value);
+    return result;
 }
 
 ncl_err ncl_driver_manager_call(ncl_driver_manager *manager, const char *path,
@@ -776,6 +833,7 @@ ncl_err ncl_driver_manager_call(ncl_driver_manager *manager, const char *path,
                                 ncl_json **result)
 {
     driver_entry *entry;
+    ncl_driver_raw raw;
 
     if (result != NULL) {
         *result = NULL;
@@ -785,9 +843,20 @@ ncl_err ncl_driver_manager_call(ncl_driver_manager *manager, const char *path,
     }
     entry = manager_lookup_entry(manager, path);
     if (entry == NULL || entry->driver->ops->call == NULL) {
+        ncl_audit_request("-", path, operation, NCL_ERR_NOT_FOUND, 0, NULL);
         return NCL_ERR_NOT_FOUND;
     }
-    return entry->driver->ops->call(entry->driver, operation, params, result);
+    {
+        ncl_err call_result;
+        int64_t started = ncl_time_monotonic_millis();
+
+        call_result = entry->driver->ops->call(entry->driver, operation, params,
+                                               result);
+        ncl_audit_request(entry->id, path, operation, call_result,
+                          ncl_time_monotonic_millis() - started,
+                          audit_raw(entry->driver, &raw));
+        return call_result;
+    }
 }
 
 void ncl_driver_manager_attach_event(ncl_driver_manager *manager,
@@ -823,6 +892,7 @@ ncl_err ncl_driver_manager_open_all(ncl_driver_manager *manager, ncl_strbuf *err
             continue;
         }
         result = entry->driver->ops->open(entry->driver);
+        ncl_audit_session(entry->id, "open", result == NCL_OK ? NULL : "failed");
         if (result != NCL_OK) {
             /* An offline device is not a fatal error: the session is opened
              * again on demand. The caller decides what to do with the list. */
@@ -847,6 +917,7 @@ void ncl_driver_manager_close_all(ncl_driver_manager *manager)
 
         if (entry->driver->ops->close != NULL) {
             entry->driver->ops->close(entry->driver);
+            ncl_audit_session(entry->id, "close", NULL);
         }
     }
 }

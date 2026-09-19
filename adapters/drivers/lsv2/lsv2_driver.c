@@ -35,6 +35,8 @@ typedef struct {
     ncl_mutex   *mutex;
     uint8_t      tx[LSV2_RX_BYTES];
     uint8_t      rx[LSV2_RX_BYTES];
+    size_t       last_tx_len; /**< the frame the audit should show */
+    size_t       last_rx_len;
 } lsv2_ctx;
 
 static unsigned json_uint(const ncl_json *object, const char *key,
@@ -78,6 +80,7 @@ static ncl_err lsv2_read_frame(lsv2_ctx *ctx, char name[5],
                               ctx->timeout_ms) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x71);
     }
+    ctx->last_rx_len = total;
     return ncl_lsv2_split(ctx->rx, total, name, payload, payload_len, NULL);
 }
 
@@ -107,6 +110,8 @@ static ncl_err lsv2_exchange(lsv2_ctx *ctx, const char *command,
     if (frame_len == 0) {
         return NCL_ERR_RANGE;
     }
+    ctx->last_tx_len = frame_len;
+    ctx->last_rx_len = 0;
     if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x72);
     }
@@ -585,6 +590,17 @@ static ncl_err lsv2_call(ncl_driver *self, const char *operation,
     return NCL_DRV_ERR_PROTOCOL(0x90); /* no such operation */
 }
 
+/** The frames of the last exchange, for the audit trail (§6). */
+static void lsv2_last_raw(const ncl_driver *self, ncl_driver_raw *out)
+{
+    const lsv2_ctx *ctx = (const lsv2_ctx *)self->ctx;
+
+    out->request = ctx->last_tx_len > 0 ? ctx->tx : NULL;
+    out->request_len = ctx->last_tx_len;
+    out->reply = ctx->last_rx_len > 0 ? ctx->rx : NULL;
+    out->reply_len = ctx->last_rx_len;
+}
+
 static void lsv2_attach_event(ncl_driver *self, ncl_driver_event_fn fn,
                               void *user)
 {
@@ -621,6 +637,7 @@ static const ncl_driver_ops kLsv2Ops = {
     lsv2_write_batch, lsv2_raw,
     lsv2_raw,         lsv2_call,
     lsv2_attach_event, lsv2_destroy,
+    lsv2_last_raw,
 };
 
 ncl_driver *ncl_lsv2_create(void)

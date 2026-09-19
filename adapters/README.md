@@ -15,8 +15,9 @@ adapters/
 ├── include/nclink_adapter/   # 对外接口（驱动实现者要 include 的头）
 │   ├── ncl_driver.h          # ncl_driver_ops / ncl_address / ncl_driver_result
 │   ├── ncl_driver_manager.h  # 驱动配置、点位表、path→驱动 分派
+│   ├── ncl_audit.h           # 审计（§6）：请求/会话/写操作/错误直方图
 │   └── ncl_adapter.h         # 守护进程：配置 → 设备
-├── src/core/                 # 与协议无关的骨架（类型、错误分级、地址解析、注册表）
+├── src/core/                 # 与协议无关的骨架（类型、错误分级、地址解析、注册表、审计）
 ├── src/registry/             # 配置加载 + 点位表 + 最长前缀分派
 ├── src/app/                  # 守护进程主体（模型生成、操作注册、轮询）
 ├── src/main.c                # ncl_adapter 可执行文件
@@ -42,6 +43,7 @@ adapters/
 | `call` | 方法类操作（启程序、MDI、刀补…），对应 NC-Link 的 Method 调用 |
 | `attach_event` | 报警、程序结束一类的事件回调 |
 | `destroy` | 释放私有状态与驱动结构本身 |
+| `last_raw` | 最近一次交换的请求/应答字节，给审计用（可选，见 §6） |
 
 三条共同的约定：
 
@@ -57,6 +59,38 @@ adapters/
 
 响应统一走 `ncl_driver_result`：`code / success / value / message / raw`，
 其中 `raw` 是原始应答字节，供审计与排障（`00-通用-实现约定.md` §6）。
+
+## 审计（§6）
+
+`00-通用-实现约定.md` §6 要四样东西，`src/core/audit.c` 一次给全，接在
+`ncl_driver_manager` 的读/写/调用/开会话处，驱动本身不用写审计代码：
+
+| §6 要求 | 实现 |
+|---|---|
+| 会话生命周期 | `ncl_audit_session()`：`open_all` / `close_all` 各记一条，原因随行 |
+| 每次请求的原始报文 + 耗时 + 响应码 | `ncl_audit_request()`：一行一条（hex 只在打开 `raw` 时打） |
+| 协议层错误码直方图 | `note_code()`：按 tier 与具体码计数，`ncl_audit_stats()` 出 JSON |
+| 写操作全量审计 | `ncl_audit_write()`：改前先读旧值，记「路径、地址、旧值、新值、操作者」 |
+
+```c
+ncl_audit_options options;
+
+ncl_audit_options_default(&options);      /* enabled=true, raw=false */
+options.raw = true;                       /* §6：报文 hex 按需采样，别长开 */
+options.operator_name = "commissioning";  /* 写审计里的「操作者」 */
+ncl_audit_init(&options);
+...
+ncl_json *stats = ncl_audit_stats();       /* 计数、直方图、最近 8 条写操作 */
+```
+
+- 日志走库内 logger，落在 `<root>/log/out.txt`，和其他日志同一份；写操作恒为
+  `INFO`（§6 要求写操作必须留痕），请求行按结果分 `DEBUG` / `WARNING`。
+- `raw` 打开时，驱动通过可选的 `last_raw` 回调把最近一次交换的请求/应答字节
+  交出来（Modbus/MC/FINS/S7/MELDAS/LSV2/SYNTEC 都实现；mock 与 MTConnect
+  没有帧，日志里就没有字节）。只显示前 96 字节，超出打 `...`。
+- 「写能力必须显式开启」（§7）由守护进程把关：点位没写 `"writable": true`
+  就不注册 `set_value` 操作，`ncl_driver_manager_write()` 本身不拦，所以
+  直接调它写只读点位是允许的——那是给工具/测试用的底层入口。
 
 ## 写一个新驱动
 
@@ -386,7 +420,7 @@ PLC 内存的大端解释同样待实机确认。
 ## 测试
 
 ```sh
-.\build.ps1                      # Windows：配置 + 编译 + 28 个测试套件
+.\build.ps1                      # Windows：配置 + 编译 + 38 个测试套件
 sh build-linux.sh build-linux    # Linux：同样全跑一遍
 ```
 
