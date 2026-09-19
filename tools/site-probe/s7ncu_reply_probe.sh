@@ -88,6 +88,12 @@ def ask(value_bytes, label, item="/S7NCU/PartCount"):
 
 ask(bytes([0x12, 0x34]), "value = 0x1234")
 ask(bytes([0x00, 0x2A]), "value = 42")
+# The module wanted at least 68 bytes of data (its own panic said so): send that
+# many with distinct values and see which one shows up in the answer.
+ask(bytes.fromhex("4045000000000000"), "double 42.0 (8 bytes)")
+ask(bytes.fromhex("000000000000002A"), "int64 42 (BE, 8 bytes)")
+ask(bytes.fromhex("0000000000000002"), "int64 2 (BE, 8 bytes)")
+ask(bytes(range(1, 69)), "68 bytes, values 1..68")
 
 print()
 print("=== what the gateway sent (last 1000 bytes of the mock log) ===")

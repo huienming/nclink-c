@@ -145,21 +145,32 @@ def handle(conn, reply):
                     function = s7[10] if len(s7) > 10 else 0
                     if function == 0xF0:                 # Setup Communication
                         params = bytes.fromhex("f0000001 0001 01e0".replace(" ", ""))
+                        # Ack_Data header: protocol, ROSCTR, redundancy, pdu ref,
+                        # param len, data len, error class, error code (the last
+                        # two are what makes it an Ack_Data rather than a Job!)
                         body = (b"\x32\x03\x00\x00" + pdu +
-                                bytes([0, len(params)]) + b"\x00\x00" + params)
+                                bytes([0, len(params)]) + b"\x00\x00" +
+                                b"\x00\x00" + params)
                         total = 7 + len(body)
                         conn.sendall(bytes([0x03, 0x00, total >> 8, total & 0xFF,
                                             0x02, 0xF0, 0x80]) + body)
                     else:                                # Read Var
-                        param = bytes([0x04, 0x01, 0xFF, 0x04, 0x00,
-                                       len(value) * 8])
-                        blob = bytes([0xFF, 0x04, 0x00, len(value) * 8])
+                        # This module slices bitlen + 4 bytes, so it reads the
+                        # field as a *byte* count (its own quirk, not standard
+                        # S7): declare the byte length and see what the value
+                        # comes back as.
+                        n = len(value)
+                        param = bytes([0x04, 0x01, 0xFF, 0x04,
+                                       (n >> 8) & 0xFF, n & 0xFF])
+                        blob = bytes([0xFF, 0x04,
+                                      (n >> 8) & 0xFF, n & 0xFF])
                         if len(value) % 2:
                             blob += b"\x00"
                         blob += value
                         body = (b"\x32\x03\x00\x00" + pdu +
                                 bytes([0, len(param)]) +
-                                bytes([0, len(blob)]) + param + blob)
+                                bytes([0, len(blob)]) + b"\x00\x00" +
+                                param + blob)
                         total = 7 + len(body)
                         conn.sendall(bytes([0x03, 0x00, total >> 8, total & 0xFF,
                                             0x02, 0xF0, 0x80]) + body)
