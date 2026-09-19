@@ -37,6 +37,29 @@ def listen(port, reply=None):
     threading.Thread(target=serve, args=(port, reply), daemon=True).start()
 
 
+def substitute(request_bytes, template):
+    """Fill {uid} / {req} / {reqflip} from the request we just received.
+
+    Modules like KEDE check the reply's <uid> against the request's, so the fake
+    machine has to echo it back; the template makes that possible without
+    hard-coding a value that changes with every call.
+    """
+    import re
+
+    text = request_bytes.decode("utf-8", "replace")
+    uid = re.search(r"<uid>\s*(\d+)\s*</uid>", text)
+    req = re.search(r"<req>\s*(\w+)\s*</req>", text)
+    values = {
+        "uid": uid.group(1) if uid else "0",
+        "req": req.group(1) if req else "no",
+    }
+    values["reqflip"] = "no" if values["req"].lower() == "yes" else "yes"
+    out = template
+    for key, value in values.items():
+        out = out.replace("{%s}" % key, value)
+    return out
+
+
 def http_200(body):
     raw = body.encode()
     head = ("HTTP/1.1 200 OK\r\n"
@@ -71,6 +94,9 @@ def handle(conn, reply):
             if reply:
                 if reply.startswith("HTTP200:"):
                     conn.sendall(http_200(reply[len("HTTP200:"):]))
+                elif reply.startswith("XSUB:"):
+                    conn.sendall((substitute(data, reply[len("XSUB:"):]) +
+                                  "\n").encode())
                 elif reply.startswith("TEXT:"):
                     conn.sendall(reply[len("TEXT:"):].encode())
                 else:
