@@ -88,6 +88,15 @@ adapters/
 （第一批 MC/SLMP → FINS → S7 → MTConnect 已完成；第二批 MELDAS → 新代 → LSV2
 → FOCAS 进行中）。
 
+**暂缓/不做的，以及原因**（避免以后重复踩）：
+
+| 协议 | 结论 | 依据 |
+|---|---|---|
+| 新代 SYNTEC RemoteCNC（10 册） | **暂缓**：实现不了裸协议 | 10 册 §3 明确写"本协议为 .NET 对象 API，非裸字节协议"，且"如需自实现裸协议：抓包…尚未逆向"。控制器同时支持 Modbus 主机（`MODBUS_FC01~FC16`），那部分用本仓库已有的 `modbus_tcp` 就能覆盖 |
+| Modbus ASCII（15 册） | 暂缓 | 15 册只给了 `:` + 十六进制 + LRC + CRLF 的轮廓，没有字节级样本；等一次抓包 |
+| MC 的 ASCII 编码、FINS/UDP、S7 的 UDP | 暂缓 | 核心 socket 层目前只有 TCP（UDP 要加一层原语），ASCII 缺原始样本 |
+| 科德/精雕/海康（20 册） | 不做 | 规格书标 🔴 缺，无可用资料 |
+
 ### Modbus
 
 ```json
