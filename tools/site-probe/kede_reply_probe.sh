@@ -96,15 +96,38 @@ ask_status("<ncda><req>no</req><uid>{uid}</uid><var>ncstate</var></ncda>",
 
 # Attributes on the root, each candidate name with a distinct value.
 attrs = " ".join('%s="%d"' % (name, i + 1) for i, name in enumerate(names))
-# Envelope as attributes, value as text — the other plausible shape.
-ask('<counter req="{reqflip}" uid="{uid}">41</counter>', "attrs + text")
-ask('<counter req="{reqflip}" uid="{uid}" nmb="41"></counter>', "attr nmb")
-ask('<counter req="{reqflip}" uid="{uid}" v1="41" v2="42"></counter>',
-    "attr v1/v2")
-ask('<counter><req>{reqflip}</req><uid>{uid}</uid><sub>get</sub>'
-    "<v1>41</v1><v2>42</v2><v3>43</v3></counter>", "v1..v3 children")
-ask('<counter><req>{reqflip}</req><uid>{uid}</uid><sub>get</sub>'
-    "<over>41</over></counter>", "over=41")
+# Give the parser *every* field name we extracted from the binary, each with a
+# distinct number: whichever number comes back names the field it reads.
+field_names = """act act1 act2 act3 act4 act5 act6 actf0 actual amode ax1 ax2 ax3
+ax4 ax5 ax6 ax7 ax8 ax9 ax10 ax11 ax12 ax13 ax14 ax15 ax16 ax17 ax18 ax19 ax20
+ax21 ax22 ax23 ax24 ax25 ax26 ax27 ax28 ax29 ax30 ax31 ax32 backw bar bar1 bar2
+bar3 bar4 bar5 bar6 blksel block bsupr debugmode hrel inauto info localtime m01
+manrtcp max mmode mode ncstate nmb no over over1 over2 over3 over4 over5 over6
+overf0 pos position1 position2 position3 position4 position5 position6 preset
+preset1 preset2 preset3 preset4 preset5 preset6 prio prg proctime0 proctime1
+proctimeproc proctimestart remaindertime ret state1 state2 state3 status switch
+tm tool unit v1 v2 v3 v4 v5 v6 v7 v8 v9 var""".split()
+index = {name: i + 1 for i, name in enumerate(field_names)}
+children_all = "".join("<%s>%d</%s>" % (name, index[name], name)
+                         for name in field_names)
+ask("<counter><req>{reqflip}</req><uid>{uid}</uid><sub>get</sub>"
+    + children_all + "</counter>", "all 100+ fields, distinct values")
+ask_status("<ncda><req>{reqflip}</req><uid>{uid}</uid><var>ncstate</var>"
+           + children_all + "</ncda>", "all fields, distinct values")
+
+print("field -> number: " +
+      ", ".join("%s=%d" % (n, index[n]) for n in field_names[:20]) + " …")
+
+# value 9 == "actual" -> the counter lives in <actual>. Confirm, then look for
+# the string item's field the same way (a few plausible spellings).
+ask("<counter><req>{reqflip}</req><uid>{uid}</uid><sub>get</sub>"
+    "<actual>77</actual></counter>", "actual=77 (expect 77)")
+ask_status("<ncda><req>{reqflip}</req><uid>{uid}</uid><var>ncstate</var>"
+           "<ncstate>free</ncstate></ncda>", "ncstate=free")
+ask_status("<ncda><req>{reqflip}</req><uid>{uid}</uid><var>ncstate</var>"
+           "<status>free</status></ncda>", "status=free")
+ask_status("<ncda><req>{reqflip}</req><uid>{uid}</uid><var>ncstate</var>"
+           "<ncstate>2048</ncstate></ncda>", "ncstate=2048")
 for xml in candidates:
     ask(xml, xml[:44])
 PY
