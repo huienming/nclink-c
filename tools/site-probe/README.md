@@ -52,6 +52,12 @@ docker run --rm --platform linux/arm/v7 -v <现场包>/app1/hp2x:/hp2x:ro \
 `gateway_meta.py` 则从二进制里抽 `Meta=path:"…" tags:"…"` 这类路由元数据；
 `websearch.py` 是查本机 SearXNG（找标准/手册出处）用的小脚本。
 
+**要某家的请求参数（字段名 / 默认值 / 端口）别猜**：网关自己带 OpenAPI，
+`gateway_schema.sh '/FANUC/ROBOT'` 把 `/api.json` 里该前缀的路径连同
+`components.schemas` 里的请求结构一起打出来——RMI 的
+`{"selector":12,"index":1,"count":10}`、默认端口 60008、
+`setasgs:["SETASG 1 1000 ALM[1] 1"]` 都是这么抄到的，比反汇编快得多。
+
 **反查"这句报错是谁报的"**：
 
 ```sh

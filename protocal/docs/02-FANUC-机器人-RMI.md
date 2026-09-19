@@ -8,7 +8,7 @@
 
 | 项 | 值 |
 |---|---|
-| 端口 | **TCP 8193**（RMI 与老接口共用；老接口另有 FTP-TP） |
+| 端口 | **TCP 8193**（RMI 与老接口共用；老接口另有 FTP-TP）；**本包网关的 56 字节二进制帧默认 60008**（§2.2） |
 | 两套接口 | **RMI**（新，推荐，R-30iB+）· **老 PC Interface**（SNPX/设备码读写） |
 | RMI 库 | `FRC_*` 指令集（**24 条**） |
 | 老接口 | `FRC_*` 设备码（GI/GO/UI/UO/SI/SO/RDI/RDO/PMCR2） |
@@ -51,6 +51,83 @@
 结论：**这家的"数据点"就是端口字**（5000/6000/7000 分别对应 RDI-RDO、UI-UO、
 SI-SO 的段起点，与公开约定一致），一次读几个点由计数域决定。应答字段语义仍待
 按回包确认——这是本册目前唯一缺的一格。
+
+### 2.2 应答闭环（🟢 2026-09 第八轮，`tools/site-probe/rmi_probe2.sh`）
+
+**没有模板比对的那一层**：`RequestHexData`（`0x618fc8`）＝ 十六进制字符串 →
+`hex.Decode` → 发出去 → `GetResponse3`，**只查"应答长度 ≥ 56"**（`0x619084`），
+不够就是 `unexpected response length`。
+
+**`Init`（`0x617854`）/ `Init2`（`0x617c00`）要两次交换，应答必须逐字节等于
+二进制里内嵌的模板**（都是 `memequal(应答, 模板, 56)`，不等就是
+`unexpected response data`）：
+
+| 交换 | 请求（都是 56 字节） | 应答必须等于 | 模板地址 |
+|---|---|---|---|
+| `Init` 第 1 次 | 56 个 `00` | **模板 A** | `0x819bff` |
+| `Init` 第 2 次 | **模板 B** | **模板 C** | `0x819b1f` / `0x819b8f` |
+| `Init2` 第 1 次 | 56 个 `00`，但 `[2] = 04` | **模板 A** | 同上 |
+| `Init2` 第 2 次 | **模板 B** | **模板 C** | 同上 |
+
+模板就是 56 字节的定长帧（二进制里存成 112 字符的十六进制字符串）：
+
+```
+A  01 00 00 00 00 00 00 00  01 00 00 00 00 00 00 00  00 ...（后 40 字节全 0）
+B  08 00 01 00 00 00 00 00  00 01 00 00 00 00 00 00  00 01 00 00 00 00 00 00
+   00 00 00 00 00 00 01 c0  00 00 00 00 10 0e 00 00  01 01 4f 01 00 00 00 00
+   00 00 00 00 00 00 00 00
+C  03 00 01 00 00 00 00 00  00 01 00 00 00 00 00 00  00 01 00 00 00 00 00 00
+   00 00 00 00 00 00 01 d4  10 0e 00 00 30 3a 00 00  01 01 00 00 00 00 00 00
+   01 01 ff 02 00 00 7c 21
+```
+
+**读数据那一层**（`PrvReadUWord` `0x618584` / `PrvReadBit` `0x617fb4` /
+`ReadRShort` `0x618aa4` …）：请求是按参数**现场拼的 43 字节帧**
+（`binary.Write` 写 1 个字节 + 2 个 uint16 = `selector`/`index`/`count`，
+`bytes.Buffer` 收尾），应答 **= 56 字节头 + 数据**，数据从 **`[56..]`**
+（`count < 4` 时是 **`[44..]`**，见 `0x6187f0`）：
+
+| 端点 | 数据解释 |
+|---|---|
+| `PrvReadUWord` | **小端 uint16 数组**，每项 2 字节 |
+| `ReadRShort` | 小端 uint16 数组 |
+| `PrvReadBit` | 布尔数组（按位） |
+| `GetData` | **整段 `[56..]` 的 base64** |
+| `GetHexResponse` | **整个应答的十六进制**（56 字节头 + 载荷都回） |
+
+假机床实测（`rmi_probe2.sh`：`A + 00 01 02 … 1f` 当应答）：
+
+| 端点 | 返回值 |
+|---|---|
+| `Init` / `Init2` | `success` ✅ |
+| `GetData` | `'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8='`（就是载荷的 base64）✅ |
+| `PrvReadUWord` | `[256, 770, 1284, 1798, 2312, 2826, 3340, 3854, 4368, 4882]`（小端 u16）✅ |
+| `ReadRShort` | 同上 |
+| `PrvReadBit` | `[false × 8]` |
+| `GetHexResponse` | 整个应答的 hex ✅ |
+
+失败对照：`Init` 第 1 帧回全 `00` → `unexpected response length`；
+回 A、第 2 帧回全 `00` → `unexpected response data`。
+
+**参数表**（从网关自己的 `/api.json` 抄，`tools/site-probe/gateway_schema.sh`）：
+
+| 端点 | 参数（默认值） |
+|---|---|
+| `Open/TCP` | `ipAddress` / `port`（默认 **60008**）/ `timeout`（15） |
+| `Init` / `Init2` / `Close` / `GetAlarmList` | `connectionId` |
+| `GetData` | `connectionId` + `setasgs`（默认 `["SETASG 1 1000 ALM[1] 1","SETASG 1001 50 POS[0] 0.0"]`） |
+| `PrvReadUWord` | + `selector`(12) / `index`(1) / `count`(10) |
+| `PrvReadBit` | + `selector`(70) / `index`(1) / `count`(8) |
+| `ReadRShort` | + `address`(1) / `count`(10) |
+| `ReadGI/GO/UI/UO/SI/SO/RDI/RDO/SDI/SDO/PMCR2` | + `index`(1) / `count`(8) |
+
+**驱动短板（留档）**：应答短于 64 字节时 `PrvReadUWord` 会 panic
+（实测 56 字节 → `HTTP 500 … slice bounds out of range [:66] with capacity 64`）；
+`Init` 的模板比对只比前 56 字节，所以**更长的应答（头 + 载荷）也能过握手**。
+
+**真机抓包口径**：`POST /FANUC/ROBOT/Open/TCP` → `/Init`（我方的会话帧），然后
+逐项 `POST /FANUC/ROBOT/<项>`；想一次看全就用 `POST /FANUC/ROBOT/GetHexResponse
+{"hexData":"…"}`，它把机床回的**整包**原样吐成 hex，照着上表就能把字段填满。
 
 ---
 
