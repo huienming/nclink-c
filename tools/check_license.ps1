@@ -21,7 +21,24 @@ if ($Root -eq "") { $Root = Split-Path -Parent $PSScriptRoot }
 
 $needle = "SPDX-License-Identifier: MIT"
 $extensions = @(".c", ".h", ".py", ".mjs", ".ps1", ".sh")
-$skipDirs = @("build", "build-linux", "build-asan", "dist", ".git", "__pycache__")
+# Every CMake output directory is named build* (build, build-x86, build-staticmem,
+# build-static-64k, ...); listing them one by one went stale the moment a new
+# configuration appeared, and the generated files under them then showed up as
+# "missing a licence header". Match the *directory* segments, so build.ps1 (a
+# file) is still checked.
+$skipDirs = @("dist", ".git", "__pycache__")
+$skipDirPatterns = @("build", "build-*")
+
+function Test-Skipped([string]$path) {
+    $dirs = Split-Path -Parent $path
+    foreach ($segment in ($dirs -split '[\\/]')) {
+        foreach ($pattern in $skipDirPatterns) {
+            if ($segment -like $pattern) { return $true }
+        }
+        if ($skipDirs -contains $segment) { return $true }
+    }
+    return $false
+}
 
 function Get-Header([string]$extension) {
     if ($extension -in @(".c", ".h")) {
@@ -32,7 +49,7 @@ function Get-Header([string]$extension) {
 
 $files = Get-ChildItem -LiteralPath $Root -Recurse -File | Where-Object {
     $extensions -contains $_.Extension -and
-    -not ($_.FullName -split '[\\/]' | Where-Object { $skipDirs -contains $_ })
+    -not (Test-Skipped $_.FullName)
 }
 
 $missing = @()
