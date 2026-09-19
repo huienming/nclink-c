@@ -249,7 +249,9 @@ static ncl_err address_parse_shorthand(const char *text, ncl_address *out)
     const char *p = text;
     long long offset = 0;
 
-    while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) {
+    /* Letters, and '_' so a name like "part_count" (a protocol's own reading)
+     * can be an area; digits start the offset either way. */
+    while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_') {
         p++;
     }
     if (p == text) {

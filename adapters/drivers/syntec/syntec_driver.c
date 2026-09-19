@@ -260,14 +260,25 @@ static ncl_err syntec_read_batch(ncl_driver *self, const ncl_address *addresses,
     for (i = 0; i < count && result == NCL_OK; i++) {
         const ncl_address *address = &addresses[i];
         const char *canonical = NULL;
+        const ncl_syntec_reading *reading;
         uint16_t cmd_id = 0;
+        int32_t code;
         uint8_t body[32];
         size_t body_len;
         size_t want = address->length > 0 ? (size_t)address->length : 4u;
         ncl_syntec_view view;
         ncl_json *value = NULL;
 
-        if (!ncl_syntec_cmd_lookup(address->area, &cmd_id, &canonical)) {
+        /* §10.12: the client's named readings are "KrnlAPI + code", so a point
+         * may say "part_count" instead of naming both; the code comes from the
+         * table. Otherwise the area is the command and the point's offset is
+         * the dwCode. */
+        code = (int32_t)address->offset;
+        reading = ncl_syntec_reading_lookup(address->area);
+        if (reading != NULL) {
+            cmd_id = reading->cmd_id;
+            code = reading->code;
+        } else if (!ncl_syntec_cmd_lookup(address->area, &cmd_id, &canonical)) {
             result = NCL_DRV_ERR_BUSINESS(0xB0); /* no such command */
             break;
         }
@@ -278,11 +289,10 @@ static ncl_err syntec_read_batch(ncl_driver *self, const ncl_address *addresses,
         {
             uint16_t function_id =
                 ctx->func_id != 0 ? (uint16_t)ctx->func_id : cmd_id;
-        /* The body is the KrnlAPI request structure (§10.2): the point's
-         * offset is the dwCode, `length` the size asked for. */
+        /* The body is the KrnlAPI request structure (§10.2): `code` is the
+         * dwCode, `length` the size asked for. */
         body_len = ncl_syntec_krnl_body(body, sizeof(body), function_id,
-                                        (int32_t)address->offset, 0, (int32_t)want,
-                                        NULL, 0);
+                                        code, 0, (int32_t)want, NULL, 0);
         if (body_len == 0) {
             result = NCL_ERR_RANGE;
             break;

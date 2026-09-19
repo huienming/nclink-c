@@ -194,6 +194,20 @@ static void test_address(void)
     NCL_CHECK_EQ_INT(addr.offset, 4);
     ncl_address_clear(&addr);
 
+    /* An underscore stays inside the area name: a protocol may name its own
+     * readings that way ("part_count"), and such a name is not an address. */
+    NCL_CHECK_EQ_INT(parse_addr("\"part_count\"", &addr), NCL_OK);
+    NCL_CHECK_EQ_STR(addr.area, "part_count");
+    NCL_CHECK_EQ_INT(addr.offset, 0);
+    ncl_address_clear(&addr);
+    NCL_CHECK_EQ_INT(parse_addr("{\"area\":\"part_count\",\"length\":4,"
+                                "\"dtype\":\"int32\"}", &addr),
+                     NCL_OK);
+    NCL_CHECK_EQ_STR(addr.area, "part_count");
+    NCL_CHECK_EQ_INT(addr.length, 4);
+    NCL_CHECK_EQ_INT(addr.dtype, NCL_DTYPE_INT32);
+    ncl_address_clear(&addr);
+
     NCL_CHECK_EQ_INT(parse_addr("\"\"", &addr), NCL_ERR_PARSE);
     NCL_CHECK_EQ_INT(parse_addr("\"D1x\"", &addr), NCL_ERR_PARSE);
     NCL_CHECK_EQ_INT(parse_addr("\"D1.\"", &addr), NCL_ERR_PARSE);

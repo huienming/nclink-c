@@ -559,3 +559,13 @@ READ_useTime      → 无常量（取值由入参传入）
 
 取法可复现：读客户端 `SyntecRemoteCNC::READ_*` 的 IL → 看它调用了 `_GB` 的哪些
 worker → 每个 worker 的 IL 里只有一个 `ldc.i4` 常量（脚本在参考架上，不进仓库）。
+
+**适配器里的用法**：`part_count`(1000)、`part_count_good`(1002)、
+`part_count_bad`(1004)、`spindle_700`(700)、`spindle_771`(771) 已经做成**具名
+读数**（`adapters/drivers/syntec/syntec_codec.c` 的 `kReadings` +
+`ncl_syntec_reading_lookup()`）：点位里区名直接写这些名字，命令号自动取
+`KrnlAPI`(200)、`dwCode` 取上表的码，`length`/`dtype` 仍按点位写（计数是
+4 字节 `int32`）。名字大小写与下划线不敏感，带不带 `READ_` 前缀都认。
+解析顺序是「具名读数 → 命令名 → 十进制命令号」，所以旧写法（区名 `KrnlAPI`
++ 偏移当 `dwCode`）不受影响。主轴那两个码只给了两个数、没给含义，因此没有
+给它们起语义化的名字：等一次实机读数看到值再定。

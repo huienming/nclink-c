@@ -149,6 +149,55 @@ static void test_commands(void)
     NCL_CHECK_EQ_STR(ncl_syntec_cmd_service(900), "?");
 }
 
+static void test_readings(void)
+{
+    const ncl_syntec_reading *reading;
+
+    NCL_TEST_CASE("§10.12: the named readings carry the code the workers load");
+    reading = ncl_syntec_reading_lookup("part_count");
+    NCL_CHECK(reading != NULL);
+    if (reading != NULL) {
+        NCL_CHECK_EQ_INT(reading->code, 1000);
+        NCL_CHECK_EQ_INT(reading->cmd_id, 200); /* KrnlAPI */
+        NCL_CHECK_EQ_STR(reading->name, "part_count");
+    }
+    /* The client's own spelling, case and underscores ignored */
+    reading = ncl_syntec_reading_lookup("READ_part_count");
+    NCL_CHECK(reading != NULL);
+    if (reading != NULL) {
+        NCL_CHECK_EQ_INT(reading->code, 1000);
+    }
+    reading = ncl_syntec_reading_lookup("PartCount");
+    NCL_CHECK(reading != NULL);
+    if (reading != NULL) {
+        NCL_CHECK_EQ_INT(reading->code, 1000);
+    }
+    reading = ncl_syntec_reading_lookup("READ_part_count_good");
+    NCL_CHECK(reading != NULL);
+    if (reading != NULL) {
+        NCL_CHECK_EQ_INT(reading->code, 1002);
+    }
+    reading = ncl_syntec_reading_lookup("part_count_bad");
+    NCL_CHECK(reading != NULL);
+    if (reading != NULL) {
+        NCL_CHECK_EQ_INT(reading->code, 1004);
+    }
+    reading = ncl_syntec_reading_lookup("spindle_700");
+    NCL_CHECK(reading != NULL);
+    if (reading != NULL) {
+        NCL_CHECK_EQ_INT(reading->code, 700);
+    }
+    reading = ncl_syntec_reading_lookup("READ_spindle_771");
+    NCL_CHECK(reading != NULL);
+    if (reading != NULL) {
+        NCL_CHECK_EQ_INT(reading->code, 771);
+    }
+    NCL_CHECK(ncl_syntec_reading_lookup("part_count_worse") == NULL);
+    NCL_CHECK(ncl_syntec_reading_lookup("KrnlAPI") == NULL); /* a command, not one */
+    NCL_CHECK(ncl_syntec_reading_lookup("") == NULL);
+    NCL_CHECK(ncl_syntec_reading_lookup(NULL) == NULL);
+}
+
 static void test_bodies(void)
 {
     uint8_t body[64];
@@ -193,6 +242,7 @@ static void test_crc(void)
 NCL_TEST_MAIN_BEGIN()
     test_header();
     test_commands();
+    test_readings();
     test_bodies();
     test_crc();
 NCL_TEST_MAIN_END()

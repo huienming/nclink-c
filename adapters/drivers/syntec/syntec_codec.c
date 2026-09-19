@@ -11,6 +11,7 @@
 
 #include "nclink_adapter/ncl_syntec.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -202,6 +203,86 @@ const char *ncl_syntec_data_code_name(int32_t code)
     for (i = 0; i < sizeof(kDataCodes) / sizeof(kDataCodes[0]); i++) {
         if (kDataCodes[i].code == code) {
             return kDataCodes[i].name;
+        }
+    }
+    return NULL;
+}
+
+/*
+ * §10.12: the readings behind the client's thin API shells. The numbers are
+ * what the `_GB` worker stubs load (`ldc.i4 <码>`), so they are evidence from
+ * the delivered assemblies rather than a guess - but which numbering space they
+ * belong to (KrnlAPI's dwCode, or a device number in pBufferIn) still needs one
+ * capture on a real controller. They are read through KrnlAPI here.
+ *
+ * Only the two APIs the doc names a meaning for get a speaking name: 1000/1002/
+ * 1004 are the total/good/bad part counters. For the spindle the doc gives two
+ * numbers and no meaning, so they are named after the numbers themselves; 700
+ * and 771 are the two workers that take a constant (the API has two more that
+ * take the axis or channel as an argument, which a point map cannot express
+ * yet).
+ */
+static const ncl_syntec_reading kReadings[] = {
+    {"part_count", 1000, NCL_SYNTEC_CMD_KRML_API},
+    {"part_count_good", 1002, NCL_SYNTEC_CMD_KRML_API},
+    {"part_count_bad", 1004, NCL_SYNTEC_CMD_KRML_API},
+    {"spindle_700", 700, NCL_SYNTEC_CMD_KRML_API},
+    {"spindle_771", 771, NCL_SYNTEC_CMD_KRML_API},
+};
+
+/** Skip a leading "READ"/"read", which is how the doc writes the API names. */
+static const char *drop_read_prefix(const char *name)
+{
+    static const char kRead[] = "read";
+    size_t i;
+
+    if (name == NULL) {
+        return "";
+    }
+    for (i = 0; i < 4; i++) {
+        if (name[i] == '\0' || tolower((unsigned char)name[i]) != kRead[i]) {
+            return name;
+        }
+    }
+    return name[4] == '\0' ? name : name + 4;
+}
+
+/** Case and underscores are ignored: "part_count" == "PartCount". */
+static bool reading_name_matches(const char *left, const char *right)
+{
+    const char *a = drop_read_prefix(left);
+    const char *b = drop_read_prefix(right);
+
+    for (;;) {
+        if (*a == '_') {
+            a++;
+            continue;
+        }
+        if (*b == '_') {
+            b++;
+            continue;
+        }
+        if (*a == '\0' || *b == '\0') {
+            return *a == '\0' && *b == '\0';
+        }
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) {
+            return false;
+        }
+        a++;
+        b++;
+    }
+}
+
+const ncl_syntec_reading *ncl_syntec_reading_lookup(const char *name)
+{
+    size_t i;
+
+    if (ncl_str_is_blank(name)) {
+        return NULL;
+    }
+    for (i = 0; i < sizeof(kReadings) / sizeof(kReadings[0]); i++) {
+        if (reading_name_matches(name, kReadings[i].name)) {
+            return &kReadings[i];
         }
     }
     return NULL;

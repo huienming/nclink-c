@@ -108,6 +108,33 @@ bool ncl_syntec_data_code(const char *name, int32_t *code);
 /** Name of a data code, or NULL. The first match wins (the two enums overlap). */
 const char *ncl_syntec_data_code_name(int32_t code);
 
+/**
+ * §10.12: one *named reading* of the delivered client. The client's 150 APIs
+ * are thin shells over worker stubs that load a single constant, and those
+ * numbers are a third numbering space of their own (1000s are counts and
+ * times, 700s are the spindle) - not `EDataType` and not `EDevice_Type`.
+ *
+ * A named reading is therefore "KrnlAPI + this code", so a point can be
+ * configured as `{"addr": "part_count", "length": 4, "dtype": "int32"}`
+ * instead of writing the command number and the code by hand. The code goes
+ * into `dwCode`: the doc notes that whether it is `dwCode` or a device number
+ * inside `pBufferIn` needs one capture on a real controller to settle, and
+ * that `pBufferIn` placement is unconfirmed anyway (§10.8).
+ */
+typedef struct {
+    const char *name; /**< canonical name, "part_count"                        */
+    int32_t     code; /**< the constant the client's worker stub loads        */
+    uint16_t    cmd_id; /**< the command it travels in (KrnlAPI for all of them) */
+} ncl_syntec_reading;
+
+/**
+ * Look a reading up by name. Case and underscores are ignored and the client's
+ * own spelling is accepted with or without its `READ_` prefix, so "part_count",
+ * "partCount" and "READ_part_count" all find the same entry. NULL when there is
+ * no such reading.
+ */
+const ncl_syntec_reading *ncl_syntec_reading_lookup(const char *name);
+
 /* ================================================================= data == */
 
 /** CRC-16 with the reversed 0xA001 polynomial, as the client library has it. */

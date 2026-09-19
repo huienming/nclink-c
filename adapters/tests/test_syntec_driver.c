@@ -360,6 +360,28 @@ static void test_read(void)
     value = NULL;
     NCL_CHECK(driver->ops->is_connected(driver));
 
+    NCL_TEST_CASE("§10.12: a named reading asks KrnlAPI for its own code");
+    mock->answer[0] = 0x00;
+    mock->answer[1] = 0x00;
+    mock->answer[2] = 0x03;
+    mock->answer[3] = 0xE8; /* 1000 parts */
+    mock->answer_len = 4;
+    /* The client writes it "READ_part_count"; the point map is lenient about it,
+     * and a reading carries its own code, so the offset is not used. */
+    NCL_CHECK_EQ_INT(read_point(driver, "READ_part_count", 7, 4, "int32", &value),
+                     NCL_OK);
+    {
+        long long number = 0;
+
+        NCL_CHECK(ncl_json_as_int(value, &number));
+        NCL_CHECK_EQ_INT(number, 1000);
+    }
+    ncl_json_free(value);
+    value = NULL;
+    NCL_CHECK_EQ_INT(mock->last_cmd, NCL_SYNTEC_CMD_KRML_API);
+    NCL_CHECK_EQ_INT(mock->last_code, 1000); /* from the table, not the offset 7 */
+    NCL_CHECK_EQ_INT(mock->last_size_out, 4);
+
     driver->ops->destroy(driver);
     mock_stop(mock);
 }
@@ -395,6 +417,9 @@ static void test_through_the_manager(void)
                             "\"points\":["
                             "{\"path\":\"/CNC/PART\",\"addr\":"
                             "{\"area\":\"KrnlAPI\",\"offset\":3,\"length\":4,"
+                            "\"dtype\":\"int32\"}},"
+                            "{\"path\":\"/CNC/COUNT\",\"addr\":"
+                            "{\"area\":\"part_count\",\"length\":4,"
                             "\"dtype\":\"int32\"}}]}",
                             mock->port);
     config = ncl_json_parse_cstr(ncl_strbuf_cstr(&json), NULL);
@@ -417,6 +442,20 @@ static void test_through_the_manager(void)
     NCL_CHECK_EQ_INT(number, 300);
     ncl_json_free(value);
     NCL_CHECK_EQ_INT(mock->last_code, 3);
+
+    NCL_TEST_CASE("a point may name a §10.12 reading instead of its code");
+    mock->answer[0] = 0x00;
+    mock->answer[1] = 0x00;
+    mock->answer[2] = 0x00;
+    mock->answer[3] = 0xFA; /* 250 */
+    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/CNC/COUNT", &value),
+                     NCL_OK);
+    NCL_CHECK(ncl_json_as_int(value, &number));
+    NCL_CHECK_EQ_INT(number, 250);
+    ncl_json_free(value);
+    NCL_CHECK_EQ_INT(mock->last_cmd, NCL_SYNTEC_CMD_KRML_API);
+    NCL_CHECK_EQ_INT(mock->last_code, 1000); /* the total part counter */
+
     NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/CNC/NOPE", &value),
                      NCL_ERR_NOT_FOUND);
     ncl_driver_manager_free(manager);

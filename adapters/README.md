@@ -118,16 +118,17 @@ ncl_json *stats = ncl_audit_stats();       /* 计数、直方图、最近 8 条�
 | MTConnect | `mtconnect` | HTTP 7878 | **数据项 id 就是区名**：`{"area":"Xabs","offset":0}` | ✅ 只读 |
 | 三菱 CNC M70/M80 | `meldas` | TCP 683 | **命令名就是区名**，偏移是轴号/IO 地址 | ✅ 只读 |
 | 海德汉 LSV2 | `lsv2` | TCP 19000 | **区名是要读的东西**，偏移是地址 | ✅ 版本/状态/PLC 内存 |
+| 新代 SYNTEC RemoteCNC | `syntec` | TCP 8000 | **命令号就是区名**（名字或裸号）+ 偏移是 `dwCode`；也认 §10.12 的具名读数 | ✅ 只读（服务端无写端点） |
 
 其余协议按 `protocal/docs/README.md` 的优先级推进
 （第一批 MC/SLMP → FINS → S7 → MTConnect 已完成；第二批 MELDAS → 新代 → LSV2
-→ FOCAS 进行中）。
+已完成；FOCAS 待做）。
 
 **暂缓/不做的，以及原因**（避免以后重复踩）：
 
 | 协议 | 结论 | 依据 |
 |---|---|---|
-| 新代 SYNTEC RemoteCNC（10 册） | **暂缓**：实现不了裸协议 | 10 册 §3 明确写"本协议为 .NET 对象 API，非裸字节协议"，且"如需自实现裸协议：抓包…尚未逆向"。控制器同时支持 Modbus 主机（`MODBUS_FC01~FC16`），那部分用本仓库已有的 `modbus_tcp` 就能覆盖 |
+| 新代 SYNTEC 的写操作 | 只读 | 交付包里没有写端点（`EFunctionID` 只有 7 个命令号，没有写数据的路径），`write` 返回"不支持"；要写 PLC 寄存器时用控制器自带的 Modbus 从站 |
 | Modbus ASCII（15 册） | 暂缓 | 15 册只给了 `:` + 十六进制 + LRC + CRLF 的轮廓，没有字节级样本；等一次抓包 |
 | MC 的 ASCII 编码、FINS/UDP、S7 的 UDP | 暂缓 | 核心 socket 层目前只有 TCP（UDP 要加一层原语），ASCII 缺原始样本 |
 | 科德/精雕/海康（20 册） | 不做 | 规格书标 🔴 缺，无可用资料 |
@@ -365,6 +366,51 @@ double（`0x06`）按 x87 布局解析，需要实机确认；坐标建议用 CS
 而抓包材料里没有它们的 payload，所以写操作返回"不支持"。**没做**：`R_RI`
 （采集主命令）的 16 位选择码与 `S_RI` 的布局在 07 册里没有列出，需要一次抓包；
 PLC 内存的大端解释同样待实机确认。
+
+### 新代 SYNTEC RemoteCNC
+
+```json
+{
+  "id": "cnc", "path": "/CNC", "type": "syntec",
+  "parameters": { "host": "10.0.0.30", "port": 8000, "timeoutMs": 5000 },
+  "points": [
+    { "path": "/CNC/COUNT", "addr": "part_count", "length": 4, "dtype": "int32" },
+    { "path": "/CNC/POS_X", "addr": {"area": "KrnlAPI", "offset": 0,
+                                     "length": 8, "dtype": "float64"} },
+    { "path": "/CNC/NCPATH", "addr": {"area": "RemoteProgExecute", "offset": 0} }
+  ]
+}
+```
+
+帧格式是从交付的 .NET 程序集里读出来的，不是猜的：`12 字节包头`
+（`Length u4 | CmdID u2 | 2 字节填充 | Reserved u4`）+ `8 字节函数头`
+（`uFuncID u2 | uSerial u1 | Reserved u1 | IHeader u4`）+ 体，小端，`Length`
+只算包头之后的部分。`uFuncID == CmdID`（§10.9：服务端按 `uFuncID` 分派，回包把
+`uSerial` 原样带回来）。
+
+**区名是命令**：写 §10.6/§10.7 的名字（`KrnlAPI`、`FileExist`、`DirCreate`…）
+或十进制裸号（`"200"`，§10.7 说编号空间是一个）；**偏移是 `dwCode`**，
+`length` 是问控制器要的字节数。`KrnlAPI` 的体是
+`uFuncID u2 | dwCode i4 | dwSizeIn i4 | dwSizeOut i4` + 输入字节（输入字节紧跟
+结构体这一条是推断，§10.8 里标着待抓包确认）。
+
+**具名读数**（§10.12）：客户端那 150 个 API 只是薄壳，真正的 worker 桩里各带
+一个常量，这是**第三套编号**（1000 段是计数与时间、700 段是主轴），既不是
+`EDataType` 也不是 `EDevice_Type`。这些名字可以直接当区名用，`length`/`dtype`
+仍按点位写：
+
+| 区名 | 码 | 说明 |
+|---|---|---|
+| `part_count` / `part_count_good` / `part_count_bad` | 1000 / 1002 / 1004 | 总/好/坏计数 |
+| `spindle_700` / `spindle_771` | 700 / 771 | `READ_spindle` 的两个常量；差在哪未确证 |
+
+名字大小写与下划线都不敏感，带不带客户端的 `READ_` 前缀都行（`READ_part_count`
+= `partCount` = `part_count`）。**未确证**：这些码到底落在 `dwCode` 还是
+`pBufferIn` 里的设备号（§10.12 结尾写明要一次实机验证），实现按 `dwCode` 走。
+
+**只读**：服务端的 `EFunctionID` 只有 7 个命令号，没有写数据的路径，所以
+`write` 返回"不支持"。要写 PLC 寄存器时走控制器自带的 Modbus 从站，
+用本仓库的 `modbus_tcp` 就行。
 
 ## 配置与守护进程
 
