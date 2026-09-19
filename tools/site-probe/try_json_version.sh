@@ -19,20 +19,34 @@ if [ ! -f "$work/json/nlohmann/json.hpp" ]; then
     echo "== fetching nlohmann $ver"
     mkdir -p "$work/json/nlohmann"
     python3 - "$ver" <<'PY'
-import sys, ssl, urllib.request
+import sys, ssl, urllib.request, urllib.error
 ver = sys.argv[1]
 out = "/tmp/run/json/nlohmann/json.hpp"
-url = "https://raw.githubusercontent.com/nlohmann/json/v%s/single_include/nlohmann/json.hpp" % ver
 # The probe image has no CA bundle; the header is public, fetches only.
 ctx = ssl._create_unverified_context()
-data = urllib.request.urlopen(url, timeout=60, context=ctx).read()
-open(out, "wb").write(data)
-print("   %d bytes" % len(data))
+last = None
+for tag in ("v" + ver, ver):
+    url = ("https://raw.githubusercontent.com/nlohmann/json/%s/"
+           "single_include/nlohmann/json.hpp" % tag)
+    try:
+        data = urllib.request.urlopen(url, timeout=60, context=ctx).read()
+        open(out, "wb").write(data)
+        print("   %s: %d bytes" % (tag, len(data)))
+        break
+    except Exception as exc:              # noqa: BLE001
+        last = exc
+        print("   %s: %s" % (tag, exc))
+else:
+    raise SystemExit("could not fetch nlohmann %s (%s)" % (ver, last))
 PY
 fi
 
 cd /work
 g++ -w -O0 -D_GLIBCXX_USE_CXX11_ABI=0 -I"$work/json" -o drive plugin_drive.cpp -ldl
+
+echo "== default object comparator in this header:"
+grep -nE 'default_object_comparator_t|using object_t' "$work/json/nlohmann/json.hpp" |
+    head -4
 
 python3 mock.py 33123 'HTTP200:{"code":0,"msg":"ok","data":{"connectionId":"probe"}}' \
     >module.log 2>&1 &

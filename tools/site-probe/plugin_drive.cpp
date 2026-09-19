@@ -37,6 +37,35 @@ struct fake_logger {
 
 static void *g_noop_vtable[64];
 
+/* The plugin's own json code (is_string, operator[]) lives in libbase.so — the
+ * plugins import it. Call it on our object to see whether the vendor's layout
+ * agrees with ours before blaming the plugin's parameter checks. */
+static void vendor_json_selfcheck(nlohmann::json *params)
+{
+    typedef void *(*index_fn)(void *, const char *);
+    typedef int (*is_string_fn)(const void *);
+    void *libbase = dlopen("libbase.so", RTLD_NOW | RTLD_GLOBAL);
+    void *idx, *iss;
+
+    if (libbase == NULL) {
+        printf("libbase: %s\n", dlerror());
+        return;
+    }
+    idx = dlsym(libbase, "_ZN8nlohmann10basic_jsonISt3mapSt6vectorSsbxydSaNS_"
+                        "14adl_serializerES2_IhSaIhEEEixIKcEERS6_PT_");
+    iss = dlsym(libbase, "_ZNK8nlohmann10basic_jsonISt3mapSt6vectorSsbxydSaNS_"
+                         "14adl_serializerES2_IhSaIhEEE9is_stringEv");
+    printf("vendor idx=%p is_string=%p\n", idx, iss);
+    if (idx != NULL && iss != NULL) {
+        void *v = ((index_fn)idx)(params, "server");
+
+        printf("vendor view: params[\"server\"]=%p is_string=%d\n", v,
+               v != NULL ? ((is_string_fn)iss)(v) : -1);
+        printf("our view:    params[\"server\"].is_string()=%d\n",
+               (int)params->operator[]("server").is_string());
+    }
+}
+
 static void *fake_logger_make(void)
 {
     static fake_logger logger;
@@ -67,7 +96,10 @@ int main(int argc, char **argv)
 
     /* Unbuffered: if a plugin aborts we still want to see how far we got. */
     setvbuf(stdout, NULL, _IONBF, 0);
-    if (ctor_name != NULL && ctor_name[0] == '\0') {
+    /* "-" means "no ctor": PowerShell drops empty arguments, so the shell
+     * scripts pass a sentinel instead. */
+    if (ctor_name != NULL &&
+        (ctor_name[0] == '\0' || strcmp(ctor_name, "-") == 0)) {
         ctor_name = NULL;
     }
 
@@ -106,6 +138,17 @@ int main(int argc, char **argv)
     params["timeout"] = 5;
     params["server"] = "http://127.0.0.1:33123";
     params["path"] = "//CNC_MEM/USER/PATH1";
+    /* The plugin's create() rejects the parameters it does not understand, and
+     * we do not know which keys it insists on: hand it every plausible one. */
+    params["script"] = "";
+    params["module"] = "";
+    params["name"] = "probe";
+    params["type"] = "probe";
+    params["id"] = "probe";
+    params["connectionId"] = "probe";
+    params["sn"] = "PROBEBOX";
+    params["lua"] = "";
+    vendor_json_selfcheck(&params);
 
     if (ctor_name != NULL) {
         ctor_fn ctor = (ctor_fn)dlsym(lib, ctor_name);

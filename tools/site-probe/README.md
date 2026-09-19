@@ -19,7 +19,18 @@ docker run --rm --platform linux/arm/v7 \
 docker run --rm --platform linux/arm/v7 \
   -v <现场包>/app1/nclink-service:/svc:ro -v $PWD:/work \
   ncl-arm-probe sh /work/plugin_drive.sh libgsk-http.so 6000 /GSK/CNC/Open/TCP
+
+# 或者（推荐）直接跑 Go 网关，让它去连假机床——协议实现其实在它里面
+docker run --rm --platform linux/arm/v7 \
+  -v <现场包>/app1/hp2x:/hp2x:ro -v $PWD:/work \
+  ncl-arm-probe sh /work/gateway_probe.sh
 ```
+
+`gateway_probe.sh` 的第一个参数是假机床的应答（十六进制，可省）：起假机床 →
+起 `hp2x_box200` → `POST /<模块>/Open/TCP` 拿 `connectionId` → 逐项 POST →
+把设备侧请求打出来。**这条路已经通了**，GSK 的 11 条请求帧就是这么抓到的
+（`protocal/docs/08-GSK-广州数控.md` §4.5）。换模块名/项键就能抓科德、三菱、
+S7、Modbus、FOCAS、840D 的对应帧。
 
 ## 已经拿到什么
 
