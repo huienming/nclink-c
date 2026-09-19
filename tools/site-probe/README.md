@@ -52,6 +52,18 @@ docker run --rm --platform linux/arm/v7 -v <现场包>/app1/hp2x:/hp2x:ro \
 `gateway_meta.py` 则从二进制里抽 `Meta=path:"…" tags:"…"` 这类路由元数据；
 `websearch.py` 是查本机 SearXNG（找标准/手册出处）用的小脚本。
 
+**反查"这句报错是谁报的"**：
+
+```sh
+python go_pclntab.py <bin> --xstring "error response length"
+```
+
+字符串常量 → `.text` 里引用它地址的字面量池格子 → 用 functab 翻回函数名。
+三菱的 `error response length` / `error response data` 就是这么定到 `hp2x/common` 的。
+
+`mock.py` 的 `EREP:` 还支持 `cut:N`（回声后截断到 N 字节），用来扫"应答该多长"——
+三菱 M70 的"正确应答 = 40 字节"就是这么试出来的（`m70_reply_probe.sh`）。
+
 ## 已经拿到什么
 
 1. **FOCAS2 握手字节**（🟢 实测，`focas_run.sh`）。`cnc_allclibhndl3()` 对假机床

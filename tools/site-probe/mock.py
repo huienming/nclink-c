@@ -12,6 +12,7 @@ may take several forms:
     HTTP200:<body>        send a minimal HTTP 200 with this JSON body
     XSUB:<template>       fill {uid} / {req} / {reqflip} from the request
     EREP:off:hex,...      echo the request, replacing these bytes
+    EREP:...,cut:N        same, then truncate the echo to N bytes
     SEQ:<hex>|<hex>|...   the n-th request gets the n-th frame
     S7S:<hex>[,<hex>...]  act as an ISO-on-TCP / S7 server (COTP CC + Setup ack
                           + Read ack); one value per requested item
@@ -149,12 +150,18 @@ def handle(conn, spec):
                 conn.sendall((substitute(data, reply[5:]) + "\n").encode())
             elif reply.startswith("EREP:"):
                 out = bytearray(data)
+                cut = None
                 for item in reply[5:].split(","):
+                    if item.startswith("cut:"):
+                        cut = int(item[4:])
+                        continue
                     off, hexbytes = item.split(":", 1)
                     raw = bytes.fromhex(hexbytes)
                     index = int(off)
                     if index + len(raw) <= len(out):
                         out[index:index + len(raw)] = raw
+                if cut is not None:
+                    out = out[:cut]
                 conn.sendall(bytes(out))
             elif reply.startswith("TEXT:"):
                 conn.sendall(reply[5:].encode())

@@ -142,6 +142,41 @@ def main(argv):
             sys.stdout.buffer.write(code)
         return 0
 
+    if "--xstring" in argv:
+        # 反查：这个字符串常量是谁在报？——找它的地址，再在 .text 里找引用它的
+        # 字面量池格子，最后用 functab 把地址翻回函数名。
+        want = argv[argv.index("--xstring") + 1].encode()
+        sect = sections(blob)
+        text_addr, text_off, text_size = sect[".text"]
+
+        def vaddr_of(offset):
+            for addr, off, size in sect.values():
+                if off <= offset < off + size:
+                    return addr + (offset - off)
+            return None
+
+        hits = []
+        pos = blob.find(want)
+        while pos >= 0:
+            vaddr = vaddr_of(pos)
+            if vaddr is not None:
+                hits.append(vaddr)
+            pos = blob.find(want, pos + 1)
+        print("字符串 %r 有 %d 处；引用它的函数：" % (want.decode(), len(hits)))
+        seen = set()
+        for vaddr in hits:
+            needle = struct.pack("<I", vaddr)
+            offset = blob.find(needle, text_off, text_off + text_size)
+            while offset >= 0:
+                where = text_addr + (offset - text_off)
+                for name, start, end in funcs:
+                    if start <= where < end and name not in seen:
+                        seen.add(name)
+                        print("  %#x  %s" % (start, name))
+                        break
+                offset = blob.find(needle, offset + 1, text_off + text_size)
+        return 0
+
     print("%d 个函数，textStart=%#x" % (pcln.nfunc, pcln.text_start))
     return 0
 
