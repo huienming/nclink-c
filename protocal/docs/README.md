@@ -83,7 +83,7 @@ Universal Robots RTDE · 力士乐 Rexroth · 宝元 LNC · 哈斯 Haas —— �
 |---|---|---|
 | 科德 GNC62 | 只差设备侧 HTTP 请求形状 | 🟢 模型项 78 条 + 插件 23 个方法 + 14 个项键（[29 册 §4.3](29-现场模型与驱动定义.md)） |
 | 精雕 JD50 | 只差设备侧请求形状 | 🟢 模型项 14 条 + Lua 映射（[29 册 §4](29-现场模型与驱动定义.md)） |
-| 海康 HCNetSDK | 相机 SDK 头文件 | 🟡 现场是 `libcamera.so`（`CAMERA::getFeature/getCV2`），非 HCNetSDK |
+| 海康"相机" | ~~相机 SDK 头文件~~ | 🟢 本包这一层已闭（[20 册 §3.1](20-缺口-科德-精雕-海康.md)：`getCV2` 是 stub、`getFeature` = base64→float、真 I/O 在 `thread_socket` 监听 8000）；剩第三方视觉软件的 ASCII |
 | GSK | 只差设备侧 HTTP 请求形状 | 🟢 模型项 16 条 + 插件 22 个方法 + 13 个项键（[29 册 §4.3](29-现场模型与驱动定义.md)） |
 | 马扎克 MAZAK | MT 授权 | — |
 | 大隈 OKUMA | DevelopKit（Windows） | — |

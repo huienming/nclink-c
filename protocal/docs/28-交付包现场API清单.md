@@ -322,7 +322,7 @@ servo, servo-bus, over-workarea, io-bus, io-module, manufacture, forbid-move`。
 | 11 Brother | 🟢 10 命令，无映射 | §5.5：12 个 CNC 端点 + 模型项 + 文件操作 | 补齐项映射 |
 | 20 科德 GNC62 | 🔴 缺 | §4：12 个量 + 8 个请求族 + `getUid` 会话号 | 🟡→🟢 **协议骨架已明**（请求族名就是命令分类） |
 | 20 精雕 JD50 | 🔴 缺 | §4：`Bind` + 10 个量 + 11 个端点 | 🟡→🟢 能力面已明 |
-| 海康相机 | 🔴 缺 | `libcamera.so`：`CAMERA::getFeature`/`getCV2` | 🟡 有库、无协议细节 |
+| 海康"相机" | 🟢 已闭 | `libcamera.so`：`CAMERA::getFeature`/`getCV2`/`thread_socket`（20 册 §3.1：前两个不是 SDK 调用，真 I/O 是网关自己 `Listen(8000)` 收视觉软件的 ASCII） | 剩第三方视觉软件侧 |
 | 14 华数 HSR | 🔵 ~170 方法 | `libHsc3Api.so`/`libCommApi.so`（Hsc3 通信栈）+ `libhsr3.so`（`/STATUS`、`/TYPE`、`/CONTROLLER/*`、固件升级） | 补齐"现场实际用到的那部分" |
 | 17 KUKA / 18 埃夫特 / 那智 / 安川天机 | 🟡/🔴 | §4/§5.5：机器人统一模型项；天机 `OpenUdp/ReadValue/GetWarn`；库卡/那智走 `/Foxconn/Chengdu/Robot/Nachi/*`；FANUC 机器人 21 个读点 | 机器人项名统一，逐个补 |
 | 04 840D | 🟢 OPC UA | `libsinumerik-arm*.so` 节点：`/Nck/State/numAlarms`、`/Methods/ReadVar`；`s7v2` 26 个量 | 两条通道都在现场用 |
