@@ -38,6 +38,36 @@ ODBST  st;   cnc_statinfo(h, &st);                  // 运行状态
 cnc_freelibhndl(h);
 ```
 
+### 2.1 线协议握手（🟢 实测，非文档）
+
+用现场交付包里的 `libfwlib32.so` 在 ARM 仿真环境里对着假机床跑
+`cnc_allclibhndl3("127.0.0.1", 8193, 3)`，抓到的**设备侧**字节序列如下
+（复现工具：`tools/site-probe/`）：
+
+```
+连接 1 →  a0 a0 a0 a0 00 01 01 01 00 02 00 01     (12 字节)
+连接 2 →  a0 a0 a0 a0 00 01 01 01 00 02 00 02     (12 字节，计数器 +1)
+          a0 a0 a0 a0 00 01 21 01 00 00           (10 字节)
+          a0 a0 a0 a0 00 01 02 01 00 00           (10 字节)
+```
+
+- 没有应答时 SDK 返回 **-16（EW_SOCKET）**，并且**会重试一次**（所以抓到两次
+  TCP 连接、四条消息）。
+- 四条消息的应答内容仍未确证（要么真机抓一次，要么按 Fwlib32 手册补全字段）；
+  这是本册目前唯一还缺的字节级证据。
+- 现场（`cfg/driver_def.json`）用的就是这一家：`module: focas`、`8193`。
+
+**这家实际用到的 29 个 SDK 调用**（`libfocas.so` 的导入表，🟢）：
+
+```
+cnc_allclibhndl3 cnc_freelibhndl cnc_statinfo cnc_machine cnc_rdcount
+cnc_rdaxisdata cnc_rdparam cnc_rdtofs cnc_rdtofsinfo cnc_rdmacro
+cnc_rdalmmsg2 cnc_rdlife cnc_rdexecprog cnc_exeprgname2 cnc_actf cnc_acts
+cnc_rdblkcount cnc_rdprogdir3 cnc_pdf_slctmain cnc_pdf_del cnc_download4
+cnc_dwnstart4 cnc_dwnend4 cnc_upload4 cnc_upstart4 cnc_upend4
+cnc_startupprocess cnc_exitprocess cnc_rdparam
+```
+
 ---
 
 ## 3. 常用函数表（按域）
