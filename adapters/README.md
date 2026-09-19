@@ -82,9 +82,11 @@ adapters/
 | 欧姆龙 FINS | `fins_tcp` | TCP 9600 | 区名 + 字：`D100`、`CIO12.3`、`E0_0`… | ✅ 内存区读写 |
 | 西门子 S7comm | `s7_tcp` | TCP 102 | 区名 + 字节偏移：`M10.3`、`DB1`、`MB10` | ✅ ISO-TSAP + COTP |
 | MTConnect | `mtconnect` | HTTP 7878 | **数据项 id 就是区名**：`{"area":"Xabs","offset":0}` | ✅ 只读 |
+| 三菱 CNC M70/M80 | `meldas` | TCP 683 | **命令名就是区名**，偏移是轴号/IO 地址 | ✅ 只读 |
 
 其余协议按 `protocal/docs/README.md` 的优先级推进
-（MC/SLMP → FINS → S7 → MTConnect → …）。
+（第一批 MC/SLMP → FINS → S7 → MTConnect 已完成；第二批 MELDAS → 新代 → LSV2
+→ FOCAS 进行中）。
 
 ### Modbus
 
@@ -240,6 +242,49 @@ MTConnect 是**只读**标准接口（§1）：写操作返回"不支持"。点�
 
 **还没做**：流式 `/sample`（§5 推荐用于高频）与 `/assets`；`/current` 的按行
 增量缓存（现在每读一次就全量解析一次，点位多时值得加）。
+
+### 三菱 CNC M70/M80（MELDAS/GIOP）
+
+```json
+{
+  "id": "cnc", "path": "/CNC", "type": "meldas",
+  "parameters": { "host": "192.168.0.10", "port": 683, "axisMode": "bit",
+                  "timeoutMs": 1000 },
+  "points": [
+    { "path": "/CNC/XABS", "addr": {"area":"machine_position","offset":1,
+                                    "dtype":"float64"} },
+    { "path": "/CNC/LOAD", "addr": {"area":"spindle_load","offset":0,
+                                    "dtype":"int32"} },
+    { "path": "/CNC/PART", "addr": {"area":"part_count","offset":0,
+                                    "dtype":"int32"} },
+    { "path": "/CNC/MODE", "addr": {"area":"work_mode","offset":0,
+                                    "dtype":"byte"} }
+  ]
+}
+```
+
+机床侧要先开网：`#1925=1`（网络使能）、`#1926/1927/1928` 是 IP/掩码/网关、
+`#1929` 是端口（改完要重启网络）——05 册 §1，这是"连不上"的第一嫌疑。
+
+MELDAS 是 **CORBA GIOP 1.0 之上的私有 mocha 操作集**：请求固定 80 字节、全程
+小端（GIOP flags=0x01）、响应按请求 ID 匹配，无握手。§8 那几条坑都落在代码里：
+长度字段是"总长 − 12"、操作名 13 字节（含结尾 NUL，且这个 NUL 同时是紧随其后的
+`00 00 00 03` 的首字节）、坐标是 CString 且长度在 `[36]`、正文从 `[40]` 起。
+
+点位把"要什么数据"和"从哪个轴要"分开写：**区名是命令**（§4 的名字表，或
+`"0x3b/0x7f"` 这样的原始命令/子码），**偏移是轴号或 IO 地址**。坐标类命令的
+轴号按 C# 交付实测的位编码（X=1、Y=2、Z=4，第 4 轴 8），`"axisMode":"index"`
+可切换成 1..n 的序号制（05 册 §5 明确两种都存在，以机床实测为准）。应答按
+自己的类型标记解码（BYTE/INT16/INT32/DOUBLE/CString），文本形式的坐标会自动
+转成点位声明的数值类型；"IDL" 应答表示该操作没有数据，点位读成 JSON null。
+
+`0x03` 那一族是"通用设备数据"命令，语义完全由子码决定，所以表里把
+`(命令, 子码)` 成对登记（§8.4）。`raw` 逃生舱收五个小端 32 位字段
+（命令、子码、数量、地址、期望类型），用来在真机上试一条文档里没有的命令。
+
+**只读**：`mochaSetData` 在交付材料里没有抓到帧格式，§8.7 也要求生产环境默认
+禁用写，所以写操作返回"不支持"，等一次抓包再补。**未验证**：10 字节扩展
+double（`0x06`）按 x87 布局解析，需要实机确认；坐标建议用 CString 形式读。
 
 ## 配置与守护进程
 
