@@ -17,6 +17,10 @@ may take several forms:
                           24 bytes copied in, then patched
     SEQ:<spec>|<spec>|... the n-th request gets the n-th frame (each part may
                           be any other form here, or raw hex)
+    LOOPQ:<keyhex>/<filler>/<frame>|<frame>|...  only the requests whose bytes
+                          contain keyhex advance; everything else gets
+                          <filler>.  For "read the next directory entry until
+                          the machine says stop" loops (M70 mochaFSReadDirectory)
     MAP:off:len:<hex>=<spec>|...  pick by the request's bytes [off,off+len):
                           entries with "=" match that hex, a trailing entry
                           without "=" is the default
@@ -129,6 +133,8 @@ def respond(conn, data, reply):
         return
     if reply.startswith("SEQ:"):
         return                       # 由 handle 处理（要按请求序号挑）
+    if reply.startswith("LOOPQ:"):
+        return                       # 由 handle 处理（要按请求内容挑）
     if reply.startswith("MAP:"):
         _, off, size, rest = reply.split(":", 3)
         key = data[int(off):int(off) + int(size)].hex()
@@ -182,6 +188,7 @@ def respond(conn, data, reply):
 def handle(conn, spec):
     conn.settimeout(60.0)
     step = 0
+    loop = 0
     try:
         while True:
             data = conn.recv(65536)
@@ -197,6 +204,17 @@ def handle(conn, spec):
                 except OSError:
                     reply = ""
             if not reply:
+                continue
+            if reply.startswith("LOOPQ:"):
+                keyhex, filler, rest = reply[6:].split("/", 2)
+                if keyhex and bytes.fromhex(keyhex) in data:
+                    parts = rest.split("|")
+                    chosen = parts[loop] if loop < len(parts) else parts[-1]
+                    loop += 1
+                else:
+                    chosen = filler
+                respond(conn, data, chosen)
+                print("--- replied", flush=True)
                 continue
             if reply.startswith("SEQ:"):
                 parts = reply[4:].split("|")

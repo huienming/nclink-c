@@ -305,33 +305,94 @@ mock 的日志比读反汇编可靠**。
 | `mochaFSIoctlFile` | IO 控制（程序信息） |
 | `mochaSetData` | 通用写 |
 
-**这一层的应答帧（🟡 2026-09 反汇编 + 假机床实测，`m70_fs_probe*.sh`）**：
+**这一层的应答帧（🟢 2026-09 第四轮：反汇编 + 假机床实测，`m70_fs_probe4.sh`）**：
 
 和 §4.1.3 同构——24 字节 GIOP 头 + 16 字节块 + **载荷**，但**不比对模板**
-（没有 `memequal`），只看两件事：
+（没有 `memequal`），只看三件事：
 
-| 检查 | 位置 | 说明 |
+| 检查 | 反汇编处 | 说明 |
 |---|---|---|
-| 长度 ≥ 24 / ≥ 40 | `mochaFSReadDirectory` `0x63a144`/`0x63a178` | < 24 或 < 40 直接报错 |
-| 状态码 | 应答 `[20..23]`（LE u32） | **0 = 正常**，非 0 = 出错（`0x63a170`） |
-| 载荷 | 应答 `[40..]` | 从 `[40]` 起**扫到第一个 `00`** 为止当文件名（`0x63a294` 的循环） |
+| 长度 ≥ 24 | `0x63a144` | 不够就 `panicSliceAcap`（HTTP 500，见文末"驱动缺陷"） |
+| 长度 ≥ 40 | `0x63a178` | **只在状态码 = 0 时才要求**（`panicSliceB`） |
+| 状态码 = 应答 `[20..23]`（LE u32） | `0x63a154`–`0x63a174` | **0 = 这一帧是一条目录项；非 0 = 目录读完** |
+| 载荷 = 应答 `[40..]` | `0x63a180`–`0x63a318` | 整段当文件名，**其中的 `00` 全被剔掉** |
 
 目录枚举的会话顺序（`GetFileList`，`0x638b3c`）：
 `mochaFSStatFile` → `mochaFSOpenDirectory` → `mochaFSReadDirectory`（**循环**，
-每轮 append 一个文件名）→ 出错时 `mochaFSCloseDirectory` 并返回已收集的列表。
+每轮 append 一条名字）→ 跳出循环后 `mochaFSCloseDirectory`，返回已收集的列表。
 
-实测（假机床）：
+**循环终止条件**（上一版缺的就是这一格）：
 
-| 试法 | 结果 |
+```
+name, status, …, err = mochaFSReadDirectory()
+if err != 0     { break }        ; 0x638c40
+if status != 0  { break }        ; 0x638c48
+fileList = append(fileList, name) ; 0x638cb0
+```
+
+- 状态码就是应答 `[20..23]`（代码里叫 `replyStatus`）；**非 0 时这一帧哪怕带了
+  文件名也会被丢掉**——函数此时把名字返回成空串，`GetFileList` 在 append 之前
+  就跳出了。
+- 跳出后打两行日志：`replyStatus of mochaFSReadDirectory: %v`（`0x7f9ac8`）与
+  `size of fileList : %v`（`0x7f9fc4`）。9 个文件层函数都有同款
+  `replyStatus of …: %v`（`mochaFSOpenFile`/`StatFile`/`CloseFile`/`ReadFile`/
+  `WriteFile`/`RemoveFile`/`CancelModal2`/`OpenDirectory`/`ReadDirectory`，
+  注意 OpenDirectory 那条写的是 `mochaOpenDirectory`）；只有读目录那一条兼作
+  "读完"信号，**其余几个非 0 只是记日志，不会中断列目录**（实测见下）。
+
+实测（假机床；`mock.py` 为此加了 `LOOPQ:`——只让含 `mochaFSReadDirectory` 的
+请求走序列，其余请求回填充帧，因为后台轮询会把 `SEQ:` 的序号算歪）：
+
+| 造的应答序列（状态码, 载荷） | `GetFileList` 返回 |
 |---|---|
-| 全部回"40 字节、状态 0、载荷空" | `GetFileList` **一直轮询 `mochaFSReadDirectory`**（空名字不算结束） |
-| 载荷给 `O1000`（`[40..44]`，无 `00` 结尾） | 名字取到（扫到载荷末尾），但下一帧出错后 http 层交付 `null` |
-| 状态码改 1 | `GetFileList` → `null`（`GetWarning` 同款错误路径） |
-| `ReadFile` 回"状态 0、载荷 `HELLO`" | 返回 `''`（内容不在 `[40..]`） |
+| `(0,"O1000") (0,"O2000") (1,"")` | **`['O1000','O2000']`** ✅ |
+| `(1,"")` | `null`（空列表） |
+| `(0,"O1000") (1,"O9999")` | `null` —— **收尾帧的名字被丢掉** ✅ |
+| `(0,"O1000\0\0") (1,"")` | `['O1000']` —— **`00` 被剔掉** ✅ |
+| 20 字节（< 24） | `HTTP 500 … slice bounds out of range [40:20]` |
+| 30 字节 + 状态 0（< 40） | `HTTP 500 … slice bounds out of range [40:30]` |
+| 30 字节 + 状态 1（≥ 24） | `null`（接受，列表就此结束） |
+| 一直回 `(0,"")`（状态 0、空名） | **死循环**：空名字照样 append，实测一帧里塞进 7493 条才被超时打断 |
 
-**未闭环**：`GetFileList`/`ReadFile` 的**载荷**约定（文件名/文件内容具体放哪、
-`[24..39]` 那 16 字节里哪一格是"还有下一条"）——试了 `[24..39]` 四格置 1 都不
-结束循环。要一次真机的"列目录/读文件"会话抓包（已记入 31 册）。
+请求侧（`m70_fs_probe4.sh` 抓到，68 字节）：
+
+```
+47 49 4f 50 01 00 01 00  38 00 00 00 00 00 00 00   GIOP +[7]=01 +[8..11]=总长-12
+4d c1 6a 30              01 00 00 00  04 00 00 00   [16..19]=请求 ID（每连接复用一个值）
+01 00 00 00              15 00 00 00               [20..23]=状态槽（请求里恒 1）、[32..35]=名字长 21
+6d 6f 63 68 61 46 53 52 65 61 64 44 69 72 65 63 74 6f 72 79   ; "mochaFSReadDirectory"
+00 00 00 00 00 00 00 00  00 00 00 00               ; 名字补到 24 字节 + 两个 u32 参数（都 0）
+```
+
+（`mochaFSOpenDirectory` 同款；`mochaFSStatFile` 只多 14 字节路径
+`M01:\PRG\USER\`，见本轮日志与 §4.1.3 的请求表。）
+
+**驱动缺陷（留档，不是待推项）**：应答短于 24 字节（或状态 0 却短于 40 字节）
+时 `mochaFSReadDirectory` **不返回错误而是 panic**（HTTP 500，`net/http` 兜住、
+进程不死）；状态 0 且空名会**无限轮询、没有次数上限**。真机上遇到通信半截断开
+的机床，这两条都会以"接口 500 / 接口卡住"的形式暴露。
+
+**读文件内容（`mochaFSReadFile` `0x63a3b8` + `ReadFile` `0x63b684`，🟢 2026-09
+第六轮：`m70_fs_probe6.sh`）**：
+
+| 应答 | 含义 | 反汇编处 |
+|---|---|---|
+| `[20..23]` 非 0 | 打 `read error, replyStatus of mochaFSReadFile: %v\n` 后收摊 | `0x63a834` |
+| 长度**正好 32** | 打 `read finish` 后收摊 = **读完**（32 = 只剩头、没有块） | `0x63a7bc` |
+| 其它 | 块长 = `[28..31]`（LE u32，打 `read size %v\n`），内容 = `[32..32+块长)` | `0x63a6a8`–`0x63a78c` |
+| 长度 < 32 或 < 32+块长 | `panicSliceAcap` / `panicSliceB`（HTTP 500） | `0x63a918`/`0x63a914` |
+
+`ReadFile` 就是"块长 ≠ 0 就接着读、拼成一整串"的循环（`0x63b808` 判块长），
+读完再 `mochaFSCloseFile`。实测（假机床）：
+
+| 造的应答序列 | `ReadFile` |
+|---|---|
+| `(状态 0, 块长 5, "HELLO")` + 32 字节读完帧 | **`'HELLO'`** ✅ |
+| `(0, 3, "HEL")` + `(0, 2, "LO")` + 32 字节读完帧 | **`'HELLO'`** ✅（日志 `read size 3` / `read size 2` / `read finish`） |
+
+写文件 `mochaFSWriteFile`（`0x63a978`）：状态非 0 → `read error, replyStatus of
+mochaFSWriteFile: %v\n`；状态 0 = 成功（`0x63acd0`）。`mochaFSStatFile`（`0x638f24`）
+状态非 0 → `replyStatus of mochaFSStatFile: %v\n`；`GetFileList` 只拿它判"目录在不在"。
 
 ---
 
