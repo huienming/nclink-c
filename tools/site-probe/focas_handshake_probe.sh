@@ -59,6 +59,15 @@ sleep 0.2
 echo "== 试法 只回 func 01"
 ./probe 127.0.0.1 8193 || echo "== probe exited $?"
 
+# 头里只动一处，看看哪一格才是关键：类型 [4..6) 改 0002 / 方向 [7] 改 01
+for variant in "a0a0a0a000020102001000010002000000000000000000000000" \
+               "a0a0a0a000010101001000010002000000000000000000000000"; do
+    echo "== 试法 $variant"
+    printf '%s' "$variant" >"$run/reply.txt"
+    sleep 0.2
+    ./probe 127.0.0.1 8193 || echo "== probe exited $?"
+done
+
 echo
 echo "===== fwlibeth.log（库自己的日志，报错原因在这）====="
 tail -20 /work/fwlibeth.log || true
