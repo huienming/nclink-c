@@ -25,6 +25,7 @@
 /* The drivers built into this library; more join in P1. */
 #include "mock/ncl_mock_driver.h"
 #include "fins/ncl_fins_driver.h"
+#include "focas/ncl_focas_driver.h"
 #include "knd/ncl_knd_driver.h"
 #include "mc/ncl_mc_driver.h"
 #include "lsv2/ncl_lsv2_driver.h"
@@ -642,6 +643,7 @@ void ncl_driver_register_builtin(void)
     (void)ncl_driver_register_protocol("lsv2", ncl_lsv2_create);
     (void)ncl_driver_register_protocol("syntec", ncl_syntec_create);
     (void)ncl_driver_register_protocol("knd", ncl_knd_create);
+    (void)ncl_driver_register_protocol("focas", ncl_focas_create);
 }
 
 ncl_driver *ncl_driver_create(const char *protocol)

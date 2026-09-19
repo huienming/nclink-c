@@ -33,6 +33,22 @@ PLC 自己的协议读写，并把点位映射成设备模型上的操作。构�
   PLC 内存读，只读）。
   其余协议按 `protocal/docs/README.md` 的优先级推进。
 
+- **`focas`（FANUC FOCAS / Fwlib32，TCP 8193，只读）**：按
+  `protocal/docs/01-FANUC-CNC-FOCAS.md` §2.1–§2.3 实现。会话 = `func 1` 握手 +
+  §2.3 的能力协商（`func 0x21` 两轮，`"negotiate": false` 可关掉）；每次读是
+  一条 `func 0x21` 命令帧，**应答必须与请求一样多的块，且每块 `[8..10)` 返回码
+  为 0**——这条是当初卡在 `-17` 的根因，现在有专门的错误码
+  `NCL_FOCAS_ERR_RB_MISSING` / `NCL_FOCAS_ERR_RB_CODE` 报出来。
+  点位地址：`area` 是数据项名（`STATINFO`/`ACTF`/`ACTS`/`RDCOUNT`/`RDLIFE`/
+  `RDMACRO`/`RDPARAM`/`RDTOFS`/`RDPROGDIR3`/`EXEPRGNAME2`）或裸码
+  （`"36"`/`"0x24"`/`"CB:0x24"`），`offset` 是**应答块号**，`bit` 是块内字节
+  偏移，值一律大端（`float32` 就是 `cnc_actf` 的坐标）。`call("items")` 列
+  已知项、`call("session")` 报握手结果，便于现场对点。写操作报
+  `NCL_ERR_NOT_SUPPORTED`（§2.3 里只抓到读帧）。
+  测试 `adapters/tests/test_focas.c`：黄金帧逐字节比对 §2.1/§2.3 的抓包
+  （12 字节 hello、10 字节空帧、40 字节协商帧、96 字节 `STATINFO` 帧）＋
+  假机床端到端（握手、逐块读、块数少一个要报 `RB_MISSING`）。
+
 ### 变更：批量读的临时表按批大小要内存（`modbus` / `mc` / `fins`）
 
 这三个驱动读一批点位时，原来不管批里几个点都先 `calloc` 一张 `*_MAX_ITEMS`

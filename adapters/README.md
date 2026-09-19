@@ -124,10 +124,11 @@ ncl_json *stats = ncl_audit_stats();       /* 计数、直方图、最近 8 条�
 | 海德汉 LSV2 | `lsv2` | TCP 19000 | **区名是要读的东西**，偏移是地址 | ✅ 版本/状态/PLC 内存 |
 | 新代 SYNTEC RemoteCNC | `syntec` | TCP 8000 | **命令号就是区名**（名字或裸号）+ 偏移是 `dwCode`；也认 §10.12 的具名读数 | ✅ 只读（服务端无写端点） |
 | 凯恩帝 KND | `knd` | HTTP 80 | **模型项名就是区名**：`STATUS`、`/PART_COUNT`、`/AXIS@0/SCREW/POSITION` | ✅ 只读（现场只映射了 get_value） |
+| FANUC FOCAS | `focas` | TCP 8193 | **数据项名就是区名**（`ACTF`/`RDCOUNT`/`STATINFO`…或裸码 `0x24`），偏移是**应答块号**，`bit` 是块内字节偏移 | ✅ 只读 |
 
 其余协议按 `protocal/docs/README.md` 的优先级推进
-（第一批 MC/SLMP → FINS → S7 → MTConnect 已完成；第二批 MELDAS → 新代 → LSV2
-已完成；FOCAS 待做）。
+（第一批 MC/SLMP → FINS → S7 → MTConnect 已完成；第二批 MELDAS → 新代 → LSV2 → FOCAS
+已完成）。下一步按规格最全的先做：**GSK（HTTP 端点已齐）→ Brother → 科德/精雕 → RMI**。
 
 **暂缓/不做的，以及原因**（避免以后重复踩）：
 

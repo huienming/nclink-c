@@ -68,6 +68,12 @@ target_link_libraries(ncl_test_syntec_driver PRIVATE nclink_drivers)
 target_include_directories(ncl_test_syntec_driver PRIVATE
         "${CMAKE_SOURCE_DIR}/tests")
 add_test(NAME syntec_driver COMMAND ncl_test_syntec_driver)
+
+add_executable(ncl_test_focas test_focas.c)
+target_link_libraries(ncl_test_focas PRIVATE nclink_drivers)
+target_include_directories(ncl_test_focas PRIVATE
+        "${CMAKE_SOURCE_DIR}/tests")
+add_test(NAME focas COMMAND ncl_test_focas)
 add_executable(ncl_test_audit test_audit.c)
 target_link_libraries(ncl_test_audit PRIVATE nclink_drivers)
 target_include_directories(ncl_test_audit PRIVATE

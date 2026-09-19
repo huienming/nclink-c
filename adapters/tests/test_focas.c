@@ -1,0 +1,806 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
+/*
+ * FOCAS: the codec against the golden frames of
+ * protocal/docs/01-FANUC-CNC-FOCAS.md §2.1/§2.3, and the driver against a mock
+ * machine that answers the way the vendor SDK needs - one reply block per
+ * request block, which is the rule that turned "-17 forever" into rc=0.
+ */
+#include <stdio.h>
+#include <string.h>
+
+#include "ncl_test.h"
+
+#include "nclink/ncl_platform.h"
+#include "nclink/ncl_socket.h"
+#include "nclink_adapter/ncl_focas.h"
+#include "focas/ncl_focas_driver.h"
+
+/* ---------------------------------------------------------------- helpers -- */
+
+static void put_u16be(uint8_t *out, uint16_t value)
+{
+    out[0] = (uint8_t)(value >> 8);
+    out[1] = (uint8_t)value;
+}
+
+static uint16_t get_u16be(const uint8_t *in)
+{
+    return (uint16_t)(((uint16_t)in[0] << 8) | in[1]);
+}
+
+static void put_u32be(uint8_t *out, uint32_t value)
+{
+    out[0] = (uint8_t)(value >> 24);
+    out[1] = (uint8_t)(value >> 16);
+    out[2] = (uint8_t)(value >> 8);
+    out[3] = (uint8_t)value;
+}
+
+static void put_float_be(uint8_t *out, float number)
+{
+    uint32_t bits = 0;
+
+    memcpy(&bits, &number, sizeof(bits));
+    put_u32be(out, bits);
+}
+
+/** Compare @p len bytes against a hex string with the spaces taken out. */
+static bool hex_equals(const uint8_t *data, size_t len, const char *hex)
+{
+    char clean[512];
+    size_t n = 0;
+    size_t i;
+    size_t k = 0;
+
+    for (i = 0; hex[i] != '\0' && n + 1 < sizeof(clean); i++) {
+        if (hex[i] != ' ') {
+            clean[n++] = hex[i];
+        }
+    }
+    clean[n] = '\0';
+    if (n != len * 2u) {
+        return false;
+    }
+    for (i = 0; i < len; i++) {
+        int hi = -1;
+        int lo = -1;
+
+        if (clean[k] >= '0' && clean[k] <= '9') {
+            hi = clean[k] - '0';
+        } else if (clean[k] >= 'a' && clean[k] <= 'f') {
+            hi = clean[k] - 'a' + 10;
+        }
+        k++;
+        if (clean[k] >= '0' && clean[k] <= '9') {
+            lo = clean[k] - '0';
+        } else if (clean[k] >= 'a' && clean[k] <= 'f') {
+            lo = clean[k] - 'a' + 10;
+        }
+        k++;
+        if (hi < 0 || lo < 0 || data[i] != (uint8_t)((hi << 4) | lo)) {
+            printf("      byte %u: got %02x want %02x%02x\n", (unsigned)i,
+                   data[i], hi, lo);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* -------------------------------------------------------------- the codec -- */
+
+static void test_golden_frames(void)
+{
+    uint8_t frame[256];
+    uint8_t body[128];
+    ncl_focas_pdu pdu;
+    size_t total = 0;
+    size_t used;
+    ncl_focas_cb cb;
+    ncl_err err;
+    const ncl_focas_item *item;
+
+    NCL_TEST_CASE("hello frame matches §2.1");
+    body[0] = 0;
+    body[1] = 1;
+    total = ncl_focas_build(frame, sizeof(frame), NCL_FOCAS_FUNC_HELLO,
+                            NCL_FOCAS_DIR_REQ, body, 2);
+    NCL_CHECK_EQ_INT(total, 12);
+    NCL_CHECK(hex_equals(frame, total, "a0a0a0a0 0001 01 01 0002 0001"));
+
+    NCL_TEST_CASE("a block-less func 0x21 frame matches §2.1");
+    total = ncl_focas_build(frame, sizeof(frame), NCL_FOCAS_FUNC_CMD,
+                            NCL_FOCAS_DIR_REQ, NULL, 0);
+    NCL_CHECK_EQ_INT(total, 10);
+    NCL_CHECK(hex_equals(frame, total, "a0a0a0a0 0001 21 01 0000"));
+
+    NCL_TEST_CASE("the negotiation frame matches the §2.3 capture");
+    used = ncl_focas_body_begin(body, sizeof(body));
+    NCL_CHECK_EQ_INT(used, 2);
+    ncl_focas_cb_init(&cb, 14);
+    cb.arg0 = 0x26f0;
+    cb.arg1 = 0x26f0;
+    used = ncl_focas_body_add(body, sizeof(body), used, &cb);
+    NCL_CHECK_EQ_INT(used, 2u + NCL_FOCAS_CB_SIZE);
+    total = ncl_focas_build(frame, sizeof(frame), NCL_FOCAS_FUNC_CMD,
+                            NCL_FOCAS_DIR_REQ, body, used);
+    NCL_CHECK_EQ_INT(total, 40);
+    NCL_CHECK(hex_equals(frame, total,
+                         "a0a0a0a0 0001 21 01 001e"
+                         " 0001 001c 0001 0001 000e"
+                         " 0000 26f0 0000 26f0"
+                         " 0000 0000 0000 0000"
+                         " 0000 0000"));
+
+    NCL_TEST_CASE("the STATINFO request matches the §2.3 capture");
+    item = ncl_focas_item_lookup("STATINFO");
+    NCL_CHECK(item != NULL);
+    if (item != NULL) {
+        size_t i;
+
+        NCL_CHECK_EQ_INT(item->cb_count, 3);
+        NCL_CHECK_EQ_INT(item->cbs[0], 25);
+        NCL_CHECK_EQ_INT(item->cbs[1], 225);
+        NCL_CHECK_EQ_INT(item->cbs[2], 152);
+        used = ncl_focas_body_begin(body, sizeof(body));
+        for (i = 0; i < item->cb_count; i++) {
+            ncl_focas_cb one;
+
+            ncl_focas_cb_init(&one, item->cbs[i]);
+            used = ncl_focas_body_add(body, sizeof(body), used, &one);
+            NCL_CHECK(used != 0);
+        }
+        total = ncl_focas_build(frame, sizeof(frame), NCL_FOCAS_FUNC_CMD,
+                                NCL_FOCAS_DIR_REQ, body, used);
+        NCL_CHECK_EQ_INT(total, 96);
+        NCL_CHECK(hex_equals(frame, total,
+                             "a0a0a0a0 0001 21 01 0056"
+                             " 0003"
+                             " 001c 0001 0001 0019 00000000 00000000 00000000 00000000 0000 0000"
+                             " 001c 0001 0001 00e1 00000000 00000000 00000000 00000000 0000 0000"
+                             " 001c 0001 0001 0098 00000000 00000000 00000000 00000000 0000 0000"));
+    }
+
+    NCL_TEST_CASE("split reads the header back");
+    body[0] = 0;
+    body[1] = 2;
+    total = ncl_focas_build(frame, sizeof(frame), NCL_FOCAS_FUNC_HELLO,
+                            NCL_FOCAS_DIR_REQ, body, 2);
+    err = ncl_focas_split(frame, 10, &pdu, &total);
+    NCL_CHECK_EQ_INT(err, NCL_ERR_RANGE); /* the body is still arriving */
+    NCL_CHECK_EQ_INT(total, 12);
+    err = ncl_focas_split(frame, total, &pdu, NULL);
+    NCL_CHECK_EQ_INT(err, NCL_OK);
+    NCL_CHECK_EQ_INT(pdu.type, NCL_FOCAS_TYPE_V1);
+    NCL_CHECK_EQ_INT(pdu.func, NCL_FOCAS_FUNC_HELLO);
+    NCL_CHECK_EQ_INT(pdu.dir, NCL_FOCAS_DIR_REQ);
+    NCL_CHECK_EQ_INT(pdu.length, 2);
+
+    NCL_TEST_CASE("a wrong magic is refused");
+    frame[1] = 0x0A;
+    err = ncl_focas_split(frame, 12, &pdu, NULL);
+    NCL_CHECK_EQ_INT(err, NCL_FOCAS_ERR_MAGIC);
+    NCL_TEST_CASE("a direction outside 1..4 is refused");
+    frame[1] = 0xA0;
+    frame[7] = 0;
+    err = ncl_focas_split(frame, 12, &pdu, NULL);
+    NCL_CHECK_EQ_INT(err, NCL_FOCAS_ERR_HEADER);
+}
+
+static void test_hello_reply(void)
+{
+    uint8_t body[16u + 8u * 2u];
+    size_t records = 0;
+    ncl_err err;
+
+    NCL_TEST_CASE("the func 1 reply is 16 + 8n bytes");
+    memset(body, 0, sizeof(body));
+    put_u16be(body + 8, 2);
+    err = ncl_focas_hello_reply(body, sizeof(body), &records);
+    NCL_CHECK_EQ_INT(err, NCL_OK);
+    NCL_CHECK_EQ_INT(records, 2);
+
+    NCL_TEST_CASE("16 + 8n is not optional (§2.2 rule 5)");
+    err = ncl_focas_hello_reply(body, sizeof(body) - 1u, &records);
+    NCL_CHECK_EQ_INT(err, NCL_FOCAS_ERR_LENGTH);
+    err = ncl_focas_hello_reply(body, 12, &records);
+    NCL_CHECK_EQ_INT(err, NCL_FOCAS_ERR_LENGTH);
+
+    NCL_TEST_CASE("hello fields are big endian");
+    put_u16be(body + 2, 0x0002);
+    NCL_CHECK_EQ_INT(ncl_focas_hello_field(body, sizeof(body), 2), 2);
+    put_u16be(body + 16, 0x1234);
+    NCL_CHECK_EQ_INT(ncl_focas_hello_field(body, sizeof(body), 16), 0x1234);
+    NCL_CHECK_EQ_INT(ncl_focas_hello_field(body, 16, 16), 0); /* past the header */
+}
+
+/** Build a reply body with @p count blocks out of the given payloads. */
+static size_t build_blocks(uint8_t *out, size_t cap, size_t count,
+                           const uint8_t *const payload[], const size_t lens[])
+{
+    size_t used = 2;
+    size_t i;
+
+    if (cap < 2u) {
+        return 0;
+    }
+    put_u16be(out, (uint16_t)count);
+    for (i = 0; i < count; i++) {
+        size_t plen = lens[i];
+        size_t size = 16u + plen;
+
+        if (used + size > cap) {
+            return 0;
+        }
+        memset(out + used, 0, size);
+        put_u16be(out + used, (uint16_t)size);
+        put_u16be(out + used + 8, 0); /* return code: the machine said OK */
+        put_u16be(out + used + 14, (uint16_t)plen);
+        if (plen > 0) {
+            memcpy(out + used + 16, payload[i], plen);
+        }
+        used += size;
+    }
+    return used;
+}
+
+static void test_blocks(void)
+{
+    uint8_t body[256];
+    uint8_t first[4];
+    uint8_t second[4];
+    const uint8_t *payloads[2];
+    size_t lens[2];
+    const uint8_t *block = NULL;
+    size_t block_len = 0;
+    size_t payload_len = 0;
+    const uint8_t *payload;
+    size_t used;
+    ncl_err err;
+
+    put_u32be(first, 0x11223344u);
+    put_u32be(second, 0xAABBCCDDu);
+    payloads[0] = first;
+    payloads[1] = second;
+    lens[0] = sizeof(first);
+    lens[1] = sizeof(second);
+    used = build_blocks(body, sizeof(body), 2, payloads, lens);
+    NCL_CHECK(used > 0);
+
+    NCL_TEST_CASE("the block count lives in body[0..2)");
+    NCL_CHECK_EQ_INT(ncl_focas_block_count(body, used), 2);
+
+    NCL_TEST_CASE("blocks are walked with their own size field");
+    err = ncl_focas_block_at(body, used, 0, &block, &block_len);
+    NCL_CHECK_EQ_INT(err, NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_focas_block_code(block, block_len), 0);
+    payload = ncl_focas_block_payload(block, block_len, &payload_len);
+    NCL_CHECK_EQ_INT(payload_len, 4);
+    NCL_CHECK_EQ_INT(get_u16be(payload), 0x1122);
+    err = ncl_focas_block_at(body, used, 1, &block, &block_len);
+    NCL_CHECK_EQ_INT(err, NCL_OK);
+    payload = ncl_focas_block_payload(block, block_len, &payload_len);
+    NCL_CHECK_EQ_INT(get_u16be(payload), 0xAABB);
+
+    NCL_TEST_CASE("an index past the count is the §2.3 rule 1 error");
+    err = ncl_focas_block_at(body, used, 2, &block, &block_len);
+    NCL_CHECK_EQ_INT(err, NCL_FOCAS_ERR_RB_MISSING);
+    /* a body shorter than the count it claims is a length complaint */
+    NCL_CHECK_EQ_INT(ncl_focas_check_blocks(body, 2, NULL),
+                     NCL_FOCAS_ERR_LENGTH);
+    /* no block at all is the count complaint */
+    NCL_CHECK_EQ_INT(ncl_focas_check_blocks(body, 1, NULL),
+                     NCL_FOCAS_ERR_RB_COUNT);
+
+    NCL_TEST_CASE("a block whose return code is not zero is refused");
+    put_u16be(body + 2 + 8, 0xFFFF); /* block 0 says -1 */
+    err = ncl_focas_check_blocks(body, used, NULL);
+    NCL_CHECK_EQ_INT(err, NCL_FOCAS_ERR_RB_CODE);
+    put_u16be(body + 2 + 8, 0);
+    NCL_CHECK_EQ_INT(ncl_focas_check_blocks(body, used, NULL), NCL_OK);
+}
+
+static void test_items(void)
+{
+    const ncl_focas_item *item;
+    uint16_t code = 0;
+
+    NCL_TEST_CASE("the §2.3 item table resolves names case insensitively");
+    item = ncl_focas_item_lookup("actf");
+    NCL_CHECK(item != NULL);
+    if (item != NULL) {
+        NCL_CHECK_EQ_INT(item->cb_count, 1);
+        NCL_CHECK_EQ_INT(item->cbs[0], 0x24);
+    }
+    item = ncl_focas_item_lookup("RDPROGDIR3");
+    NCL_CHECK(item != NULL);
+    if (item != NULL) {
+        NCL_CHECK_EQ_INT(item->cbs[0], 0x06);
+        NCL_CHECK_EQ_INT(item->arg0[0], 0x13);
+        NCL_CHECK_EQ_INT(item->arg1[0], 1);
+    }
+    item = ncl_focas_item_lookup("RDCOUNT");
+    NCL_CHECK(item != NULL);
+    if (item != NULL) {
+        NCL_CHECK_EQ_INT(item->cbs[0], 0x8b);
+        NCL_CHECK_EQ_INT(item->arg0[0], 1);
+    }
+    NCL_CHECK(ncl_focas_item_lookup("no-such-item") == NULL);
+
+    NCL_TEST_CASE("a bare code is parsed instead");
+    NCL_CHECK(ncl_focas_parse_code("36", &code));
+    NCL_CHECK_EQ_INT(code, 36);
+    NCL_CHECK(ncl_focas_parse_code("0x24", &code));
+    NCL_CHECK_EQ_INT(code, 0x24);
+    NCL_CHECK(ncl_focas_parse_code("CB:0x8b", &code));
+    NCL_CHECK_EQ_INT(code, 0x8b);
+    NCL_CHECK(!ncl_focas_parse_code("nope", &code));
+    NCL_CHECK(!ncl_focas_parse_code("CB:", &code));
+}
+
+static void test_decode(void)
+{
+    uint8_t data[16];
+    ncl_json *value = NULL;
+    long long number = 0;
+    double real = 0;
+
+    NCL_TEST_CASE("values are big endian");
+    put_u32be(data, 0x11223344u);
+    NCL_CHECK_EQ_INT(ncl_focas_decode(data, 4, NCL_DTYPE_INT32, 1, &value), NCL_OK);
+    NCL_CHECK(ncl_json_as_int(value, &number));
+    NCL_CHECK_EQ_INT(number, 0x11223344);
+    ncl_json_free(value);
+    value = NULL;
+
+    put_u16be(data, 0xFFFE);
+    NCL_CHECK_EQ_INT(ncl_focas_decode(data, 2, NCL_DTYPE_INT16, 1, &value), NCL_OK);
+    NCL_CHECK(ncl_json_as_int(value, &number));
+    NCL_CHECK_EQ_INT(number, -2);
+    ncl_json_free(value);
+    value = NULL;
+
+    put_float_be(data, 42.5f);
+    NCL_CHECK_EQ_INT(ncl_focas_decode(data, 4, NCL_DTYPE_FLOAT32, 1, &value),
+                     NCL_OK);
+    NCL_CHECK(ncl_json_as_double(value, &real));
+    NCL_CHECK(real > 42.49 && real < 42.51);
+    ncl_json_free(value);
+    value = NULL;
+
+    NCL_TEST_CASE("an array comes back when length > 1");
+    put_u16be(data, 1);
+    put_u16be(data + 2, 2);
+    put_u16be(data + 4, 3);
+    NCL_CHECK_EQ_INT(ncl_focas_decode(data, 6, NCL_DTYPE_INT16, 3, &value), NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(value), 3);
+    ncl_json_free(value);
+    value = NULL;
+
+    NCL_TEST_CASE("a short payload is a range error, not a short read");
+    NCL_CHECK_EQ_INT(ncl_focas_decode(data, 3, NCL_DTYPE_INT32, 1, &value),
+                     NCL_ERR_RANGE);
+}
+
+/* ------------------------------------------------------------- the mock -- */
+
+typedef struct {
+    ncl_socket *listener;
+    unsigned    port;
+    ncl_thread *thread;
+    bool        stop;
+    int         requests;
+    uint8_t     last_func;
+    size_t      last_blocks;
+    uint8_t     hello[16u + 8u * 2u];
+    size_t      hello_len;
+    uint8_t     payload[3][64];
+    size_t      payload_len[3];
+    size_t      payload_count;
+    int         short_by; /**< reply with fewer blocks than asked */
+} focas_mock;
+
+static size_t mock_block_body(uint8_t *out, size_t cap, size_t count,
+                              const focas_mock *mock)
+{
+    size_t used = 2;
+    size_t i;
+
+    put_u16be(out, (uint16_t)count);
+    for (i = 0; i < count; i++) {
+        size_t k = i < mock->payload_count ? i : mock->payload_count - 1u;
+        size_t plen = mock->payload_len[k];
+        size_t size = 16u + plen;
+
+        if (used + size > cap) {
+            return 0;
+        }
+        memset(out + used, 0, size);
+        put_u16be(out + used, (uint16_t)size);
+        put_u16be(out + used + 8, 0);
+        put_u16be(out + used + 14, (uint16_t)plen);
+        if (plen > 0) {
+            memcpy(out + used + 16, mock->payload[k], plen);
+        }
+        used += size;
+    }
+    return used;
+}
+
+static void mock_main(void *arg)
+{
+    focas_mock *mock = (focas_mock *)arg;
+
+    while (!mock->stop) {
+        ncl_socket *peer = ncl_socket_accept(mock->listener, 200);
+
+        if (peer == NULL) {
+            continue;
+        }
+        for (;;) {
+            uint8_t header[NCL_FOCAS_HEADER];
+            uint8_t frame[2048];
+            uint8_t body[1024];
+            uint8_t reply[2048];
+            ncl_focas_pdu pdu;
+            size_t total = 0;
+            size_t body_len;
+            size_t frame_len;
+            size_t blocks;
+
+            if (ncl_socket_recv_exact(peer, header, sizeof(header), 2000) != NCL_OK) {
+                break;
+            }
+            memset(&pdu, 0, sizeof(pdu));
+            if (ncl_focas_split(header, sizeof(header), &pdu, &total) !=
+                NCL_ERR_RANGE) {
+                break;
+            }
+            if (total > sizeof(frame)) {
+                break;
+            }
+            memcpy(frame, header, sizeof(header));
+            if (pdu.length > 0 &&
+                ncl_socket_recv_exact(peer, frame + sizeof(header), pdu.length,
+                                      2000) != NCL_OK) {
+                break;
+            }
+            mock->requests++;
+            mock->last_func = pdu.func;
+            if (pdu.func == NCL_FOCAS_FUNC_HELLO) {
+                body_len = mock->hello_len;
+                memcpy(body, mock->hello, body_len);
+            } else if (pdu.func == NCL_FOCAS_FUNC_CMD) {
+                blocks = 0;
+                if (pdu.length >= 2u) {
+                    blocks = get_u16be(frame + sizeof(header));
+                }
+                mock->last_blocks = blocks;
+                if (blocks == 0) {
+                    blocks = 1; /* §2.2 rule 6: a 0x21 reply needs a block */
+                }
+                if (mock->short_by > 0 && blocks > (size_t)mock->short_by) {
+                    blocks -= (size_t)mock->short_by;
+                }
+                body_len = mock_block_body(body, sizeof(body), blocks, mock);
+            } else {
+                break; /* the bye: the SDK closes here, so does the mock */
+            }
+            if (body_len == 0) {
+                break;
+            }
+            frame_len = ncl_focas_build(reply, sizeof(reply), pdu.func,
+                                        NCL_FOCAS_DIR_RESP, body, body_len);
+            if (frame_len == 0 ||
+                ncl_socket_send(peer, reply, frame_len) != NCL_OK) {
+                break;
+            }
+        }
+        ncl_socket_close(peer);
+    }
+}
+
+static focas_mock *mock_start(void)
+{
+    focas_mock *mock = (focas_mock *)ncl_mem_calloc(1, sizeof(*mock));
+
+    if (mock == NULL) {
+        return NULL;
+    }
+    mock->listener = ncl_socket_listen(0, NULL, 0);
+    if (mock->listener == NULL) {
+        ncl_free_safe(mock);
+        return NULL;
+    }
+    mock->port = ncl_socket_local_port(mock->listener);
+    /* the hello reply: 16 bytes of header, no records, field 2 = 0 so the
+     * driver takes the §2.3 "else" branch and sends the code 14 probe */
+    memset(mock->hello, 0, sizeof(mock->hello));
+    put_u16be(mock->hello + 8, 0);
+    mock->hello_len = 16;
+    mock->payload_count = 1;
+    mock->payload_len[0] = 4;
+    put_u32be(mock->payload[0], 12345);
+    mock->thread = ncl_thread_start(mock_main, mock);
+    if (mock->thread == NULL) {
+        ncl_socket_close(mock->listener);
+        ncl_free_safe(mock);
+        return NULL;
+    }
+    return mock;
+}
+
+static void mock_stop(focas_mock *mock)
+{
+    if (mock == NULL) {
+        return;
+    }
+    mock->stop = true;
+    ncl_thread_join(mock->thread);
+    ncl_socket_close(mock->listener);
+    ncl_free_safe(mock);
+}
+
+static ncl_driver *focas_driver(focas_mock *mock, const char *extra)
+{
+    ncl_driver *driver = ncl_driver_create("focas");
+    ncl_strbuf json;
+    ncl_json *params;
+
+    if (driver == NULL) {
+        return NULL;
+    }
+    ncl_strbuf_init(&json);
+    (void)ncl_strbuf_printf(&json,
+                            "{\"host\":\"127.0.0.1\",\"port\":%u,"
+                            "\"timeoutMs\":800,\"retries\":0%s}",
+                            mock->port, extra != NULL ? extra : "");
+    params = ncl_json_parse_cstr(ncl_strbuf_cstr(&json), NULL);
+    ncl_strbuf_free(&json);
+    if (params == NULL || driver->ops->create(driver, params) != NCL_OK) {
+        ncl_json_free(params);
+        driver->ops->destroy(driver);
+        return NULL;
+    }
+    ncl_json_free(params);
+    return driver;
+}
+
+static ncl_err read_point(ncl_driver *driver, const char *area, long long block,
+                          int length, const char *dtype, ncl_json **value)
+{
+    ncl_strbuf json;
+    ncl_json *node;
+    ncl_address address;
+    ncl_err err;
+
+    ncl_strbuf_init(&json);
+    (void)ncl_strbuf_printf(&json,
+                            "{\"area\":\"%s\",\"offset\":%lld,\"length\":%d,"
+                            "\"dtype\":\"%s\"}",
+                            area, block, length, dtype);
+    node = ncl_json_parse_cstr(ncl_strbuf_cstr(&json), NULL);
+    ncl_strbuf_free(&json);
+    if (node == NULL) {
+        return NCL_ERR_PARSE;
+    }
+    err = ncl_address_from_json(node, &address);
+    ncl_json_free(node);
+    if (err != NCL_OK) {
+        return err;
+    }
+    err = ncl_driver_read_one(driver, &address, value);
+    ncl_address_clear(&address);
+    return err;
+}
+
+static void test_driver(void)
+{
+    focas_mock *mock = mock_start();
+    ncl_driver *driver;
+    ncl_json *value = NULL;
+    long long number = 0;
+    double real = 0;
+
+    NCL_CHECK(mock != NULL);
+    if (mock == NULL) {
+        return;
+    }
+    driver = focas_driver(mock, NULL);
+    NCL_CHECK(driver != NULL);
+    if (driver == NULL) {
+        mock_stop(mock);
+        return;
+    }
+
+    NCL_TEST_CASE("open negotiates the §2.3 handshake");
+    NCL_CHECK_EQ_INT(driver->ops->open(driver), NCL_OK);
+    NCL_CHECK(driver->ops->is_connected(driver));
+    /* hello + the 0 block probe + the code 14 probe */
+    NCL_CHECK_EQ_INT(mock->requests, 3);
+    NCL_CHECK_EQ_INT(mock->last_func, NCL_FOCAS_FUNC_CMD);
+    NCL_CHECK_EQ_INT(mock->last_blocks, 1);
+
+    NCL_TEST_CASE("a read gets the block the point asked for");
+    NCL_CHECK_EQ_INT(read_point(driver, "RDCOUNT", 0, 1, "int32", &value), NCL_OK);
+    NCL_CHECK(value != NULL);
+    NCL_CHECK(ncl_json_as_int(value, &number));
+    NCL_CHECK_EQ_INT(number, 12345);
+    ncl_json_free(value);
+    value = NULL;
+    NCL_CHECK_EQ_INT(mock->requests, 4);
+
+    NCL_TEST_CASE("a value is big endian and scaled by the point's dtype");
+    put_u32be(mock->payload[0], 0x42F40000u); /* 122.0f */
+    mock->payload_len[0] = 4;
+    NCL_CHECK_EQ_INT(read_point(driver, "ACTF", 0, 1, "float32", &value), NCL_OK);
+    NCL_CHECK(ncl_json_as_double(value, &real));
+    NCL_CHECK(real > 121.9 && real < 122.1);
+    ncl_json_free(value);
+    value = NULL;
+
+    NCL_TEST_CASE("STATINFO's blocks are read one by one (§2.3 ODBST split)");
+    mock->payload_count = 3;
+    mock->payload_len[0] = 6;
+    put_u16be(mock->payload[0], 11);
+    put_u16be(mock->payload[0] + 2, 22);
+    put_u16be(mock->payload[0] + 4, 33);
+    mock->payload_len[1] = 2;
+    put_u16be(mock->payload[1], 7);
+    mock->payload_len[2] = 2;
+    put_u16be(mock->payload[2], 9);
+    NCL_CHECK_EQ_INT(read_point(driver, "STATINFO", 1, 1, "int16", &value), NCL_OK);
+    NCL_CHECK(ncl_json_as_int(value, &number));
+    NCL_CHECK_EQ_INT(number, 7);
+    ncl_json_free(value);
+    value = NULL;
+    NCL_CHECK_EQ_INT(read_point(driver, "STATINFO", 2, 1, "int16", &value), NCL_OK);
+    NCL_CHECK(ncl_json_as_int(value, &number));
+    NCL_CHECK_EQ_INT(number, 9);
+    ncl_json_free(value);
+    value = NULL;
+    NCL_CHECK_EQ_INT(read_point(driver, "STATINFO", 0, 3, "int16", &value), NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(value), 3);
+    ncl_json_free(value);
+    value = NULL;
+
+    NCL_TEST_CASE("an item the table does not know is sent as a bare code");
+    mock->payload_len[0] = 4;
+    put_u32be(mock->payload[0], 0x0000002Au);
+    NCL_CHECK_EQ_INT(read_point(driver, "0x22", 0, 1, "int32", &value), NCL_OK);
+    NCL_CHECK(ncl_json_as_int(value, &number));
+    NCL_CHECK_EQ_INT(number, 42);
+    ncl_json_free(value);
+    value = NULL;
+
+    NCL_TEST_CASE("a block index past the reply is the rule 1 error");
+    NCL_CHECK_EQ_INT(read_point(driver, "RDCOUNT", 4, 1, "int32", &value),
+                     NCL_FOCAS_ERR_RB_MISSING);
+
+    NCL_TEST_CASE("write is not supported (no frame was captured)");
+    {
+        ncl_address address;
+        ncl_json *node = ncl_json_parse_cstr(
+            "{\"area\":\"RDCOUNT\",\"offset\":0,\"length\":1,\"dtype\":\"int32\"}",
+            NULL);
+        ncl_json *scalar = ncl_json_new_int(1);
+
+        NCL_CHECK(node != NULL);
+        NCL_CHECK(ncl_address_from_json(node, &address) == NCL_OK);
+        NCL_CHECK_EQ_INT(driver->ops->write_batch(driver, &address, scalar, 1),
+                         NCL_ERR_NOT_SUPPORTED);
+        ncl_address_clear(&address);
+        ncl_json_free(scalar);
+        ncl_json_free(node);
+    }
+
+    NCL_TEST_CASE("call(\"items\") lists what the table knows");
+    NCL_CHECK_EQ_INT(driver->ops->call(driver, "items", NULL, &value), NCL_OK);
+    NCL_CHECK(value != NULL);
+    NCL_CHECK(ncl_json_arr_len(value) >= 8);
+    ncl_json_free(value);
+    value = NULL;
+    NCL_TEST_CASE("call(\"session\") reports the hello");
+    NCL_CHECK_EQ_INT(driver->ops->call(driver, "session", NULL, &value), NCL_OK);
+    NCL_CHECK(value != NULL);
+    NCL_CHECK_EQ_INT(ncl_json_obj_get_int(value, "helloField2", -1), 0);
+    NCL_CHECK_EQ_INT(ncl_json_obj_get_int(value, "probeBlocks", -1), 1);
+    ncl_json_free(value);
+    value = NULL;
+    NCL_TEST_CASE("an unknown operation is refused");
+    NCL_CHECK_EQ_INT(driver->ops->call(driver, "nope", NULL, &value),
+                     NCL_DRV_ERR_PROTOCOL(0x94));
+
+    NCL_TEST_CASE("the last exchange reaches the audit trail");
+    {
+        ncl_driver_raw raw;
+
+        memset(&raw, 0, sizeof(raw));
+        ncl_driver_last_raw(driver, &raw);
+        NCL_CHECK(raw.request != NULL && raw.request_len >= 10);
+        NCL_CHECK(raw.reply != NULL && raw.reply_len >= 10);
+        NCL_CHECK_EQ_INT(raw.request[6], NCL_FOCAS_FUNC_CMD);
+    }
+
+    driver->ops->close(driver);
+    NCL_CHECK(!driver->ops->is_connected(driver));
+    driver->ops->destroy(driver);
+    mock_stop(mock);
+}
+
+static void test_driver_short_reply(void)
+{
+    focas_mock *mock = mock_start();
+    ncl_driver *driver;
+    ncl_json *value = NULL;
+
+    NCL_CHECK(mock != NULL);
+    if (mock == NULL) {
+        return;
+    }
+    driver = focas_driver(mock, NULL);
+    NCL_CHECK(driver != NULL);
+    if (driver == NULL) {
+        mock_stop(mock);
+        return;
+    }
+    NCL_CHECK_EQ_INT(driver->ops->open(driver), NCL_OK);
+
+    NCL_TEST_CASE("one block short is exactly what §2.3 rule 1 is about");
+    /* STATINFO asks for three blocks; the machine answers two */
+    mock->payload_count = 3;
+    mock->payload_len[0] = 4;
+    put_u16be(mock->payload[0], 11);
+    put_u16be(mock->payload[0] + 2, 22);
+    mock->payload_len[1] = 2;
+    put_u16be(mock->payload[1], 7);
+    mock->payload_len[2] = 2;
+    put_u16be(mock->payload[2], 9);
+    mock->short_by = 1;
+    NCL_CHECK_EQ_INT(read_point(driver, "STATINFO", 2, 1, "int16", &value),
+                     NCL_FOCAS_ERR_RB_MISSING);
+    NCL_CHECK(value == NULL);
+    NCL_CHECK_EQ_INT(read_point(driver, "STATINFO", 1, 1, "int16", &value),
+                     NCL_OK); /* the blocks that did arrive still read */
+    ncl_json_free(value);
+    value = NULL;
+
+    driver->ops->destroy(driver);
+    mock_stop(mock);
+}
+
+static void test_driver_no_negotiate(void)
+{
+    focas_mock *mock = mock_start();
+    ncl_driver *driver;
+
+    NCL_CHECK(mock != NULL);
+    if (mock == NULL) {
+        return;
+    }
+    driver = focas_driver(mock, ",\"negotiate\":false");
+    NCL_CHECK(driver != NULL);
+    if (driver == NULL) {
+        mock_stop(mock);
+        return;
+    }
+    NCL_TEST_CASE("\"negotiate\":false stops after the hello");
+    NCL_CHECK_EQ_INT(driver->ops->open(driver), NCL_OK);
+    NCL_CHECK_EQ_INT(mock->requests, 1);
+    NCL_CHECK_EQ_INT(mock->last_func, NCL_FOCAS_FUNC_HELLO);
+
+    driver->ops->destroy(driver);
+    mock_stop(mock);
+}
+
+NCL_TEST_MAIN_BEGIN()
+    test_golden_frames();
+    test_hello_reply();
+    test_blocks();
+    test_items();
+    test_decode();
+    test_driver();
+    test_driver_short_reply();
+    test_driver_no_negotiate();
+NCL_TEST_MAIN_END()
