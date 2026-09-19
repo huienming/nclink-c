@@ -104,32 +104,108 @@ ncl_err ncl_syntec_split(const uint8_t *frame, size_t len, ncl_syntec_view *out,
 /* ============================================================= commands == */
 
 /*
- * §10.7: one numbering space for the whole controller. The file transfer
- * service starts at 1 with the declaration order of FileTransferCmd, the
- * Dipole service at 178, and 200 is the KrnlAPI command.
+ * §10.7/§10.10: one numbering space for the whole controller. The numbers are
+ * the enum values the assemblies carry - which is why GetAllFileList is 8 and
+ * Install is 48 rather than the declaration order they look like.
  */
 static const struct {
     const char *name;
     uint16_t    cmd_id;
 } kCommands[] = {
-    {"FileSendStart", NCL_SYNTEC_CMD_FILE_FIRST},
-    {"FileSending", NCL_SYNTEC_CMD_FILE_FIRST + 1u},
-    {"FileRecvStart", NCL_SYNTEC_CMD_FILE_FIRST + 2u},
-    {"FileRecving", NCL_SYNTEC_CMD_FILE_FIRST + 3u},
-    {"GetAllFileList", NCL_SYNTEC_CMD_FILE_FIRST + 4u},
-    {"Install", NCL_SYNTEC_CMD_FILE_FIRST + 5u},
-    {"FileExist", NCL_SYNTEC_CMD_FILE_FIRST + 6u},
-    {"DirExist", NCL_SYNTEC_CMD_FILE_FIRST + 7u},
-    {"FileNew", NCL_SYNTEC_CMD_FILE_FIRST + 8u},
-    {"FileDelete", NCL_SYNTEC_CMD_FILE_FIRST + 9u},
-    {"FileCopy", NCL_SYNTEC_CMD_FILE_FIRST + 10u},
-    {"FileMove", NCL_SYNTEC_CMD_FILE_FIRST + 11u},
-    {"DirCreate", NCL_SYNTEC_CMD_FILE_FIRST + 12u},
-    {"DipoleFirst", NCL_SYNTEC_CMD_DIPOLE_FIRST},
-    {"DipoleSecond", NCL_SYNTEC_CMD_DIPOLE_FIRST + 1u},
-    {"DipoleThird", NCL_SYNTEC_CMD_DIPOLE_FIRST + 2u},
+    /* FileTransferCmd（实测值） */
+    {"FileSendStart", 1},
+    {"FileSending", 2},
+    {"FileRecvStart", 3},
+    {"FileRecving", 4},
+    {"GetAllFileList", 8},
+    {"FileExist", 11},
+    {"DirExist", 12},
+    {"FileNew", 13},
+    {"FileDelete", 14},
+    {"FileCopy", 15},
+    {"FileMove", 16},
+    {"DirCreate", 17},
+    {"Install", 48},
+    /* EFunctionID（实测值） */
+    {"NcShutdown", 87},
+    {"NcRestartCNC", 163},
+    {"NcRequestUpdate", 165},
+    {"NcStartControlSystem", 174},
+    {"ResMgrRemoteLookup", 178},
+    {"RemoteProgExecute", 180},
     {"KrnlAPI", NCL_SYNTEC_CMD_KRML_API},
+    {"OnEventCall", 1}, /* AlarmCmd: TCPALARM_OnEventCall */
 };
+
+/*
+ * §10.10: the data codes. `EDataType` is what a KrnlAPI read asks for with its
+ * `dwCode`; `EDevice_Type` names the kind of device data a request selects.
+ */
+static const struct {
+    const char *name;
+    int32_t     code;
+} kDataCodes[] = {
+    /* Syntec.OpenCNC.EventTriggerEnum.EDataType */
+    {"DT_MACHINEPOS", 0},        {"DT_SETTABLESET", 1},
+    {"DT_BASICOFFSET", 2},       {"DT_G92OFFSET", 3},
+    {"DT_HCSOFFSET", 4},         {"DT_HCSCHANGE", 5},
+    {"DT_SYSTIME", 6},           {"DT_FEEDBACK", 7},
+    {"DT_HOMING", 8},            {"DT_AXESALRM", 9},
+    {"DT_TOOLINFO", 10},         {"DT_COORD", 11},
+    {"DT_SERVOCMD", 12},         {"DT_DUALFEEDBACK", 13},
+    {"DT_GLOBALVAR", 14},        {"DT_SYSTEMVAR", 15},
+    {"DT_DEBUGVAR", 16},         {"DT_IBIT", 17},
+    {"DT_OBIT", 18},             {"DT_CBIT", 19},
+    {"DT_SBIT", 20},             {"DT_ABIT", 21},
+    {"DT_SPINDLE_FEEDBACK_VEL", 22},
+    {"DT_SPINDLE_SERVOCMD_VEL", 23},
+    {"DT_REGISTER", 24},         {"DT_DEVICEVAL", 25},
+    {"DT_ABSOLUTE_FEEDBACK", 26},
+    {"DT_CNC_STATUS", 41},       {"DT_CNC_MAIN_PROGRAM", 42},
+    {"DT_PART_COUNT", 43},       {"DT_BUFFEROVERFLOW", 500},
+    /* Syntec.OpenCNC.EDevice_Type */
+    {"L_REGISTER", 0},           {"GLOBAL_VARIABLE", 1},
+    {"R_REGISTER", 2},           {"SYSTEM_VARIABLE", 3},
+    {"I_BIT", 4},                {"O_BIT", 5},
+    {"C_BIT", 6},                {"S_BIT", 7},
+    {"A_BIT", 8},                {"STATE_VARIABLE", 9},
+    {"PARAM", 10},               {"COORD_VARIABLE", 11},
+    {"TIMER_STATE", 12},         {"TIMER_TYPE", 13},
+    {"TIMER_SETTING", 14},       {"TIMER_ELAPSE", 15},
+    {"COUNTER_STATE", 16},       {"COUNTER_TYPE", 17},
+    {"COUNTER_SETTING", 18},     {"COUNTER_COUNT", 19},
+    {"DEV_AX_VARIABLE", 20},     {"NOT_DEFINE", -1},
+};
+
+bool ncl_syntec_data_code(const char *name, int32_t *code)
+{
+    size_t i;
+
+    if (ncl_str_is_blank(name)) {
+        return false;
+    }
+    for (i = 0; i < sizeof(kDataCodes) / sizeof(kDataCodes[0]); i++) {
+        if (ncl_streq_ignore_case(name, kDataCodes[i].name)) {
+            if (code != NULL) {
+                *code = kDataCodes[i].code;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+const char *ncl_syntec_data_code_name(int32_t code)
+{
+    size_t i;
+
+    for (i = 0; i < sizeof(kDataCodes) / sizeof(kDataCodes[0]); i++) {
+        if (kDataCodes[i].code == code) {
+            return kDataCodes[i].name;
+        }
+    }
+    return NULL;
+}
 
 bool ncl_syntec_cmd_lookup(const char *name, uint16_t *cmd_id,
                            const char **canonical)
@@ -181,7 +257,9 @@ const char *ncl_syntec_cmd_name(uint16_t cmd_id)
 
 const char *ncl_syntec_cmd_service(uint16_t cmd_id)
 {
-    if (cmd_id >= NCL_SYNTEC_CMD_FILE_FIRST && cmd_id <= 17u) {
+    /* The enum values are not contiguous: GetAllFileList is 8 and Install is
+     * 48, so the file transfer family is named explicitly. */
+    if ((cmd_id >= 1u && cmd_id <= 17u) || cmd_id == 48u) {
         return "FileTransfer";
     }
     if (cmd_id == NCL_SYNTEC_CMD_KRML_API) {

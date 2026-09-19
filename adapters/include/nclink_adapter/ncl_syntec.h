@@ -99,6 +99,15 @@ const char *ncl_syntec_cmd_name(uint16_t cmd_id);
 /** The service a CmdID belongs to, for logs ("FileTransfer", "Dipole", ...). */
 const char *ncl_syntec_cmd_service(uint16_t cmd_id);
 
+/**
+ * §10.10: the data codes of the client's `EDataType` and `EDevice_Type` enums
+ * ("DT_PART_COUNT" 43, "DT_CNC_STATUS" 41, "DT_MACHINEPOS" 0, ...). A KrnlAPI
+ * read carries one of these as its `dwCode`.
+ */
+bool ncl_syntec_data_code(const char *name, int32_t *code);
+/** Name of a data code, or NULL. The first match wins (the two enums overlap). */
+const char *ncl_syntec_data_code_name(int32_t code);
+
 /* ================================================================= data == */
 
 /** CRC-16 with the reversed 0xA001 polynomial, as the client library has it. */

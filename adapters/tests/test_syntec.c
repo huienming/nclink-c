@@ -89,19 +89,46 @@ static void test_commands(void)
 {
     uint16_t cmd = 0;
     const char *canonical = NULL;
+    int32_t code = 0;
 
     NCL_TEST_CASE("the known command numbers of §10.6 / §10.7");
     NCL_CHECK(ncl_syntec_cmd_lookup("FileSendStart", &cmd, &canonical));
     NCL_CHECK_EQ_INT(cmd, 1);
     NCL_CHECK(ncl_syntec_cmd_lookup("FileExist", &cmd, &canonical));
-    NCL_CHECK_EQ_INT(cmd, 7);
+    NCL_CHECK_EQ_INT(cmd, 11);
     NCL_CHECK(ncl_syntec_cmd_lookup("DirCreate", &cmd, &canonical));
-    NCL_CHECK_EQ_INT(cmd, 13);
+    NCL_CHECK_EQ_INT(cmd, 17);
     NCL_CHECK(ncl_syntec_cmd_lookup("KrnlAPI", &cmd, &canonical));
     NCL_CHECK_EQ_INT(cmd, 200);
-    NCL_CHECK(ncl_syntec_cmd_lookup("DipoleFirst", &cmd, &canonical));
+    NCL_CHECK(ncl_syntec_cmd_lookup("ResMgrRemoteLookup", &cmd, &canonical));
     NCL_CHECK_EQ_INT(cmd, 178);
+    NCL_CHECK(ncl_syntec_cmd_lookup("RemoteProgExecute", &cmd, &canonical));
+    NCL_CHECK_EQ_INT(cmd, 180);
+    NCL_CHECK(ncl_syntec_cmd_lookup("NcShutdown", &cmd, &canonical));
+    NCL_CHECK_EQ_INT(cmd, 87);
+    /* 枚举里带显式值：声明顺序骗人，这两个是实测值 */
+    NCL_CHECK(ncl_syntec_cmd_lookup("GetAllFileList", &cmd, NULL));
+    NCL_CHECK_EQ_INT(cmd, 8);
+    NCL_CHECK(ncl_syntec_cmd_lookup("Install", &cmd, NULL));
+    NCL_CHECK_EQ_INT(cmd, 48);
     NCL_CHECK(!ncl_syntec_cmd_lookup("NoSuchCommand", &cmd, NULL));
+
+    NCL_TEST_CASE("the data codes of §10.10 are the enum values");
+    NCL_CHECK(ncl_syntec_data_code("DT_PART_COUNT", &code));
+    NCL_CHECK_EQ_INT(code, 43);
+    NCL_CHECK(ncl_syntec_data_code("dt_cnc_status", &code));
+    NCL_CHECK_EQ_INT(code, 41);
+    NCL_CHECK(ncl_syntec_data_code("DT_MACHINEPOS", &code));
+    NCL_CHECK_EQ_INT(code, 0);
+    NCL_CHECK(ncl_syntec_data_code("DT_BUFFEROVERFLOW", &code));
+    NCL_CHECK_EQ_INT(code, 500);
+    NCL_CHECK(ncl_syntec_data_code("STATE_VARIABLE", &code));
+    NCL_CHECK_EQ_INT(code, 9);
+    NCL_CHECK(ncl_syntec_data_code("NOT_DEFINE", &code));
+    NCL_CHECK_EQ_INT(code, -1);
+    NCL_CHECK(!ncl_syntec_data_code("DT_NOPE", &code));
+    NCL_CHECK_EQ_STR(ncl_syntec_data_code_name(43), "DT_PART_COUNT");
+    NCL_CHECK(ncl_syntec_data_code_name(9999) == NULL);
 
     NCL_TEST_CASE("a bare command number is accepted, as §10.7 numbers one space");
     NCL_CHECK(ncl_syntec_cmd_lookup("179", &cmd, &canonical));
@@ -113,9 +140,10 @@ static void test_commands(void)
 
     NCL_TEST_CASE("names and services come back");
     NCL_CHECK_EQ_STR(ncl_syntec_cmd_name(200), "KrnlAPI");
-    NCL_CHECK_EQ_STR(ncl_syntec_cmd_name(7), "FileExist");
+    NCL_CHECK_EQ_STR(ncl_syntec_cmd_name(11), "FileExist");
     NCL_CHECK(ncl_syntec_cmd_name(999) == NULL);
-    NCL_CHECK_EQ_STR(ncl_syntec_cmd_service(7), "FileTransfer");
+    NCL_CHECK_EQ_STR(ncl_syntec_cmd_service(11), "FileTransfer");
+    NCL_CHECK_EQ_STR(ncl_syntec_cmd_service(48), "FileTransfer"); /* Install */
     NCL_CHECK_EQ_STR(ncl_syntec_cmd_service(178), "Dipole");
     NCL_CHECK_EQ_STR(ncl_syntec_cmd_service(200), "Dipole");
     NCL_CHECK_EQ_STR(ncl_syntec_cmd_service(900), "?");

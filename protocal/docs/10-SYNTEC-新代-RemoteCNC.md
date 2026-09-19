@@ -467,3 +467,72 @@ payload（TDevice 之类的选择结构）**，payload 的布局就是上面这�
 > 更省事的一条路：直接读客户端**某一个具体 API 的请求构造函数**
 > （比如 `READ_position`），那一个方法里就同时有"哪个 uFuncID、哪个结构体、
 > 哪个枚举值"，比逐个枚举去凑更快也更少歧义。
+
+### 10.11 全部数值拿到（Constant 表按对字段读出来了）
+
+上一节卡在枚举数值上，原因是把 `Constant` 行的 `Type`（**元素类型**，int32 = 8）
+当成了父索引；父索引在 `Parent` 里，而且 dnfile 已经把它解析成行对象
+（`row.Parent.row`）。改对之后一次取全：
+
+**命令号（服务端 `EFunctionID`，就是报文里的 uFuncID）**
+
+| 名称 | 值 | 名称 | 值 |
+|---|---|---|---|
+| `TCP_NcShutdown` | 87 | `TCP_ResMgr_RemoteLookup` | 178 |
+| `TCP_NcRestartCNC` | 163 | `TCP_RemoteProgExecute` | 180 |
+| `TCP_NcRequestUpdate` | 165 | `TCP_KrnlAPI` | **200** |
+| `TCP_NcStartControlSystem` | 174 | | |
+
+> 这张表**反证了 §10.7 从 IL 读出来的基数**：Dipole 分派是
+> `switch(命令号 - 178)`，正对应 `TCP_ResMgr_RemoteLookup = 178`；那条
+> `if (命令号 == 200)` 正是 `TCP_KrnlAPI`。两条独立路径得到同一结论。
+
+**文件传输（服务端 `FileTransferCmd`）**
+
+| 名称 | 值 | 名称 | 值 |
+|---|---|---|---|
+| `FileSendStart` | 1 | `FileExist` | 11 |
+| `FileSending` | 2 | `DirExist` | 12 |
+| `FileRecvStart` | 3 | `FileNew` | 13 |
+| `FileRecving` | 4 | `FileDelete` | 14 |
+| `GetAllFileList` | **8** | `FileCopy` | 15 |
+| `Install` | **48** | `FileMove` | 16 |
+| | | `DirCreate` | 17 |
+
+> **声明顺序不等于取值**：`GetAllFileList` 是 8、`Install` 是 48。最初按声明
+> 顺序填的表是错的——这种错误只有拿到数值才看得见，已按实测值改正。
+
+**数据码（客户端 `EDataType`，KrnlAPI 的 `dwCode` 用它）**
+
+```
+DT_MACHINEPOS=0        DT_SETTABLESET=1     DT_BASICOFFSET=2    DT_G92OFFSET=3
+DT_HCSOFFSET=4         DT_HCSCHANGE=5       DT_SYSTIME=6        DT_FEEDBACK=7
+DT_HOMING=8            DT_AXESALRM=9        DT_TOOLINFO=10      DT_COORD=11
+DT_SERVOCMD=12         DT_DUALFEEDBACK=13   DT_GLOBALVAR=14     DT_SYSTEMVAR=15
+DT_DEBUGVAR=16         DT_IBIT=17           DT_OBIT=18          DT_CBIT=19
+DT_SBIT=20             DT_ABIT=21           DT_SPINDLE_FEEDBACK_VEL=22
+DT_SPINDLE_SERVOCMD_VEL=23                  DT_REGISTER=24      DT_DEVICEVAL=25
+DT_ABSOLUTE_FEEDBACK=26                     DT_CNC_STATUS=41
+DT_CNC_MAIN_PROGRAM=42 DT_PART_COUNT=43    DT_BUFFEROVERFLOW=500
+```
+
+**设备数据种类（客户端 `EDevice_Type`）**
+
+```
+L_REGISTER=0  GLOBAL_VARIABLE=1  R_REGISTER=2  SYSTEM_VARIABLE=3  I_BIT=4
+O_BIT=5  C_BIT=6  S_BIT=7  A_BIT=8  STATE_VARIABLE=9  PARAM=10
+COORD_VARIABLE=11  TIMER_STATE=12  TIMER_TYPE=13  TIMER_SETTING=14
+TIMER_ELAPSE=15  COUNTER_STATE=16  COUNTER_TYPE=17  COUNTER_SETTING=18
+COUNTER_COUNT=19  DEV_AX_VARIABLE=20  NOT_DEFINE=-1
+```
+
+另有 `EOcVariantType{VACANT=0, INT=1, DOUBLE=2, STRING=3}`（`TOcVariant.nValType`）
+与 `EServiceName{Dipole=0, Alarm=1, Update=2, FileTransfer=3, AutoConnect=4}`。
+
+这些数值已经落进代码（`ncl_syntec_cmd_lookup` / `ncl_syntec_data_code`），
+点位配置可以直接用名字或数值：
+
+```
+{"area": "KrnlAPI", "offset": 43, "length": 4, "dtype": "int32"}   # 工件计数
+{"area": "KrnlAPI", "offset": 41, "length": 4, "dtype": "int32"}   # CNC 状态
+```
