@@ -1,6 +1,6 @@
 # 07 · 海德汉 HEIDENHAIN（LSV2）实现规格书
 
-> **证据**：🟢 全实证 —— 参考实现二进制（LSV2 驱动）+ `pyLSV2 1.7.0`（45 条命令全带语义与权限说明）
+> **证据**：🟢 全实证 —— 参考实现二进制（LSV2 驱动）+ `pyLSV2 1.7.0`（45 条命令全带语义与权限说明）+ **本包设备侧实测（§2.1，握手与 9 个方法已闭环）**
 > **定位**：iTNC530 / TNC7 系列的标准远程协议，**文本命令式**，实现难度低
 
 ---
@@ -13,7 +13,7 @@
 | 传输 | TCP 长连接；单会话独占 |
 | 报文 | `[4 字节大端 payload 长度] + [4 字节命令名] + [payload]` |
 | 命令 | **45 条 CMD / 23 条 RSP**（字符串命令，如 `C_FL` / `T_OK`） |
-| 缓冲区 | 默认 256 字节（可协商放大） |
+| 缓冲区 | 默认 256 字节；握手用 `C_CC` 协商（本包实测 `max_block_length=4096` → `C_CC 00 07`） |
 | 登录 | 分级：`INSPECT < FILE < MONITOR < DIAGNOSTICS < PLCDEBUG`（部分命令需特定权限） |
 |参考实现| `pyLSV2`（Python，MIT） |
 | 版本要求 | `R_DP`/`R_DR` 等需 iTNC530 ≥ 34049x 03 / 60642x 01 |
@@ -24,12 +24,69 @@
 
 ```
 ① TCP connect(host, 19000)
-② 无握手
+② 握手（🟢 本包实测，见 §2.1）：A_LG 登录 → R_VR ×7 读版本 → R_PR 读系统参数
+   → C_CC 协商缓冲区 → 再 A_LG 登录 FILETRANSFER
 ③ 按需登录：发 A_LG + "\0" + 用户名 + "\0" (+ 口令 + "\0")
    —— 不登录也能用部分命令（见 §4 权限列）
 ④ 保活：周期性 R_ST（请求远程状态）
 ⑤ 登出：A_LO + 用户名
 ```
+
+### 2.1 设备侧实测（🟢 2026-09，`tools/site-probe/lsv2_probe{1..5}.sh`）
+
+把网关注到假机床（`mock.py` 监听 19000）后 `POST /LSV2/Open/TCP`，网关自己把
+整段握手走完；按 pyLSV2 的约定逐条答上（`A_LG` → `T_OK`、`R_VR` → `S_VR` 文本、
+`R_PR` → `S_PR` + 120 字节系统参数、`C_CC` → `T_OK`）后 **Open/TCP 直接返回
+`success: true` + connectionId**，整段是：
+
+```
+→ A_LG "INSPECT\0"                       16B  （只读登录）
+↓ T_OK
+→ R_VR 01 / 02 / 03 / 04 / 05 / 06 / 07  9B×7 （CONTROL/NC_VERSION/PLC_VERSION/
+                                                 OPTIONS/ID/RELEASE_TYPE/SPLC_VERSION）
+↓ S_VR "<字符串>\0"                      每项一条
+→ R_PR                                   8B   （系统参数，应答 120 字节）
+↓ S_PR + 120B  （pyLSV2 misc.decode_system_parameters 的 "!14L8B8L2BH4B2L2HL"，
+                 其中 max_block_length 在偏移 98、2 字节大端 → 决定下面的 C_CC 值）
+→ C_CC 00 07                             10B  （协商 4096 字节缓冲）
+↓ T_OK
+→ C_CC 00 13                             10B  （第二档协商）
+↓ T_OK
+→ A_LG "FILE\0"                          13B  （文件传输登录）
+```
+
+`max_block_length` 给 0 时网关直接回 `unknown buffer size`（Open/TCP 失败）；
+给 4096 时协商值变成 `00 07`（`ParCCC` 枚举）。
+
+**逐项 telegram（🟢 实测，参数码就是 pyLSV2 的 `ParRRI`）**：
+
+| 方法 | 登录 | 设备侧 telegram | 应答 | 实测结果 |
+|---|---|---|---|---|
+| `GetVersion` | INSPECT | 上面那 7 条 `R_VR` | `S_VR` + 文本 | ✅ `{control:"TNC640", nc_version:"340595-07", …}` 七项全出值 |
+| `GetSystemParameter` | INSPECT | `R_PR` | `S_PR` + 120/124B | ✅ 29 个字段（`max_block_length` 等） |
+| `GetAxesLocation` | **DNC** | `R_RI` + `00 16`（22） | `S_RI` | ✅ `{axes:{X:1.234, Y:-5.678, Z:9.5}}` |
+| `GetExecutionStatus` | DNC | `R_RI` + `00 17`（23） | `S_RI` + u16 | ✅ `{state:1, text:"MDI"}` |
+| `GetProgramStack` | DNC | `R_RI` + `00 18`（24） | `S_RI` + u32 + 两个 NUL 串 | ✅ `{line:300, main_pgm:"MAIN.H", current_pgm:"SUB.H"}` |
+| `GetOverrideInfo` | DNC | `R_RI` + `00 19`（25） | `S_RI` + 3×u32 | ⚠️ 出值但**整除截断**（见 §7.8） |
+| `GetProgramStatus` | DNC | `R_RI` + `00 1a`（26） | `S_RI` + u16 | ✅ `{state:2, text:"FINISHED"}`（2 = `PgmState.FINISHED`） |
+| `GetErrorMessages` | DNC | `R_RI` + `00 1b`（27）→ 循环 `00 1c`（28） | `S_RI` + 报文；**结束时回 `T_ER` + `00 39`** | ✅ `{errors:[{Class:1,Group:2,Number:3,Text:"TEXT"}]}` |
+| `GetSpindleToolStatus` | DNC | `R_RI` + `00 33`（51） | `S_RI` + u32 + 2×u16 + 2×double(**小端**) | 形状对（`Number/Index/Axis`），`Length/Radius` 用 `<d` |
+| `GetDirectoryInfo` | FILE | `R_DI`（无载荷） | `S_DI` | 请求已抓到 |
+| `GetDirectoryContent` | FILE | `R_DR` + `00`（`ParRDR.SINGLE`） | `S_DR`（可能要 `_block` 多帧） | 请求已抓到 |
+| `GetFileInfo` | FILE | `R_FI` + 路径串 | `S_FI` | 请求已抓到（文件不存在时网关回 `T_ER` + `T_ER_NO_FILE=32` 并给空结构） |
+| `ChangeDirectory` / `GetFileList` | FILE | `C_DC` + 路径串（`TNC:\0`）→ `R_DI` | `T_OK` | 请求已抓到 |
+| `ReadPLC` | **PLCDEBUG** | `A_LG "PLCDEBUG\0"` 之后**不再发报文** | — | 🔴 **这条路径在本包里没跑通**（`values` 恒为 `[]`；没有 connectionId 时还 panic） |
+
+注：`R_RI` 的参数码与 pyLSV2 `ParRRI` 完全对上（16=22 AXIS_LOCATION、17=23 EXEC_STATE、
+18=24 SELECTED_PGM、19=25 OVERRIDE、1a=26 PGM_STATE、1b=27 FIRST_ERROR、1c=28 NEXT_ERROR、
+33=51 CURRENT_TOOL），这是**独立第三方实现与本包网关互为佐证**的一条。
+
+**报文分帧的两个坑**（第一轮就踩了）：
+
+1. **块名在偏移 4..8、载荷从偏移 8 开始** —— `[4B 长度][4B 块名][载荷]`，
+   别把偏移 8 当成块名（用 `mock.py` 的 `MAP:4:6:…` 才挑得中）。
+2. **`MAP` 的键长要等于"块名 + 参数"的实际字节数**：`A_LG` 16B → 键含用户名，
+   `R_VR` 9B → 键 5 字节，`R_PR` 8B → 键 4 字节，`R_RI` 10B → 键 6 字节。
 
 ---
 
@@ -208,6 +265,16 @@ TYPE0..TYPE4 = 0..4, TYPE5 = 10, UNKNOWN = -1
 5. **`R_RI` 是采集主命令**（读控制器状态），16 位选择码决定读哪类信息。
 6. **`C_EK` 可模拟按键、`C_MC` 可改机器参数** —— 生产禁用，必须权限墙。
 7. **iTNC530 与 TNC7 命令集有差异**（`R_DP`/`R_DR` 有最低版本要求）。
+8. **倍率（`R_RI` 25）被整除截断**：报文里是"百分数 ×100"的大端 u32，本包网关
+   按**整数除法**换算（喂 `150/250/350` → 回 `1/2/3`），所以 50% 会变成 0、
+   99.5% 变成 0 —— 现场"倍率显示为 0"先看这一条（§2.1 实测）。
+9. **报警列表靠 `T_ER + 00 39`（`T_ER_NO_NEXT_ERROR`=57）收尾**：假机床如果一直回
+   `S_RI`，网关会**无限循环**地重复 `R_RI 00 1c`（第四轮就是这样卡到超时的）。
+10. **`max_block_length` 为 0 时 Open/TCP 直接失败**（`unknown buffer size`）——
+    应答 `R_PR` 时必须把偏移 98 那 2 个字节填对（本包实测 4096 → `C_CC 00 07`）。
+11. **`ReadPLC` 本包不可用**（PLCDEBUG 登录之后就不再发报文，返回空数组；
+    `lsv2_mod_plc.lua` 那套 `plc_feed_speed=4448`/`plc_spindle_speed=18376`/
+    `plc_status=4352` 的地址采不到值）。
 
 ---
 
@@ -218,3 +285,5 @@ TYPE0..TYPE4 = 0..4, TYPE5 = 10, UNKNOWN = -1
 | `pyLSV2`（参考架 `pylsv2-1.7.0-py3-none-any.whl`） | 完整实现：`low_level_com.py`（分帧）+ `client.py`（业务）+ `const.py`（命令表） |
 | 数据 | CMD 45 条带说明 · RSP 23 条 · LSV2StatusCode 99 错误码 · MemoryType/ExecState/PgmState/ControlType（原始素材未随本目录提供） |
 | 参考实现侧 | `驱动定义目录/` 中 LSV2 驱动定义（端口 19000） |
+| 上游源码（本轮对照用） | `github.com/drunsinn/pyLSV2`（master：`pyLSV2/{low_level_com,client,const,misc,dat_cls}.py`）——§2.1 的握手/应答结构都按它对照验证过 |
+| 现场 Lua 驱动 | `app1/nclink-service/lua/lua_mod/lsv2_mod.lua`（NC-Link 项 → LSV2 方法的映射，含 `/STATUS` 状态枚举 0=running、2/3/7/8=free、其余 holding）与 `lsv2_mod_plc.lua`（PLC 内存版，本包 `ReadPLC` 不通） |

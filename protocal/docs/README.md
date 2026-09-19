@@ -18,7 +18,7 @@
 | 04 | [西门子 840D sl（OPC UA）](04-SIEMENS-840D-OPCUA.md) | 4840 | TCP | 🟢 | asyncua |
 | 05 | [**三菱 CNC M70/M80（MELDAS/GIOP）**](05-MITSUBISHI-CNC-M70-MELDAS.md) | 683 | TCP | 🟢 39接口/271方法 | EZSocket / 裸协议 |
 | 06 | [三菱 PLC（MC/SLMP）](06-MITSUBISHI-PLC-MC-SLMP.md) | 5534 | TCP/UDP | 🟢 **MC 通道读/写闭环**（§3.0；SLMP 通道是驱动缺陷） | pymcprotocol / melsec_mc_protocol |
-| 07 | [海德汉 HEIDENHAIN（LSV2）](07-HEIDENHAIN-LSV2.md) | 19000 | TCP | 🟢 45命令 | pyLSV2 |
+| 07 | [海德汉 HEIDENHAIN（LSV2）](07-HEIDENHAIN-LSV2.md) | 19000 | TCP | 🟢 45命令 + **设备侧握手/9 方法闭环**（§2.1） | pyLSV2 |
 | 08 | [广州数控 GSK](08-GSK-广州数控.md) | 6000 | TCP | 🟡 | GSKRM.dll |
 | 09 | [凯恩帝 KND（REST + DLL）](09-KND-凯恩帝.md) | 80 | HTTP | 🟢 面 | KAPI |
 | 10 | [**新代 SYNTEC（RemoteCNC）**](10-SYNTEC-新代-RemoteCNC.md) | 8000 | TCP | 🟢 150方法 + **设备侧 9 项全闭环**（§3.1/§3.2） | SyntecRemoteAPI / 裸帧 |
