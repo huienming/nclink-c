@@ -378,3 +378,20 @@ Dipole 的第 4 条命令（200）那条分支里调用的是 `TCPDipoleService:
 > 读命令号的方法（已固定下来）：**先找分派方法的 `switch`，看它前面减掉的基数；
 > 再看分派体里有没有 `ldc.i4 <值>; bne.un/beq` 这类"额外命令"比较**。
 > 两条都读了，命令号才不漏。
+
+### 10.8 `KrnlAPI` 是 P/Invoke：业务码来自原生 Krnl API
+
+`OCAPIServer.TCPDipoleService::KrnlAPI` 的元数据是
+`rva=0` + `mdPinvokeImpl=True`（`mdStatic`、`mdPrivate`）——**它没有 IL，是
+对原生库的直接调用**。也就是说服务端把收到的
+`MMI_Request_KrnlAPI{uFuncID, dwCode, dwSizeIn, dwSizeOut, pBufferIn}`
+**原样递给本机的 Krnl/MMI 原生函数**，`dwCode` 是**原生 API 的函数码**，
+不是协议层的枚举。
+
+这条对实现的意义：
+
+1. **分帧与命令号**（12 字节包头 + `CmdID` + 函数体）已经够写靶机与驱动骨架了；
+2. **业务码表**（`READ_status` / `READ_position` 各自用哪个 `dwCode`）要么从
+   客户端那 150 个薄壳里读（它们知道给每个 API 填什么码），要么从本机原生
+   API 的导出表读（交付包里有 `OCUSER.dll`，166 个导出）；
+3. 靶机先只答一路（`KrnlAPI`），把收发、序列号、超时跑通，再逐条补业务码。
