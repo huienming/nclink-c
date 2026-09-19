@@ -100,6 +100,10 @@ ncl_json *stats = ncl_audit_stats();       /* 计数、直方图、最近 8 条�
    第三方驱动也可以自己调用 `ncl_driver_register_protocol()` 挂进注册表。
 4. 在 `tests/` 里加：报文构造/解析的黄金样本（真实抓包做 case）＋ 用
    `mock` 或自建靶机跑一遍连接与读写。
+5. 批量读里要用的临时表**按这一批的规模分配**，不要按协议上限先要一大块：
+   元素 40 字节时 `2048` 项就是 80 KiB，静态池版本里一次三点的读就会被拒
+   （`modbus` / `mc` / `fins` 都踩过这个坑，现在按"字符串地址算一项、其余每个
+   元素算一项"算容量，上限仍由 `*_MAX_ITEMS` 把关）。
 
 `drivers/mock/` 是最小样板：内存点位模型 + 错误注入 + 事件触发，没有一行
 网络代码，测试里可以直接用（`ncl_mock_driver_create()`）。
@@ -508,13 +512,23 @@ HTTP 客户端（`drivers/http/ncl_http_client.c`）与 MTConnect 驱动共用�
 ## 测试
 
 ```sh
-.\build.ps1                      # Windows：配置 + 编译 + 38 个测试套件
+.\build.ps1                      # Windows：配置 + 编译 + 39 个测试套件
 sh build-linux.sh build-linux    # Linux：同样全跑一遍
 ```
 
+其中 25 套是核心库的（`tests/`），14 套是适配器层的（`adapters/tests/`）。
 适配器层的测试三件套：`tests/test_driver.c`（驱动接口：注册表、地址解析、
 错误分级、mock 的读写/位寻址/批量/事件/原始报文）、
 `tests/test_driver_manager.c`（配置加载、点位表、前缀分派）、
 `tests/test_adapter.c`（配置 → 设备：生成模型、操作、读写、方法、轮询）。
 协议驱动的测试以两段为主：报文级的黄金样本（字节级 diff），以及对着 mock
 靶机的连接—读写—重连流程。
+
+小池回归（适配器层最容易踩的是"按协议上限要临时表"这类固定大块，见上一条）：
+
+```sh
+NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 NCL_MEM_REPORT=1 ./build-linux.sh build-linux-64k
+```
+
+64 KiB 池下应当只有 `file` 一套失败（它自己的整块读回比较要 1 MiB 连续块，与适配器
+无关）；32 KiB 池会再少 `ftp` 一套。池的实测峰值与边界见 `../MANUAL.md` 4.9。

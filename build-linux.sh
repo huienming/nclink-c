@@ -11,7 +11,9 @@
 #
 # 可选：NCL_STATIC_MEM=1 让库内每次分配都从固定静态池里拿（不调用 malloc），
 # 池大小用 NCL_MEM_POOL_BYTES 指定，默认 20 MiB（20971520 字节）；
-# NCL_MEM_SINGLE_THREAD=1 可去掉池的锁（单上下文/裸机）。
+# NCL_MEM_SINGLE_THREAD=1 可去掉池的锁（单上下文/裸机）；
+# NCL_MEM_REPORT=1 让每个测试进程在退出时打印池的峰值占用与最大请求，
+# 这是给设备定池大小的实测依据（与 build.ps1 -MemReport 同一份统计）。
 # 例如 NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 ./build-linux.sh build-linux-static
 #
 # 产出：
@@ -61,6 +63,9 @@ if [ "${NCL_STATIC_MEM:-0}" = "1" ]; then
     CFLAGS="$CFLAGS -DNCL_STATIC_MEM=1 -DNCL_MEM_POOL_BYTES=${NCL_MEM_POOL_BYTES:-20971520}"
     if [ "${NCL_MEM_SINGLE_THREAD:-0}" = "1" ]; then
         CFLAGS="$CFLAGS -DNCL_MEM_SINGLE_THREAD=1"
+    fi
+    if [ "${NCL_MEM_REPORT:-0}" = "1" ]; then
+        CFLAGS="$CFLAGS -DNCL_MEM_REPORT=1"
     fi
 fi
 

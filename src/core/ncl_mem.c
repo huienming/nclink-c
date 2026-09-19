@@ -111,6 +111,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* NCL_MEM_TRACE (see below) turns a refusal into a call stack; backtrace() is a
+ * glibc/musl extension, so it is opt-in twice over. */
+#if defined(NCL_MEM_REPORT) && defined(NCL_MEM_TRACE) && defined(__GLIBC__)
+#include <execinfo.h>
+#endif
+
 #if !defined(NCL_STATIC_MEM)
 
 /* ------------------------------------------------------- runtime allocator -- */
@@ -711,6 +717,60 @@ static void pool_note_failure_locked(void)
     g_failure_free = total;
 }
 
+#if defined(NCL_MEM_REPORT)
+/** How many refusals the report names before it stops printing. */
+#define NCL_MEM_REFUSAL_PRINTS 8u
+static unsigned g_refusal_prints;
+
+#if defined(NCL_MEM_TRACE) && defined(__GLIBC__)
+/** Diagnostic: name the caller of a refused request (Linux/glibc only). */
+static void pool_trace_refusal(void)
+{
+    void  *frames[16];
+    int    count = backtrace(frames, (int)(sizeof(frames) / sizeof(frames[0])));
+
+    /* frames[0] is this function, frames[1] the refusal helper: start at the
+     * allocator the library actually called. */
+    if (count > 2) {
+        backtrace_symbols_fd(frames + 2, count - 2, 2);
+    }
+}
+#else
+static void pool_trace_refusal(void)
+{
+}
+#endif
+
+/**
+ * Refuse a request of @p size: bump the counter, remember the shape of the free
+ * space, and (under NCL_MEM_REPORT) name the request. The size matters as much
+ * as the counters: a refusal of a 40 byte block and a refusal of a 1 MiB buffer
+ * mean very different things to whoever is sizing the pool, and the aggregate
+ * report cannot tell them apart on its own.
+ */
+static void pool_note_refusal_locked(size_t size)
+{
+    g_failures++;
+    pool_note_failure_locked();
+    if (g_refusal_prints < NCL_MEM_REFUSAL_PRINTS) {
+        g_refusal_prints++;
+        fprintf(stderr,
+                "ncl_mem: refused %lu bytes with %lu free bytes (largest "
+                "contiguous %lu)\n",
+                (unsigned long)size, (unsigned long)g_failure_free,
+                (unsigned long)g_failure_largest_free);
+        pool_trace_refusal();
+    }
+}
+#else
+static void pool_note_refusal_locked(size_t size)
+{
+    (void)size;
+    g_failures++;
+    pool_note_failure_locked();
+}
+#endif
+
 /** Count a request in the log2 histogram that sizes the pool. */
 static void pool_note_request(size_t size)
 {
@@ -741,8 +801,7 @@ void *ncl_mem_alloc(size_t size)
     /* Refuse anything the pool could never hold before rounding up, so a
      * request close to SIZE_MAX cannot wrap into a small one. */
     if (size > pool_total()) {
-        g_failures++;
-        pool_note_failure_locked();
+        pool_note_refusal_locked(size);
         pool_unlock();
         return NULL;
     }
@@ -796,8 +855,7 @@ void *ncl_mem_alloc(size_t size)
         g_allocations++;
         out = (void *)((unsigned char *)b + NCL_MEM_HDR);
     } else {
-        g_failures++;
-        pool_note_failure_locked();
+        pool_note_refusal_locked(size);
     }
     pool_unlock();
     return out;
@@ -809,8 +867,7 @@ void *ncl_mem_calloc(size_t count, size_t size)
 
     if (count != 0u && size > (size_t)-1 / count) {
         pool_lock();
-        g_failures++;
-        pool_note_failure_locked();
+        pool_note_refusal_locked(count * size);
         pool_unlock();
         return NULL;
     }
@@ -927,8 +984,7 @@ void *ncl_mem_realloc(void *ptr, size_t size)
         return NULL;
     }
     if (size > pool_total()) {
-        g_failures++;
-        pool_note_failure_locked();
+        pool_note_refusal_locked(size);
         pool_unlock();
         return NULL;
     }

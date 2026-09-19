@@ -60,8 +60,9 @@ examples/           两个可运行示例：设备端 / 客户端
 MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 
 src/<模块>/         实现，共 13 个模块目录        ← 以下仅源码仓库有
-tests/              25 个测试套件（含 mem 分配器不变量、mem_mc 蒙特卡洛、mem_mt 并发压测，以及可选的
-                    broker 互操作与 TLS 套件）+ 协议黄金样本
+tests/              25 个核心测试套件（含 mem 分配器不变量、mem_mc 蒙特卡洛、mem_mt 并发压测，
+                    以及可选的 broker 互操作与 TLS 套件）+ 协议黄金样本；
+adapters/tests/     14 个适配器测试套件（驱动接口、配置分派、守护进程、各协议黄金报文与靶机）
 tools/              许可头检查、broker 互操作、文档生成与发布打包脚本
 build.ps1           Windows 一键：配置 + 编译 + ctest
 build-linux.sh      Linux 免 cmake 构建
@@ -81,7 +82,7 @@ build-linux.sh      Linux 免 cmake 构建
 
 除了 MSVC，**mingw-w64（GCC）在 Windows 目标上也整套验证过**（16.2.0 / UCRT /
 posix-threads）：`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw` 编出的库、
-示例与测试 **25/25 通过**（Go 绑定的 cgo 走的就是这条链，见 2.4.2）。
+示例与测试全部通过（Go 绑定的 cgo 走的就是这条链，见 2.4.2）。
 
 脚本会自动定位 Visual Studio 2022 Build Tools 自带的 CMake/Ninja，并按架构调用对应的
 `vcvars64.bat` / `vcvars32.bat`，不用先开 VS 命令行；`-Arch x86` 出的就是 32 位
@@ -93,12 +94,13 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### 2.3 Linux（已验证：gcc 13.4，25/25 测试通过）
+### 2.3 Linux（已验证：gcc 13.4，39/39 测试通过）
 
-补充验证（gcc 13，容器内，2026-09-17）：`./build-linux.sh` 全量 **25/25 通过**；
-静态池版 `NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536` 与默认 20 MiB 也都是 **25/25**，
-且 `mem_mc` 的统计与 Windows/MSVC 逐位一致（确定性序列）。真 broker 互操作
-（`tests/test_broker`）对 **Mosquitto 2.1.2** 与 **EMQX 5.8.9** 各 **44 项检查全过**。
+补充验证（gcc 13，容器内）：`./build-linux.sh` 全量 **39/39 通过**（25 个核心套件 +
+14 个适配器套件），`mem_mc` 的统计与 Windows/MSVC 逐位一致（确定性序列）。静态池
+版的尺寸边界见 4.9：64 KiB 池 **38/39**（只剩 `file` 一套，它读回比较时要 1 MiB
+连续块），1.5 MiB 池 **39/39**。真 broker 互操作（`tests/test_broker`）对
+**Mosquitto 2.1.2** 与 **EMQX 5.8.9** 各 **44 项检查全过**。
 
 内存门禁：`./tools/asan-linux.sh`（`--docker` 可在 Windows/macOS 上一键跑）用
 AddressSanitizer + LeakSanitizer 覆盖分配器、协议层与传输层；MSVC 的 ASan 不带泄漏
@@ -1227,29 +1229,62 @@ NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 ./build-linux.sh build-linux-static-64
 ncl_mem: static-pool peak 25632 of 65536 bytes, live 269 blocks, 3236 allocations, 0 failures, 0 foreign frees; free 45728 bytes in 13 blocks (largest 43808), largest request 1024
 ```
 
+被拒的时候还会**当场点名被拒的是多大的请求**（最多打 8 行，之后只计数），这一行
+才是定池大小最直接的依据——汇总行里 `largest request` 只统计被记进直方图的请求，
+"请求比整个池还大"这条路径不进直方图：
+
+```
+ncl_mem: refused 81920 bytes with 59296 free bytes (largest contiguous 44000)
+```
+
+Linux 上再加 `-DNCL_MEM_TRACE=1`（`src/core/ncl_mem.c`，glibc `backtrace`）会把调用栈
+一起打出来，纯粹用于定位"到底谁在要这块内存"，不随发行包提供。`build-linux.sh`
+侧对应 `NCL_MEM_REPORT=1`（与 `build.ps1 -MemReport` 同一份统计）：
+
+```sh
+NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 NCL_MEM_REPORT=1 ./build-linux.sh build-linux-rep
+```
+
 运行时也可以读 `ncl_mem_get_stats()`：池大小、当前用量、峰值、活块数、**总空闲字节与
 空闲块数**、最大连续空闲块、**历史最大单次请求**、分配次数、拒绝次数、外来释放次数、
 **最后一次拒绝时的空闲快照**、坏链计数、**实际占用峰值（`peak_footprint_bytes`，含块头）
 与每个尺寸类的用量**（见 4.9.2）。
 
-本仓库全量测试的实测峰值（Windows x64 / MSVC，64 KiB 池，尺寸类开启；单位字节，
-**载荷口径**的峰值与最大单次请求，测试日志原值。含块头的"实际占用"口径见 4.9.2）：
+本仓库全量测试（39 套）的实测峰值（Windows x64 / MSVC，20 MiB 池，尺寸类开启；
+单位字节，**载荷口径**的峰值与最大单次请求，测试日志原值。含块头的"实际占用"口径
+见 4.9.2）：
 
-| 用例 | 峰值 | 最大单次请求 | 用例 | 峰值 | 最大单次请求 |
+| 用例 | 峰值 | 最大请求 | 用例 | 峰值 | 最大请求 |
 |------|------|------|------|------|------|
-| file | 47568 | 16384 | http | 5792 | 2760 |
-| ftp | 43392 | 16384 | mqtt_client | 4032 | 2600 |
-| message | 14688 | 1024 | schema | 4032 | 1536 |
-| server | 22960 | 2600 | json | 1568 | 64 |
-| rest | 17168 | 2760 | thread | 2272 | 1600 |
-| event | 14416 | 768 | model | 10368 | 1024 |
-| client | 13344 | 2600 | config | 6592 | 2760 |
+| file | 1092288 | 1060922 | s7 | 8000 | 4176 |
+| ftp | 38608 | 16624 | mtconnect | 8400 | 2048 |
+| event | 19952 | 1536 | meldas | 4480 | 664 |
+| rest | 17520 | 2760 | lsv2 | 8448 | 4312 |
+| message | 14672 | 1024 | syntec_driver | 12416 | 8328 |
+| client | 13008 | 2600 | audit | 6304 | 1536 |
+| server | 23792 | 2600 | knd | 3888 | 512 |
+| config | 6800 | 2760 | adapter | 15664 | 1536 |
+| http | 5904 | 2760 | driver_manager | 10640 | 1536 |
+| model | 10368 | 1024 | driver | 3472 | 1536 |
+| schema | 4032 | 1536 | modbus | 4656 | 736 |
+| mqtt_client | 4016 | 2600 | mc | 8048 | 4280 |
+| thread | 2208 | 1600 | fins | 8928 | 4280 |
+| mqtt | 544 | 64 | cpp | 2736 | 336 |
+| json | 1568 | 64 | topic / codec / common | 48 / 32 / 64 | 35 / 12 / 64 |
 
-- 实测边界：**64 KiB 池全量 25/25 通过、零拒绝**；32 KiB 时 22/25（message、ftp、file
-  三条被拒，且拒绝快照显示是"总空闲都不够"，即尺寸问题；加上尺寸类后是 **23/25**，
-  `message` 通过，见 4.9.2）。设备端常见组合
-  （model + message + client/server + mqtt）在 32 KiB 上下就够，文件搬运是唯一的大户；
-  默认的 20 MiB 是"先跑通"的余量口径。
+`mem` / `mem_mc` / `mem_mt` 三套是分配器自己的压测，故意把池吃满（峰值 12~16 MiB、
+拒绝数千次），它们的数字不代表业务流量，故不入表。
+
+- 实测边界（Linux / gcc 13，全套 39 个套件）：**32 KiB → 37/39**（`file`、`ftp` 被拒）、
+  **64 KiB → 38/39**（只剩 `file`）、**1.5 MiB → 39/39**。设备端常见组合
+  （model + message + client/server + mqtt + 各协议驱动）在 **32~64 KiB** 就够——
+  上表里除 `file` 外最大的 `ftp` 也只到 38 KiB。
+- `file` 这一套为什么是大户：它用 `ncl_file_read_all()` 把 1 MiB 的文件**整块读进池里**
+  与上传前的内容比对，12 万字节级的大块只能来自通用区，而默认尺寸类区占池的 1/4，
+  于是池要 ≥ 4/3 × 1.06 MiB。两个办法：设备上改用流式读写（`ncl_file_write_chunk()` /
+  `ncl_file_read_chunk()`，16 KiB 一块，`ftp` 那套跑的就是它），或把尺寸类区压小
+  （`-MemClassBytes` / `NCLINK_MEM_CLASS_BYTES`）——实测尺寸类区为 0 时 **1.125 MiB
+  池 39/39**。默认的 20 MiB 是"先跑通"的余量口径。
 - 分配策略：**最佳适配**（能装下的最小空闲块） + 释放时**双向合并**；块头 32 字节、
   载荷 16 字节对齐（`NCL_MEM_ALIGNMENT`）；剩余空间小于"块头 + 对齐"时不再切分，免得
   池里堆满永远用不上的碎屑。同尺寸请求会命中完全匹配而提前结束查找。
@@ -1331,8 +1366,9 @@ ncl_mem: static-pool peak 25632 of 65536 bytes, live 269 blocks, 3236 allocation
 
 这张表最值得记的一条：**碎片压力取决于"最大单次请求 / 池大小"这个比值，而不只是池够不
 够大**。20 MiB 池在随机流量里仍出现 22 次形状拒绝，因为随机流量会一次性申请到 2.6 MB
-（池的 1/8）。库自身的真实最大请求是 16 KB（文件块），所以在 64 KiB 池里它占 1/4、在
-512 KiB 池里只占 1/32——这也解释了为什么 64 KiB 是"够用但很紧"而 128 KiB 就宽松。
+（池的 1/8）。库自身的常规最大请求是 16 KB（文件流式的块，见 4.9 的表），所以在
+64 KiB 池里它占 1/4——"够用但很紧"说的就是这种比值：块一大就要从通用区拿，而通用区
+默认只有池的 3/4（4.9.1 的 4/3 规则就是这么来的）。
 
 跑法：`build.ps1 -StaticMem -MemPoolBytes 65536` 之后 `ctest -R mem_mc`；想复现上面的
 首适配对照，加 `-MemFirstFit`（Linux：`NCL_MEM_FIRST_FIT=1`）。堆构建下这个套件同样会
@@ -1362,21 +1398,25 @@ ncl_mem: static-pool peak 25632 of 65536 bytes, live 269 blocks, 3236 allocation
 - **区域份额按实测分布加权**（`g_class_share`），可用宏覆盖；`-MemReport` 会打印每一类的
   `live/free/region` 用量，现场按真实流量调。
 
-实测收益（64 KiB 池，同一套 24 个测试，**实际占用＝载荷＋块头**的峰值，开/关尺寸类）：
+实测收益（Windows x64 / MSVC，64 KiB 池，39 套全部重跑，**实际占用＝载荷＋块头**的
+峰值，开/关尺寸类各编一份）：
 
 | 用例 | 关（字节） | 开（字节） | 省 | 用例 | 关 | 开 | 省 |
 |------|-----------|-----------|----|------|----|----|----|
-| server | 36160 | 25584 | **29.2%** | model | 16304 | 10720 | 34.2% |
-| message | 24064 | 16256 | **32.4%** | event | 25504 | 15344 | 39.8% |
-| client | 20032 | 13920 | **30.5%** | json | 2800 | 1568 | 44.0% |
-| rest | 25872 | 18000 | **30.4%** | schema | 7456 | 4032 | 45.9% |
+| server | 36384 | 25744 | **29.2%** | model | 16304 | 10720 | 34.2% |
+| message | 24064 | 16256 | **32.4%** | event | 34864 | 23776 | 31.8% |
+| client | 19520 | 13584 | **30.4%** | json | 2800 | 1568 | 44.0% |
+| rest | 25904 | 18000 | **30.5%** | schema | 7456 | 4032 | 45.9% |
 | config | 8896 | 6720 | 24.5% | mqtt | 1120 | 544 | 51.4% |
-| http | 6944 | 5952 | 14.3% | mem_mc | 50608 | 40736 | 19.5% |
-| file | 57584 | 48272 | 16.2% | ftp | 44384 | 43520 | 1.9% |
+| adapter | 25936 | 17120 | **34.0%** | knd | 6976 | 3984 | 42.9% |
+| driver_manager | 16752 | 10768 | **35.7%** | meldas | 7712 | 4544 | 41.1% |
+| modbus | 7792 | 4784 | **38.6%** | s7 | 11152 | 8128 | 27.1% |
+| mem | 65376 | 49504 | 24.3% | ftp | 39584 | 38768 | 2.1% |
 
-设备端那几条主力路径都在 **29%～32%**，与设计预期一致；`ftp` 收益小是因为它几乎全是
-16 KiB 的大块（本来就不进尺寸类）。**池大小的边界也跟着变了**：32 KiB 池从 22/25 变成
-**23/25**（`message` 现在能过了，只剩 ftp/file 需要大块连续空间），64 KiB 仍是 25/25。
+设备端那几条主力路径都在 **29%～38%**，与设计预期一致；`ftp` 收益小是因为它几乎全是
+16 KiB 的大块（本来就不进尺寸类）。**池大小的边界也跟着变了**：不开尺寸类时 32 KiB
+池会多丢一套 `message`（开尺寸类后它能过），64 KiB 起 38/39（只剩 `file`，见 4.9——
+它在 64 KiB 池里连跑都跑不完，所以不进这张表）。
 
 度量口径提醒：`in_use_bytes` 只算载荷，**不含块头**，因此它天然偏向通用区；要比较
 "池到底省没省"，看 `footprint_bytes` / `peak_footprint_bytes`（载荷 + 每块 32 字节

@@ -349,16 +349,43 @@ static int compare_items(const void *a, const void *b)
     return left->element < right->element ? -1 : (left->element > right->element);
 }
 
+/**
+ * How many items a batch can expand to: a string address is one item, anything
+ * else is one item per element. Sizing the scratch array from the batch instead
+ * of always reserving MB_MAX_ITEMS keeps a three point read from taking 80 KiB
+ * out of a device's pool (2048 * 40 bytes); MB_MAX_ITEMS is still the ceiling,
+ * and build_items reports an oversized batch as NCL_ERR_RANGE rather than
+ * writing past what was allocated.
+ */
+static size_t batch_capacity(const ncl_address *addresses, size_t count)
+{
+    size_t total = 0;
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+        size_t width = addresses[i].dtype == NCL_DTYPE_STRING
+                           ? 1u
+                           : (size_t)addresses[i].length;
+
+        if (width > MB_MAX_ITEMS - total) {
+            return MB_MAX_ITEMS;
+        }
+        total += width;
+    }
+    return total == 0u ? 1u : total;
+}
+
 /** Expand the addresses into the elements a read has to fetch. */
 static ncl_err build_items(mb_ctx *ctx, const ncl_address *addresses,
-                           size_t count, mb_item *items, size_t *item_count)
+                           size_t count, mb_item *items, size_t capacity,
+                           size_t *item_count)
 {
     size_t i;
     size_t used = 0;
 
     for (i = 0; i < count; i++) {
         if (addresses[i].dtype == NCL_DTYPE_STRING) {
-            if (used + 1 > MB_MAX_ITEMS) {
+            if (used + 1 > capacity) {
                 return NCL_ERR_RANGE;
             }
             items[used].address_index = i;
@@ -375,7 +402,7 @@ static ncl_err build_items(mb_ctx *ctx, const ncl_address *addresses,
             uint16_t width = element_width(&addresses[i]);
 
             for (element = 0; element < (size_t)addresses[i].length; element++) {
-                if (used + 1 > MB_MAX_ITEMS) {
+                if (used + 1 > capacity) {
                     return NCL_ERR_RANGE;
                 }
                 items[used].address_index = i;
@@ -546,6 +573,7 @@ static ncl_err mb_read_batch(ncl_driver *self, const ncl_address *addresses,
     ncl_json **slots = NULL;
     ncl_json *array = ncl_json_new_array();
     size_t item_count = 0;
+    size_t capacity;
     ncl_err result;
     size_t i;
 
@@ -561,13 +589,14 @@ static ncl_err mb_read_batch(ncl_driver *self, const ncl_address *addresses,
         *values = array;
         return NCL_OK;
     }
-    items = (mb_item *)ncl_mem_calloc(MB_MAX_ITEMS, sizeof(*items));
+    capacity = batch_capacity(addresses, count);
+    items = (mb_item *)ncl_mem_calloc(capacity, sizeof(*items));
     slots = (ncl_json **)ncl_mem_calloc(count, sizeof(*slots));
     if (items == NULL || slots == NULL) {
         result = NCL_ERR_NOMEM;
         goto done;
     }
-    result = build_items(ctx, addresses, count, items, &item_count);
+    result = build_items(ctx, addresses, count, items, capacity, &item_count);
     if (result != NCL_OK) {
         goto done;
     }
