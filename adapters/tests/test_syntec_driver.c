@@ -257,6 +257,8 @@ static void test_read(void)
     ncl_json_free(value);
     value = NULL;
     NCL_CHECK_EQ_INT(mock->last_cmd, NCL_SYNTEC_CMD_KRML_API);
+    /* §10.9: the function header carries the same number as the packet's CmdID */
+    NCL_CHECK_EQ_INT(mock->last_func, NCL_SYNTEC_CMD_KRML_API);
     NCL_CHECK_EQ_INT(mock->last_code, 1); /* the point's offset is the dwCode */
     NCL_CHECK_EQ_INT(mock->last_size_out, 4);
     NCL_CHECK_EQ_INT(mock->last_serial, 1);

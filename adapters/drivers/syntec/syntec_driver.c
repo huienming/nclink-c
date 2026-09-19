@@ -267,10 +267,15 @@ static ncl_err syntec_read_batch(ncl_driver *self, const ncl_address *addresses,
             break;
         }
         (void)canonical;
+        /* §10.9: the controller dispatches on uFuncID and writes CmdID = uFuncID
+         * into its answers, so the two fields carry the same command number
+         * unless the configuration says otherwise. */
+        {
+            uint16_t function_id =
+                ctx->func_id != 0 ? (uint16_t)ctx->func_id : cmd_id;
         /* The body is the KrnlAPI request structure (§10.2): the point's
          * offset is the dwCode, `length` the size asked for. */
-        body_len = ncl_syntec_krnl_body(body, sizeof(body),
-                                        (uint16_t)ctx->func_id,
+        body_len = ncl_syntec_krnl_body(body, sizeof(body), function_id,
                                         (int32_t)address->offset, 0, (int32_t)want,
                                         NULL, 0);
         if (body_len == 0) {
@@ -278,8 +283,8 @@ static ncl_err syntec_read_batch(ncl_driver *self, const ncl_address *addresses,
             break;
         }
         memset(&view, 0, sizeof(view));
-        result = syntec_request(ctx, cmd_id, (uint16_t)ctx->func_id, body,
-                                body_len, &view);
+        result = syntec_request(ctx, cmd_id, function_id, body, body_len, &view);
+        }
         if (result != NCL_OK) {
             break;
         }
@@ -508,7 +513,7 @@ ncl_driver *ncl_syntec_create(void)
         return NULL;
     }
     ctx->port = 8000; /* §10.1: the controller's OCAPIServer listens here */
-    ctx->func_id = 1; /* the delivered client's uFuncID for KrnlAPI - to verify */
+    ctx->func_id = 0; /* 0 = use the command number for both fields (§10.9) */
     ctx->serial = 1;
     ctx->connect_timeout_ms = 3000;
     ctx->timeout_ms = 3000;

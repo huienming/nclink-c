@@ -8,7 +8,8 @@
  *
  * Parameters:
  *   "host", "port"      target; port defaults to 8000
- *   "funcId"            the uFuncID written into the function header
+ *   "funcId"            override for the uFuncID written into the function
+ *                       header; 0 (default) means "the command number itself"
  *   "serial"            the first uSerial (default 1, incrementing)
  *   "connectTimeoutMs"  TCP connect (default 3000)
  *   "timeoutMs"         per request (default 3000; a control is slower than a
@@ -23,8 +24,13 @@
  *   {"path": "/CNC/X",    "addr": {"area": "200", "offset": 20,
  *                                  "length": 8, "dtype": "float64"}}
  *
- * The area is the CmdID - a name from §10.6 or a bare number - and the offset
- * is the `dwCode` the command carries; `length` is the reply size asked for.
+ * The area is the command number (§10.7: one numbering space for the whole
+ * controller) - a name from §10.6 or a bare number - and the offset is the
+ * `dwCode` the command carries; `length` is the reply size asked for.
+ *
+ * §10.9: the controller dispatches on the function header's **uFuncID** and
+ * writes `CmdID = uFuncID` into its answers, so both fields carry the same
+ * number; `"funcId"` only exists for the case where a machine wants another.
  * Those two numbers come from the machine's own documentation or from a
  * capture, which is what keeps this driver honest: §10.8 shows the controller
  * hands `dwCode` straight to its native Krnl API, so the codes are the native

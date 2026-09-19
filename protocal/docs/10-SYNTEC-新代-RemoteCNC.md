@@ -395,3 +395,34 @@ Dipole 的第 4 条命令（200）那条分支里调用的是 `TCPDipoleService:
    客户端那 150 个薄壳里读（它们知道给每个 API 填什么码），要么从本机原生
    API 的导出表读（交付包里有 `OCUSER.dll`，166 个导出）；
 3. 靶机先只答一路（`KrnlAPI`），把收发、序列号、超时跑通，再逐条补业务码。
+
+### 10.9 `uFuncID` 就是命令号（`funcId` 悬念结清）
+
+`OCAPIServer.TCPService::ProcessPacket` 的 IL 把两个方向都说清了：
+
+```
+local0 = 把 m_WorkBuffer 直接 marshal 成函数结构体
+funcId = local0.uFuncID                    ← 取函数头里的 uFuncID
+this.DispatchPacketByFunctionID(funcId, &out)   ← 按 uFuncID 分派（不是按 CmdID）
+this.PreparePackets(out.size, funcId, m_nWtfReserved)   ← 回包：CmdID = funcId
+```
+
+而 `PreparePackets` 写包头是：
+
+```
+CTCPCMD_PacketStart.Length   = 分派返回的内容长度
+CTCPCMD_PacketStart.CmdID    = 传进来的 funcId
+CTCPCMD_PacketStart.Reserved = m_nWtfReserved
+```
+
+**结论**：包头里的 `CmdID` 与函数头里的 `uFuncID` 是**同一个命令号**，
+服务端按 `uFuncID` 分派、回包时把它写回 `CmdID`。所以 §10.6/§10.7 里按基数
+推出的那些数（文件传输 1..17、Dipole 178/179/180、200）**就是 uFuncID**，
+不存在另一个"funcId 常量"要找。
+
+旁证：`TCPAlarmService::PrepareAlarmPacket` 给
+`MMI_Request_OnEventCallParams` 填的是 `nFuncID = 1`（报警回调这一路），
+同样是"函数号 = 命令号"的用法。
+
+实现因此改成：**两个字段默认填同一个命令号**，`"funcId"` 参数只在某台机床
+要求不同值时覆盖（默认 0 = 用命令号）。
