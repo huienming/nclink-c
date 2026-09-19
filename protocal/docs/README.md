@@ -17,7 +17,7 @@
 | 03 | [西门子 S7 PLC（S7comm）](03-SIEMENS-S7-PLC.md) | 102 | TCP/ISO-TSAP | 🟢 | python-snap7 |
 | 04 | [西门子 840D sl（OPC UA）](04-SIEMENS-840D-OPCUA.md) | 4840 | TCP | 🟢 | asyncua |
 | 05 | [**三菱 CNC M70/M80（MELDAS/GIOP）**](05-MITSUBISHI-CNC-M70-MELDAS.md) | 683 | TCP | 🟢 39接口/271方法 | EZSocket / 裸协议 |
-| 06 | [三菱 PLC（MC/SLMP）](06-MITSUBISHI-PLC-MC-SLMP.md) | 5534 | TCP/UDP | 🟢 | pymcprotocol / melsec_mc_protocol |
+| 06 | [三菱 PLC（MC/SLMP）](06-MITSUBISHI-PLC-MC-SLMP.md) | 5534 | TCP/UDP | 🟢 **MC 通道读/写闭环**（§3.0；SLMP 通道是驱动缺陷） | pymcprotocol / melsec_mc_protocol |
 | 07 | [海德汉 HEIDENHAIN（LSV2）](07-HEIDENHAIN-LSV2.md) | 19000 | TCP | 🟢 45命令 | pyLSV2 |
 | 08 | [广州数控 GSK](08-GSK-广州数控.md) | 6000 | TCP | 🟡 | GSKRM.dll |
 | 09 | [凯恩帝 KND（REST + DLL）](09-KND-凯恩帝.md) | 80 | HTTP | 🟢 面 | KAPI |
