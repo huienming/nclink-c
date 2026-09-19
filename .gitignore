@@ -63,3 +63,5 @@ __pycache__/
 /bindings/**/log/
 # Go 绑定：库在 <root>/bin/ 下落的运行期文件（sn.txt 等）
 /bindings/go/bin/
+# scratch output of tools/site-probe (it copies the site package under run/)
+tools/site-probe/run/

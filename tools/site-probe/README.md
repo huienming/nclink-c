@@ -69,3 +69,17 @@ docker run --rm --platform linux/arm/v7 \
 
 任一条通了，GSK / KEDE / Mitsubishi-HTTP / 相机这几家的**设备侧请求形状**就能
 在本地补齐，不用等现场（`protocal/docs/29-现场模型与驱动定义.md` §6）。
+
+第 2 条已经试到中途（`ncl_service.sh`）：
+
+- ✅ 宿主能在 armv7 容器里起来；
+- ✅ spdlog 的 `Failed getting file size from fd: Value too large for defined data
+  type` 是 32 位进程 `fstat()` 一个 Windows bind-mount 上的文件报 EOVERFLOW——
+  把工作目录与日志都放到容器自己的文件系统（`/tmp`）就好了；
+- ❌ 接着它要求当前目录下有 `./nclink.cfg`（`nclink_cfg.json` 之外的另一份），
+  包里没有，随后在 qemu 下 Bus error。要接着走就得把 `nclink.cfg` 的格式凑出来，
+  或者回到第 1 条。
+
+另外：`INCBOX200/log/` 里那几份**现场运行日志**能告诉我们运行期的形态
+（每项一个 data_driver、重试节奏），但那份日志里 FOCAS 一次都没连上机床
+（2909 次 `-16`），所以它不能当抓包用（29 册 §8）。
