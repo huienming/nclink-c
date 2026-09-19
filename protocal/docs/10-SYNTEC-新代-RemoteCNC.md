@@ -271,3 +271,39 @@ FileNew / FileDelete / FileCopy / FileMove / DirCreate；`AlarmCmd` 里含
 3. 读 `SyntecRemoteCNC` 的 `READ_status` / `READ_position` 之类的薄壳，
    把它们映射到的 `uFuncID` 取出来（业务命令号）。
 4. 有了 1–3 就能写一个假 OCAPIServer 靶机，跑通握手 + `READ_status`，再实现驱动。
+
+### 10.4 分帧机制（已确证，出处：`OCAPIServer_WinCE.exe` 的 IL）
+
+**一个包 = 12 字节包头 + `Length` 字节内容**，两端都用"结构体 ↔ 字节"直接搬：
+
+```
+CTCPCMD_PacketStart   (12 字节，LayoutKind.Sequential 默认对齐)
+    0  4  Length      u4      内容长度（不是总长）
+    4  2  CmdID       u2      命令号
+    6  2  ——          ——      CmdID 后的 2 字节填充（默认对齐产生）
+    8  4  Reserved    u4
+```
+
+依据：
+
+1. `TCPService::RecvPacketStart` 里 `Socket::BeginReceive(buffer, 0, **12**, None, ...)`
+   —— 包头固定 12 字节（取自 `m_HeaderBuf`）。
+2. `TCPService::ReceivePackets` 的调用序列是
+   `RecvPacketStart(&len)` → `RecvPacketContent(len)`，
+   而 `RecvPacketContent(size)` 内部按 `size - 已收` 继续 `BeginReceive`
+   到 `m_WorkBuffer` —— 即 **`len` 就是"包头之后的内容字节数"**。
+3. `TCPService::StructureToByteArray(structure, size)` 是
+   `new byte[size]` + `Marshal.StructureToPtr` + `Marshal.Copy` + `FreeHGlobal`，
+   反向的 `ByteArrayToStructure` 同类 —— 报文体就是 C 结构体的字节镜像。
+4. `TCPService::CheckAndCreateBuffer(ref buffer, size)`：缓冲区不够长就
+   `new byte[size]`，说明内容长度完全由包头决定，收包侧不预设上限。
+5. `TCPService::Run` 的主循环：`Select(timeout)` → `ReceivePackets()` →
+   `ProcessPacket()` → `SendResponse()`；超时参数是秒（`m_nTimeOut * 1000`）。
+
+函数体的前 4 字节是 `CTCPFunctionCmdSend_Header`
+（`uFuncID u2 | uSerial u1 | Reserved u1 | IHeader u4`，共 8 字节，无填充），
+其后才是该功能自己的 `MMI_Request_*`。
+
+**下一步**：把业务薄壳（`READ_status` / `READ_position`…）对应的 `uFuncID`
+取出来，并从 `ProcessPacket` 的分派表读出命令号全集；再确认 32/64 位指针宽度
+（客户端是 x86，指针 4 字节）。
