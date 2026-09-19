@@ -200,3 +200,74 @@ session.WRITE_plc_cbit(addr, 1)
 | 素材 | 固件履历 + 解出的 29 个 API 二进制（原始素材未随本目录提供） |
 | 完整方法表 | 150 方法全签名 · OpenCNC 4206 方法（原始素材未随本目录提供） |
 | **待办** | ① 抓 `RemoteServer`/`MultiTCP` 通道报文，逆向裸协议（可绕开 SDK 分发限制）② 确认 5566-5572 通道的协议本质 |
+
+---
+
+## 10. 线协议解剖（进行中）
+
+> 本节是**逐条从交付包里的 .NET 程序集元数据读出来的**，不是推测。读到哪写到哪，
+> 每条都标了出处；未落实的部分明确标"待补"，不用它去写代码。
+
+### 10.1 两端各是谁（出处：程序集清单）
+
+| 角色 | 文件 | 说明 |
+|---|---|---|
+| 控制器侧服务端 | `Shared/dotnet/OCAPIServer_WinCE.exe` | .NET 程序集，含 `OCAPIServer.TCPServer` / `OCAPIServer.TCPService`，端口默认 8000 |
+| 客户端 API | `Shared/dotnet/Syntec.RemoteCNC.WinCE.dll` | .NET 程序集，`Syntec.Remote.SyntecRemoteCNC`（150 方法） |
+| 客户端底层 | `Shared/dotnet/Syntec.OpenCNC.dll` | .NET 程序集，`Syntec.OpenCNC.OcApiTCP`（65 方法：`Connect` / `InternalConnect` / `Disconnect` / `TCPFile*` / `Install` / `OCAPIInit`） |
+| PC 侧原生 | `Shared/Windows/OCApi.dll`、`OCKrnl.dll` 等 | 原生 PE（非 .NET），`OcApiTCP` 的会话很可能落在这里 |
+
+> 说明：`Syntec.OpenCNC.dll` 里 `OcApiTCP` 没有 `Socket`/`TcpClient` 调用，会话在原生侧；
+> 但**服务端** `OCAPIServer_WinCE.exe` 有 `Socket::Select` + `ReceivePackets`，
+> 所以"报文长什么样"从服务端程序集就能读全。
+
+### 10.2 报文是结构体（出处：`OCAPIServer_WinCE.exe` 元数据字段表）
+
+服务端的收发走 `ByteArrayToStructure` / `StructureToByteArray`，也就是把 C 结构体
+直接按字节搬。已读出的结构体（字段名照抄）：
+
+```
+CTCPCMD_PacketStart          : Length, CmdID, Reserved          # 每个包的包头
+CTCPFunctionCmdSend_Header   : uFuncID, uSerial, Reserved, IHeader
+MMI_Request_KrnlAPI          : uFuncID, dwCode, dwSizeIn, dwSizeOut, pBufferIn
+MMI_Request_FileSendStart    : uFuncID, nFilePathLength, szFilePath
+MMI_Request_FileSending      : uFuncID, nFileLength, pBufferIn
+MMI_Request_FileRecvStart    : uFuncID, nFilePathLength, szFilePath
+MMI_Request_FileRecving      : uFuncID, nFileOffset, nReqLength
+MMI_Request_GetAllFileList   : uFuncID, nDirPathLength, szDirPath
+MMI_Request_Install          : uFuncID, nMethod
+MMI_Request_FileExist        : uFuncID, nFilePathLength, szFilePath
+MMI_Request_DirExist         : uFuncID, nDirPathLength, szDirPath
+MMI_Request_DirCreate        : uFuncID, nDirPathLength, szDirPath
+MMI_Request_FileNew          : uFuncID, nFilePathLength, szFilePath
+MMI_Request_FileDelete       : uFuncID, nFilePathLength, szFilePath
+MMI_Request_FileCopy         : uFuncID, nTwoFilePathLength, szTwoFilePath
+MMI_Request_FileMove         : uFuncID, nTwoFilePathLength, szTwoFilePath
+MMI_Request_RemoteProgExecute: uFuncID, nPathLength, nArgumentsLength, lpszProgFullPath
+MMI_Request_NcShutdown       : uFuncID, dwMilliseconds
+MMI_Request_NcRestartCNC     : nDelayTimeMilliseconds, nTimeOutMilliseconds, bForce
+MMI_Request_NcRequestUpdate  : uFuncID, nLength, pBufferIn
+MMI_Request_ResMgr_RemoteLookup: uFuncID, nLength, lpszKey
+MMI_Request_OnEventCallParams: nFuncID, nEventID, nParam
+Krnl_Response_NcRequestUpdate: hr, nLength, pBufferOut
+```
+
+两个命令枚举（同处读出）：`FileTransferCmd` = FileSendStart / FileSending /
+FileRecvStart / FileRecving / GetAllFileList / Install / FileExist / DirExist /
+FileNew / FileDelete / FileCopy / FileMove / DirCreate；`AlarmCmd` 里含
+`TCPALARM_OnEventCall`。
+
+另有 CRC：客户端程序集里有 256 项 CRC-16 表、多项式 **0xA001**（`BitConverter` 取字节，
+即小端）。**它是给哪一段算的、放在报文哪个位置，待补**——只在文件类路径上被引用，
+业务读写路径目前没看到。
+
+### 10.3 下一步（按此顺序补齐，每步都留出处）
+
+1. 读 `OCAPIServer.TCPService::ReceivePackets` 与 `ByteArrayToStructure` 的 IL：
+   确定 `Length` / `CmdID` / `Reserved` 的宽度与字节序、包头→命令体的分派方式、
+   超时与重发（`TCPRetrying` / `TCPRetried` 事件在客户端侧）。
+2. 读各 `MMI_Request_*` 结构体的字段签名与 `StructLayout`/`MarshalAs`：
+   算出每个包的**精确字节长度与偏移**（`n*Length` 与 `sz*` 是变长还是定长数组）。
+3. 读 `SyntecRemoteCNC` 的 `READ_status` / `READ_position` 之类的薄壳，
+   把它们映射到的 `uFuncID` 取出来（业务命令号）。
+4. 有了 1–3 就能写一个假 OCAPIServer 靶机，跑通握手 + `READ_status`，再实现驱动。
