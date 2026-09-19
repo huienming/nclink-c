@@ -426,3 +426,44 @@ CTCPCMD_PacketStart.Reserved = m_nWtfReserved
 
 实现因此改成：**两个字段默认填同一个命令号**，`"funcId"` 参数只在某台机床
 要求不同值时覆盖（默认 0 = 用命令号）。
+
+### 10.10 数据码空间（客户端程序集的枚举，名字已确证）
+
+客户端 `Syntec.OpenCNC.dll` 里的枚举就是"要点什么数据"的码表，成员名全部可读：
+
+```
+Syntec.OpenCNC.EDevice_Type        L_REGISTER, GLOBAL_VARIABLE, R_REGISTER,
+                                  SYSTEM_VARIABLE, I_BIT, O_BIT, C_BIT, S_BIT,
+                                  A_BIT, STATE_VARIABLE, PARAM, COORD_VARIABLE,
+                                  TIMER_STATE, TIMER_TYPE, TIMER_SETTING,
+                                  TIMER_ELAPSE …
+Syntec.OpenCNC.EOcVariantType      VACANT, INT, DOUBLE, STRING
+                                  （对应 TOcVariant{nValType, nIntVal, DoubleVal}）
+Syntec.OpenCNC.EventTriggerEnum.EDataType
+                                  DT_MACHINEPOS, DT_SETTABLESET, DT_BASICOFFSET,
+                                  DT_G92OFFSET, DT_HCSOFFSET, DT_HCSCHANGE,
+                                  DT_SYSTIME, DT_FEEDBACK, DT_HOMING,
+                                  DT_AXESALRM, DT_TOOLINFO, DT_COORD,
+                                  DT_SERVOCMD, DT_DUALFEEDBACK, DT_GLOBALVAR,
+                                  DT_SYSTEMVAR
+```
+
+配合已读出的结构体，业务访问的形状就清楚了：
+
+```
+TDevice{nDevType, nCoordID, nGroupID, nFormat, nNo}   ← "读哪个设备的什么"
+TOcVariant{nValType, nIntVal, DoubleVal}             ← 值的类型与内容
+MMI_Request_KrnlAPI{uFuncID, dwCode, dwSizeIn, dwSizeOut, pBufferIn}
+```
+
+也就是说一条业务读取 = **命令号（uFuncID）+ dwCode（原生函数码）+
+payload（TDevice 之类的选择结构）**，payload 的布局就是上面这些结构体。
+
+**还剩一步**：这些枚举的**数值**（成员名已确认，数值要从 IL 或常量表取；
+`Constant` 表在 dnfile 里的父索引解析还没对上——`row.Type` 是元素类型、
+父索引另有字段，下次直接修）。取到数值后，`EDevice_Type` + `EDataType` 就能
+填进驱动的点位配置里用。
+
+> 更省事的一条路：直接读客户端**某一个具体 API 的请求构造函数**
+> （比如 `READ_position`），那一个方法里就同时有"哪个 uFuncID、哪个结构体、
+> 哪个枚举值"，比逐个枚举去凑更快也更少歧义。
