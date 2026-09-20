@@ -1,0 +1,208 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
+/*
+ * End to end test of the declaration seam: a one file adapter
+ * (module_tool_basic.c) is built as a module, loaded by protocol name, and its
+ * declaration is turned into the model, the bindings and - through real
+ * Query/Set requests - into calls to its own functions.
+ *
+ * No configuration point map takes part in this: that is the whole point.
+ */
+#include "ncl_test.h"
+
+#include <string.h>
+
+#include "nclink/ncl_message.h"
+#include "nclink/ncl_tool.h"
+#include "nclink_adapter/ncl_module.h"
+
+#ifndef NCL_TEST_PLUGIN_DIR
+#  error "NCL_TEST_PLUGIN_DIR must point at the directory holding the modules"
+#endif
+
+static ncl_message *query(const char *path)
+{
+    ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+    ncl_query_request_item *item = ncl_query_request_item_new(path);
+
+    (void)ncl_params_set_string(&item->params, "operation", "get_value");
+    (void)ncl_message_set_message_id(request, "q1");
+    (void)ncl_message_add_query_request_item(request, item);
+    return request;
+}
+
+static ncl_message *set_value(const char *path, long long value)
+{
+    ncl_message *request = ncl_message_new(NCL_MSG_SET_REQUEST);
+    ncl_set_request_item *item = ncl_set_request_item_new(path);
+
+    (void)ncl_params_set_string(&item->params, "operation", "set_value");
+    (void)ncl_params_set_int(&item->params, "value", value);
+    (void)ncl_message_set_message_id(request, "s1");
+    (void)ncl_message_add_set_request_item(request, item);
+    return request;
+}
+
+static long long query_int(ncl_server *server, const char *path, bool *ok)
+{
+    ncl_message *request = query(path);
+    ncl_message *response = ncl_server_invoke_query(server, request);
+    long long value = 0;
+
+    *ok = false;
+    if (response != NULL) {
+        ncl_query_response_item *item =
+            (ncl_query_response_item *)ncl_message_item_at(response, 0);
+
+        if (item != NULL && strcmp(item->code, NCL_KW_CODE_OK) == 0 &&
+            ncl_json_as_int(ncl_query_response_item_data(item), &value)) {
+            *ok = true;
+        }
+        ncl_message_free(response);
+    }
+    ncl_message_free(request);
+    return value;
+}
+
+NCL_TEST_MAIN_BEGIN()
+    ncl_module_set *modules = ncl_modules_create();
+    ncl_strbuf err;
+    const ncl_tool_decl *decl;
+    ncl_json *model;
+    char *model_json;
+    ncl_server_options options;
+    ncl_server *server;
+    ncl_tool_registration *registration = NULL;
+
+    ncl_strbuf_init(&err);
+    NCL_CHECK(modules != NULL);
+
+    NCL_TEST_CASE("a one file adapter loads as a tool module");
+    NCL_CHECK_EQ_INT(ncl_modules_add(modules, "test_tool_basic",
+                                     NCL_TEST_PLUGIN_DIR, &err),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT((int)err.len, 0);
+    NCL_CHECK_EQ_INT(ncl_module_count(modules), 1);
+    NCL_CHECK_EQ_INT(ncl_module_abi(modules, 0), NCL_TOOL_MODULE_ABI);
+    NCL_CHECK_EQ_STR(ncl_module_name(modules, 0), "test_tool_basic");
+    NCL_CHECK_EQ_STR(ncl_module_version(modules, 0), "0.1.0");
+    NCL_CHECK(ncl_module_description(modules, 0) != NULL);
+
+    NCL_TEST_CASE("its declaration arrives validated, with the points in code");
+    decl = ncl_module_tool(modules, 0);
+    NCL_CHECK(decl != NULL);
+    if (decl == NULL) {
+        ncl_modules_free(modules);
+        ncl_strbuf_free(&err);
+        return ncl_test_failures == 0 ? 0 : 1;
+    }
+    NCL_CHECK_EQ_STR(decl->name, "test_tool_basic");
+    NCL_CHECK_EQ_INT(decl->sample_ms, 500);
+    NCL_CHECK_EQ_INT(decl->point_count, 2);
+    NCL_CHECK_EQ_STR(decl->points[0].path, "/TEST/RUN");
+    NCL_CHECK(decl->points[0].sampled);
+    NCL_CHECK(decl->points[1].writable);
+    NCL_CHECK_EQ_INT(ncl_tool_validate(decl, &err), NCL_OK);
+
+    NCL_TEST_CASE("a tool module has no protocol to register (and no error)");
+    NCL_CHECK_EQ_INT(ncl_modules_register(modules, &err), NCL_OK);
+    NCL_CHECK_EQ_INT((int)err.len, 0);
+
+    NCL_TEST_CASE("the declaration builds the model the device publishes");
+    model = ncl_tool_model(decl, NULL, &err);
+    NCL_CHECK(model != NULL);
+    if (model == NULL) {
+        ncl_modules_free(modules);
+        ncl_strbuf_free(&err);
+        return ncl_test_failures == 0 ? 0 : 1;
+    }
+    {
+        ncl_json *node = ncl_json_arr_get(ncl_json_obj_get(model, "devices"), 0);
+        ncl_json *items = ncl_json_obj_get(node, "dataItems");
+        ncl_json *channel =
+            ncl_json_arr_get(ncl_json_obj_get(node, "configs"), 0);
+
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 2);
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
+                             ncl_json_arr_get(items, 0), "name"),
+                         "/TEST/RUN");
+        NCL_CHECK(channel != NULL);
+        if (channel != NULL) {
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(channel, "id"),
+                             "test_tool_basic");
+            NCL_CHECK_EQ_INT(ncl_json_obj_get_int(channel, "sampleInterval", 0),
+                             500);
+            /* upload was declared 0: the sample period stands in for it. */
+            NCL_CHECK_EQ_INT(ncl_json_obj_get_int(channel, "uploadInterval", 0),
+                             500);
+        }
+    }
+    model_json = ncl_json_write_string(model);
+    ncl_json_free(model);
+    NCL_CHECK(model_json != NULL);
+
+    NCL_TEST_CASE("the loaded adapter serves requests through the server");
+    memset(&options, 0, sizeof(options));
+    options.sn = "V000000001";
+    options.model_json = model_json;
+    server = ncl_server_create(&options);
+    ncl_free_safe(model_json);
+    NCL_CHECK(server != NULL);
+    if (server != NULL) {
+        bool ok = false;
+
+        NCL_CHECK_EQ_INT(ncl_tool_register(server, decl, NULL, &registration,
+                                           &err),
+                         NCL_OK);
+        NCL_CHECK(registration != NULL);
+        NCL_CHECK_EQ_INT(query_int(server, "/TEST/RUN", &ok), 7);
+        NCL_CHECK(ok);
+
+        /* Read, write, read back: one point, two operations. */
+        {
+            ncl_message *request = set_value("/TEST/MODE", 5);
+            ncl_message *response = ncl_server_invoke_set(server, request);
+
+            NCL_CHECK(response != NULL);
+            if (response != NULL) {
+                ncl_set_response_item *item =
+                    (ncl_set_response_item *)ncl_message_item_at(response, 0);
+
+                NCL_CHECK(item != NULL);
+                if (item != NULL) {
+                    NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_OK);
+                }
+                ncl_message_free(response);
+            }
+            ncl_message_free(request);
+        }
+        NCL_CHECK_EQ_INT(query_int(server, "/TEST/MODE", &ok), 5);
+        NCL_CHECK(ok);
+
+        /* Writing the read only point is refused by the adapter itself, with
+         * its own protocol error. */
+        {
+            ncl_message *request = set_value("/TEST/RUN", 3);
+            ncl_message *response = ncl_server_invoke_set(server, request);
+
+            NCL_CHECK(response != NULL);
+            if (response != NULL) {
+                ncl_set_response_item *item =
+                    (ncl_set_response_item *)ncl_message_item_at(response, 0);
+
+                NCL_CHECK(item != NULL);
+                if (item != NULL) {
+                    NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_NG);
+                }
+                ncl_message_free(response);
+            }
+            ncl_message_free(request);
+        }
+        ncl_tool_unregister(decl, registration);
+        ncl_server_free(server);
+    }
+
+    ncl_modules_free(modules);
+    ncl_strbuf_free(&err);
+NCL_TEST_MAIN_END()

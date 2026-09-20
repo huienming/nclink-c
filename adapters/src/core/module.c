@@ -32,9 +32,17 @@
 #  include <dirent.h>
 #endif
 
+/**
+ * Both generations start with the ABI word, so the loader can tell them apart
+ * before it knows which struct it is looking at.
+ */
+typedef const unsigned *(*ncl_module_probe_fn)(void);
+
 typedef struct {
     ncl_library              *library;
     const ncl_adapter_module_desc *module; /**< borrowed: it lives in @p library */
+    const ncl_tool_module_desc    *tool;   /**< generation 2, NULL for a driver */
+    unsigned                  abi;     /**< 1 = driver factory, 2 = tool declaration */
     char                     *path;   /**< owned */
     bool                      registered;
 } ncl_loaded_module;
@@ -114,7 +122,10 @@ static ncl_err module_attach(ncl_module_set *set, ncl_library *library,
 {
     ncl_adapter_module_fn entry;
     const ncl_adapter_module_desc *module;
+    const ncl_tool_module_desc *tool;
+    const unsigned *head;
     ncl_loaded_module *slot;
+    unsigned abi;
 
     *added = false;
     entry = (ncl_adapter_module_fn)ncl_library_symbol(library,
@@ -123,24 +134,41 @@ static ncl_err module_attach(ncl_module_set *set, ncl_library *library,
         err_append_module(err, "模块未导出 " NCL_ADAPTER_MODULE_ENTRY "()", path);
         return NCL_ERR_INVALID_ARG;
     }
-    module = entry();
-    if (module == NULL) {
+    head = ((ncl_module_probe_fn)entry)();
+    if (head == NULL) {
         err_append_module(err, "模块的入口返回空", path);
         return NCL_ERR_INVALID_ARG;
     }
-    if (module->abi != NCL_ADAPTER_MODULE_ABI) {
+    abi = *head;
+    module = NULL;
+    tool = NULL;
+    if (abi == NCL_ADAPTER_MODULE_ABI) {
+        module = (const ncl_adapter_module_desc *)head;
+        if (ncl_str_is_blank(module->name) || module->create == NULL) {
+            err_append_module(err, "模块缺少 name 或 create", path);
+            return NCL_ERR_INVALID_ARG;
+        }
+    } else if (abi == NCL_TOOL_MODULE_ABI) {
+        tool = (const ncl_tool_module_desc *)head;
+        if (ncl_str_is_blank(tool->name)) {
+            err_append_module(err, "模块缺少 name", path);
+            return NCL_ERR_INVALID_ARG;
+        }
+        if (ncl_tool_validate(&tool->decl, err) != NCL_OK) {
+            err_append_module(err, "模块声明的点位不合法", path);
+            return NCL_ERR_INVALID_ARG;
+        }
+    } else {
         char text[256];
 
-        snprintf(text, sizeof(text), "模块 %s 的 ABI 是 %u，本宿主只认 %u",
-                 path, module->abi, (unsigned)NCL_ADAPTER_MODULE_ABI);
+        snprintf(text, sizeof(text),
+                 "模块 %s 的 ABI 是 %u，本宿主只认 %u（驱动工厂）和 %u（工具声明）",
+                 path, abi, (unsigned)NCL_ADAPTER_MODULE_ABI,
+                 (unsigned)NCL_TOOL_MODULE_ABI);
         err_append(err, text);
         return NCL_ERR_INVALID_ARG;
     }
-    if (ncl_str_is_blank(module->name) || module->create == NULL) {
-        err_append_module(err, "模块缺少 name 或 create", path);
-        return NCL_ERR_INVALID_ARG;
-    }
-    if (module_name_taken(set, module->name)) {
+    if (module_name_taken(set, module != NULL ? module->name : tool->name)) {
         return NCL_OK; /* already loaded: not an error, @p added stays false */
     }
     if (set->count == set->capacity) {
@@ -162,6 +190,8 @@ static ncl_err module_attach(ncl_module_set *set, ncl_library *library,
     }
     slot->library = library;
     slot->module = module;
+    slot->tool = tool;
+    slot->abi = abi;
     set->count++;
     *added = true;
     return NCL_OK;
@@ -364,6 +394,17 @@ ncl_err ncl_modules_register(ncl_module_set *set, ncl_strbuf *err)
         if (entry->registered) {
             continue;
         }
+        /* A tool module has no driver factory to register: the host reads its
+         * declaration instead (ncl_module_tool()). */
+        if (entry->abi == NCL_TOOL_MODULE_ABI) {
+            ncl_log_info("适配器模块 %s：工具 \"%s\"（%s，%u 个点位）",
+                         ncl_library_path(entry->library), entry->tool->name,
+                         !ncl_str_is_blank(entry->tool->version)
+                             ? entry->tool->version
+                             : "?",
+                         (unsigned)entry->tool->decl.point_count);
+            continue;
+        }
         if (ncl_driver_register_protocol(module->name, module->create) != NCL_OK) {
             err_append_module(err, "协议已被注册（内置驱动或另一个模块）",
                               module->name);
@@ -407,25 +448,64 @@ static const ncl_loaded_module *module_at(const ncl_module_set *set,
     return &set->items[index];
 }
 
+/** Name of the module at @p entry, whichever generation it is. */
+static const char *module_name_of(const ncl_loaded_module *entry)
+{
+    if (entry == NULL) {
+        return NULL;
+    }
+    return entry->abi == NCL_TOOL_MODULE_ABI ? entry->tool->name
+                                             : entry->module->name;
+}
+
+static const char *module_version_of(const ncl_loaded_module *entry)
+{
+    if (entry == NULL) {
+        return NULL;
+    }
+    return entry->abi == NCL_TOOL_MODULE_ABI ? entry->tool->version
+                                             : entry->module->version;
+}
+
+static const char *module_description_of(const ncl_loaded_module *entry)
+{
+    if (entry == NULL) {
+        return NULL;
+    }
+    return entry->abi == NCL_TOOL_MODULE_ABI ? entry->tool->description
+                                             : entry->module->description;
+}
+
 const char *ncl_module_name(const ncl_module_set *set, size_t index)
 {
-    const ncl_loaded_module *entry = module_at(set, index);
-
-    return entry != NULL ? entry->module->name : NULL;
+    return module_name_of(module_at(set, index));
 }
 
 const char *ncl_module_version(const ncl_module_set *set, size_t index)
 {
-    const ncl_loaded_module *entry = module_at(set, index);
-
-    return entry != NULL ? entry->module->version : NULL;
+    return module_version_of(module_at(set, index));
 }
 
 const char *ncl_module_description(const ncl_module_set *set, size_t index)
 {
+    return module_description_of(module_at(set, index));
+}
+
+unsigned ncl_module_abi(const ncl_module_set *set, size_t index)
+{
     const ncl_loaded_module *entry = module_at(set, index);
 
-    return entry != NULL ? entry->module->description : NULL;
+    return entry != NULL ? entry->abi : 0u;
+}
+
+const ncl_tool_decl *ncl_module_tool(const ncl_module_set *set, size_t index)
+{
+    const ncl_loaded_module *entry = module_at(set, index);
+
+    if (entry == NULL || entry->abi != NCL_TOOL_MODULE_ABI) {
+        return NULL;
+    }
+    return &entry->tool->decl;
 }
 
 const char *ncl_module_path(const ncl_module_set *set, size_t index)

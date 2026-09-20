@@ -41,13 +41,24 @@
 #include <stddef.h>
 
 #include "nclink/ncl_json.h"
+#include "nclink/ncl_tool.h"
 #include "nclink_adapter/ncl_driver.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** ABI generation of the module descriptor. A host refuses anything else. */
+/**
+ * ABI generation 1: what this header describes - the module hands over a
+ * driver factory and the host registers it.
+ *
+ * Generation 2 is the tool declaration (NCL_TOOL_MODULE_ABI in
+ * nclink/ncl_tool.h): the module declares its points in code and the host
+ * builds the model and the bindings from that, with no driver and no point map
+ * in the configuration. Both generations start with the ABI word, so a host
+ * reads that first and then knows which struct it has; anything else is
+ * refused.
+ */
 #define NCL_ADAPTER_MODULE_ABI 1u
 
 /* The entry point is a function named ncl_adapter_module(), so the struct it
@@ -144,6 +155,13 @@ ncl_err ncl_modules_register(ncl_module_set *set, ncl_strbuf *err);
 size_t ncl_module_count(const ncl_module_set *set);
 /** Protocol name of module @p index, or NULL. */
 const char *ncl_module_name(const ncl_module_set *set, size_t index);
+/** ABI generation of module @p index (0 when the index is out of range). */
+unsigned ncl_module_abi(const ncl_module_set *set, size_t index);
+/**
+ * Declaration of the tool module at @p index, or NULL when that module is a
+ * driver module (generation 1). Borrowed; it lives in the module.
+ */
+const ncl_tool_decl *ncl_module_tool(const ncl_module_set *set, size_t index);
 /** Version / description of module @p index, or NULL. */
 const char *ncl_module_version(const ncl_module_set *set, size_t index);
 const char *ncl_module_description(const ncl_module_set *set, size_t index);

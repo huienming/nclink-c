@@ -117,10 +117,11 @@ struct ncl_tool_point {
     ncl_point_fn fn;
     /**
      * The author's own data for this point - a register address, a mapping
-     * table entry, a protocol item name. Borrowed, never touched by the host,
-     * handed back through @p self. NULL is fine.
+     * table entry, a protocol item name. Borrowed: the host never reads or
+     * writes it, it only hands it back through @p self, so an adapter may also
+     * put a table it mutates (a cache, a last value) here. NULL is fine.
      */
-    const void *arg;
+    void *arg;
     /** Optional one line description, for the schema. */
     const char *summary;
 };
@@ -308,6 +309,59 @@ ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
 /** close() the connection and release the registration. NULL is accepted. */
 void ncl_tool_unregister(const ncl_tool_decl *decl,
                          ncl_tool_registration *registration);
+
+/* The module side ------------------------------------------------------- */
+
+/**
+ * ABI generation a tool module declares. Generation 1 (ncl_module.h) is the
+ * older shape - a module that hands over a driver factory - so the two can be
+ * told apart from the descriptor's first field.
+ */
+#define NCL_TOOL_MODULE_ABI 2u
+
+/** Entry point symbol a module exports (same name for both generations). */
+#define NCL_TOOL_MODULE_ENTRY "ncl_adapter_module"
+
+#if defined(_WIN32) || defined(_WIN64)
+#  define NCL_TOOL_MODULE_EXPORT __declspec(dllexport)
+#else
+#  define NCL_TOOL_MODULE_EXPORT __attribute__((visibility("default")))
+#endif
+
+/**
+ * What a tool module hands the host: who it is, plus the declaration from
+ * NCL_TOOL_BEGIN/NCL_TOOL_END. The tool name is the one the author wrote in the
+ * declaration, so the tool name, the module name and (by the file naming
+ * convention) the file name cannot drift apart.
+ */
+typedef struct {
+    unsigned       abi;         /**< NCL_TOOL_MODULE_ABI                        */
+    const char    *name;        /**< tool name, from NCL_TOOL_BEGIN             */
+    const char    *version;     /**< module version, for `--plugins`            */
+    const char    *description; /**< one line, for `--plugins`                  */
+    ncl_tool_decl  decl;        /**< the points, the periods, open()/close()    */
+} ncl_tool_module_desc;
+
+/** What a module's entry point looks like. */
+typedef const ncl_tool_module_desc *(*ncl_tool_module_fn)(void);
+
+/**
+ * The last line of an adapter file: exports the entry point above. Everything
+ * the host needs is already in the declaration, so there is nothing to fill in
+ * here beyond the two version strings.
+ */
+#define NCL_TOOL_MODULE(version_literal, description_literal)                  \
+    static ncl_tool_module_desc ncl_tool_module_;                              \
+                                                                               \
+    NCL_TOOL_MODULE_EXPORT const ncl_tool_module_desc *ncl_adapter_module(void)   \
+    {                                                                          \
+        ncl_tool_module_.abi = NCL_TOOL_MODULE_ABI;                            \
+        ncl_tool_module_.name = ncl_tool_name_;                                \
+        ncl_tool_module_.version = version_literal;                            \
+        ncl_tool_module_.description = description_literal;                    \
+        ncl_tool_module_.decl = ncl_tool_declaration();                        \
+        return &ncl_tool_module_;                                              \
+    }
 
 #ifdef __cplusplus
 }

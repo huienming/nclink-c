@@ -28,7 +28,8 @@ typedef struct {
     long long   value;
 } fixture_item;
 
-static const fixture_item k_run_item = {"STATUS@RUN", 40};
+/* Mutable on purpose: an adapter may park a cache in the point's own data. */
+static fixture_item k_run_item = {"STATUS@RUN", 40};
 
 static int g_opens;
 static int g_closes;
