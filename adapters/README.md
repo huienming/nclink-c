@@ -609,6 +609,12 @@ broker 的部署不受影响。**broker 没起来不致命**：`ncl_adapter_brok
 严格一致**（设备类型和点位路径的设备段必须同名，不一致时启动就报错）。检测口径：
 `ncl_tool_model()` 生成的模型经过 `ncl_root_node_parse()` 之后，每个数据项的
 `ncl_node_path()` 等于它声明的路径（`tests/test_tool.c` 里有这条用例）。
+
+模型里数据项和组件的 **`name` 是给人看的可读名**：第 4 部分那张表的"含义"列
+（`STATUS` → 运行状态、`PART_COUNT` → 加工件数、`PROGRAM` → 主程序名、`WARNING` → 报警信息、
+`POSITION` → 位置、`SPEED` → 速度；组件 `AXIS@X` → X 轴、`CONTROLLER` → 控制器），带 `number`
+的缀在后面（位置（实际）/位置（目标）），本册查不到的 type 照原名。**名字与路径无关**，
+改名字不会动路径（路径只由 type 与 number 拼）。
 可运行的配置样例见 `tests/test_adapter.c` 里的 `kConfig`。
 
 ## FANUC 适配器模块（`ncl_driver_focas`）

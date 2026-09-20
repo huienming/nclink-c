@@ -375,6 +375,149 @@ static void split_type_number(const char *text, char **type_out,
     *number_out = ncl_strdup(at + 1);
 }
 
+/*
+ * 数据项/组件的**可读名**：第 4 部分那张表里的中文含义（表 4 物理量、表 6 通用、
+ * 表 7 专用），组件另有表 2。名字只写给人和界面看 —— 路径是 type(+number) 拼出来的，
+ * 跟名字没有关系，所以名字怎么改都不会动路径。
+ */
+typedef struct {
+    const char *type;
+    const char *label;
+} tool_label;
+
+static const tool_label k_labels[] = {
+    /* 表 4 物理量数据项（默认单位见 32 册） */
+    {"ACCELERATION", "加速度"},
+    {"ANGLE", "角位置"},
+    {"ANGULAR_ACCELERATION", "角加速度"},
+    {"ANGULAR_VELOCITY", "角速度"},
+    {"CONCENTRATION", "浓度"},
+    {"CONDUCTIVITY", "导电率"},
+    {"CURRENT", "电流"},
+    {"DISPLACEMENT", "位移"},
+    {"ENERGY", "功耗"},
+    {"FLOW", "瞬时流量"},
+    {"FREQUENCY", "频率"},
+    {"LENGTH", "长度"},
+    {"MASS", "质量"},
+    {"POSITION", "位置"},
+    {"POWER", "功率"},
+    {"POWER_FACTOR", "功率因数"},
+    {"PRESSURE", "压强"},
+    {"RESISTANCE", "电阻"},
+    {"SPEED", "速度"},
+    {"TEMPERATURE", "温度"},
+    {"TORQUE", "扭矩"},
+    {"VISCOSITY", "粘度"},
+    {"VOLT_AMPERE", "视在功率"},
+    /* 表 6 通用数据项 */
+    {"CREATE_TIME", "创建时间"},
+    {"CREATOR", "创建者"},
+    {"MANUFACTURER", "厂商"},
+    {"MODEL", "型号"},
+    {"NAME", "名称"},
+    {"NUMBER", "编号"},
+    {"PARAMETER", "参数"},
+    {"STATUS", "运行状态"},
+    {"VERSION", "版本"},
+    {"WARNING", "报警信息"},
+    /* 表 7 专用数据项 */
+    {"CONSOLE", "控制台"},
+    {"COORDINATE", "坐标系"},
+    {"FEED_OVERRIDE", "进给倍率"},
+    {"FEED_SPEED", "进给速度"},
+    {"FILE", "文件"},
+    {"LINE_NUMBER", "程序行号"},
+    {"PATH_LEFT_LENGTH", "剩余进给"},
+    {"PART", "工件"},
+    {"PART_COUNT", "加工件数"},
+    {"PROGRAM", "主程序名"},
+    {"PROGRAM_NUMBER", "当前程序号"},
+    {"SHELF_UNIT", "仓位"},
+    {"SITE", "站点"},
+    {"SPINDLE_OVERRIDE", "主轴倍率"},
+    {"SUBPROGRAM", "子程序名"},
+    {"TOOL", "刀具"},
+    {"TOOLPARAM", "刀具参数"},
+    {"TOOL_NUMBER", "当前刀号"},
+    {"TYPE", "类型"},
+    {"VARIABLE", "运行变量"},
+    {"WORK_MODE", "工作模式"},
+    /* 表 2 组件类型 */
+    {"AXIS", "轴"},
+    {"CONTROLLER", "控制器"},
+    {"MOTOR", "电机"},
+    {"SCREW", "丝杠"},
+    {"SHELF", "货架系统"},
+    {"SERVO", "伺服"},
+    {"TOOL_MAGAZINE", "刀库"},
+};
+
+/** number 是我们自己的约定后缀，能译就译成可读的词（表 8 里没有它）。 */
+static const char *tool_label_of(const char *type)
+{
+    size_t i;
+
+    if (type == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < sizeof(k_labels) / sizeof(k_labels[0]); i++) {
+        if (strcmp(k_labels[i].type, type) == 0) {
+            return k_labels[i].label;
+        }
+    }
+    return type; /* 表里没有的（厂商自定的 type）照原名，至少不是空的 */
+}
+
+static const char *tool_number_label(const char *number)
+{
+    if (number == NULL) {
+        return NULL;
+    }
+    if (strcmp(number, "REAL") == 0) {
+        return "实际";
+    }
+    if (strcmp(number, "CMD") == 0) {
+        return "目标";
+    }
+    return number;
+}
+
+/** 数据项的可读名："运行状态"、"位置（实际）"、"功率（1）"。 */
+static char *tool_item_label(const char *type, const char *number)
+{
+    char *name = NULL;
+
+    if (number == NULL) {
+        return ncl_strdup(tool_label_of(type));
+    }
+    if (ncl_asprintf(&name, "%s（%s）", tool_label_of(type),
+                     tool_number_label(number)) != NCL_OK) {
+        return NULL;
+    }
+    return name;
+}
+
+/** 组件的可读名："控制器"、"X 轴"（轴号在前，读起来才知道是哪根轴）。 */
+static char *tool_component_label(const char *type, const char *number)
+{
+    char *name = NULL;
+
+    if (number == NULL) {
+        return ncl_strdup(tool_label_of(type));
+    }
+    if (strcmp(type, "AXIS") == 0) {
+        if (ncl_asprintf(&name, "%s %s", number, tool_label_of(type)) != NCL_OK) {
+            return NULL;
+        }
+        return name;
+    }
+    if (ncl_asprintf(&name, "%s（%s）", tool_label_of(type), number) != NCL_OK) {
+        return NULL;
+    }
+    return name;
+}
+
 /**
  * Build the model of a declaration.
  *
@@ -530,7 +673,16 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         split_type_number(tail, &type, &number);
         snprintf(id, sizeof(id), "p%u", (unsigned)i);
         (void)ncl_json_obj_set_string(item, "id", id);
-        (void)ncl_json_obj_set_string(item, "name", point->path);
+        {
+            /* name 给人看（"运行状态"、"位置（实际）"），不是路径：路径由 type 与
+             * number 在模型树里拼出来，名字改了也不会动路径。 */
+            char *label = tool_item_label(type, number);
+
+            if (label != NULL) {
+                (void)ncl_json_obj_set_string(item, "name", label);
+                ncl_free_safe(label);
+            }
+        }
         (void)ncl_json_obj_set_string(item, "type",
                                       type != NULL ? type : point->path);
         if (number != NULL) {
@@ -591,7 +743,15 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                 }
                 (void)ncl_json_obj_set_string(groups[g].node, "id",
                                               groups[g].id);
-                (void)ncl_json_obj_set_string(groups[g].node, "name", name);
+                {
+                    /* 组件的 name 也给人看："控制器"、"X 轴"（路径由 type 与
+                     * number 决定，与 name 无关）。 */
+                    char *label = tool_component_label(ctype, cnumber);
+                    const char *shown = label != NULL ? label : name;
+
+                    (void)ncl_json_obj_set_string(groups[g].node, "name", shown);
+                    ncl_free_safe(label);
+                }
                 (void)ncl_json_obj_set_string(groups[g].node, "type", ctype);
                 if (cnumber != NULL) {
                     (void)ncl_json_obj_set_string(groups[g].node, "number",

@@ -257,6 +257,11 @@ NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalm
   会看到对应点位读失败，这是预期行为。
 - 模型树是标准的 **`MACHINE → CONTROLLER / AXIS@X → 数据项`**：声明里的中段路径就是组件，
   宿主会把它建成组件节点（`/MACHINE/CONTROLLER/PROGRAM` 因此挂在 `CONTROLLER` 下）。
+- 模型里每个数据项/组件的 **`name` 是可读名**（照数据字典的含义列）：`/MACHINE/STATUS` 叫
+  "运行状态"、`/MACHINE/PART_COUNT` 叫"加工件数"、`/MACHINE/CONTROLLER/PROGRAM` 叫"主程序名"、
+  `/MACHINE/WARNING` 叫"报警信息"，`/MACHINE/AXIS@X/POSITION@REAL` 是 `AXIS@X` 组件（名字"X 轴"）
+  下的"位置（实际）"、`@CMD` 是"位置（目标）"，速度是"速度"。**名字与路径无关**：路径由
+  `type` 与 `number` 拼出来（`/MACHINE/AXIS@X/POSITION@REAL`），上位机按路径问、按名字显示。
 - `/MACHINE/SESSION`、`/MACHINE/ITEMS` 两个方法由 `NCL_METHOD_NAMED` 声明（会话状态、数据项
   清单），它们只作为方法调用，不进取值模型、也不参与采样。
 

@@ -153,13 +153,15 @@ NCL_TEST_MAIN_BEGIN()
             ncl_json_arr_get(ncl_json_obj_get(node, "configs"), 0);
 
         NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 3);
+        /* name 给人看：字典里查得到的 type 用中文含义，查不到的照原名（RUN 不是
+         * 第 4 部分的名字，所以名字就是 RUN）。 */
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 0), "name"),
-                         "/MACHINE/RUN");
+                         "RUN");
         /* 待抓包的点位也在模型里，理由是它的 description。 */
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 2), "name"),
-                         "/MACHINE/ALARM");
+                         "ALARM");
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 2), "description"),
                          "报警：待抓包（帧还没抓到）");

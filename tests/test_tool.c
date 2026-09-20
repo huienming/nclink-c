@@ -324,16 +324,16 @@ static void test_model(void)
     NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 3);
     item = ncl_json_arr_get(items, 0);
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "id"), "p0");
-    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "/MACHINE/STATUS@RUN");
+    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "运行状态（RUN）");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "type"), "STATUS");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "number"), "RUN");
     /* 没有 source：模型树自己就能走出一条与我们声明的路径一模一样的路径，
      * 所以这里不留"另一条路"，免得两个算法给出两个路径。 */
     NCL_CHECK(ncl_json_obj_get(item, "source") == NULL);
-    /* The tail without "@" keeps the path as its type, exactly like the
-     * configuration driven model does; a writable point is marked settable. */
+    /* The tail without "@" keeps the path as its type; a type the dictionary
+     * does not know keeps itself as the name (no label to translate to). */
     item = ncl_json_arr_get(items, 2);
-    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "/MACHINE/MODE");
+    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "MODE");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "type"), "MODE");
     NCL_CHECK(ncl_json_obj_get_bool(item, "settable", false));
     item = ncl_json_arr_get(items, 1);
@@ -402,14 +402,14 @@ static void test_model(void)
                 NCL_CHECK_EQ_INT(ncl_json_arr_len(components), 1);
                 component = ncl_json_arr_get(components, 0);
                 NCL_CHECK_EQ_STR(ncl_json_obj_get_string(component, "name"),
-                                 "CONTROLLER");
+                                 "控制器");
                 NCL_CHECK_EQ_STR(ncl_json_obj_get_string(component, "type"),
                                  "CONTROLLER");
                 component_item =
                     ncl_json_arr_get(ncl_json_obj_get(component, "dataItems"), 0);
                 NCL_CHECK_EQ_STR(
                     ncl_json_obj_get_string(component_item, "name"),
-                    "/MACHINE/CONTROLLER/PROGRAM");
+                    "主程序名");
                 NCL_CHECK_EQ_STR(
                     ncl_json_obj_get_string(component_item, "type"), "PROGRAM");
                 NCL_CHECK(ncl_json_obj_get(component_item, "source") == NULL);
@@ -422,7 +422,7 @@ static void test_model(void)
                 NCL_CHECK_EQ_INT(ncl_json_arr_len(direct), 1);
                 direct_item = ncl_json_arr_get(direct, 0);
                 NCL_CHECK_EQ_STR(ncl_json_obj_get_string(direct_item, "name"),
-                                 "/MACHINE/STATUS");
+                                 "运行状态");
                 NCL_CHECK(ncl_json_obj_get(direct_item, "source") == NULL);
             }
             ncl_json_free(model2);
@@ -741,7 +741,7 @@ static void test_pending(void)
 
         NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 2);
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(warning, "name"),
-                         "/MACHINE/WARNING");
+                         "报警信息");
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(warning, "description"),
                          "报警：待抓包（cnc_rdalmmsg2）");
         /* 默认采样通道：抽样的待抓包点位占着位置（现场要求报警进通道），
