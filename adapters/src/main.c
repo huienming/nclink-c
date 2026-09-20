@@ -190,14 +190,26 @@ static void log_modules(const ncl_module_set *set)
 
         if (tool != NULL) {
             /* A declared tool is not a protocol waiting for a driver: it serves
-             * its own points, so it is reported as a tool. */
-            ncl_log_info("适配器模块 %s：工具 \"%s\"%s%s（%u 个点位，%s）",
+             * its own points, so it is reported as a tool. Values and methods
+             * are counted apart, the way the model sees them. */
+            size_t values = 0;
+            size_t methods = 0;
+            size_t p;
+
+            for (p = 0; p < tool->point_count; p++) {
+                if (tool->points[p].readable || tool->points[p].writable) {
+                    values++;
+                } else {
+                    methods++;
+                }
+            }
+            ncl_log_info("适配器模块 %s：工具 \"%s\"%s%s（%u 个点位 + %u 个方法，%s）",
                          ncl_module_path(set, i), ncl_module_name(set, i),
                          ncl_module_version(set, i) != NULL ? " " : "",
                          ncl_module_version(set, i) != NULL
                              ? ncl_module_version(set, i)
                              : "",
-                         (unsigned)tool->point_count,
+                         (unsigned)values, (unsigned)methods,
                          ncl_module_description(set, i) != NULL
                              ? ncl_module_description(set, i)
                              : "声明式适配器");
@@ -278,6 +290,54 @@ static const char *tool_serving(const ncl_module_set *modules,
         }
     }
     return NULL;
+}
+
+/**
+ * The other half of the same check: a "tools" entry names a module that has to
+ * be loaded, because that module is what declares the device's points. A tool
+ * that is not there is reported by the file name the loader would have looked
+ * for, which is what a site needs to see.
+ */
+static ncl_err check_tools(const ncl_json *config, const char *plugin_dir,
+                           const ncl_module_set *modules, ncl_strbuf *err)
+{
+    const ncl_json *tools = ncl_json_obj_get(config, "tools");
+    size_t i;
+
+    if (ncl_json_type_of(tools) != NCL_JSON_ARRAY) {
+        return NCL_OK;
+    }
+    for (i = 0; i < ncl_json_arr_len(tools); i++) {
+        const char *name =
+            ncl_json_obj_get_string(ncl_json_arr_get(tools, i), "name");
+        bool found = false;
+        size_t m;
+        char *file;
+
+        if (ncl_str_is_blank(name)) {
+            continue;
+        }
+        for (m = 0; m < ncl_module_count(modules); m++) {
+            const ncl_tool_decl *decl = ncl_module_tool(modules, m);
+
+            if (decl != NULL && strcmp(decl->name, name) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            continue;
+        }
+        file = ncl_library_file_name(name);
+        (void)ncl_strbuf_printf(err,
+                                "工具 \"%s\" 未装载：%s 里没有 %s"
+                                "（--plugin-dir 换目录，--plugins 看已装载的模块）",
+                                name, plugin_dir,
+                                file != NULL ? file : "对应模块");
+        ncl_free_safe(file);
+        return NCL_ERR_NOT_FOUND;
+    }
+    return NCL_OK;
 }
 
 static ncl_err check_protocols(const ncl_json *config, const char *plugin_dir,
@@ -469,7 +529,8 @@ int main(int argc, char **argv)
         return 0;
     }
     ncl_strbuf_reset(&err);
-    if (check_protocols(config, plugin_dir, modules, &err) != NCL_OK) {
+    if (check_protocols(config, plugin_dir, modules, &err) != NCL_OK ||
+        check_tools(config, plugin_dir, modules, &err) != NCL_OK) {
         ncl_log_error("%s", ncl_strbuf_cstr(&err));
         ncl_modules_free(modules);
         ncl_json_free(config);

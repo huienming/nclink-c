@@ -2,8 +2,11 @@
 
 `ncl_adapter` —— 把一台 FANUC 机床接进 NC-Link 的现场程序。它**本身就是一台 NC-Link
 设备**：`ncl_server` 加它周围的传输与端点；机床侧的 FOCAS 适配器不是编进程序里的，
-而是启动时从 `plugins\` 装载的一个模块。**一个进程、一条链路、一个设备**，点位表写在
-配置文件里，现场改点表不用重新编译。
+而是启动时从 `plugins\` 装载的一个模块。**一个进程、一条链路、一个设备**。
+
+点位（模型路径 → FOCAS 数据项）**声明在适配器模块里**（`clients/focas/focas_tool.c`），
+一个点位一行；配置只管机床地址、采样周期、broker 与要装载的模块。加/改一个点位＝改那一个
+.c 文件并重编模块；**采样周期与上报周期在生成的模型文件里，现场可调不用编译**（第 5 节）。
 
 ```
 FANUC CNC ──FOCAS(8193)──▶ ncl_driver_focas.dll（插件） ──▶ ncl_adapter（宿主：ncl_server）
@@ -21,7 +24,8 @@ FANUC CNC ──FOCAS(8193)──▶ ncl_driver_focas.dll（插件） ──▶ 
 ```
 bin/ncl_adapter.exe            设备程序（宿主）：一台 NC-Link 服务端 + REST + 轮询调度
 plugins/ncl_driver_focas.dll   FANUC 适配器模块（FOCAS over TCP）——启动时动态装载
-conf/fanuc.json                设备配置：机床地址、点位表、采样周期、broker、要装载的模块
+conf/fanuc.json                设备配置：机床地址、采样周期、broker、要装载的模块
+                               （点位表在模块里，见第 5 节）
 conf/mqtt.cfg                  MQTT broker 配置样例
 run-once.ps1                   自检：轮询一遍全部点位，打印到屏幕并写日志
 run.ps1                        常驻运行（Ctrl+C 退出）
@@ -58,8 +62,9 @@ D:\fanuc\              <- <root>
 1. 把本包解开放到 `<root>`（例如 `D:\fanuc\`）。**`plugins\` 必须跟 `bin\` 一起放**：
    程序默认从 `<root>\plugins` 装载模块，找不到就说"协议 focas 未注册"。
 2. 改 `conf/fanuc.json`：
-   - `drivers[0].parameters.host` ＝ 机床 IP（`port` 默认 8193）；
-   - `drivers[0].points` ＝ 点位表（见第 5 节）；
+   - `tools[0].parameters.host` ＝ 机床 IP（`port` 默认 8193，另有 `timeoutMs`、
+     `connectTimeoutMs`、`retries`、`negotiate`）；
+   - `sample.intervalMs` / `sample.uploadMs` ＝ 采样与上报周期；
    - `plugins.load` ＝ 要装载的模块名（默认 `["focas"]`）。
 3. 改 `conf/mqtt.cfg` 里的 `url` 为 broker 地址；或者用命令行的 `-b`（优先级更高）。
 4. 设备 SN：`bin\sn.txt` 不存在时自动生成一个（`V2` + 9 位十六进制）。**同一台机床
@@ -79,6 +84,9 @@ cd D:\fanuc
 # ② 自检：轮询一遍全部点位（不接 broker，读完就退出）
 .\bin\ncl_adapter.exe -c conf\fanuc.json --once
 
+# ②b 只看一个点位（排查某个点位时最省事；走的是和上位机一样的绑定）
+.\bin\ncl_adapter.exe -c conf\fanuc.json --probe /CNC/PART_COUNT
+
 # ③ 接 broker 跑起来（Ctrl+C 退出）
 .\bin\ncl_adapter.exe -c conf\fanuc.json -b tcp://10.0.0.9:1883
 
@@ -94,11 +102,19 @@ cd D:\fanuc
 自检输出长这样（每个点位一行，同时写进 `log\out.txt`）：
 
 ```
-  /CNC/PART_COUNT                  = 1234
-  /CNC/STATUS@RUN                  = 1
-  /CNC/AXIS@0/POSITION             = 12.345
-  ...
+2026-09-20 12:57:57.517 INFO [46812] /CNC/STATUS@MANUAL = 0
+2026-09-20 12:57:57.518 INFO [46812] /CNC/STATUS@RUN = 1
+2026-09-20 12:57:57.532 INFO [46812] /CNC/PART_COUNT = 1234
+2026-09-20 12:57:57.532 INFO [46812] /CNC/PROGRAM@NAME = "O1234"
+2026-09-20 12:57:57.535 INFO [46812] /CNC/AXIS@0/POSITION = 12.345
 自检：19 个点位，0 个读取失败
+```
+
+`--probe` 打的是单点结果（客户端视角，带 OK/NG 与原因）：
+
+```
+> .\bin\ncl_adapter.exe -c conf\fanuc.json --probe /CNC/PART_COUNT
+/CNC/PART_COUNT = 1234          # 退出码 0；读不到时打印 NG 与原因，退出码 1
 ```
 
 读到不出来的点位会打 `<读取失败>`；**只要有一个点位没读到，退出码就是 1**，所以
@@ -119,6 +135,7 @@ cd D:\fanuc
 | `--port <端口>` | REST 端口，默认 8080，`0` ＝ 随机 |
 | `--interval <毫秒>` | 轮询周期，默认 1000 |
 | `--once` | 轮询一遍并打印，然后退出（自检；有读不到的点位时退出码为 1） |
+| `--probe <路径>` | 只读一个点位并打印（走和客户端一样的绑定），然后退出 |
 | `--stats` | 跑完 `--once` 再打印审计计数（§6），然后退出 |
 | `--raw` | 审计里带上每次请求的原始报文 hex（§6） |
 | `--offline` | 不连 MQTT，只跑 REST 与轮询 |
@@ -142,16 +159,28 @@ cd D:\fanuc
 
 ---
 
-## 5. 点表（`conf/fanuc.json` 的 `points`）
+## 5. 点位表（在模块里：`clients/focas/focas_tool.c`）
 
-点位表就是配置里的一个数组：**改点表＝改配置文件，改完重启**。每条点位给出模型路径
-和机床侧的地址：
+点位**声明在适配器模块里**：一个点位 ＝ 一条 FOCAS 地址 + 一行声明。模型路径、采样与否
+都在那一行上写着，**改点位＝改这个 .c 文件并重编模块**；采样周期与上报周期在配置和模型
+文件里，现场改不用重编。
 
-```json
-{ "path": "STATUS@RUN", "addr": { "area": "STATINFO@2", "offset": 0, "dtype": "int16", "length": 1 } },
-{ "path": "AXIS@1/POSITION", "addr": { "area": "ACTF@4", "offset": 0, "dtype": "float32", "length": 1 } },
-{ "path": "PROGRAM@NAME", "addr": { "area": "EXEPRGNAME2", "offset": 0, "dtype": "string", "length": 36 } }
+```c
+static const focas_point k_status_run = {"STATINFO@2", 0, NCL_DTYPE_INT16, 1};
+static const focas_point k_part_count = {"RDCOUNT", 0, NCL_DTYPE_INT32, 1};
+
+NCL_POINT_SAMPLED_ARG("/CNC/STATUS@RUN", focas_dispatch, &k_status_run)
+NCL_POINT_SAMPLED_ARG("/CNC/PART_COUNT", focas_dispatch, &k_part_count)
 ```
+
+`focas_point` 四个字段就是原来的 `addr`：`area`（FOCAS 数据项）、`offset`（应答块序号）、
+`dtype`、`length`（元素个数）。三种声明宏：
+
+| 宏 | 含义 |
+|---|---|
+| `NCL_POINT_SAMPLED_ARG(路径, 函数, 地址)` | 可读，**并进采样通道** |
+| `NCL_POINT_ARG(路径, 函数, 地址)` | 只按需读（Query），不参与周期采样 |
+| `NCL_METHOD_NAMED(路径, 函数, 参数, 名字)` | 方法调用（不进模型取值） |
 
 `area` 的写法是 FOCAS 特有的（照抄即可）：
 
@@ -182,9 +211,14 @@ cd D:\fanuc
 | `RDLIFE` `RDPARAM` `RDMACRO` `RDTOFS` `RDPROGDIR3` | 同名项 | 刀具寿命 / 参数 / 宏变量 / 刀补 / 程序目录（**字段布局待真机核对**） | ✘ |
 
 - 最后一行**默认不写进点表**：按需读一个没核对过的字段可以，每秒往总线上报一个没人
-  核对过的名字不行。要试就在 `points` 里加一条，先别开采样（`"sample": false`）。
-- 3 轴写 6 条轴点位（位置 + 速度各 3 条）；要加轴就照 `AXIS@k/...` 往下加。
-- 点位的 `sample` 字段：`false` 表示只按需读、不参与周期采样。
+  核对过的名字不行。要试就照着加一条 `focas_point` + 一行 `NCL_POINT_ARG`（只按需读，
+  别用 `NCL_POINT_SAMPLED_ARG`）。
+- 3 轴写 6 条轴点位（位置 + 速度各 3 条）；要加轴就照 `k_axisN_position` / `k_axisN_speed`
+  往下加。**轴点位的路径尾段会重名**（`POSITION`×3、`SPEED`×3），所以它们用
+  `NCL_POINT_SAMPLED_NAMED` 显式给名字（`"AXIS0.POSITION"`…），方法调用地址就是
+  `focas/AXIS0.POSITION`；名字在同一个 tool 里必须唯一，重复会被宿主在装载时拒绝。
+- `/CNC/SESSION`、`/CNC/ITEMS` 两个方法由 `NCL_METHOD_NAMED` 声明（会话状态、数据项
+  清单），它们只作为方法调用，不进取值模型、也不参与采样。
 
 ---
 
@@ -205,14 +239,18 @@ plugins\
   `"plugins": { "dir": "plugins", "load": ["focas"], "auto": true }`：`auto` 表示
   "先扫描整个目录"。
 - `--plugin <名字>` 可以在命令行补一个模块（最多 8 个），`-P/--plugin-dir` 换目录。
-- 换别的协议只改配置：把 `drivers[0].type` 换成模块的协议名，点位表照写。
+- 换别的品牌/协议 ＝ 换一个适配器模块：配置里 `tools[0].name` 换成模块声明的工具名，
+  `parameters` 换成那台设备的连接参数。多数品牌要**新写一个模块**（一个 .c：连接 +
+  一个 dispatch + 点位声明 + `NCL_TOOL_MODULE`），写法见内部资料版的
+  `docs/adapters-README.md`。
 
 ```powershell
 .\bin\ncl_adapter.exe -c conf\modbus.json -b tcp://10.0.0.9:1883
 ```
 
-模块是一个独立的动态库，与程序之间有固定的装载约定（导出 `ncl_adapter_module()`
-把驱动工厂交给宿主，宿主负责登记）。两条纪律：
+模块是一个独立的动态库，与程序之间有固定的装载约定：导出 `ncl_adapter_module()`，
+把**点位声明**交给宿主（ABI 2，现代适配器），或者把**驱动工厂**交给宿主（ABI 1，
+老式驱动模块，宿主同样支持——配置里那套 `drivers[]` + `points[]` 就是给它用的）。两条纪律：
 
 - **模块必须和程序用同一套头文件编译**：模块自带一份核心库的拷贝，装载时程序会核对
   ABI 代次（不一致会明确拒绝并给出原因），但跨版本的模块请重新编译。
@@ -244,11 +282,13 @@ plugins\
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| 启动就报 `协议 "focas" 未注册：<目录> 里没有 ncl_driver_focas.dll` | `plugins\` 没跟 `bin\` 一起放，或缺了模块文件；用 `--plugins` 看装载结果 |
+| 启动就报 `工具 "focas" 未装载：<目录> 里没有 ncl_driver_focas.dll` | `plugins\` 没跟 `bin\` 一起放，或缺了模块文件；用 `--plugins` 看装载结果 |
+| 启动就报 `协议 "xxx" 未注册：…` | 老式写法（配置里 `drivers[]` + `points[]`）才需要注册协议；先看第 6 节，或 `--plugins` 看装载结果 |
 | `模块 ... 的 ABI 是 N，本宿主只认 M` | 模块与程序不是同一次构建的产物，换配套的模块 |
 | 日志 `cnc_allclibhndl3 ... -16`（连接超时） | 机床没开以太网功能、IP/端口不对、被防火墙挡；先用 `ping` 与 `telnet <ip> 8193` 确认 |
 | 日志 `-17`（协议/握手类） | 协商没通过。FOCAS 需机床侧授权"以太网功能"；先试 `--raw` 抓帧，把 `log\out.txt` 给开发 |
-| 单个点位读失败但其它正常 | 该点位地址或 dtype 不对：`conf\fanuc.json` 里对一下，或先删掉这个点位 |
+| 单个点位读失败但其它正常 | 该点位的 `area`/`dtype`/`offset` 不对：第 5 节的表里对一下，或先用 `--probe <路径>` 单独试这一个点位 |
+| 想单独确认一个点位 | `--probe /CNC/PART_COUNT`：走客户端一样的绑定，打印值或 NG 与原因 |
 | 数值明显不对（比如位置是 12345 而不是 12.345） | 见第 7 节的坐标形态说明，用 `--raw` 抓一次 |
 | `MQTT 暂未连上 / broker 未就绪` | broker 没起或地址不对。**不影响读机床**：程序会 1 s→30 s 退避重试，连上自动补订阅 |
 | REST 没起来（端口被占？） | 换 `--port 8081` |

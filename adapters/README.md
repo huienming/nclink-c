@@ -12,19 +12,70 @@
 
 ```
 adapters/
-├── include/nclink_adapter/   # 对外接口（驱动实现者要 include 的头）
+├── include/nclink_adapter/   # 宿主侧接口（模块作者看的是 include/nclink/ 下的头）
 │   ├── ncl_driver.h          # ncl_driver_ops / ncl_address / ncl_driver_result
-│   ├── ncl_driver_manager.h  # 驱动配置、点位表、path→驱动 分派
+│   ├── ncl_driver_manager.h  # 驱动配置、点位表、path→驱动 分派（老式路径）
 │   ├── ncl_audit.h           # 审计（§6）：请求/会话/写操作/错误直方图
 │   ├── ncl_adapter.h         # 宿主：配置 → 设备（含 MQTT 会话）
-│   └── ncl_module.h          # 适配器模块 ABI 与装载器（ncl_driver_<协议>.*）
-├── src/core/                 # 与协议无关的骨架（类型、错误分级、地址解析、注册表、审计、模块装载）
-├── src/registry/             # 配置加载 + 点位表 + 最长前缀分派
-├── src/app/                  # 宿主主体（模型生成、操作注册、轮询、MQTT、采样）
+│   └── ncl_module.h          # 模块 ABI 与装载器（两代，见下）
+├── src/core/                 # 与协议无关的骨架（驱动接口、地址解析、模块装载、审计）
+├── src/app/                  # 宿主主体（声明/点表 → 模型、操作注册、轮询、MQTT、采样）
 ├── src/main.c                # ncl_adapter 可执行文件（一台 NC-Link 设备程序）
-├── drivers/<协议>/           # 每个协议一个目录：帧构造/解析 + 会话状态
-└── tests/                    # 黄金报文 + mock 靶机的集成测试
+└── tests/                    # 装载器、宿主、黄金报文与 mock 靶机的集成测试
 ```
+
+协议客户端（帧构造/解析 + 会话状态）在 `clients/<协议>/`，公开头是
+`clients/include/nclink/clients/<协议>.h`；`adapters/` 只管宿主与模块装载。
+
+## 写一个适配器：一个文件（推荐）
+
+适配器作者只看一个头 —— `nclink/ncl_tool.h` —— 写一个 `.c` 文件：连接开一次，一个
+dispatch 服务全部点位，最后一行交出模块入口。
+
+```c
+#include "nclink/ncl_tool.h"
+
+static void *open_box(const ncl_json *params, char **err) { /* 连接开一次 */ }
+static void  close_box(void *ctx) { }
+static ncl_err dispatch(void *ctx, const ncl_tool_point *self, ncl_operation op,
+                        const ncl_json *params, ncl_json **result, char **reason) { }
+
+NCL_TOOL_BEGIN("mybox", "某品牌机床（只读）", 1000, 1000, open_box, close_box)
+    NCL_POINT_SAMPLED_ARG("/BOX/RUN", dispatch, &k_run)    /* 可读 + 进采样通道 */
+    NCL_POINT_ARG("/BOX/NAME", dispatch, &k_name)          /* 只按需读 */
+    NCL_POINT_RW_ARG("/BOX/MODE", dispatch, &k_mode)       /* 可读可写 */
+    NCL_METHOD_NAMED("/BOX/RESET", dispatch, &k_reset, "RESET")
+NCL_TOOL_END()
+
+NCL_TOOL_MODULE("1.0.0", "某品牌机床适配器")
+```
+
+宿主拿这份声明生成模型、OpenAPI schema 与绑定：`path` 就是模型路径，采样通道取
+`NCL_TOOL_BEGIN` 的周期，方法调用地址是 `<tool 名>/<点位名>`（点位名默认取路径尾段；
+同一条路径下重名时用 `*_NAMED` 宏显式给名字）。`sampled` 只要求点位可读，周期给 0
+就表示"这个声明不生成采样通道"（现场仍可在模型文件里加、调）。
+
+参数有三条通道，别混：
+
+| 参数 | 从哪来 |
+|---|---|
+| 配置里的 `parameters`（IP/端口/超时/unit…） | `open(params, err)` 拿一次，返回的 ctx 传给每个点位 |
+| 客户端的请求参数（Query 的 params、Set 的 `"value"`、方法调用的 arguments） | handler 的 `params` |
+| **点位自己的数据**（寄存器地址、映射表条目、协议项名） | 声明时挂在点位上，handler 从 `self->arg` 取 |
+
+配置里对应的一段只有参数，点位不在这里：
+
+```json
+{ "tools": [ { "name": "mybox", "parameters": { "host": "10.0.0.5" } } ] }
+```
+
+模块文件按 `ncl_driver_<tool 名>.dll`（Linux/macOS 是 `libncl_driver_<名字>.so`）放进
+`plugins/` 即可。现场三条命令：`ncl_adapter --plugins`（列工具与点位/方法个数）、
+`--probe <路径>`（单点试读）、`--once`（跑一遍自检）。可抄的样板：
+`clients/focas/focas_tool.c`（FANUC，19 个点位 + 2 个方法）、
+`adapters/tests/module_tool_basic.c`（最小夹具）。
+
+## 驱动接口（内部一层：协议客户端，以及老式驱动模块）
 
 构建产物是 `libnclink_drivers.a`（CMake 目标 `nclink::drivers`）、宿主可执行文件
 `ncl_adapter`，以及插件目录里的适配器模块（`plugins/ncl_driver_<协议>.dll|.so`）：
@@ -32,7 +83,7 @@ adapters/
 把它们放回内置注册表，做成一个自包含的可执行文件）。驱动层与 `nclink::core` 分开：
 设备端不带任何厂商驱动时可以直接不编译这一层（`-DNCLINK_BUILD_ADAPTERS=OFF`）。
 
-## 驱动接口
+### 一个驱动 = 一张 ncl_driver_ops 表
 
 一个驱动 = 一张 `ncl_driver_ops` 表：
 

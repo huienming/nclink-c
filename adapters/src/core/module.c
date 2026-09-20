@@ -408,12 +408,14 @@ ncl_err ncl_modules_register(ncl_module_set *set, ncl_strbuf *err)
         /* A tool module has no driver factory to register: the host reads its
          * declaration instead (ncl_module_tool()). */
         if (entry->abi == NCL_TOOL_MODULE_ABI) {
-            ncl_log_info("适配器模块 %s：工具 \"%s\"（%s，%u 个点位）",
+            /* Values and methods are counted by the host when it lists what is
+             * loaded; here the interesting part is that a tool needs no driver
+             * registration at all. */
+            ncl_log_info("适配器模块 %s：工具 \"%s\"（%s）",
                          ncl_library_path(entry->library), entry->tool->name,
                          !ncl_str_is_blank(entry->tool->version)
                              ? entry->tool->version
-                             : "?",
-                         (unsigned)entry->tool->decl.point_count);
+                             : "?");
             continue;
         }
         if (ncl_driver_register_protocol(module->name, module->create) != NCL_OK) {

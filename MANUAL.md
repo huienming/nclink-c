@@ -102,7 +102,7 @@ ctest --test-dir build --output-on-failure
 适配器进来后全量是 **42 个套件**（26 核心 + 16 适配器，多的是 `library`：
 `ncl_library_*` 的装载接口），3.4.0 的 `ncl_fanuc_collector` 已改为
 `ncl_adapter`（宿主）+ `plugins/ncl_driver_focas.dll`（模块）+ `conf/fanuc.json`
-（点表）这一组合方式：
+（连接参数与采样）这一组合方式（19 个点位在 `clients/focas/focas_tool.c` 里声明）：
 **默认堆版**已在 Windows/MSVC 与 MinGW/gcc 16.2 上复测 **42/42**，Linux 容器里跑同一条
 命令即可；静态池版的尺寸边界见 4.9（那组数字是 39 套口径，未随这套重跑）：64 KiB 池
 **38/39**（只剩 `file` 一套，它读回比较时要 1 MiB 连续块），1.5 MiB 池 **39/39**。

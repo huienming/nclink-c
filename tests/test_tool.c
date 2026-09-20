@@ -302,8 +302,10 @@ static void test_model(void)
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "type"), "CNC");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "id"), "V9");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "name"), "夹具机床");
+    /* 4 declared points, but /CNC/RESET only answers calls: a method is not a
+     * data item, so the model carries three. */
     items = ncl_json_obj_get(node, "dataItems");
-    NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 4);
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 3);
     item = ncl_json_arr_get(items, 0);
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "id"), "p0");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "/CNC/STATUS@RUN");
@@ -340,7 +342,7 @@ static void test_model(void)
     if (model != NULL) {
         node = ncl_json_arr_get(ncl_json_obj_get(model, "devices"), 0);
         NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(node, "dataItems")),
-                         4);
+                         3);
         NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(node, "configs")), 0);
         /* No "device" object: the defaults stand in. */
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "type"), "MACHINE");

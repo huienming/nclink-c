@@ -419,8 +419,16 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         char *type = NULL;
         char *number = NULL;
         char id[32];
-        ncl_json *item = ncl_json_new_object();
+        ncl_json *item;
 
+        /* A point that only answers calls is a method, not a value: it belongs
+         * in the schema (through its binding) and not in the model, which is
+         * what a client reads values out of - the same split the configuration
+         * made between "points" and "methods". */
+        if (!point->readable && !point->writable) {
+            continue;
+        }
+        item = ncl_json_new_object();
         if (item == NULL) {
             goto fail;
         }

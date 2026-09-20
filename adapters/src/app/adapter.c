@@ -197,18 +197,36 @@ static const ncl_json *tool_parameters(const ncl_json *config, const char *name)
 /** Every point of the declaration is a model path of this device. */
 static ncl_err load_declared_points(ncl_adapter *adapter)
 {
+    size_t declared_count = adapter->decl->point_count;
+    size_t at = 0;
     size_t i;
 
-    adapter->point_count = adapter->decl->point_count;
+    /* A point that only answers calls is a method: it has no value to poll, so
+     * it stays out of the point list (and out of the model) - the host reaches
+     * it through its binding, exactly like a configuration's "methods". */
+    for (i = 0; i < declared_count; i++) {
+        const ncl_tool_point *declared = &adapter->decl->points[i];
+
+        if (declared->readable || declared->writable) {
+            adapter->point_count++;
+        }
+    }
+    if (adapter->point_count == 0) {
+        return NCL_OK;
+    }
     adapter->points = (adapter_point *)ncl_mem_calloc(adapter->point_count,
                                                       sizeof(adapter_point));
     if (adapter->points == NULL) {
         return NCL_ERR_NOMEM;
     }
-    for (i = 0; i < adapter->point_count; i++) {
+    for (i = 0; i < declared_count; i++) {
         const ncl_tool_point *declared = &adapter->decl->points[i];
-        adapter_point *point = &adapter->points[i];
+        adapter_point *point;
 
+        if (!declared->readable && !declared->writable) {
+            continue;
+        }
+        point = &adapter->points[at++];
         point->path = ncl_strdup(declared->path);
         point->writable = declared->writable;
         point->sampled = declared->sampled;

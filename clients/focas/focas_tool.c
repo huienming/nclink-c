@@ -65,6 +65,17 @@ static const focas_point k_axis0_speed      = {"ACTS@0", 0, NCL_DTYPE_FLOAT32, 1
 static const focas_point k_axis1_speed      = {"ACTS@4", 0, NCL_DTYPE_FLOAT32, 1};
 static const focas_point k_axis2_speed      = {"ACTS@8", 0, NCL_DTYPE_FLOAT32, 1};
 
+/** A method-like point: the FOCAS operation the host calls by name. */
+typedef struct {
+    const char *operation;
+} focas_method;
+
+/* Two commissioning aids the driver has always had: what the session looks like
+ * and what the item table knows. They answer as Method calls to
+ * "focas/SESSION" and "focas/ITEMS". */
+static const focas_method k_session = {"session"};
+static const focas_method k_items   = {"items"};
+
 /* -------------------------------------------------------------- the tool -- */
 
 /**
@@ -124,7 +135,22 @@ static ncl_err focas_dispatch(void *ctx, const ncl_tool_point *self,
     ncl_address address;
     ncl_err rc;
 
-    (void)params;
+    if (op == NCL_OP_FUNC_CALL) {
+        const focas_method *method = (const focas_method *)self->arg;
+
+        if (driver == NULL || method == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_STATE, "%s 没有方法参数",
+                                 self->path);
+        }
+        rc = driver->ops->call != NULL
+                 ? driver->ops->call(driver, method->operation, params, result)
+                 : NCL_ERR_NOT_SUPPORTED;
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s 失败（%s）", self->path,
+                                 ncl_driver_error_tier_name(rc));
+        }
+        return NCL_OK;
+    }
     if (op != NCL_OP_GET_VALUE) {
         return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
                              "FOCAS 适配器只读：%s", self->path);
@@ -182,6 +208,9 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", 1000, 1000,
                             &k_axis1_speed, "AXIS1.SPEED")
     NCL_POINT_SAMPLED_NAMED("/CNC/AXIS@2/SPEED", focas_dispatch,
                             &k_axis2_speed, "AXIS2.SPEED")
+    /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
+    NCL_METHOD_NAMED("/CNC/SESSION", focas_dispatch, &k_session, "SESSION")
+    NCL_METHOD_NAMED("/CNC/ITEMS", focas_dispatch, &k_items, "ITEMS")
 NCL_TOOL_END()
 
 NCL_TOOL_MODULE("1.0.0", "FANUC FOCAS / Fwlib32 over TCP, read only (01 册 §2.1-§2.3)")
