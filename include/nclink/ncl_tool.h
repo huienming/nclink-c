@@ -104,6 +104,27 @@ typedef ncl_err (*ncl_point_fn)(void *ctx, const ncl_tool_point *self,
                                ncl_operation op, const ncl_json *params,
                                ncl_json **result, char **reason);
 
+/**
+ * The frames of the last exchange, for the audit trail (§6 of the spec asks for
+ * the bytes of every request). Borrowed from the module, which keeps them until
+ * its next exchange; either frame may be NULL.
+ */
+typedef struct {
+    const void *request;
+    size_t      request_len;
+    const void *reply;
+    size_t      reply_len;
+} ncl_tool_frames;
+
+/**
+ * Optional: hand the host the frames of the last exchange. An adapter that sits
+ * on a protocol client (see clients/) implements it in three lines with the
+ * driver's ncl_driver_last_raw(); an adapter without frames of its own leaves it
+ * out. This is the *only* audit related thing an author ever writes - the trail
+ * itself is the host's business.
+ */
+typedef void (*ncl_tool_last_raw_fn)(void *ctx, ncl_tool_frames *out);
+
 /** One declared point; the macros below fill it in. */
 struct ncl_tool_point {
     /** Model path, e.g. "/CNC/STATUS@RUN". Also how the point is addressed. */
@@ -156,6 +177,8 @@ typedef struct {
     long long             upload_ms;
     ncl_tool_open_fn      open;
     ncl_tool_close_fn     close;
+    /** Optional frames for the audit trail; NULL when the protocol has none. */
+    ncl_tool_last_raw_fn  last_raw;
     const ncl_tool_point *points;
     size_t                point_count;
 } ncl_tool_decl;
@@ -233,6 +256,7 @@ typedef struct {
 #define NCL_METHOD_NAMED(path_literal, fn, arg, name_literal)                  \
     { path_literal, false, false, true, false, name_literal, fn, arg, NULL },
 
+
 #define NCL_TOOL_BEGIN(name_literal, description_literal, sample_ms_value,     \
                        upload_ms_value, open_fn, close_fn)                     \
     static const char ncl_tool_name_[] = name_literal;                         \
@@ -243,9 +267,18 @@ typedef struct {
     static ncl_tool_close_fn const ncl_tool_close_ = (close_fn);               \
     static const ncl_tool_point ncl_tool_points_[] = {
 
-#define NCL_TOOL_END()                                                         \
+/*
+ * NCL_TOOL_END closes the block. NCL_TOOL_END_WITH_RAW does the same and adds
+ * the optional frames callback, so the audit trail can show the bytes:
+ *
+ *     NCL_TOOL_BEGIN(...)
+ *         NCL_POINT(...)
+ *     NCL_TOOL_END_WITH_RAW(my_last_raw)
+ */
+#define NCL_TOOL_END_IMPL(last_raw_expr)                                       \
     }                                                                          \
     ;                                                                          \
+    static ncl_tool_last_raw_fn const ncl_tool_last_raw_used_ = (last_raw_expr); \
     static inline ncl_tool_decl ncl_tool_declaration(void)                     \
     {                                                                          \
         ncl_tool_decl decl;                                                    \
@@ -256,11 +289,15 @@ typedef struct {
         decl.upload_ms = ncl_tool_upload_ms_;                                  \
         decl.open = ncl_tool_open_;                                            \
         decl.close = ncl_tool_close_;                                          \
+        decl.last_raw = ncl_tool_last_raw_used_;                               \
         decl.points = ncl_tool_points_;                                        \
         decl.point_count =                                                     \
             sizeof(ncl_tool_points_) / sizeof(ncl_tool_points_[0]);            \
         return decl;                                                           \
     }
+
+#define NCL_TOOL_END() NCL_TOOL_END_IMPL(NULL)
+#define NCL_TOOL_END_WITH_RAW(fn) NCL_TOOL_END_IMPL(fn)
 
 /* Small helpers, so a point function stays a few lines. */
 
@@ -294,6 +331,32 @@ ncl_err ncl_tool_reply_text(ncl_json **result, const char *text);
 ncl_err ncl_tool_fail(char **reason, ncl_err code, const char *fmt, ...);
 
 /* Host facing ----------------------------------------------------------- */
+
+/**
+ * Where the host records what the points did, for the audit trail (§6: every
+ * request with its bytes, every write with its old and new value).
+ *
+ * The core only knows this shape - the implementation lives where the audit
+ * does (nclink_adapter/ncl_audit.h), so a host without one passes NULL and the
+ * shim records nothing. An adapter author never sees this: the accounting is
+ * done for them.
+ */
+typedef struct {
+    void *user;
+    /** True when the trail wants the frames too (they cost a call to ask). */
+    bool (*wants_raw)(void *user);
+    /** One point call: what was asked, what it answered, how long it took. */
+    void (*request)(void *user, const char *tool, const ncl_tool_point *point,
+                    ncl_operation op, int code, int64_t micros,
+                    const ncl_tool_frames *frames);
+    /**
+     * One write, in full: the value that was there (NULL when it could not be
+     * read) and the one being written, plus the outcome.
+     */
+    void (*write)(void *user, const char *tool, const ncl_tool_point *point,
+                  const ncl_json *old_value, const ncl_json *new_value,
+                  int code);
+} ncl_tool_audit;
 
 /** The name a point answers to inside its tool: the tail of its path. */
 const char *ncl_tool_point_name(const ncl_tool_point *point);
@@ -332,8 +395,9 @@ typedef struct ncl_tool_registration ncl_tool_registration;
  * what open() returned.
  */
 ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
-                          const ncl_json *params, ncl_tool_registration **out,
-                          ncl_strbuf *err);
+                          const ncl_json *params,
+                          const ncl_tool_audit *audit,
+                          ncl_tool_registration **out, ncl_strbuf *err);
 
 /** close() the connection and release the registration. NULL is accepted. */
 void ncl_tool_unregister(const ncl_tool_decl *decl,

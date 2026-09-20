@@ -27,6 +27,7 @@
 
 #include "nclink/ncl_env.h"
 #include "nclink_adapter/ncl_driver.h"
+#include "nclink_adapter/ncl_audit.h"
 #include "nclink/ncl_config.h"
 #include "nclink/ncl_logger.h"
 #include "nclink/ncl_mqtt.h"
@@ -106,6 +107,52 @@ static void err_appendf(ncl_strbuf *err, const char *fmt, ...)
 }
 
 /* ---------------------------------------------------------- declared tool -- */
+
+/* §6: the trail for a declared tool is the host's business, so an adapter
+ * author never writes audit code. The core's shim reports every point call
+ * here; what only the module knows - the frames - arrives through the optional
+ * last_raw callback, and the address column carries the point's name because
+ * the protocol address itself lives inside the module. */
+
+static bool audit_wants_raw(void *user)
+{
+    (void)user;
+    return ncl_audit_wants_raw();
+}
+
+static void audit_request(void *user, const char *tool,
+                          const ncl_tool_point *point, ncl_operation op, int code,
+                          int64_t micros, const ncl_tool_frames *frames)
+{
+    ncl_driver_raw raw;
+    bool has_frames = frames != NULL &&
+                      (frames->request != NULL || frames->reply != NULL);
+
+    (void)user;
+    (void)op; /* the path is what the request named */
+    memset(&raw, 0, sizeof(raw));
+    if (has_frames) {
+        raw.request = (const uint8_t *)frames->request;
+        raw.request_len = frames->request_len;
+        raw.reply = (const uint8_t *)frames->reply;
+        raw.reply_len = frames->reply_len;
+    }
+    ncl_audit_request(tool, point->path, ncl_tool_point_name(point), code, micros,
+                      has_frames ? &raw : NULL);
+}
+
+static void audit_write(void *user, const char *tool,
+                        const ncl_tool_point *point, const ncl_json *old_value,
+                        const ncl_json *new_value, int code)
+{
+    (void)user;
+    ncl_audit_write(tool, point->path, ncl_tool_point_name(point), old_value,
+                    new_value, code);
+}
+
+static const ncl_tool_audit k_tool_audit = {
+    NULL, audit_wants_raw, audit_request, audit_write,
+};
 
 /**
  * The declaration a loaded module brought, if any. One device serves one
@@ -630,10 +677,12 @@ ncl_adapter *ncl_adapter_create_with_modules(const ncl_json *config,
             tool_parameters(config, adapter->decl->name);
 
         if (ncl_tool_register(adapter->server, adapter->decl, parameters,
-                              &adapter->registration, err) != NCL_OK) {
+                              &k_tool_audit, &adapter->registration,
+                              err) != NCL_OK) {
             ncl_adapter_free(adapter);
             return NULL;
         }
+        ncl_audit_session(adapter->decl->name, "open", NULL);
     }
     return adapter;
 }
@@ -664,6 +713,9 @@ void ncl_adapter_free(ncl_adapter *adapter)
     ncl_server_free(adapter->server);
     /* Then the declared tool: the server is gone, so nothing can call into it
      * any more and close() runs exactly once. */
+    if (adapter->decl != NULL) {
+        ncl_audit_session(adapter->decl->name, "close", NULL);
+    }
     ncl_tool_unregister(adapter->decl, adapter->registration);
     if (adapter->mqtt != NULL) {
         ncl_mqtt_client_disconnect(adapter->mqtt);

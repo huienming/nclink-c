@@ -38,6 +38,7 @@ static long long g_run = 1;
 static long long g_mode;
 static long long g_written = -1;
 static const char *g_name = "MOCK-1";
+static int g_last_raw_calls;
 
 static void *fixture_open(const ncl_json *params, char **err)
 {
@@ -54,6 +55,20 @@ static void fixture_close(void *ctx)
     if (ctx != NULL) {
         g_closes++;
     }
+}
+
+/** The optional frames callback: the host asks, the module hands bytes over. */
+static void fixture_last_raw(void *ctx, ncl_tool_frames *out)
+{
+    static const unsigned char k_request[] = {0x02, 0x01, 0xa0};
+    static const unsigned char k_reply[] = {0x02, 0x01, 0x02, 0x00, 0x07};
+
+    (void)ctx;
+    g_last_raw_calls++;
+    out->request = k_request;
+    out->request_len = sizeof(k_request);
+    out->reply = k_reply;
+    out->reply_len = sizeof(k_reply);
 }
 
 static ncl_err fixture_dispatch(void *ctx, const ncl_tool_point *self,
@@ -109,7 +124,7 @@ NCL_TOOL_BEGIN("cnc", "FANUC 数控机床（夹具）", 1000, 2000,
     NCL_POINT("/CNC/NAME", fixture_dispatch)
     NCL_POINT_RW("/CNC/MODE", fixture_dispatch)
     NCL_METHOD("/CNC/RESET", fixture_dispatch)
-NCL_TOOL_END()
+NCL_TOOL_END_WITH_RAW(fixture_last_raw)
 
 /** The declaration the macros above built, by value. */
 static ncl_tool_decl fixture_decl(void)
@@ -436,6 +451,68 @@ static ncl_message *query(const char *path)
     return request;
 }
 
+/* ------------------------------------------------------------- audit sink -- */
+
+/* The host's §6 trail: the shim reports every point call here. */
+
+static int g_sink_requests;
+static int g_sink_writes;
+static int g_sink_raw_asked;
+static int g_sink_frames;
+static char g_sink_path[64];
+static ncl_operation g_sink_op;
+static int g_sink_code;
+static long long g_sink_old = -2;
+static long long g_sink_new = -2;
+
+static bool sink_wants_raw(void *user)
+{
+    (void)user;
+    g_sink_raw_asked++;
+    return true;
+}
+
+static void sink_request(void *user, const char *tool,
+                         const ncl_tool_point *point, ncl_operation op, int code,
+                         int64_t micros, const ncl_tool_frames *frames)
+{
+    (void)user;
+    (void)tool;
+    (void)micros;
+    g_sink_requests++;
+    g_sink_op = op;
+    g_sink_code = code;
+    snprintf(g_sink_path, sizeof(g_sink_path), "%s", point->path);
+    if (frames != NULL && frames->request != NULL && frames->request_len == 3) {
+        if (frames->reply != NULL && frames->reply_len == 5) {
+            g_sink_frames++;
+        }
+    }
+}
+
+static void sink_write(void *user, const char *tool, const ncl_tool_point *point,
+                       const ncl_json *old_value, const ncl_json *new_value,
+                       int code)
+{
+    (void)user;
+    (void)tool;
+    (void)point;
+    (void)code;
+    g_sink_writes++;
+    g_sink_old = -1;
+    g_sink_new = -1;
+    if (old_value != NULL) {
+        (void)ncl_json_as_int(old_value, &g_sink_old);
+    }
+    if (new_value != NULL) {
+        (void)ncl_json_as_int(new_value, &g_sink_new);
+    }
+}
+
+static const ncl_tool_audit k_sink = {
+    NULL, sink_wants_raw, sink_request, sink_write,
+};
+
 static ncl_message *set_value(const char *path, long long value)
 {
     ncl_message *request = ncl_message_new(NCL_MSG_SET_REQUEST);
@@ -489,7 +566,7 @@ static void test_register_and_invoke(void)
 
     NCL_TEST_CASE("registering a declaration opens once and binds every "
                   "operation");
-    NCL_CHECK_EQ_INT(ncl_tool_register(server, &decl, params, &registration,
+    NCL_CHECK_EQ_INT(ncl_tool_register(server, &decl, params, &k_sink, &registration,
                                        &err),
                      NCL_OK);
     NCL_CHECK_EQ_INT((int)err.len, 0);
@@ -623,6 +700,22 @@ static void test_register_and_invoke(void)
     }
 
     NCL_TEST_CASE("unregistering closes the connection once");
+
+    NCL_TEST_CASE("the host kept the trail for every point call (§6)");
+    /* Five calls went through the shim: two reads, the write, the read back
+     * and the method call. The last one is the method. */
+    NCL_CHECK_EQ_INT(g_sink_requests, 5);
+    NCL_CHECK_EQ_INT(g_sink_op, NCL_OP_FUNC_CALL);
+    NCL_CHECK_EQ_INT(g_sink_code, NCL_OK);
+    NCL_CHECK_EQ_INT(g_sink_writes, 1);
+    NCL_CHECK_EQ_INT(g_sink_old, 0);  /* the fixture's mode starts at zero */
+    NCL_CHECK_EQ_INT(g_sink_new, 42); /* what the request carried */
+    /* The trail asked for frames, so the module's callback ran and its bytes
+     * reached the sink. */
+    NCL_CHECK(g_sink_raw_asked > 0);
+    NCL_CHECK(g_last_raw_calls > 0);
+    NCL_CHECK(g_sink_frames > 0);
+
     ncl_tool_unregister(&decl, registration);
     NCL_CHECK_EQ_INT(g_closes, 1);
     ncl_tool_unregister(&decl, NULL);

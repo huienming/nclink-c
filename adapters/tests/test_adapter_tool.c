@@ -15,6 +15,7 @@
 
 #include "nclink/ncl_message.h"
 #include "nclink/ncl_tool.h"
+#include "nclink_adapter/ncl_audit.h"
 #include "nclink_adapter/ncl_adapter.h"
 #include "nclink_adapter/ncl_module.h"
 
@@ -79,6 +80,10 @@ NCL_TEST_MAIN_BEGIN()
     ncl_server *server;
     ncl_tool_registration *registration = NULL;
 
+    ncl_audit_options audit_options;
+
+    ncl_audit_options_default(&audit_options); /* §6: on, without the raw bytes */
+    ncl_audit_init(&audit_options);
     ncl_strbuf_init(&err);
     NCL_CHECK(modules != NULL);
 
@@ -172,8 +177,8 @@ NCL_TEST_MAIN_BEGIN()
     if (server != NULL) {
         bool ok = false;
 
-        NCL_CHECK_EQ_INT(ncl_tool_register(server, decl, NULL, &registration,
-                                           &err),
+        NCL_CHECK_EQ_INT(ncl_tool_register(server, decl, NULL, NULL,
+                                           &registration, &err),
                          NCL_OK);
         NCL_CHECK(registration != NULL);
         NCL_CHECK_EQ_INT(query_int(server, "/TEST/RUN", &ok), 7);
@@ -263,6 +268,42 @@ NCL_TEST_MAIN_BEGIN()
                 NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/TEST/NOPE",
                                                       &err),
                                  NCL_ERR_NOT_FOUND);
+
+                /* §6: the host keeps the trail for the declared tool - an
+                 * adapter author never writes audit code. */
+                NCL_TEST_CASE("the host's trail records what the tool did");
+                ncl_audit_reset_stats();
+                {
+                    ncl_message *request = query("/TEST/RUN");
+                    ncl_message *response = ncl_server_invoke_query(
+                        ncl_adapter_server(adapter), request);
+
+                    ncl_message_free(response);
+                    ncl_message_free(request);
+                }
+                {
+                    ncl_message *request = set_value("/TEST/MODE", 9);
+                    ncl_message *response = ncl_server_invoke_set(
+                        ncl_adapter_server(adapter), request);
+
+                    ncl_message_free(response);
+                    ncl_message_free(request);
+                }
+                {
+                    ncl_json *stats = ncl_audit_stats();
+
+                    NCL_CHECK(stats != NULL);
+                    if (stats != NULL) {
+                        /* One Query and one Set (the Set's own old value read
+                         * is preparation for the trail, not a request of its own -
+                         * the same accounting the point map used). */
+                        NCL_CHECK_EQ_INT(
+                            ncl_json_obj_get_int(stats, "requests", -1), 2);
+                        NCL_CHECK_EQ_INT(
+                            ncl_json_obj_get_int(stats, "writes", -1), 1);
+                        ncl_json_free(stats);
+                    }
+                }
                 ncl_adapter_free(adapter);
             }
         }

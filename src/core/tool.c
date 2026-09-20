@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "nclink/ncl_platform.h"
+
 /* ------------------------------------------------------------- diagnostics -- */
 
 static void err_append(ncl_strbuf *err, const char *text)
@@ -519,6 +521,9 @@ fail:
 typedef struct {
     void                  *ctx;
     const ncl_tool_point  *point;
+    /** Where the §6 trail goes (borrowed from the caller; may be NULL). */
+    const ncl_tool_audit  *audit;
+    const ncl_tool_decl   *decl;
 } ncl_tool_shim;
 
 struct ncl_tool_registration {
@@ -528,31 +533,95 @@ struct ncl_tool_registration {
     size_t               shim_count;
 };
 
+/** The frames of the last exchange, when the trail wants them (§6). */
+static ncl_tool_frames shim_frames(const ncl_tool_shim *shim)
+{
+    ncl_tool_frames frames;
+
+    memset(&frames, 0, sizeof(frames));
+    if (shim->audit != NULL && shim->audit->wants_raw != NULL &&
+        shim->audit->wants_raw(shim->audit->user) &&
+        shim->decl->last_raw != NULL) {
+        shim->decl->last_raw(shim->ctx, &frames);
+    }
+    return frames;
+}
+
+/** One line in the trail: what was asked, what it answered, how long it took. */
+static void shim_report(const ncl_tool_shim *shim, ncl_operation op, ncl_err code,
+                        int64_t micros)
+{
+    ncl_tool_frames frames;
+
+    if (shim->audit == NULL || shim->audit->request == NULL) {
+        return;
+    }
+    frames = shim_frames(shim);
+    shim->audit->request(shim->audit->user, shim->decl->name, shim->point, op,
+                         code, micros, &frames);
+}
+
+/**
+ * The value a write is about to replace, for the trail (§6 asks for it). A
+ * point that cannot be read just leaves it NULL, which the trail shows as "-".
+ */
+static void shim_read_old_value(const ncl_tool_shim *shim, ncl_json **old_value)
+{
+    if (shim->audit == NULL || shim->audit->write == NULL ||
+        !shim->point->readable) {
+        return;
+    }
+    (void)shim->point->fn(shim->ctx, shim->point, NCL_OP_GET_VALUE, NULL,
+                          old_value, NULL);
+}
+
 static ncl_err shim_read(void *instance, const ncl_json *params,
                          ncl_json **result, char **reason)
 {
     const ncl_tool_shim *shim = (const ncl_tool_shim *)instance;
+    int64_t started = ncl_time_monotonic_millis();
+    ncl_err rc;
 
-    return shim->point->fn(shim->ctx, shim->point, NCL_OP_GET_VALUE, params,
-                           result, reason);
+    rc = shim->point->fn(shim->ctx, shim->point, NCL_OP_GET_VALUE, params, result,
+                         reason);
+    shim_report(shim, NCL_OP_GET_VALUE, rc,
+                ncl_time_monotonic_millis() - started);
+    return rc;
 }
 
 static ncl_err shim_write(void *instance, const ncl_json *params,
                           ncl_json **result, char **reason)
 {
     const ncl_tool_shim *shim = (const ncl_tool_shim *)instance;
+    ncl_json *old_value = NULL;
+    int64_t started = ncl_time_monotonic_millis();
+    ncl_err rc;
 
-    return shim->point->fn(shim->ctx, shim->point, NCL_OP_SET_VALUE, params,
-                           result, reason);
+    shim_read_old_value(shim, &old_value);
+    rc = shim->point->fn(shim->ctx, shim->point, NCL_OP_SET_VALUE, params, result,
+                         reason);
+    if (shim->audit != NULL && shim->audit->write != NULL) {
+        shim->audit->write(shim->audit->user, shim->decl->name, shim->point,
+                           old_value, ncl_tool_param_value(params), rc);
+    }
+    ncl_json_free(old_value);
+    shim_report(shim, NCL_OP_SET_VALUE, rc,
+                ncl_time_monotonic_millis() - started);
+    return rc;
 }
 
 static ncl_err shim_call(void *instance, const ncl_json *params,
                          ncl_json **result, char **reason)
 {
     const ncl_tool_shim *shim = (const ncl_tool_shim *)instance;
+    int64_t started = ncl_time_monotonic_millis();
+    ncl_err rc;
 
-    return shim->point->fn(shim->ctx, shim->point, NCL_OP_FUNC_CALL, params,
-                           result, reason);
+    rc = shim->point->fn(shim->ctx, shim->point, NCL_OP_FUNC_CALL, params, result,
+                         reason);
+    shim_report(shim, NCL_OP_FUNC_CALL, rc,
+                ncl_time_monotonic_millis() - started);
+    return rc;
 }
 
 static ncl_tool_fn shim_for(ncl_operation op)
@@ -582,8 +651,9 @@ static size_t point_operation_count(const ncl_tool_point *point)
 }
 
 ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
-                          const ncl_json *params, ncl_tool_registration **out,
-                          ncl_strbuf *err)
+                          const ncl_json *params,
+                          const ncl_tool_audit *audit,
+                          ncl_tool_registration **out, ncl_strbuf *err)
 {
     ncl_tool_registration *registration;
     size_t operations = 0;
@@ -643,6 +713,8 @@ ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
 
         shim->ctx = registration->ctx;
         shim->point = point;
+        shim->audit = audit;
+        shim->decl = decl;
         for (op = 0; op < 3; op++) {
             ncl_operation candidate = k_operations[op];
 

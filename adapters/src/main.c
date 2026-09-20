@@ -415,6 +415,12 @@ int main(int argc, char **argv)
         audit.raw = args.raw;                   /* §6: off unless asked for */
         audit.operator_name = args.operator_name;
         ncl_audit_init(&audit);
+        if (args.raw) {
+            /* The frames go to the trail's request lines, which are DEBUG: the
+             * hex is only interesting when it was asked for, so asking for it
+             * raises the level too - otherwise `--raw` would log nothing. */
+            ncl_log_set_level(NCL_LOG_DEBUG);
+        }
     }
     ncl_strbuf_init(&err);
     config = ncl_adapter_json_from_file(args.config, &err);

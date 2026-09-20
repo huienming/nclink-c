@@ -122,6 +122,25 @@ static void focas_close(void *ctx)
 }
 
 /**
+ * The frames of the last exchange, for the host's §6 trail. This is the only
+ * audit related line an adapter author writes: the host does the accounting.
+ */
+static void focas_last_raw(void *ctx, ncl_tool_frames *out)
+{
+    ncl_driver *driver = (ncl_driver *)ctx;
+    ncl_driver_raw raw;
+
+    if (driver == NULL) {
+        return;
+    }
+    ncl_driver_last_raw(driver, &raw);
+    out->request = raw.request;
+    out->request_len = raw.request_len;
+    out->reply = raw.reply;
+    out->reply_len = raw.reply_len;
+}
+
+/**
  * One function for all nineteen points: `self->arg` is the FOCAS address of
  * this point, `op` is what the client asked for. The address is borrowed from
  * the table above, so it is never cleared.
@@ -211,6 +230,6 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", 1000, 1000,
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
     NCL_METHOD_NAMED("/CNC/SESSION", focas_dispatch, &k_session, "SESSION")
     NCL_METHOD_NAMED("/CNC/ITEMS", focas_dispatch, &k_items, "ITEMS")
-NCL_TOOL_END()
+NCL_TOOL_END_WITH_RAW(focas_last_raw)
 
 NCL_TOOL_MODULE("1.0.0", "FANUC FOCAS / Fwlib32 over TCP, read only (01 册 §2.1-§2.3)")
