@@ -188,14 +188,14 @@ public final class SelfTest {
             check("上报周期", decoded.uploadIntervalMs() == 2000);
             check("行数", decoded.rows() == 2);
             check("列数", decoded.columns().size() == 1);
-            check("表头路径", "/STATUS".equals(decoded.columns().get(0).path()));
+            check("表头路径", "/MACHINE/STATUS".equals(decoded.columns().get(0).path()));
             check("每列点数", decoded.columns().get(0).points() == 2);
             check("按行取值", Long.valueOf(1L).equals(decoded.valueAt(0, 0))
                     && Long.valueOf(2L).equals(decoded.valueAt(1, 0)));
             check("getLong / getDouble / getString",
                     decoded.getLong(0, 0) == 1 && decoded.getDouble(1, 0) == 2.0
                             && "2".equals(decoded.getString(1, 0)));
-            check("表头一行", "/STATUS".equals(decoded.header(" ")));
+            check("表头一行", "/MACHINE/STATUS".equals(decoded.header(" ")));
             check("原始报文带 paths", decoded.rawJson() != null
                     && decoded.rawJson().contains("paths"));
         }
@@ -261,7 +261,7 @@ public final class SelfTest {
                     "plc",
                     new String[] {"getValue", "getCount"},
                     new Server.Binding[] {
-                        new Server.Binding("/STATUS", Operation.GET_VALUE, "getValue")},
+                        new Server.Binding("/MACHINE/STATUS", Operation.GET_VALUE, "getValue")},
                     (method, params) -> {
                         if ("getValue".equals(method)) {
                             return Integer.valueOf(42);
@@ -334,7 +334,7 @@ public final class SelfTest {
         try (Server device = new Server("V2TEST00001")) {
             device.registerTool("plc", new String[] {"getValue"},
                     new Server.Binding[] {
-                        new Server.Binding("/STATUS", Operation.GET_VALUE, "getValue")},
+                        new Server.Binding("/MACHINE/STATUS", Operation.GET_VALUE, "getValue")},
                     (method, params) -> {
                         throw new IllegalStateException("坏掉了");
                     });

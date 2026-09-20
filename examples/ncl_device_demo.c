@@ -118,8 +118,8 @@ typedef struct {
     long long part_count; /**< /PART_COUNT 加工计件 */
     int warning;         /**< /CONTROLLER/WARNING 报警号，0 表示无报警 */
     int program;         /**< /CONTROLLER/PROGRAM 当前加工程序名 */
-    int tool_number;     /**< /CONTROLLER/TOOL_NUMBER 当前刀号 */
-    int feed_override;   /**< /FEED_OVERRIDE 进给倍率（%） */
+    int tool_number;     /**< /MACHINE/CONTROLLER/TOOL_NUMBER 当前刀号 */
+    int feed_override;   /**< /MACHINE/FEED_OVERRIDE 进给倍率（%） */
     int spindle_speed;   /**< /AXIS@S/SPEED 主轴转速（r/min） */
     int mode;            /**< /MACHINING_MODE 加工模式（0 手动 / 1 录入 / 2 自动） */
 } demo_device;
@@ -401,35 +401,35 @@ static const ncl_tool_method kMethods[] = {
  * 28 项全都按这些路径取值，缺一条那一列只能是 null。
  */
 static const ncl_tool_binding kBindings[] = {
-    {"/STATUS", NCL_OP_GET_VALUE, "getValue", "plc"},
-    {"/STATUS", NCL_OP_SET_VALUE, "setValue", "plc"},
-    {"/PART_COUNT", NCL_OP_GET_VALUE, "getCount", "plc"},
-    {"/CONTROLLER/WARNING", NCL_OP_GET_VALUE, "getWarning", "plc"},
-    {"/CONTROLLER/PROGRAM", NCL_OP_GET_VALUE, "getProgram", "plc"},
-    {"/CONTROLLER/TOOL_NUMBER", NCL_OP_GET_VALUE, "getToolNumber", "plc"},
-    {"/FEED_OVERRIDE", NCL_OP_GET_VALUE, "getFeedOverride", "plc"},
-    {"/MACHINING_MODE", NCL_OP_GET_VALUE, "getMachiningMode", "plc"},
-    {"/AXIS@S/SPEED", NCL_OP_GET_VALUE, "getSpeedS", "plc"},
-    {"/AXIS@X/POWER@1", NCL_OP_GET_VALUE, "getPowerX", "plc"},
-    {"/AXIS@Y/POWER@1", NCL_OP_GET_VALUE, "getPowerY", "plc"},
-    {"/AXIS@Z/POWER@1", NCL_OP_GET_VALUE, "getPowerZ", "plc"},
-    {"/AXIS@C/POWER@1", NCL_OP_GET_VALUE, "getPowerC", "plc"},
-    {"/AXIS@S/POWER@1", NCL_OP_GET_VALUE, "getPowerS", "plc"},
-    {"/AXIS@X/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationXX", "plc"},
-    {"/AXIS@X/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationXY", "plc"},
-    {"/AXIS@X/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationXZ", "plc"},
-    {"/AXIS@Y/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationYX", "plc"},
-    {"/AXIS@Y/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationYY", "plc"},
-    {"/AXIS@Y/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationYZ", "plc"},
-    {"/AXIS@Z/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationZX", "plc"},
-    {"/AXIS@Z/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationZY", "plc"},
-    {"/AXIS@Z/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationZZ", "plc"},
-    {"/AXIS@C/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationCX", "plc"},
-    {"/AXIS@C/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationCY", "plc"},
-    {"/AXIS@C/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationCZ", "plc"},
-    {"/AXIS@S/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationSX", "plc"},
-    {"/AXIS@S/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationSY", "plc"},
-    {"/AXIS@S/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationSZ", "plc"}};
+    {"/MACHINE/STATUS", NCL_OP_GET_VALUE, "getValue", "plc"},
+    {"/MACHINE/STATUS", NCL_OP_SET_VALUE, "setValue", "plc"},
+    {"/MACHINE/PART_COUNT", NCL_OP_GET_VALUE, "getCount", "plc"},
+    {"/MACHINE/CONTROLLER/WARNING", NCL_OP_GET_VALUE, "getWarning", "plc"},
+    {"/MACHINE/CONTROLLER/PROGRAM", NCL_OP_GET_VALUE, "getProgram", "plc"},
+    {"/MACHINE/CONTROLLER/TOOL_NUMBER", NCL_OP_GET_VALUE, "getToolNumber", "plc"},
+    {"/MACHINE/FEED_OVERRIDE", NCL_OP_GET_VALUE, "getFeedOverride", "plc"},
+    {"/MACHINE/MACHINING_MODE", NCL_OP_GET_VALUE, "getMachiningMode", "plc"},
+    {"/MACHINE/AXIS@S/SPEED", NCL_OP_GET_VALUE, "getSpeedS", "plc"},
+    {"/MACHINE/AXIS@X/POWER@1", NCL_OP_GET_VALUE, "getPowerX", "plc"},
+    {"/MACHINE/AXIS@Y/POWER@1", NCL_OP_GET_VALUE, "getPowerY", "plc"},
+    {"/MACHINE/AXIS@Z/POWER@1", NCL_OP_GET_VALUE, "getPowerZ", "plc"},
+    {"/MACHINE/AXIS@C/POWER@1", NCL_OP_GET_VALUE, "getPowerC", "plc"},
+    {"/MACHINE/AXIS@S/POWER@1", NCL_OP_GET_VALUE, "getPowerS", "plc"},
+    {"/MACHINE/AXIS@X/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationXX", "plc"},
+    {"/MACHINE/AXIS@X/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationXY", "plc"},
+    {"/MACHINE/AXIS@X/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationXZ", "plc"},
+    {"/MACHINE/AXIS@Y/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationYX", "plc"},
+    {"/MACHINE/AXIS@Y/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationYY", "plc"},
+    {"/MACHINE/AXIS@Y/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationYZ", "plc"},
+    {"/MACHINE/AXIS@Z/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationZX", "plc"},
+    {"/MACHINE/AXIS@Z/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationZY", "plc"},
+    {"/MACHINE/AXIS@Z/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationZZ", "plc"},
+    {"/MACHINE/AXIS@C/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationCX", "plc"},
+    {"/MACHINE/AXIS@C/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationCY", "plc"},
+    {"/MACHINE/AXIS@C/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationCZ", "plc"},
+    {"/MACHINE/AXIS@S/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationSX", "plc"},
+    {"/MACHINE/AXIS@S/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationSY", "plc"},
+    {"/MACHINE/AXIS@S/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationSZ", "plc"}};
 
 
 /* ------------------------------------------------------------- MQTT 回调 -- */

@@ -37,9 +37,9 @@ defer nclink.Shutdown()
 
 c, err := nclink.Get("V2023A7B762")
 model, err := c.Probe(5000)              // 拉模型
-v, err := c.Value("/STATUS", 5000)       // 读值
+v, err := c.Value("/MACHINE/STATUS", 5000)       // 读值
 defer v.Close()
-err = c.Set("/STATUS", mustJSON("42"), 5000)
+err = c.Set("/MACHINE/STATUS", mustJSON("42"), 5000)
 
 err = c.SubscribeSamples(2, func(topic string, msg *nclink.Message) {
     // msg 只在回调期间有效（C 侧规则一致）
@@ -74,8 +74,8 @@ err = device.RegisterTool("plc",
             `{"type":"number"}},"required":["value"]}`},
     },
     []nclink.Binding{
-        {Path: "/STATUS", Operation: nclink.OpGetValue, Method: "getStatus"},
-        {Path: "/PART_COUNT", Operation: nclink.OpSetValue, Method: "setCount"},
+        {Path: "/MACHINE/STATUS", Operation: nclink.OpGetValue, Method: "getStatus"},
+        {Path: "/MACHINE/PART_COUNT", Operation: nclink.OpSetValue, Method: "setCount"},
     },
     func(method string, params any) (any, error) {
         // params 是请求参数的 JSON 解码结果（没有参数时是 nil）；

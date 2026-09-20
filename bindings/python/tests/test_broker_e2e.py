@@ -44,7 +44,7 @@ MODEL = {
             "type": "SAMPLE_CHANNEL",
             "sampleInterval": 200,
             "uploadInterval": 200,
-            "ids": [{"id": "/STATUS"}, {"id": "/PART_COUNT"}],
+            "ids": [{"id": "/MACHINE/STATUS"}, {"id": "/MACHINE/PART_COUNT"}],
         }],
         "dataItems": [
             {"name": "状态", "id": "030001", "type": "STATUS", "settable": False},
@@ -88,9 +88,9 @@ class BrokerE2ETest(unittest.TestCase):
                       "getCount": lambda params: state["count"],
                       "setCount": lambda params: self._set_count(state, params),
                       "slow": lambda params: (time.sleep(0.15), {"ok": True})[1]},
-            bindings=[("/STATUS", nclink.Operation.GET_VALUE, "getStatus"),
-                      ("/PART_COUNT", nclink.Operation.GET_VALUE, "getCount"),
-                      ("/PART_COUNT", nclink.Operation.SET_VALUE, "setCount")])
+            bindings=[("/MACHINE/STATUS", nclink.Operation.GET_VALUE, "getStatus"),
+                      ("/MACHINE/PART_COUNT", nclink.Operation.GET_VALUE, "getCount"),
+                      ("/MACHINE/PART_COUNT", nclink.Operation.SET_VALUE, "setCount")])
         device.subscribe()
         device.init_samples()
 
@@ -104,16 +104,16 @@ class BrokerE2ETest(unittest.TestCase):
                 self.assertEqual(model.root.id, "01")
                 self.assertIsNotNone(model.find_by_id("030001"))
                 paths = [item.path for item in model.root.devices[0].data_items]
-                self.assertIn("/STATUS", paths)
+                self.assertIn("/MACHINE/STATUS", paths)
 
             # 路径绑定 -> 工具方法（GET）
-            with client.get_value("/STATUS") as value:
+            with client.get_value("/MACHINE/STATUS") as value:
                 self.assertEqual(value.to_python(), 1)
 
             # 路径绑定 -> 工具方法（SET），再读回来
-            client.set_value("/PART_COUNT", 7)
+            client.set_value("/MACHINE/PART_COUNT", 7)
             self.assertEqual(state["count"], 7)
-            with client.get_value("/PART_COUNT") as value:
+            with client.get_value("/MACHINE/PART_COUNT") as value:
                 self.assertEqual(value.to_python(), 7)
 
             # methodCall：应答是 **JSON 文本**，绑定必须解析成 Json（曾经在这里踩过）
@@ -164,7 +164,7 @@ class BrokerE2ETest(unittest.TestCase):
 
             sample = samples[-1]
             self.assertEqual([column.path for column in sample.columns],
-                             ["/STATUS", "/PART_COUNT"])
+                             ["/MACHINE/STATUS", "/MACHINE/PART_COUNT"])
             self.assertEqual(sample.value_at(0, 0), 1)
             self.assertGreaterEqual(device.sample_upload_count, 1)
             self.assertEqual(events[-1].key, "PART_COUNT")
@@ -279,7 +279,7 @@ class TlsE2ETest(unittest.TestCase):
         self.addCleanup(device.close)
         device.register_tool("plc", methods={"getStatus": None},
                              handlers={"getStatus": lambda params: 42},
-                             bindings=[("/STATUS", nclink.Operation.GET_VALUE,
+                             bindings=[("/MACHINE/STATUS", nclink.Operation.GET_VALUE,
                                         "getStatus")])
         device.subscribe()
 
@@ -288,7 +288,7 @@ class TlsE2ETest(unittest.TestCase):
         with nclink.get_device(self.SN) as client:
             with client.probe() as model:
                 self.assertEqual(model.root.id, "01")
-            with client.get_value("/STATUS") as value:
+            with client.get_value("/MACHINE/STATUS") as value:
                 self.assertEqual(value.to_python(), 42)
 
     def test_untrusted_certificate_is_rejected(self):

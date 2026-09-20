@@ -10,7 +10,7 @@ package com.nclink;
  * Nclink.init("tcp://127.0.0.1:1883");
  * try (DeviceClient device = Nclink.getDevice("V2023A7B762")) {
  *     try (Model model = device.probe()) { ... }
- *     try (Json value = device.getValue("/STATUS")) { ... }
+ *     try (Json value = device.getValue("/MACHINE/STATUS")) { ... }
  *     device.subscribeSamples(0, (topic, sample) -> System.out.println(sample.rows()));
  * }
  * Nclink.shutdown();

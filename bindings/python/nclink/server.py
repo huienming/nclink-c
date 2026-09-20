@@ -9,7 +9,7 @@
 
     device = nclink.Server(sn="V2023A7B762", broker="tcp://127.0.0.1:1883")
     device.register_tool("plc", methods={"getCount": None},
-                         bindings=[("/PART_COUNT", nclink.Operation.GET_VALUE, "getCount")])
+                         bindings=[("/MACHINE/PART_COUNT", nclink.Operation.GET_VALUE, "getCount")])
     device.subscribe()          # 订阅 6 个请求主题
     device.init_samples()       # 启动模型里声明的采样通道
     device.push_event("010307", {"key": "PART_COUNT", "value": 7})
@@ -211,7 +211,7 @@ class Server:
 
         `bindings`：`[(路径, Operation, 方法名), ...]`，也可以给
         `{"path":..., "operation":..., "method":...}` 的列表；路径是模型里的完整
-        路径（如 "/STATUS"）。
+        路径（如 "/MACHINE/STATUS"）。
 
         `handlers`：`{方法名: 处理函数}`；不传就用 `server.handlers` 里先放好的。
         处理函数收 `params`（Python 对象或 None），返回要应答的值：返回 None 表示

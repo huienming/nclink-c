@@ -51,7 +51,7 @@ def _fixture_text():
 
 
 SAMPLE_TOPIC = "Sample/V203243111F/s1"
-SAMPLE_PAYLOAD = ('{"@id":"m1","paths":["/STATUS"],"id":"s1",'
+SAMPLE_PAYLOAD = ('{"@id":"m1","paths":["/MACHINE/STATUS"],"id":"s1",'
                   '"beginTime":"1700000000000","data":[{"data":[1,2]}],'
                   '"interval":1000,"uploadInterval":2000}')
 EVENT_TOPIC = "Event/V203243111F"
@@ -177,13 +177,13 @@ class MessageTest(unittest.TestCase):
         self.assertEqual(sample.upload_interval_ms, 2000)
         self.assertEqual(sample.rows, 2)
         self.assertEqual(len(sample.columns), 1)
-        self.assertEqual(sample.columns[0].path, "/STATUS")
+        self.assertEqual(sample.columns[0].path, "/MACHINE/STATUS")
         self.assertEqual(sample.columns[0].points, 2)
         self.assertEqual([sample.value_at(r, 0) for r in range(sample.rows)], [1, 2])
         self.assertEqual(sample.get_long(0, 0), 1)
         self.assertAlmostEqual(sample.get_double(1, 0), 2.0)
         self.assertEqual(sample.get_string(1, 0), "2")
-        self.assertEqual(sample.header(), "/STATUS")
+        self.assertEqual(sample.header(), "/MACHINE/STATUS")
         self.assertIn("paths", sample.raw_json)
 
     def test_event(self):
@@ -242,7 +242,7 @@ class ServerTest(unittest.TestCase):
             methods={"getValue": None, "getCount": None},
             handlers={"getValue": lambda params: 42,
                       "getCount": lambda params: {"n": 7}},
-            bindings=[("/STATUS", nclink.Operation.GET_VALUE, "getValue")])
+            bindings=[("/MACHINE/STATUS", nclink.Operation.GET_VALUE, "getValue")])
         return device
 
     def test_create_and_model(self):
@@ -262,7 +262,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(device.operation_count, 2)
         self.assertGreaterEqual(device.binding_count, 1)
 
-        payload = '{"@id":"q1","ids":[{"id":"/STATUS","params":{"operation":"get_value"}}]}'
+        payload = '{"@id":"q1","ids":[{"id":"/MACHINE/STATUS","params":{"operation":"get_value"}}]}'
         reply = device.dispatch("Query/Request/V2TEST00001", payload)
         self.assertEqual(reply.type, nclink.MessageType.QUERY_RESPONSE)
         body = reply.to_python()
@@ -372,8 +372,8 @@ class ServerTest(unittest.TestCase):
 
         device.register_tool("plc", methods={"getValue": None},
                              handlers={"getValue": boom},
-                             bindings=[("/STATUS", nclink.Operation.GET_VALUE, "getValue")])
-        payload = '{"@id":"q1","ids":[{"id":"/STATUS","params":{"operation":"get_value"}}]}'
+                             bindings=[("/MACHINE/STATUS", nclink.Operation.GET_VALUE, "getValue")])
+        payload = '{"@id":"q1","ids":[{"id":"/MACHINE/STATUS","params":{"operation":"get_value"}}]}'
         body = device.dispatch("Query/Request/V2TEST00001", payload).to_python()
         self.assertEqual(body["values"][0]["code"], "NG")
         self.assertIn("坏掉了", body["values"][0]["reason"])
@@ -384,8 +384,8 @@ class ServerTest(unittest.TestCase):
         self.addCleanup(device.close)
         device.register_tool("plc", methods={"getValue": None},
                              handlers={"getValue": lambda params: None},
-                             bindings=[("/STATUS", nclink.Operation.GET_VALUE, "getValue")])
-        payload = '{"@id":"q1","ids":[{"id":"/STATUS","params":{"operation":"get_value"}}]}'
+                             bindings=[("/MACHINE/STATUS", nclink.Operation.GET_VALUE, "getValue")])
+        payload = '{"@id":"q1","ids":[{"id":"/MACHINE/STATUS","params":{"operation":"get_value"}}]}'
         body = device.dispatch("Query/Request/V2TEST00001", payload).to_python()
         self.assertEqual(body["values"][0]["code"], "NG")
 
@@ -412,7 +412,7 @@ class ServerTest(unittest.TestCase):
         # 采样通道是模型里的一个 CONFIG 节点：ids 是各项路径，周期单位毫秒
         device.add_sample({"name": "测试通道", "id": "ch1", "type": "SAMPLE_CHANNEL",
                            "sampleInterval": 1000, "uploadInterval": 1000,
-                           "ids": [{"id": "/STATUS"}]})
+                           "ids": [{"id": "/MACHINE/STATUS"}]})
         self.assertEqual(device.sample_count, 1)
         device.remove_sample("ch1")
         self.assertEqual(device.sample_count, 0)

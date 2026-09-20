@@ -83,7 +83,7 @@ static char g_model_json[1024];
  * Besides one data item it carries a sample channel ("ch1") declaring two
  * sample items: that is what the client uses to top up a Sample message which
  * arrived without a "paths" header. The two data items resolve to the paths
- * "/STATUS" and "/PART_COUNT" (a data item directly under a device takes its
+ * "/PLC/STATUS" and "/PLC/PART_COUNT" (a data item directly under a device takes its
  * path from its type).
  */
 static void load_model(void)
@@ -92,8 +92,8 @@ static void load_model(void)
              "{\"name\":\"nclink\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\","
              "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\",\"configs\":["
              "{\"id\":\"ch1\",\"type\":\"SAMPLE_CHANNEL\",\"sampleInterval\":1000,"
-             "\"uploadInterval\":5000,\"ids\":[{\"id\":\"/STATUS\"},"
-             "{\"id\":\"/PART_COUNT\"}]}],"
+             "\"uploadInterval\":5000,\"ids\":[{\"id\":\"/PLC/STATUS\"},"
+             "{\"id\":\"/PLC/PART_COUNT\"}]}],"
              "\"dataItems\":[{\"id\":\"030001\",\"type\":\"STATUS\"},"
              "{\"id\":\"030002\",\"type\":\"PART_COUNT\"}],"
              "\"version\":\"2.0\"}],\"uniqueID\":\"test\"}");
@@ -288,7 +288,7 @@ static void test_client_full_flow(void)
     NCL_CHECK_EQ_INT(ncl_client_holder_client_count(), 1);
 
     NCL_TEST_CASE("getValue returns the queried value");
-    NCL_CHECK_EQ_INT(ncl_client_get_value(client, "/STATUS", 5000, &value), NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_client_get_value(client, "/PLC/STATUS", 5000, &value), NCL_OK);
     NCL_CHECK(value != NULL);
     {
         long long iv = 0;
@@ -313,13 +313,13 @@ static void test_client_full_flow(void)
     NCL_CHECK(strstr(ncl_fake_server_last_payload(server), "0-2") != NULL);
 
     NCL_TEST_CASE("getLength returns the reported length");
-    NCL_CHECK_EQ_INT(ncl_client_get_length(client, "/STATUS", 5000, &length),
+    NCL_CHECK_EQ_INT(ncl_client_get_length(client, "/PLC/STATUS", 5000, &length),
                      NCL_OK);
     NCL_CHECK_EQ_INT(length, 3);
     NCL_CHECK(strstr(ncl_fake_server_last_payload(server), "get_length") != NULL);
 
     NCL_TEST_CASE("setValue reports success");
-    NCL_CHECK_EQ_INT(ncl_client_set_value(client, "/STATUS", ncl_json_new_int(7),
+    NCL_CHECK_EQ_INT(ncl_client_set_value(client, "/PLC/STATUS", ncl_json_new_int(7),
                                           5000),
                      NCL_OK);
     NCL_CHECK_EQ_STR(ncl_fake_server_last_topic(server), "Set/Request/" TEST_SN);
@@ -349,7 +349,7 @@ static void test_client_full_flow(void)
 
     NCL_TEST_CASE("the installed model resolves paths and identifiers");
     {
-        char *id = ncl_client_get_id(client, "/STATUS");
+        char *id = ncl_client_get_id(client, "/PLC/STATUS");
         char *path;
         NCL_CHECK(id != NULL);
         if (id != NULL) {
@@ -357,7 +357,7 @@ static void test_client_full_flow(void)
             path = ncl_client_get_path(client, "030001");
             NCL_CHECK(path != NULL);
             if (path != NULL) {
-                NCL_CHECK_EQ_STR(path, "/STATUS");
+                NCL_CHECK_EQ_STR(path, "/PLC/STATUS");
                 ncl_free_safe(path);
             }
             ncl_free_safe(id);
@@ -396,7 +396,7 @@ static void test_client_full_flow(void)
         ncl_message_set_sample_id(sample, "ch1");
         ncl_message_set_sample_interval(sample, 1000);
         ncl_message_set_upload_interval(sample, 5000);
-        ncl_message_add_sample_path(sample, "/STATUS");
+        ncl_message_add_sample_path(sample, "/PLC/STATUS");
         NCL_CHECK_EQ_INT(
             ncl_sample_item_add_value(item, ncl_json_new_int(42)), NCL_OK);
         NCL_CHECK_EQ_INT(
@@ -420,7 +420,7 @@ static void test_client_full_flow(void)
         NCL_CHECK_EQ_STR(seen.channel, "ch1");
         NCL_CHECK_EQ_INT(seen.interval, 1000);
         NCL_CHECK_EQ_INT(seen.upload_interval, 5000);
-        NCL_CHECK_EQ_STR(seen.path, "/STATUS");
+        NCL_CHECK_EQ_STR(seen.path, "/PLC/STATUS");
         NCL_CHECK_EQ_INT(seen.values, 2);
         NCL_CHECK_EQ_INT(seen.first_value, 42);
         NCL_CHECK_EQ_INT(ncl_client_sample_count(client), 1);
@@ -435,7 +435,7 @@ static void test_client_full_flow(void)
 
         ncl_message_set_message_id(sample, "s2");
         ncl_message_set_sample_id(sample, "ch2");
-        ncl_message_add_sample_path(sample, "/STATUS");
+        ncl_message_add_sample_path(sample, "/PLC/STATUS");
         ncl_sample_item_add_value(item, ncl_json_new_int(1));
         ncl_message_add_sample_item(sample, item);
         payload = ncl_message_write_string(sample);
@@ -466,8 +466,8 @@ static void test_client_full_flow(void)
         }
         NCL_CHECK_EQ_INT(seen.samples, base + 1);
         NCL_CHECK_EQ_INT(seen.path_count, 2);
-        NCL_CHECK_EQ_STR(seen.path, "/STATUS");
-        NCL_CHECK_EQ_STR(seen.path_last, "/PART_COUNT");
+        NCL_CHECK_EQ_STR(seen.path, "/PLC/STATUS");
+        NCL_CHECK_EQ_STR(seen.path_last, "/PLC/PART_COUNT");
         NCL_CHECK_EQ_INT(seen.complete, 1);
         ncl_client_set_sample_handler(client, NULL, NULL);
     }
@@ -527,7 +527,7 @@ static void test_request_timeout(void)
     client = ncl_client_holder_get("V1");
     NCL_CHECK(client != NULL);
     if (client != NULL) {
-        NCL_CHECK_EQ_INT(ncl_client_get_value(client, "/STATUS", 700, &value),
+        NCL_CHECK_EQ_INT(ncl_client_get_value(client, "/PLC/STATUS", 700, &value),
                          NCL_ERR_TIMEOUT);
         NCL_CHECK(value == NULL);
     }

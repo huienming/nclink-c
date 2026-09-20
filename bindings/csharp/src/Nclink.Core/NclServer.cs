@@ -28,7 +28,7 @@ namespace Nclink
     /// <summary>一条路径绑定：把模型里的路径绑到一个工具方法上。</summary>
     public sealed class NclToolBinding
     {
-        /// <summary>模型里的完整路径（如 "/STATUS"）。</summary>
+        /// <summary>模型里的完整路径（如 "/MACHINE/STATUS"）。</summary>
         public string Path { get; private set; }
 
         /// <summary>对这个路径做什么操作（GET_VALUE / SET_VALUE / ...）。</summary>
@@ -88,8 +88,8 @@ namespace Nclink
     /// {
     ///     device.RegisterTool("plc", new string[] { "getStatus", "getCount" },
     ///         new NclToolBinding[] {
-    ///             new NclToolBinding("/STATUS", NclOperation.GetValue, "getStatus"),
-    ///             new NclToolBinding("/PART_COUNT", NclOperation.GetValue, "getCount") },
+    ///             new NclToolBinding("/MACHINE/STATUS", NclOperation.GetValue, "getStatus"),
+    ///             new NclToolBinding("/MACHINE/PART_COUNT", NclOperation.GetValue, "getCount") },
     ///         (method, parameters) =&gt; method == "getStatus" ? 1 : 42);
     ///     device.RegisterBuiltinTool();     // addSample / removeSample
     ///     device.Subscribe();               // 订阅 6 个请求主题

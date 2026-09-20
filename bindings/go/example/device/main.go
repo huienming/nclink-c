@@ -37,9 +37,9 @@ var (
 	scalars = []string{"getValue", "setValue", "getCount", "getWarning",
 		"getProgram", "getToolNumber", "getFeedOverride", "getMachiningMode",
 		"getSpeedS"}
-	scalarPaths = []string{"/STATUS", "/STATUS", "/PART_COUNT",
-		"/CONTROLLER/WARNING", "/CONTROLLER/PROGRAM", "/CONTROLLER/TOOL_NUMBER",
-		"/FEED_OVERRIDE", "/MACHINING_MODE", "/AXIS@S/SPEED"}
+	scalarPaths = []string{"/MACHINE/STATUS", "/MACHINE/STATUS", "/MACHINE/PART_COUNT",
+		"/MACHINE/CONTROLLER/WARNING", "/MACHINE/CONTROLLER/PROGRAM", "/MACHINE/CONTROLLER/TOOL_NUMBER",
+		"/MACHINE/FEED_OVERRIDE", "/MACHINE/MACHINING_MODE", "/MACHINE/AXIS@S/SPEED"}
 )
 
 const defaultBroker = "tcp://127.0.0.1:1883"
@@ -256,7 +256,7 @@ func main() {
 		name := "getPower" + axis
 		methods = append(methods, nclink.ToolMethod{Name: name})
 		bindings = append(bindings, nclink.Binding{
-			Path: "/AXIS@" + axis + "/POWER@1", Operation: nclink.OpGetValue,
+			Path: "/MACHINE/AXIS@" + axis + "/MACHINE/POWER@1", Operation: nclink.OpGetValue,
 			Method: name})
 	}
 	for _, axis := range axes {
@@ -264,7 +264,7 @@ func main() {
 			name := "getAcceleration" + axis + dir
 			methods = append(methods, nclink.ToolMethod{Name: name})
 			bindings = append(bindings, nclink.Binding{
-				Path:      "/AXIS@" + axis + "/ACCELERATION@" + dir,
+				Path:      "/MACHINE/AXIS@" + axis + "/ACCELERATION@" + dir,
 				Operation: nclink.OpGetValue, Method: name})
 		}
 	}

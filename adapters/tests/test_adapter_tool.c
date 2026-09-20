@@ -109,7 +109,7 @@ NCL_TEST_MAIN_BEGIN()
     NCL_CHECK_EQ_STR(decl->name, "test_tool_basic");
     NCL_CHECK_EQ_INT(decl->sample_ms, 500);
     NCL_CHECK_EQ_INT(decl->point_count, 3);
-    NCL_CHECK_EQ_STR(decl->points[0].path, "/TEST/RUN");
+    NCL_CHECK_EQ_STR(decl->points[0].path, "/MACHINE/RUN");
     NCL_CHECK(decl->points[0].sampled);
     NCL_CHECK(decl->points[1].writable);
     /* 第三个点位是"待抓包"：声明了、可查，但没有函数。 */
@@ -155,11 +155,11 @@ NCL_TEST_MAIN_BEGIN()
         NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 3);
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 0), "name"),
-                         "/TEST/RUN");
+                         "/MACHINE/RUN");
         /* 待抓包的点位也在模型里，理由是它的 description。 */
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 2), "name"),
-                         "/TEST/ALARM");
+                         "/MACHINE/ALARM");
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 2), "description"),
                          "报警：待抓包（帧还没抓到）");
@@ -192,12 +192,12 @@ NCL_TEST_MAIN_BEGIN()
                                            &registration, &err),
                          NCL_OK);
         NCL_CHECK(registration != NULL);
-        NCL_CHECK_EQ_INT(query_int(server, "/TEST/RUN", &ok), 7);
+        NCL_CHECK_EQ_INT(query_int(server, "/MACHINE/RUN", &ok), 7);
         NCL_CHECK(ok);
 
         /* Read, write, read back: one point, two operations. */
         {
-            ncl_message *request = set_value("/TEST/MODE", 5);
+            ncl_message *request = set_value("/MACHINE/MODE", 5);
             ncl_message *response = ncl_server_invoke_set(server, request);
 
             NCL_CHECK(response != NULL);
@@ -213,13 +213,13 @@ NCL_TEST_MAIN_BEGIN()
             }
             ncl_message_free(request);
         }
-        NCL_CHECK_EQ_INT(query_int(server, "/TEST/MODE", &ok), 5);
+        NCL_CHECK_EQ_INT(query_int(server, "/MACHINE/MODE", &ok), 5);
         NCL_CHECK(ok);
 
         /* Writing the read only point is refused by the adapter itself, with
          * its own protocol error. */
         {
-            ncl_message *request = set_value("/TEST/RUN", 3);
+            ncl_message *request = set_value("/MACHINE/RUN", 3);
             ncl_message *response = ncl_server_invoke_set(server, request);
 
             NCL_CHECK(response != NULL);
@@ -260,14 +260,14 @@ NCL_TEST_MAIN_BEGIN()
                 NCL_CHECK(ncl_adapter_tool(adapter) == decl);
                 NCL_CHECK_EQ_INT(ncl_adapter_point_count(adapter), 3);
                 NCL_CHECK_EQ_STR(ncl_adapter_point_path(adapter, 0),
-                                 "/TEST/RUN");
+                                 "/MACHINE/RUN");
                 /* 待抓包的点位在列表里（自检要点名它），但读取直接说清楚，
                  * 不走服务器、也不进轮询失败数。 */
                 NCL_CHECK(!ncl_adapter_point_available(adapter, 2));
                 NCL_CHECK_EQ_STR(ncl_adapter_point_summary(adapter, 2),
                                  "报警：待抓包（帧还没抓到）");
                 ncl_strbuf_reset(&err);
-                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/TEST/ALARM",
+                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/MACHINE/ALARM",
                                                       &err),
                                  NCL_ERR_NOT_SUPPORTED);
                 NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "待抓包") != NULL);
@@ -283,7 +283,7 @@ NCL_TEST_MAIN_BEGIN()
 
                 /* The host's own read path (what --once and the poll loop use)
                  * goes through the module's binding. */
-                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/TEST/RUN",
+                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/MACHINE/RUN",
                                                       &err),
                                  NCL_OK);
                 {
@@ -295,7 +295,7 @@ NCL_TEST_MAIN_BEGIN()
                     NCL_CHECK(value != NULL && ncl_json_as_int(value, &got));
                     NCL_CHECK_EQ_INT(got, 7);
                 }
-                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/TEST/NOPE",
+                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/MACHINE/NOPE",
                                                       &err),
                                  NCL_ERR_NOT_FOUND);
 
@@ -304,7 +304,7 @@ NCL_TEST_MAIN_BEGIN()
                 NCL_TEST_CASE("the host's trail records what the tool did");
                 ncl_audit_reset_stats();
                 {
-                    ncl_message *request = query("/TEST/RUN");
+                    ncl_message *request = query("/MACHINE/RUN");
                     ncl_message *response = ncl_server_invoke_query(
                         ncl_adapter_server(adapter), request);
 
@@ -312,7 +312,7 @@ NCL_TEST_MAIN_BEGIN()
                     ncl_message_free(request);
                 }
                 {
-                    ncl_message *request = set_value("/TEST/MODE", 9);
+                    ncl_message *request = set_value("/MACHINE/MODE", 9);
                     ncl_message *response = ncl_server_invoke_set(
                         ncl_adapter_server(adapter), request);
 

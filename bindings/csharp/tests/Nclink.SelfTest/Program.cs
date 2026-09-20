@@ -155,7 +155,7 @@ namespace Nclink.SelfTest
                 Check("采样快照 interval", sample.IntervalMs == 1000);
                 Check("采样快照 uploadInterval", sample.UploadIntervalMs == 2000);
                 Check("采样快照列数", sample.Columns.Count == 1);
-                Check("采样快照列路径", sample.Columns[0].Path == "/STATUS");
+                Check("采样快照列路径", sample.Columns[0].Path == "/MACHINE/STATUS");
                 Check("采样快照点数", sample.Columns[0].Points == 2);
                 Check("采样快照按行取值", sample.GetLong(1, 0) == 2);
                 Check("采样报文也能拿 JSON", message.Json.Contains("\"paths\""));
@@ -753,11 +753,11 @@ namespace Nclink.SelfTest
                     new string[] { "getStatus", "getCount", "setCount" },
                     new NclToolBinding[]
                     {
-                        new NclToolBinding("/STATUS", NclOperation.GetValue,
+                        new NclToolBinding("/MACHINE/STATUS", NclOperation.GetValue,
                                            "getStatus"),
-                        new NclToolBinding("/PART_COUNT", NclOperation.GetValue,
+                        new NclToolBinding("/MACHINE/PART_COUNT", NclOperation.GetValue,
                                            "getCount"),
-                        new NclToolBinding("/PART_COUNT", NclOperation.SetValue,
+                        new NclToolBinding("/MACHINE/PART_COUNT", NclOperation.SetValue,
                                            "setCount")
                     },
                     delegate(string method, NclJson parameters)
@@ -785,14 +785,14 @@ namespace Nclink.SelfTest
                                   probed.FindById("030001") != null);
                         }
 
-                        using (NclJson value = client.GetValue("/STATUS"))
+                        using (NclJson value = client.GetValue("/MACHINE/STATUS"))
                         {
                             Check("真 broker：路径绑定取值", value.AsLong() == 1);
                         }
 
-                        client.SetValue("/PART_COUNT", "7");
+                        client.SetValue("/MACHINE/PART_COUNT", "7");
                         Check("真 broker：路径绑定写值到达处理函数", state[1] == 7);
-                        using (NclJson value = client.GetValue("/PART_COUNT"))
+                        using (NclJson value = client.GetValue("/MACHINE/PART_COUNT"))
                         {
                             Check("真 broker：写进去的值读得回来", value.AsLong() == 7);
                         }
@@ -1004,9 +1004,9 @@ namespace Nclink.SelfTest
                 },
                 new NclToolBinding[]
                 {
-                    new NclToolBinding("/STATUS", NclOperation.GetValue, "getStatus"),
-                    new NclToolBinding("/PART_COUNT", NclOperation.GetValue, "getCount"),
-                    new NclToolBinding("/WARNING", NclOperation.GetValue, "nothing")
+                    new NclToolBinding("/MACHINE/STATUS", NclOperation.GetValue, "getStatus"),
+                    new NclToolBinding("/MACHINE/PART_COUNT", NclOperation.GetValue, "getCount"),
+                    new NclToolBinding("/MACHINE/WARNING", NclOperation.GetValue, "nothing")
                 },
                 delegate(string method, NclJson parameters)
                 {

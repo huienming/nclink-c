@@ -74,12 +74,12 @@ using (NclDeviceClient device = Nclink.GetDevice("V2023A7B762"))
     using (NclModel model = device.Probe())     // 拉模型
     {
         foreach (NclNode item in model.Root.Devices) { /* 遍历设备/组件/数据项 */ }
-        string id = device.GetId("/AXIS@X/POWER");   // 路径 → 节点 id
+        string id = device.GetId("/MACHINE/AXIS@X/POWER");   // 路径 → 节点 id
     }
 
-    long status = device.GetLong("/STATUS");         // getValue
-    device.SetValue("/STATUS", "42");                // setValue（值用 JSON 文本）
-    using (NclJson range = device.GetValueRange("/PART_COUNT", 0, 9)) { }
+    long status = device.GetLong("/MACHINE/STATUS");         // getValue
+    device.SetValue("/MACHINE/STATUS", "42");                // setValue（值用 JSON 文本）
+    using (NclJson range = device.GetValueRange("/MACHINE/PART_COUNT", 0, 9)) { }
     using (NclJson reply = device.MethodCall("/plc/setValue",
                                              "{\"value\":99999}", check: true)) { }
 
@@ -114,8 +114,8 @@ using (NclServer device = new NclServer("V2CS0000001", modelJson, "tcp://127.0.0
                                                      + "{\"value\":{\"type\":\"integer\"}}}" } },
         new NclToolBinding[]
         {
-            new NclToolBinding("/STATUS", NclOperation.GetValue, "getStatus"),
-            new NclToolBinding("/PART_COUNT", NclOperation.SetValue, "setCount")
+            new NclToolBinding("/MACHINE/STATUS", NclOperation.GetValue, "getStatus"),
+            new NclToolBinding("/MACHINE/PART_COUNT", NclOperation.SetValue, "setCount")
         },
         delegate(string method, NclJson parameters)
         {
@@ -447,7 +447,7 @@ bindings\csharp\samples\Nclink.Demo.Device\bin\Release\net8.0\Nclink.Demo.Device
 ```
 HTTP: http://localhost:9008/api/schema（Swagger UI: http://localhost:9008/swagger-ui）
 设备端已就绪：SN=V2CS0000001 broker=(不接 MQTT)，工具 6 个操作，采样通道 1 个
-publish Sample/V2CS0000001/cs_channel {"paths":["/STATUS","/PART_COUNT","/CONTROLLER/WARNNING"], ...
+publish Sample/V2CS0000001/cs_channel {"paths":["/MACHINE/STATUS","/MACHINE/PART_COUNT","/MACHINE/CONTROLLER/WARNNING"], ...
 publish Event/V2CS0000001 {"@id":"d9fd5cb3-...","id":"010307","time":"1789609920540","event":{"key":"PART_COUNT","value":13}}
 离线模式：没有 MQTT，客户端读不到；REST 端点照常用。
 

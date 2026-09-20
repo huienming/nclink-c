@@ -5,6 +5,36 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 变更：路径只有一种算法 —— `source` 是父路径的简写，两者必须一致
+
+同一个节点有两条路可以算出路径：写了的 `source`（简写），或者向上遍历父节点拼接。
+以前这两条路会给出**不同**的结果：设备下的数据项按声明是 `/MACHINE/STATUS`，而按
+父节点拼出来是 `/STATUS`（组件更是被直接忽略成 `/AXIS@X`）。现在只有一条规则：
+
+- **路径 = 父路径 + "/" + `type`（有 `number` 时写成 `type@number`）**。根节点只出
+  一个 `/`（不是一段），所以设备对象（`device.type` = `MACHINE`）答在 `/MACHINE`，
+  它下面的组件、数据项都带这一段。
+- **`source` 只是"父路径的简写"**：写了就优先用它，但它必须和父节点拼接的结果一致 ——
+  不一致时模型加载告警（列出两侧的路径），以 `source` 为准。客户端可以不认 `source`、
+  自己走一遍树，两份结果必须一样。
+- **适配器生成的模型里一个 `source` 都不写**："source 可以不给"，树的形状已经说明
+  一切。`device.type` 与点位路径的设备段必须同名，不同名时 `ncl_tool_model()` 直接
+  报错（否则模型路径和点位路径会分叉）。
+
+影响面（路径变了：设备下的数据项与组件多出设备段）：
+
+- 核心：`ncl_node_set_path()` 统一了四类子节点的规则（设备/组件/数据项/配置），
+  去掉"父为设备则前缀清空"的老规则；根节点路径改为 `/`；`source` 一致性检查。
+- 适配器：`ncl_tool_model()` 不再写 `source`，新增设备类型与设备段同名的校验。
+- 测试：`tests/data/model_nclink.json`（通道 id 跟着改）、`test_model` / `test_message` /
+  `test_client` / `test_server` / `test_tool`（新增"模型树路径 == 声明路径"用例）、
+  适配器夹具 `module_tool_basic.c`（`/TEST/...` → `/MACHINE/...`）。
+- 示例与绑定：`examples/device_model.c` + `ncl_device_demo.c` + `ncl_client_demo.c`
+  （五个语言示例共用的模型与绑定），Python / C# / Java / Go 的示例、测试与 README，
+  `MANUAL.md` 4.3 与示例表。
+- 验证：`build.ps1` **41/41**；FANUC 假机床 `--once` = 19 个点位（13 可读 + 6 待抓包）、
+  0 失败；`--model` 输出里 `source` 出现 **0** 次，数据项路径仍是 `/MACHINE/...`。
+
 ### 变更：模型里每个名字都来自数据字典 —— FANUC 私有位退出模型
 
 模型里出现的每一个 `type` 都必须能在第 4 部分（[32 册](protocal/docs/32-标准第4部分-数据项定义.md)）

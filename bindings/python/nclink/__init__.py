@@ -13,9 +13,9 @@
     with nclink.get_device("V2023A7B762") as device:
         with device.probe() as model:            # 拉模型
             print(model.root.name, [n.path for n in model.root.children(0)])
-        with device.get_value("/STATUS") as value:
+        with device.get_value("/MACHINE/STATUS") as value:
             print("STATUS =", value.to_python())
-        device.set_value("/STATUS", 42)           # 写值
+        device.set_value("/MACHINE/STATUS", 42)           # 写值
         with device.method_call("/plc/getCount", check=True) as reply:
             print(reply.to_python())
 

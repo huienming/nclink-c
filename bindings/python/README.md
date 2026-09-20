@@ -77,12 +77,12 @@ with nclink.get_device("V2023A7B762") as device:
         print(model.root.id, model.root.name)
         for item in model.root.devices[0].data_items:
             print(item.path, "->", item.id)
-        print(device.get_id("/STATUS"), device.get_path("010302"))
+        print(device.get_id("/MACHINE/STATUS"), device.get_path("010302"))
 
-    with device.get_value("/STATUS") as value:     # 读值
+    with device.get_value("/MACHINE/STATUS") as value:     # 读值
         print("STATUS =", value.to_python())
-    device.set_value("/STATUS", 42)                # 写值
-    with device.get_value_range("/PART_COUNT", 0, 9) as window:
+    device.set_value("/MACHINE/STATUS", 42)                # 写值
+    with device.get_value_range("/MACHINE/PART_COUNT", 0, 9) as window:
         print(window.to_python())
     with device.method_call("/plc/getCount", check=True) as reply:
         print(reply.to_python())
@@ -155,8 +155,8 @@ device.register_tool(
                                              "properties": {"value": {"type": "integer"}}}},
     handlers={"getStatus": lambda params: 1,
               "setCount": lambda params: params["value"]},
-    bindings=[("/STATUS", nclink.Operation.GET_VALUE, "getStatus"),
-              ("/PART_COUNT", nclink.Operation.SET_VALUE, "setCount")])
+    bindings=[("/MACHINE/STATUS", nclink.Operation.GET_VALUE, "getStatus"),
+              ("/MACHINE/PART_COUNT", nclink.Operation.SET_VALUE, "setCount")])
 device.register_builtin_tool()      # addSample / removeSample
 device.subscribe()                  # 订阅 6 个请求主题
 device.init_samples()               # 启动模型里声明的采样通道

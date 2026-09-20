@@ -21,7 +21,7 @@ const (
 		`"devices":[{"id":"02","type":"MACHINE","name":"模拟机床",` +
 		`"configs":[{"name":"采样通道","id":"ch1","type":"SAMPLE_CHANNEL",` +
 		`"sampleInterval":200,"uploadInterval":200,` +
-		`"ids":[{"id":"/STATUS"}]}],` +
+		`"ids":[{"id":"/MACHINE/STATUS"}]}],` +
 		`"dataItems":[{"name":"状态","id":"030001","type":"STATUS",` +
 		`"settable":false},` +
 		`{"name":"加工计件","id":"030002","type":"PART_COUNT","settable":true}]}]}`
@@ -75,8 +75,8 @@ func TestServerToolAndQuery(t *testing.T) {
 				`{"type":"number"}},"required":["value"]}`},
 		},
 		[]Binding{
-			{Path: "/STATUS", Operation: OpGetValue, Method: "getStatus"},
-			{Path: "/PART_COUNT", Operation: OpSetValue, Method: "setCount"},
+			{Path: "/MACHINE/STATUS", Operation: OpGetValue, Method: "getStatus"},
+			{Path: "/MACHINE/PART_COUNT", Operation: OpSetValue, Method: "setCount"},
 		},
 		func(method string, params any) (any, error) {
 			mu.Lock()
@@ -106,7 +106,7 @@ func TestServerToolAndQuery(t *testing.T) {
 	}
 
 	// ---- query hits the binding and carries the handler's value ----
-	request := queryRequest(t, "q1", "/STATUS")
+	request := queryRequest(t, "q1", "/MACHINE/STATUS")
 	defer request.Close()
 	response, err := server.InvokeQuery(request)
 	if err != nil {
@@ -139,7 +139,7 @@ func TestServerToolAndQuery(t *testing.T) {
 	// A Set request carries its items under "values" (a Query request uses
 	// "ids"); the item payload is the same shape.
 	writePayload, err := ParseMessage("Set/Request/"+serverSN,
-		[]byte(fmt.Sprintf(`{"@id":"s1","values":[{"id":"/PART_COUNT","params":%s}]}`, params)))
+		[]byte(fmt.Sprintf(`{"@id":"s1","values":[{"id":"/MACHINE/PART_COUNT","params":%s}]}`, params)))
 	if err != nil {
 		t.Fatalf("ParseMessage(set): %v", err)
 	}
@@ -287,7 +287,7 @@ func TestServerEventsAndSampling(t *testing.T) {
 	// ---- addSample / removeSample at run time ----
 	stop := "60000"
 	config := fmt.Sprintf(`{"id":"ch2","type":"SAMPLE_CHANNEL","sampleInterval":1000,`+
-		`"uploadInterval":%s,"ids":[{"id":"/STATUS"}]}`, stop)
+		`"uploadInterval":%s,"ids":[{"id":"/MACHINE/STATUS"}]}`, stop)
 	if err := server.AddSample(config); err != nil {
 		t.Fatalf("AddSample: %v", err)
 	}
@@ -311,9 +311,9 @@ func TestServerBuiltinAndFileTools(t *testing.T) {
 	// Experiment switch: with NCL_GO_TOOL_ON_SAMPLED_PATH=1 the tool binding sits
 	// on the path the sample channel samples, which makes the sampler thread call
 	// the Go callback.
-	path := "/PART_COUNT"
+	path := "/MACHINE/PART_COUNT"
 	if os.Getenv("NCL_GO_TOOL_ON_SAMPLED_PATH") == "1" {
-		path = "/STATUS"
+		path = "/MACHINE/STATUS"
 	}
 	if err := server.RegisterTool("plc", []ToolMethod{{Name: "getStatus"}},
 		[]Binding{{Path: path, Operation: OpGetValue, Method: "getStatus"}},
@@ -329,7 +329,7 @@ func TestServerBuiltinAndFileTools(t *testing.T) {
 	// addSample is reachable through the built in tool.
 	call, err := server.InvokeMethodCall(methodRequest(t, "b1", "/nclinkServer/addSample",
 		`{"request":{"id":"ch3","type":"SAMPLE_CHANNEL","sampleInterval":1000,`+
-			`"uploadInterval":60000,"ids":[{"id":"/STATUS"}]}}`))
+			`"uploadInterval":60000,"ids":[{"id":"/MACHINE/STATUS"}]}}`))
 	if err != nil {
 		t.Fatalf("InvokeMethodCall(addSample): %v", err)
 	}
@@ -342,7 +342,7 @@ func TestServerBuiltinAndFileTools(t *testing.T) {
 	}
 	// The file tool answers its own schema.
 	fileCall, err := server.InvokeMethodCall(methodRequest(t, "f1",
-		"/CONTROLLER/FILE/getAttribute", `{"name":"nope.txt"}`))
+		"/MACHINE/CONTROLLER/FILE/getAttribute", `{"name":"nope.txt"}`))
 	if err != nil {
 		t.Fatalf("InvokeMethodCall(file): %v", err)
 	}
@@ -472,9 +472,9 @@ func TestServerFreeWithRunningSamples(t *testing.T) {
 		`"devices":[{"id":"02","type":"MACHINE","name":"模拟机床",` +
 		`"configs":[{"name":"采样通道","id":"ch1","type":"SAMPLE_CHANNEL",` +
 		`"sampleInterval":1,"uploadInterval":60000,` +
-		`"ids":[{"id":"/STATUS"},{"id":"/STATUS"},{"id":"/STATUS"},` +
-		`{"id":"/STATUS"},{"id":"/STATUS"},{"id":"/STATUS"},` +
-		`{"id":"/STATUS"},{"id":"/STATUS"}]}],` +
+		`"ids":[{"id":"/MACHINE/STATUS"},{"id":"/MACHINE/STATUS"},{"id":"/MACHINE/STATUS"},` +
+		`{"id":"/MACHINE/STATUS"},{"id":"/MACHINE/STATUS"},{"id":"/MACHINE/STATUS"},` +
+		`{"id":"/MACHINE/STATUS"},{"id":"/MACHINE/STATUS"}]}],` +
 		`"dataItems":[{"name":"状态","id":"030001","type":"STATUS"}]}]}`
 
 	for round := 0; round < 12; round++ {
@@ -489,7 +489,7 @@ func TestServerFreeWithRunningSamples(t *testing.T) {
 			methods[i] = ToolMethod{Name: fmt.Sprintf("m%d", i)}
 		}
 		err = server.RegisterTool("plc", methods,
-			[]Binding{{Path: "/STATUS", Operation: OpGetValue, Method: "m0"}},
+			[]Binding{{Path: "/MACHINE/STATUS", Operation: OpGetValue, Method: "m0"}},
 			func(string, any) (any, error) { return 1, nil })
 		if err != nil {
 			t.Fatalf("round %d: RegisterTool: %v", round, err)

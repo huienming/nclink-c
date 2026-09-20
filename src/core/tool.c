@@ -456,9 +456,35 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
     (void)ncl_json_obj_set_string(root, "name", "适配器设备模型");
     (void)ncl_json_obj_set_string(root, "version", "1.1.0");
 
-    (void)ncl_json_obj_set_string(node, "type",
-                                  ncl_str_is_blank(device_type) ? "MACHINE"
-                                                               : device_type);
+    /* The device node's type is the first segment of every declared path, so
+     * the model tree walks to exactly the path the declaration wrote. A device
+     * type that disagrees with that segment would give two different paths for
+     * one point (the tree says one thing, source/config another), so it is
+     * refused by name instead of being papered over with a "source". */
+    if (prefix != NULL && !ncl_str_is_blank(device_type) &&
+        (strlen(device_type) != prefix_len ||
+         strncmp(device_type, prefix, prefix_len) != 0)) {
+        err_appendf(err,
+                    "点位路径的设备段 /%.*s 与配置里的 device.type（%s）不一致："
+                    "两者必须是同一个名字，否则模型里的路径和点位路径对不上",
+                    (int)prefix_len, prefix, device_type);
+        goto fail;
+    }
+    {
+        char type_buf[128];
+
+        if (!ncl_str_is_blank(device_type)) {
+            (void)ncl_json_obj_set_string(node, "type", device_type);
+        } else if (prefix != NULL && prefix_len < sizeof(type_buf)) {
+            /* No device type in the configuration: the declaration's first
+             * segment is what the points are already addressed by. */
+            memcpy(type_buf, prefix, prefix_len);
+            type_buf[prefix_len] = '\0';
+            (void)ncl_json_obj_set_string(node, "type", type_buf);
+        } else {
+            (void)ncl_json_obj_set_string(node, "type", "MACHINE");
+        }
+    }
     (void)ncl_json_obj_set_string(node, "id",
                                   ncl_str_is_blank(device_id) ? "01"
                                                               : device_id);
@@ -466,15 +492,11 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                                   ncl_str_is_blank(device_name) ? "适配器设备"
                                                                 : device_name);
     (void)ncl_json_obj_set_string(node, "version", "1.0");
-    if (prefix != NULL) {
-        char *device_source = ncl_strndup(prefix, prefix_len);
-
-        if (device_source != NULL) {
-            /* The device node's own path is the segment its points live under. */
-            (void)ncl_json_obj_set_string(node, "source", device_source);
-            ncl_free_safe(device_source);
-        }
-    }
+    /* No "source" anywhere in this model: the tree says it all. The device is
+     * the segment its points live under (a device of type MACHINE answers on
+     * /MACHINE), each component is a segment of its own, and walking the
+     * parents gives exactly the path the declaration asked for - so the two
+     * ways of getting a path cannot drift apart (model.c checks that too). */
 
     for (i = 0; i < decl->point_count; i++) {
         const ncl_tool_point *point = &decl->points[i];
@@ -482,7 +504,6 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         const char *tail = last != NULL ? last + 1 : point->path;
         const char *component = NULL;
         size_t component_len = 0;
-        char *source = NULL;
         char *type = NULL;
         char *number = NULL;
         char id[32];
@@ -506,17 +527,6 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                 component_len = (size_t)(last - component);
             }
         }
-        if (component != NULL &&
-            ncl_asprintf(&source, "%.*s/%.*s", (int)prefix_len, prefix,
-                         (int)component_len, component) != NCL_OK) {
-            ncl_json_free(item);
-            goto fail;
-        }
-        if (component == NULL && prefix != NULL &&
-            ncl_asprintf(&source, "%.*s", (int)prefix_len, prefix) != NCL_OK) {
-            ncl_json_free(item);
-            goto fail;
-        }
         split_type_number(tail, &type, &number);
         snprintf(id, sizeof(id), "p%u", (unsigned)i);
         (void)ncl_json_obj_set_string(item, "id", id);
@@ -532,11 +542,6 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         if (point->writable) {
             (void)ncl_json_obj_set_bool(item, "settable", true);
         }
-        if (source != NULL) {
-            /* "source" is what makes the model path equal to the point path. */
-            (void)ncl_json_obj_set_string(item, "source", source);
-        }
-        ncl_free_safe(source);
         ncl_free_safe(type);
         ncl_free_safe(number);
 
@@ -591,15 +596,6 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                 if (cnumber != NULL) {
                     (void)ncl_json_obj_set_string(groups[g].node, "number",
                                                   cnumber);
-                }
-                {
-                    char *component_source = ncl_strndup(prefix, prefix_len);
-
-                    if (component_source != NULL) {
-                        (void)ncl_json_obj_set_string(groups[g].node, "source",
-                                                      component_source);
-                        ncl_free_safe(component_source);
-                    }
                 }
                 (void)ncl_json_arr_push(components, groups[g].node);
                 ncl_free_safe(name);

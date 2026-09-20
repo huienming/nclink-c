@@ -627,7 +627,7 @@ func (s *Server) EventCount() int {
 
 /* --------------------------------------------------------- file channel -- */
 
-// RegisterFileTool installs the "/CONTROLLER/FILE" tool: peers can push files
+// RegisterFileTool installs the "/MACHINE/CONTROLLER/FILE" tool: peers can push files
 // to this device and pull files back from it.
 func (s *Server) RegisterFileTool() error {
 	if err := s.requireOpen("RegisterFileTool"); err != nil {

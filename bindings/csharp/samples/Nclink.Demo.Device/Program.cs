@@ -38,9 +38,9 @@ namespace Nclink.Demo
         };
         private static readonly string[] ScalarPaths =
         {
-            "/STATUS", "/STATUS", "/PART_COUNT", "/CONTROLLER/WARNING",
-            "/CONTROLLER/PROGRAM", "/CONTROLLER/TOOL_NUMBER", "/FEED_OVERRIDE",
-            "/MACHINING_MODE", "/AXIS@S/SPEED"
+            "/MACHINE/STATUS", "/MACHINE/STATUS", "/MACHINE/PART_COUNT", "/MACHINE/CONTROLLER/WARNING",
+            "/MACHINE/CONTROLLER/PROGRAM", "/MACHINE/CONTROLLER/TOOL_NUMBER", "/MACHINE/FEED_OVERRIDE",
+            "/MACHINE/MACHINING_MODE", "/MACHINE/AXIS@S/SPEED"
         };
         private const string DefaultBroker = "tcp://127.0.0.1:1883";
 
@@ -282,7 +282,7 @@ namespace Nclink.Demo
             foreach (string axis in Axes)
             {
                 methods.Add("getPower" + axis);
-                bindings.Add(new NclToolBinding("/AXIS@" + axis + "/POWER@1",
+                bindings.Add(new NclToolBinding("/MACHINE/AXIS@" + axis + "/MACHINE/POWER@1",
                                                 NclOperation.GetValue,
                                                 "getPower" + axis));
             }
@@ -292,7 +292,7 @@ namespace Nclink.Demo
                 {
                     methods.Add("getAcceleration" + axis + dir);
                     bindings.Add(new NclToolBinding(
-                        "/AXIS@" + axis + "/ACCELERATION@" + dir,
+                        "/MACHINE/AXIS@" + axis + "/ACCELERATION@" + dir,
                         NclOperation.GetValue, "getAcceleration" + axis + dir));
                 }
             }

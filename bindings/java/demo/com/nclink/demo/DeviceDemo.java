@@ -46,9 +46,9 @@ public final class DeviceDemo {
         "getValue", "setValue", "getCount", "getWarning", "getProgram",
         "getToolNumber", "getFeedOverride", "getMachiningMode", "getSpeedS"};
     private static final String[] SCALAR_PATHS = {
-        "/STATUS", "/STATUS", "/PART_COUNT", "/CONTROLLER/WARNING",
-        "/CONTROLLER/PROGRAM", "/CONTROLLER/TOOL_NUMBER", "/FEED_OVERRIDE",
-        "/MACHINING_MODE", "/AXIS@S/SPEED"};
+        "/MACHINE/STATUS", "/MACHINE/STATUS", "/MACHINE/PART_COUNT", "/MACHINE/CONTROLLER/WARNING",
+        "/MACHINE/CONTROLLER/PROGRAM", "/MACHINE/CONTROLLER/TOOL_NUMBER", "/MACHINE/FEED_OVERRIDE",
+        "/MACHINE/MACHINING_MODE", "/MACHINE/AXIS@S/SPEED"};
     private static final String DEFAULT_BROKER = "tcp://127.0.0.1:1883";
 
     /** 被工具方法读写的"机床状态"（真机里换成你的 PLC / 采集卡）。 */
@@ -218,14 +218,14 @@ public final class DeviceDemo {
         }
         for (String axis : AXES) {
             methods.add("getPower" + axis);
-            bindings.add(new Server.Binding("/AXIS@" + axis + "/POWER@1",
+            bindings.add(new Server.Binding("/MACHINE/AXIS@" + axis + "/MACHINE/POWER@1",
                     Operation.GET_VALUE, "getPower" + axis));
         }
         for (String axis : AXES) {
             for (String dir : DIRS) {
                 methods.add("getAcceleration" + axis + dir);
                 bindings.add(new Server.Binding(
-                        "/AXIS@" + axis + "/ACCELERATION@" + dir,
+                        "/MACHINE/AXIS@" + axis + "/ACCELERATION@" + dir,
                         Operation.GET_VALUE, "getAcceleration" + axis + dir));
             }
         }

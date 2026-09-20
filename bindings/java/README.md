@@ -78,14 +78,14 @@ try (DeviceClient device = Nclink.getDevice("V2023A7B762")) {
         for (Node item : model.root().devices().get(0).dataItems()) {
             System.out.println(item.path() + " -> " + item.id());
         }
-        System.out.println(device.getId("/STATUS") + " " + device.getPath("010302"));
+        System.out.println(device.getId("/MACHINE/STATUS") + " " + device.getPath("010302"));
     }
 
-    try (Json value = device.getValue("/STATUS")) {  // 读值
+    try (Json value = device.getValue("/MACHINE/STATUS")) {  // 读值
         System.out.println("STATUS = " + value.toJavaObject());
     }
-    device.setValue("/STATUS", "42");                // 写值（JSON 文本）
-    try (Json window = device.getValueRange("/PART_COUNT", 0, 9)) { /* ... */ }
+    device.setValue("/MACHINE/STATUS", "42");                // 写值（JSON 文本）
+    try (Json window = device.getValueRange("/MACHINE/PART_COUNT", 0, 9)) { /* ... */ }
     try (Json reply = device.methodCall("/plc/getCount", null, true, 5000)) {
         System.out.println(reply.encode());          // {"code":"OK", ...}
     }
@@ -158,8 +158,8 @@ try (Server device = new Server("V2JAVA00001", modelJson, "tcp://127.0.0.1:1883"
         "plc",
         new String[] {"getStatus", "setCount"},
         new Server.Binding[] {
-            new Server.Binding("/STATUS", Operation.GET_VALUE, "getStatus"),
-            new Server.Binding("/PART_COUNT", Operation.SET_VALUE, "setCount")},
+            new Server.Binding("/MACHINE/STATUS", Operation.GET_VALUE, "getStatus"),
+            new Server.Binding("/MACHINE/PART_COUNT", Operation.SET_VALUE, "setCount")},
         (method, params) -> "getStatus".equals(method) ? 1
                                : ((Map<?, ?>) params.toJavaObject()).get("value"));
     device.registerBuiltinTool();       // addSample / removeSample

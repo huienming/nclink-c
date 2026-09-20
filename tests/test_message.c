@@ -347,8 +347,8 @@ static void test_sample_normalise(void)
         NCL_CHECK_EQ_INT(ncl_message_sample_normalise(m, root), NCL_OK);
         NCL_CHECK(ncl_message_sample_is_complete(m));
         NCL_CHECK_EQ_INT(ncl_strvec_len(&m->as.sample.paths), 3);
-        NCL_CHECK_EQ_STR(ncl_strvec_at(&m->as.sample.paths, 0), "/STATUS");
-        NCL_CHECK_EQ_STR(ncl_strvec_at(&m->as.sample.paths, 1), "/PART_COUNT");
+        NCL_CHECK_EQ_STR(ncl_strvec_at(&m->as.sample.paths, 0), "/PLC/STATUS");
+        NCL_CHECK_EQ_STR(ncl_strvec_at(&m->as.sample.paths, 1), "/PLC/PART_COUNT");
         NCL_CHECK_EQ_STR(ncl_strvec_at(&m->as.sample.paths, 2),
                          "/CONTROLLER/WARNNING");
         ncl_message_free(m);

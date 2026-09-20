@@ -70,8 +70,8 @@ public final class BrokerE2E {
                     "plc",
                     new String[] {"getStatus", "setStatus"},
                     new Server.Binding[] {
-                        new Server.Binding("/STATUS", Operation.GET_VALUE, "getStatus"),
-                        new Server.Binding("/STATUS", Operation.SET_VALUE, "setStatus")},
+                        new Server.Binding("/MACHINE/STATUS", Operation.GET_VALUE, "getStatus"),
+                        new Server.Binding("/MACHINE/STATUS", Operation.SET_VALUE, "setStatus")},
                     (method, params) -> {
                         if ("setStatus".equals(method)) {
                             state[0] = ((Number) ((Map<?, ?>) params.toJavaObject())
@@ -107,11 +107,11 @@ public final class BrokerE2E {
                 try (Model probed = client.probe()) {
                     check("真 broker：probe 到模型", "01".equals(probed.root().id()));
                 }
-                try (Json value = client.getValue("/STATUS")) {
+                try (Json value = client.getValue("/MACHINE/STATUS")) {
                     check("真 broker：路径绑定取值",
                             value.toJavaObject().equals(Long.valueOf(1)));
                 }
-                client.setValue("/STATUS", "7");
+                client.setValue("/MACHINE/STATUS", "7");
                 check("真 broker：路径绑定写值到达处理函数", state[0] == 7);
                 try (Json reply = client.methodCall("/plc/getStatus")) {
                     check("真 broker：methodCall 应答解析成 JSON",

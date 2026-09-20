@@ -46,7 +46,7 @@ func main() {
 	fmt.Printf("probe: model is %d bytes\n", len(model.String()))
 	model.Close()
 
-	value, err := client.Value("/STATUS", 5000)
+	value, err := client.Value("/MACHINE/STATUS", 5000)
 	if err != nil {
 		fmt.Println("value:", err)
 		os.Exit(1)

@@ -53,7 +53,7 @@ static void test_round_trip(void)
     NCL_CHECK(ncl_node_is_valid(root));
 
     NCL_TEST_CASE("root fields");
-    NCL_CHECK_EQ_STR(ncl_node_path(root), "/NC_LINK_ROOT");
+    NCL_CHECK_EQ_STR(ncl_node_path(root), "/");
     NCL_CHECK_EQ_STR(root->name, "nclink");
     NCL_CHECK_EQ_STR(root->id, "01");
     NCL_CHECK_EQ_STR(root->unique_id, "nclinkSampleTool");
@@ -62,7 +62,7 @@ static void test_round_trip(void)
     {
         ncl_node *device = ncl_node_device_at(root, 0);
         NCL_CHECK(device != NULL);
-        NCL_CHECK_EQ_STR(ncl_node_path(device), "/NC_LINK_ROOT/PLC");
+        NCL_CHECK_EQ_STR(ncl_node_path(device), "/PLC");
         NCL_CHECK_EQ_STR(device->version, "2.0");
         NCL_CHECK_EQ_INT(ncl_ptrvec_len(&device->configs), 2);
         NCL_CHECK_EQ_INT(ncl_ptrvec_len(&device->data_items), 3);
@@ -76,7 +76,7 @@ static void test_round_trip(void)
 
         NCL_CHECK_EQ_STR(file_config->source, "CONTROLLER");
         NCL_CHECK_EQ_STR(ncl_node_path(file_config), "/CONTROLLER/FILE");
-        NCL_CHECK_EQ_STR(ncl_node_path(sample_config), "/SAMPLE_CHANNEL");
+        NCL_CHECK_EQ_STR(ncl_node_path(sample_config), "/PLC/SAMPLE_CHANNEL");
         NCL_CHECK(ncl_node_is_sample_node(sample_config));
         NCL_CHECK(sample_config->has_sample_interval);
         NCL_CHECK_EQ_INT(sample_config->sample_interval, 1000);
@@ -89,7 +89,7 @@ static void test_round_trip(void)
         ncl_node *status = ncl_node_data_item_at(device, 0);
         ncl_node *warning = ncl_node_data_item_at(device, 2);
 
-        NCL_CHECK_EQ_STR(ncl_node_path(status), "/STATUS");
+        NCL_CHECK_EQ_STR(ncl_node_path(status), "/PLC/STATUS");
         NCL_CHECK_EQ_STR(ncl_node_path(warning), "/CONTROLLER/WARNNING");
     }
 
@@ -106,7 +106,7 @@ static void test_round_trip(void)
         }
         if (ncl_node_sample_count(sample_config) == 3) {
             char *path = ncl_sample_ref_path(ncl_node_sample_at(sample_config, 0));
-            NCL_CHECK_EQ_STR(path, "/STATUS");
+            NCL_CHECK_EQ_STR(path, "/PLC/STATUS");
             ncl_free_safe(path);
             path = ncl_sample_ref_path(ncl_node_sample_at(sample_config, 2));
             NCL_CHECK_EQ_STR(path, "/CONTROLLER/WARNNING");
@@ -124,8 +124,8 @@ static void test_round_trip(void)
         NCL_CHECK_EQ_INT(ncl_root_node_id_map(root, &ids), NCL_OK);
         /* 1 device + 3 data items + 2 configs */
         NCL_CHECK_EQ_INT(ncl_node_map_len(&paths), 6);
-        NCL_CHECK(ncl_node_map_get(&paths, "/NC_LINK_ROOT/PLC") != NULL);
-        NCL_CHECK(ncl_node_map_get(&paths, "/STATUS") != NULL);
+        NCL_CHECK(ncl_node_map_get(&paths, "/PLC") != NULL);
+        NCL_CHECK(ncl_node_map_get(&paths, "/PLC/STATUS") != NULL);
         NCL_CHECK(ncl_node_map_get(&ids, "030001") != NULL);
         NCL_CHECK(ncl_node_map_get(&ids, "sample_channel2") != NULL);
         ncl_node_map_free(&paths);
@@ -208,9 +208,9 @@ static void test_builder_api(void)
 /*
  * 组件（带 number）下的数据项路径，以及采样通道引用它们时形成的“表头”。
  *
- * 组件/数据项的编号用 "@" 分隔，所以组件路径为 "/AXIS@0"，
- * 其下数据项为 "/AXIS@0/POSITION"；采样项再按数据类型加后缀：
- *   LIST -> "/AXIS@0/TRACE$LIST-0"   HASH -> "/AXIS@0/PARAM$HASH-speed"
+ * 组件/数据项的编号用 "@" 分隔，所以组件路径为 "/PLC/AXIS@0"，
+ * 其下数据项为 "/PLC/AXIS@0/POSITION"；采样项再按数据类型加后缀：
+ *   LIST -> "/PLC/AXIS@0/TRACE$LIST-0"   HASH -> "/PLC/AXIS@0/PARAM$HASH-speed"
  * 多个索引/键时形如 "$LIST-[0, 1]"。
  */
 static const char *kComponentModel =
@@ -246,22 +246,22 @@ static void test_component_paths_and_sample_header(void)
     }
     device = ncl_node_device_at(root, 0);
     axis = ncl_node_component_at(device, 0);
-    NCL_CHECK_EQ_STR(ncl_node_path(axis), "/AXIS@0");
+    NCL_CHECK_EQ_STR(ncl_node_path(axis), "/PLC/AXIS@0");
     NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(axis, 0)),
-                     "/AXIS@0/POSITION");
+                     "/PLC/AXIS@0/POSITION");
     NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(axis, 1)),
-                     "/AXIS@0/TRACE");
+                     "/PLC/AXIS@0/TRACE");
     NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(axis, 2)),
-                     "/AXIS@0/PARAM");
-    /* 设备下的数据项仍走“父为设备则前缀清空”的规则 */
+                     "/PLC/AXIS@0/PARAM");
+    /* 设备下的数据项也带设备段（走父节点拼接与 source 一个结果） */
     NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(device, 0)),
-                     "/STATUS");
+                     "/PLC/STATUS");
 
     NCL_TEST_CASE("路径可以反查到节点");
     ncl_node_map_init(&paths);
     NCL_CHECK_EQ_INT(ncl_root_node_path_map(root, &paths), NCL_OK);
-    NCL_CHECK(ncl_node_map_get(&paths, "/AXIS@0/POSITION") != NULL);
-    NCL_CHECK(ncl_node_map_get(&paths, "/AXIS@0") != NULL);
+    NCL_CHECK(ncl_node_map_get(&paths, "/PLC/AXIS@0/POSITION") != NULL);
+    NCL_CHECK(ncl_node_map_get(&paths, "/PLC/AXIS@0") != NULL);
     ncl_node_map_free(&paths);
 
     NCL_TEST_CASE("采样表头：采样项路径按数据类型加后缀");
@@ -271,17 +271,17 @@ static void test_component_paths_and_sample_header(void)
 
     ref = ncl_node_sample_at(config, 0);
     path = ncl_sample_ref_path(ref);
-    NCL_CHECK_EQ_STR(path, "/AXIS@0/POSITION");
+    NCL_CHECK_EQ_STR(path, "/PLC/AXIS@0/POSITION");
     ncl_free_safe(path);
 
     ref = ncl_node_sample_at(config, 1);
     path = ncl_sample_ref_path(ref);
-    NCL_CHECK_EQ_STR(path, "/AXIS@0/TRACE$LIST-0");
+    NCL_CHECK_EQ_STR(path, "/PLC/AXIS@0/TRACE$LIST-0");
     ncl_free_safe(path);
 
     ref = ncl_node_sample_at(config, 2);
     path = ncl_sample_ref_path(ref);
-    NCL_CHECK_EQ_STR(path, "/AXIS@0/PARAM$HASH-speed");
+    NCL_CHECK_EQ_STR(path, "/PLC/AXIS@0/PARAM$HASH-speed");
     ncl_free_safe(path);
 
     NCL_TEST_CASE("多个索引时形如 $LIST-[0, 1]");
@@ -293,7 +293,7 @@ static void test_component_paths_and_sample_header(void)
         multi->params = params;
         multi->node = ncl_node_data_item_at(axis, 1); /* 借用 */
         path = ncl_sample_ref_path(multi);
-        NCL_CHECK_EQ_STR(path, "/AXIS@0/TRACE$LIST-[0, 1]");
+        NCL_CHECK_EQ_STR(path, "/PLC/AXIS@0/TRACE$LIST-[0, 1]");
         ncl_free_safe(path);
         multi->node = NULL;
         ncl_sample_ref_free(multi);
@@ -340,22 +340,22 @@ static void test_data_item_number_paths(void)
     device = ncl_node_device_at(root, 0);
     axis = ncl_node_component_at(device, 0);
     NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(axis, 0)),
-                     "/AXIS@S/POWER@1");
+                     "/MACHINE/AXIS@S/POWER@1");
     NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(axis, 1)),
-                     "/AXIS@S/POWER@2");
+                     "/MACHINE/AXIS@S/POWER@2");
     /* 没有 number 的项（单路）路径不带后缀 */
     NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(axis, 2)),
-                     "/AXIS@S/SPEED");
+                     "/MACHINE/AXIS@S/SPEED");
     /* 设备下的数据项：父前缀清空，自己带的 number 仍然进路径 */
     NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(device, 0)),
-                     "/STATUS@1");
+                     "/MACHINE/STATUS@1");
 
     NCL_TEST_CASE("带 number 的数据项也能按路径反查");
     ncl_node_map_init(&paths);
     NCL_CHECK_EQ_INT(ncl_root_node_path_map(root, &paths), NCL_OK);
-    NCL_CHECK(ncl_node_map_get(&paths, "/AXIS@S/POWER@1") != NULL);
-    NCL_CHECK(ncl_node_map_get(&paths, "/AXIS@S/POWER@2") != NULL);
-    NCL_CHECK(ncl_node_map_get(&paths, "/AXIS@S/SPEED") != NULL);
+    NCL_CHECK(ncl_node_map_get(&paths, "/MACHINE/AXIS@S/POWER@1") != NULL);
+    NCL_CHECK(ncl_node_map_get(&paths, "/MACHINE/AXIS@S/POWER@2") != NULL);
+    NCL_CHECK(ncl_node_map_get(&paths, "/MACHINE/AXIS@S/SPEED") != NULL);
     ncl_node_map_free(&paths);
 
     NCL_TEST_CASE("同一通道里两路传感器各自成为一列表头");
@@ -364,11 +364,11 @@ static void test_data_item_number_paths(void)
     NCL_CHECK_EQ_INT(ncl_node_sample_count(config), 2);
     ref = ncl_node_sample_at(config, 0);
     path = ncl_sample_ref_path(ref);
-    NCL_CHECK_EQ_STR(path, "/AXIS@S/POWER@1");
+    NCL_CHECK_EQ_STR(path, "/MACHINE/AXIS@S/POWER@1");
     ncl_free_safe(path);
     ref = ncl_node_sample_at(config, 1);
     path = ncl_sample_ref_path(ref);
-    NCL_CHECK_EQ_STR(path, "/AXIS@S/POWER@2");
+    NCL_CHECK_EQ_STR(path, "/MACHINE/AXIS@S/POWER@2");
     ncl_free_safe(path);
 
     ncl_node_free(root);

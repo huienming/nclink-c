@@ -604,8 +604,11 @@ broker 的部署不受影响。**broker 没起来不致命**：`ncl_adapter_brok
 **命令行 → 配置里的 `mqtt` → `<conf>/mqtt.cfg`**：配置文件自己写全了 broker，
 就不再去别的文件里找。
 
-自动生成的模型里，每个数据项的 `source` 就是点位路径的父级，因此
-**模型路径与配置里的点位路径严格一致**，配置和模型不会漂移。
+自动生成的模型里**一个 `source` 都不写**：设备段来自 `device.type`，组件段来自点位
+路径的中段，数据项段来自路径尾段 —— 所以 **模型树拼出来的路径与声明里的点位路径
+严格一致**（设备类型和点位路径的设备段必须同名，不一致时启动就报错）。检测口径：
+`ncl_tool_model()` 生成的模型经过 `ncl_root_node_parse()` 之后，每个数据项的
+`ncl_node_path()` 等于它声明的路径（`tests/test_tool.c` 里有这条用例）。
 可运行的配置样例见 `tests/test_adapter.c` 里的 `kConfig`。
 
 ## FANUC 适配器模块（`ncl_driver_focas`）

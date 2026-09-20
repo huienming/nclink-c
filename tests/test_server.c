@@ -18,7 +18,7 @@
 #define TEST_SN "V203243111F"
 
 /* The device model used by the tests. The STATUS data item sits directly under
- * the device, so its path is "/STATUS" (see the path rules in MANUAL.md 4.3). */
+ * the device, so its path is "/PLC/STATUS" (see the path rules in MANUAL.md 4.3). */
 static const char *kModelJson =
     "{\"name\":\"nclink\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\","
     "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\",\"configs\":[],"
@@ -28,7 +28,7 @@ static const char *kModelJson =
 /* --------------------------------------------------------------- test tool */
 
 typedef struct {
-    ncl_json *status;     /* value behind /STATUS */
+    ncl_json *status;     /* value behind /PLC/STATUS */
     int       set_calls;
 } test_tool;
 
@@ -166,9 +166,9 @@ static void test_server_end_to_end(void)
     {"ping", tool_ping_method, NULL},
     };
     static const ncl_tool_binding bindings[] = {
-        {"/STATUS", NCL_OP_GET_VALUE, "getValue", NULL},
-        {"/STATUS", NCL_OP_SET_VALUE, "setValue", NULL},
-        {"/PART_COUNT", NCL_OP_GET_LENGTH, "getLength", NULL},
+        {"/PLC/STATUS", NCL_OP_GET_VALUE, "getValue", NULL},
+        {"/PLC/STATUS", NCL_OP_SET_VALUE, "setValue", NULL},
+        {"/PLC/PART_COUNT", NCL_OP_GET_LENGTH, "getLength", NULL},
     };
 
     memset(&tool, 0, sizeof(tool));
@@ -215,8 +215,8 @@ static void test_server_end_to_end(void)
         NCL_CHECK(root != NULL);
         NCL_CHECK(ncl_node_is_valid(root));
         device = ncl_node_device_at(root, 0);
-        NCL_CHECK_EQ_STR(ncl_node_path(device), "/NC_LINK_ROOT/PLC");
-        NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(device, 0)), "/STATUS");
+        NCL_CHECK_EQ_STR(ncl_node_path(device), "/PLC");
+        NCL_CHECK_EQ_STR(ncl_node_path(ncl_node_data_item_at(device, 0)), "/PLC/STATUS");
     }
 
     NCL_TEST_CASE("tool methods and path bindings register");
@@ -237,7 +237,7 @@ static void test_server_end_to_end(void)
     NCL_TEST_CASE("QueryRequest is answered with the tool value");
     {
         ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
-        ncl_query_request_item *item = ncl_query_request_item_new("/STATUS");
+        ncl_query_request_item *item = ncl_query_request_item_new("/PLC/STATUS");
         ncl_message *response;
         size_t baseline = request_baseline(broker);
 
@@ -319,7 +319,7 @@ static void test_server_end_to_end(void)
     NCL_TEST_CASE("get_length reaches the bound method");
     {
         ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
-        ncl_query_request_item *item = ncl_query_request_item_new("/PART_COUNT");
+        ncl_query_request_item *item = ncl_query_request_item_new("/PLC/PART_COUNT");
         ncl_message *response;
         size_t baseline = request_baseline(broker);
 
@@ -346,7 +346,7 @@ static void test_server_end_to_end(void)
     NCL_TEST_CASE("SetRequest updates the tool state");
     {
         ncl_message *request = ncl_message_new(NCL_MSG_SET_REQUEST);
-        ncl_set_request_item *item = ncl_set_request_item_new("/STATUS");
+        ncl_set_request_item *item = ncl_set_request_item_new("/PLC/STATUS");
         ncl_message *response;
         size_t baseline = request_baseline(broker);
 
@@ -461,7 +461,7 @@ static void test_server_end_to_end(void)
         ncl_json_obj_set_string(config, "type", "SAMPLE_CHANNEL");
         ncl_json_obj_set_int(config, "sampleInterval", 1000);
         ncl_json_obj_set_int(config, "uploadInterval", 60000);
-        ncl_json_obj_set_string(ref, "id", "/STATUS");
+        ncl_json_obj_set_string(ref, "id", "/PLC/STATUS");
         ncl_json_arr_push(ids, ref);
         ncl_json_obj_set(config, "ids", ids);
         ncl_json_obj_set(params, "request", config);
@@ -507,13 +507,13 @@ static void test_server_end_to_end(void)
 /* =========================================================== sampling test */
 
 /* A model with one SAMPLE_CHANNEL whose two sample items are addressed by path
- * ("/STATUS") and by node id ("030002"). */
+ * ("/PLC/STATUS") and by node id ("030002"). */
 static const char *kSampleModelJson =
     "{\"name\":\"nclink\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\","
     "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\","
     "\"configs\":[{\"id\":\"ch1\",\"type\":\"SAMPLE_CHANNEL\","
     "\"sampleInterval\":40,\"uploadInterval\":120,"
-    "\"ids\":[{\"id\":\"/STATUS\"},{\"id\":\"030002\"}]}],"
+    "\"ids\":[{\"id\":\"/PLC/STATUS\"},{\"id\":\"030002\"}]}],"
     "\"dataItems\":[{\"id\":\"030001\",\"type\":\"STATUS\"},"
     "{\"id\":\"030002\",\"type\":\"PART_COUNT\"}],\"version\":\"2.0\"}]}";
 
@@ -633,7 +633,7 @@ static void test_sample_channel_shapes(void)
     char topic[512];
     char payload[4096];
     int i;
-    /* 模型里只有 /STATUS，没有任何 SAMPLE_CHANNEL，也没有 /EXT/A@0 */
+    /* 模型里只有 /PLC/STATUS，没有任何 SAMPLE_CHANNEL，也没有 /EXT/A@0 */
     static const char *kModelJson =
         "{\"name\":\"nclink\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\","
         "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\",\"configs\":[],"
@@ -644,7 +644,7 @@ static void test_sample_channel_shapes(void)
         {"getExt", sample_get_ext, NULL},
     };
     static const ncl_tool_binding bindings[] = {
-        {"/STATUS", NCL_OP_GET_VALUE, "getValue", NULL},
+        {"/PLC/STATUS", NCL_OP_GET_VALUE, "getValue", NULL},
         {"/EXT/A@0", NCL_OP_GET_VALUE, "getExt", NULL},
     };
 
@@ -690,7 +690,7 @@ static void test_sample_channel_shapes(void)
         ncl_node *config = config_from_json(
             "{\"id\":\"chExt\",\"type\":\"SAMPLE_CHANNEL\","
             "\"sampleInterval\":40,\"uploadInterval\":80,"
-            "\"ids\":[{\"id\":\"/EXT/A@0\"},{\"id\":\"/STATUS\"}]}");
+            "\"ids\":[{\"id\":\"/EXT/A@0\"},{\"id\":\"/PLC/STATUS\"}]}");
         NCL_CHECK(config != NULL);
         if (config != NULL) {
             NCL_CHECK_EQ_INT(ncl_server_add_sample(server, config), NCL_OK);
@@ -707,7 +707,7 @@ static void test_sample_channel_shapes(void)
         NCL_CHECK(ncl_fake_server_publish_at(broker, 0, topic, sizeof(topic),
                                              payload, sizeof(payload)));
         NCL_CHECK_EQ_STR(topic, "Sample/" TEST_SN "/chExt");
-        NCL_CHECK(strstr(payload, "\"paths\":[\"/EXT/A@0\",\"/STATUS\"]") != NULL);
+        NCL_CHECK(strstr(payload, "\"paths\":[\"/EXT/A@0\",\"/PLC/STATUS\"]") != NULL);
 
         /* 消费端拿到的是完整报文：表头项数 == 数据块列数，各列取值个数一致 */
         {
@@ -715,7 +715,7 @@ static void test_sample_channel_shapes(void)
             NCL_CHECK(sample != NULL);
             if (sample != NULL) {
                 char *header = ncl_message_sample_header(sample, ";");
-                NCL_CHECK_EQ_STR(header, "/EXT/A@0;/STATUS");
+                NCL_CHECK_EQ_STR(header, "/EXT/A@0;/PLC/STATUS");
                 ncl_free_safe(header);
                 NCL_CHECK(ncl_message_sample_is_complete(sample));
                 NCL_CHECK_EQ_INT(ncl_message_item_count(sample), 2);
@@ -746,15 +746,15 @@ static void test_sample_channel_shapes(void)
              NCL_ERR_INVALID_MODEL, "ids 为空"},
             /* 缺 sampleInterval */
             {"{\"id\":\"bad3\",\"type\":\"SAMPLE_CHANNEL\",\"uploadInterval\":80,"
-             "\"ids\":[{\"id\":\"/STATUS\"}]}",
+             "\"ids\":[{\"id\":\"/PLC/STATUS\"}]}",
              NCL_ERR_INVALID_ARG, "缺 sampleInterval"},
             /* 缺 uploadInterval */
             {"{\"id\":\"bad4\",\"type\":\"SAMPLE_CHANNEL\",\"sampleInterval\":40,"
-             "\"ids\":[{\"id\":\"/STATUS\"}]}",
+             "\"ids\":[{\"id\":\"/PLC/STATUS\"}]}",
              NCL_ERR_INVALID_ARG, "缺 uploadInterval"},
             /* 周期为 0 */
             {"{\"id\":\"bad5\",\"type\":\"SAMPLE_CHANNEL\",\"sampleInterval\":0,"
-             "\"uploadInterval\":80,\"ids\":[{\"id\":\"/STATUS\"}]}",
+             "\"uploadInterval\":80,\"ids\":[{\"id\":\"/PLC/STATUS\"}]}",
              NCL_ERR_INVALID_ARG, "sampleInterval 为 0"},
         };
         size_t c;
@@ -801,8 +801,8 @@ static void test_sampling(void)
     {"getCount", sample_get_part_count, NULL},
     };
     static const ncl_tool_binding bindings[] = {
-        {"/STATUS", NCL_OP_GET_VALUE, "getValue", NULL},
-        {"/PART_COUNT", NCL_OP_GET_VALUE, "getCount", NULL},
+        {"/PLC/STATUS", NCL_OP_GET_VALUE, "getValue", NULL},
+        {"/PLC/PART_COUNT", NCL_OP_GET_VALUE, "getCount", NULL},
     };
 
     memset(&tool, 0, sizeof(tool));
@@ -892,13 +892,13 @@ static void test_sampling(void)
             NCL_CHECK_EQ_INT(sample->as.sample.upload_interval, 120);
             NCL_CHECK_EQ_INT(ncl_message_item_count(sample), 2);
             NCL_CHECK_EQ_INT(ncl_strvec_len(&sample->as.sample.paths), 2);
-            /* 表头：线上必须是数组 "paths":["/STATUS","/PART_COUNT"]，
+            /* 表头：线上必须是数组 "paths":["/PLC/STATUS","/PLC/PART_COUNT"]，
              * 且顺序与采样项一致。 */
             NCL_CHECK_EQ_STR(ncl_strvec_at(&sample->as.sample.paths, 0),
-                             "/STATUS");
+                             "/PLC/STATUS");
             NCL_CHECK_EQ_STR(ncl_strvec_at(&sample->as.sample.paths, 1),
-                             "/PART_COUNT");
-            NCL_CHECK(strstr(payload, "\"paths\":[\"/STATUS\",\"/PART_COUNT\"]")
+                             "/PLC/PART_COUNT");
+            NCL_CHECK(strstr(payload, "\"paths\":[\"/PLC/STATUS\",\"/PLC/PART_COUNT\"]")
                       != NULL);
             /* beginTime 必须是墙上时钟（不是单调时钟），
              * 而不是本进程开机后的单调值。 */
@@ -910,10 +910,10 @@ static void test_sampling(void)
             }
             {
                 char *header = ncl_message_sample_header(sample, ";");
-                NCL_CHECK_EQ_STR(header, "/STATUS;/PART_COUNT");
+                NCL_CHECK_EQ_STR(header, "/PLC/STATUS;/PLC/PART_COUNT");
                 ncl_free_safe(header);
                 header = ncl_message_sample_header(sample, NULL);
-                NCL_CHECK_EQ_STR(header, "/STATUS;/PART_COUNT");
+                NCL_CHECK_EQ_STR(header, "/PLC/STATUS;/PLC/PART_COUNT");
                 ncl_free_safe(header);
             }
             {
@@ -987,7 +987,7 @@ static void test_sub_millisecond_samples(void)
         {"getJitter", sample_get_jitter, NULL},
     };
     static const ncl_tool_binding bindings[] = {
-        {"/STATUS", NCL_OP_GET_VALUE, "getValue", NULL},
+        {"/PLC/STATUS", NCL_OP_GET_VALUE, "getValue", NULL},
         {"/TRACE@0", NCL_OP_GET_VALUE, "getTrace", NULL},
         {"/JITTER@0", NCL_OP_GET_VALUE, "getJitter", NULL},
     };
@@ -1085,7 +1085,7 @@ static void test_sub_millisecond_samples(void)
         ncl_node *config = config_from_json(
             "{\"id\":\"chMixed\",\"type\":\"SAMPLE_CHANNEL\","
             "\"sampleInterval\":40,\"uploadInterval\":80,"
-            "\"ids\":[{\"id\":\"/STATUS\"},{\"id\":\"/TRACE@0\"}]}");
+            "\"ids\":[{\"id\":\"/PLC/STATUS\"},{\"id\":\"/TRACE@0\"}]}");
         int trace_before = tool.trace_calls;
         size_t uploads_before = ncl_server_sample_upload_count(server);
 
@@ -1094,7 +1094,7 @@ static void test_sub_millisecond_samples(void)
             NCL_CHECK_EQ_INT(ncl_server_add_sample(server, config), NCL_OK);
             ncl_node_free(config);
         }
-        /* 外层槽位一致即可：/STATUS 每槽 1 点、/TRACE@0 每槽 10 点 */
+        /* 外层槽位一致即可：/PLC/STATUS 每槽 1 点、/TRACE@0 每槽 10 点 */
         for (i = 0; i < 150 && ncl_server_sample_upload_count(server) == uploads_before;
              i++) {
             ncl_sleep_millis(20);
@@ -1103,7 +1103,7 @@ static void test_sub_millisecond_samples(void)
         NCL_CHECK(ncl_server_sample_upload_count(server) > uploads_before);
         NCL_CHECK(ncl_fake_server_publish_at(broker, 0, topic, sizeof(topic),
                                              payload, sizeof(payload)));
-        NCL_CHECK(strstr(payload, "\"paths\":[\"/STATUS\",\"/TRACE@0\"]") != NULL);
+        NCL_CHECK(strstr(payload, "\"paths\":[\"/PLC/STATUS\",\"/TRACE@0\"]") != NULL);
         {
             ncl_message *sample = ncl_message_parse(topic, payload, strlen(payload));
             NCL_CHECK(sample != NULL);
@@ -1153,7 +1153,7 @@ static void test_sub_millisecond_samples(void)
         ncl_node *config = config_from_json(
             "{\"id\":\"chFlat\",\"type\":\"SAMPLE_CHANNEL\","
             "\"sampleInterval\":40,\"uploadInterval\":80,"
-            "\"ids\":[{\"id\":\"/STATUS\"}]}");
+            "\"ids\":[{\"id\":\"/PLC/STATUS\"}]}");
         NCL_CHECK(config != NULL);
         if (config != NULL) {
             NCL_CHECK_EQ_INT(ncl_server_add_sample(server, config), NCL_OK);
@@ -1275,10 +1275,10 @@ static void test_free_with_running_samples(void)
         "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\","
         "\"configs\":[{\"id\":\"ch1\",\"type\":\"SAMPLE_CHANNEL\","
         "\"sampleInterval\":1,\"uploadInterval\":60000,"
-        "\"ids\":[{\"id\":\"/STATUS\"},{\"id\":\"/STATUS\"},"
-        "{\"id\":\"/STATUS\"},{\"id\":\"/STATUS\"},"
-        "{\"id\":\"/STATUS\"},{\"id\":\"/STATUS\"},"
-        "{\"id\":\"/STATUS\"},{\"id\":\"/STATUS\"}]}],"
+        "\"ids\":[{\"id\":\"/PLC/STATUS\"},{\"id\":\"/PLC/STATUS\"},"
+        "{\"id\":\"/PLC/STATUS\"},{\"id\":\"/PLC/STATUS\"},"
+        "{\"id\":\"/PLC/STATUS\"},{\"id\":\"/PLC/STATUS\"},"
+        "{\"id\":\"/PLC/STATUS\"},{\"id\":\"/PLC/STATUS\"}]}],"
         "\"dataItems\":[{\"id\":\"030001\",\"type\":\"STATUS\"}]}]}";
     sample_tool tool;
     int round;
@@ -1304,7 +1304,7 @@ static void test_free_with_running_samples(void)
             methods[i].fn = sample_get_status;
         }
         memset(bindings, 0, sizeof(bindings));
-        bindings[0].path = "/STATUS";
+        bindings[0].path = "/PLC/STATUS";
         bindings[0].operation = NCL_OP_GET_VALUE;
         bindings[0].method = "m0";
         memset(&options, 0, sizeof(options));

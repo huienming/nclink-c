@@ -170,8 +170,8 @@ ctest --test-dir build-linux --output-on-failure
 ncl::Client::init("tcp://broker:1883");     // ssl:// 需要启用 TLS 的构建
 ncl::Client client("V203243111F");
 ncl::Model  model = client.probe();          // 拉取设备模型
-ncl::Json   v     = client.value("/STATUS"); // 读值
-client.set("/STATUS", ncl::Json::parse("42"));
+ncl::Json   v     = client.value("/MACHINE/STATUS"); // 读值
+client.set("/MACHINE/STATUS", ncl::Json::parse("42"));
 // 出错抛 ncl::Error（继承 std::runtime_error，e.code() 是 ncl_err）
 ncl::Client::shutdown();
 ```
@@ -192,7 +192,7 @@ defer nclink.Shutdown()
 
 client, _ := nclink.Get("V203243111F")
 model, _ := client.Probe(5000)          // 拉设备模型
-v, _ := client.Value("/STATUS", 5000)   // 读值
+v, _ := client.Value("/MACHINE/STATUS", 5000)   // 读值
 defer v.Close()
 
 client.SubscribeSamples(2, func(topic string, msg *nclink.Message) {
@@ -222,8 +222,8 @@ Nclink.logInit();
 Nclink.init("tcp://127.0.0.1:1883");
 try (DeviceClient device = Nclink.getDevice("V2023A7B762")) {
     try (Model model = device.probe()) { /* 遍历模型树 */ }
-    try (Json value = device.getValue("/STATUS")) { /* 读值 */ }
-    device.setValue("/STATUS", "42");
+    try (Json value = device.getValue("/MACHINE/STATUS")) { /* 读值 */ }
+    device.setValue("/MACHINE/STATUS", "42");
     device.subscribeSamples(2, (topic, sample) -> show(sample));  // 快照，出了回调也能用
 }
 Nclink.shutdown();
@@ -244,7 +244,7 @@ HTTP / REST 端点：`device.startHttp(9008, true)`（`0` = 随机端口）挂�
 `http.route(method, path, handler)` 还能挂自己的路由（返回 `HttpEndpoint.Reply`）。
 关端点要在关 `device` 之前——`device.close()` 已经先收 HTTP 再停服务。
 
-文件通道（`/CONTROLLER/FILE`，MQTT 只传 `/temp/<名字>` 令牌、字节走 FTP）：
+文件通道（`/MACHINE/CONTROLLER/FILE`，MQTT 只传 `/temp/<名字>` 令牌、字节走 FTP）：
 `device.registerFileTool()` 让设备端能收文件；客户端侧
 `client.uploadLocalFile(本地文件, "/data/x.bin")` / `client.downloadTo("/data/x.bin",
 本地文件)` / `client.listFiles("/data")`（`FileInfo`）/ `client.makeDirectory` /
@@ -271,7 +271,7 @@ import nclink
 nclink.init("tcp://127.0.0.1:1883")
 with nclink.get_device("V2023A7B762") as device:
     with device.probe() as model: ...                     # 拉模型（顺带装进客户端）
-    with device.get_value("/STATUS") as value: ...         # 读值
+    with device.get_value("/MACHINE/STATUS") as value: ...         # 读值
     device.subscribe_samples(2, lambda topic, sample: print(sample.rows))
 nclink.shutdown()
 ```
@@ -314,8 +314,8 @@ Nclink.Init("tcp://127.0.0.1:1883");
 using (NclDeviceClient device = Nclink.GetDevice("V2023A7B762"))
 {
     using (NclModel model = device.Probe()) { /* 遍历模型树 */ }
-    long status = device.GetLong("/STATUS");
-    device.SetValue("/STATUS", "42");
+    long status = device.GetLong("/MACHINE/STATUS");
+    device.SetValue("/MACHINE/STATUS", "42");
     device.SampleReceived += (s, e) => Console.WriteLine(e.Sample);
     device.SubscribeSamples();
 }
@@ -480,8 +480,8 @@ static const ncl_tool_method methods[] = {
 
 /* 绑定键是 "<operation>#<path>"，path 取自模型（见 4.3） */
 static const ncl_tool_binding bindings[] = {
-    {"/STATUS", NCL_OP_GET_VALUE, "getValue", "plc"},
-    {"/STATUS", NCL_OP_SET_VALUE, "setValue", "plc"},
+    {"/MACHINE/STATUS", NCL_OP_GET_VALUE, "getValue", "plc"},
+    {"/MACHINE/STATUS", NCL_OP_SET_VALUE, "setValue", "plc"},
 };
 
 static ncl_server *g_server;
@@ -567,11 +567,11 @@ int main(void) {
         ncl_message_free(probe);
     }
 
-    if (ncl_client_get_value(client, "/STATUS", 5000, &value) == NCL_OK) {
+    if (ncl_client_get_value(client, "/MACHINE/STATUS", 5000, &value) == NCL_OK) {
         ncl_json_as_int(value, &number);
         ncl_json_free(value);
     }
-    ncl_client_set_value(client, "/STATUS", ncl_json_new_int(7), 5000);
+    ncl_client_set_value(client, "/MACHINE/STATUS", ncl_json_new_int(7), 5000);
 
     ncl_client_holder_shutdown();
     return 0;
@@ -589,51 +589,51 @@ MQTT 5.0 broker（mochi-mqtt v2.7.9，匿名 1883；更早几次实测用的是 
 行为一致）：
 
 ```
-设备模型已装载: /NC_LINK_ROOT，/STATUS 的节点 id = 010302
+设备模型已装载: /NC_LINK_ROOT，/MACHINE/STATUS 的节点 id = 010302
 模型里的采集通道 sample_channel0: 8 个采样项
-    [0] /PART_COUNT
-    [1] /FEED_OVERRIDE
-    [2] /CONTROLLER/PROGRAM
-    [3] /CONTROLLER/TOOL_NUMBER
-    [4] /AXIS@S/SPEED
-    [5] /STATUS
-    [6] /MACHINING_MODE
-    [7] /CONTROLLER/WARNING
+    [0] /MACHINE/PART_COUNT
+    [1] /MACHINE/FEED_OVERRIDE
+    [2] /MACHINE/CONTROLLER/PROGRAM
+    [3] /MACHINE/CONTROLLER/TOOL_NUMBER
+    [4] /MACHINE/AXIS@S/SPEED
+    [5] /MACHINE/STATUS
+    [6] /MACHINE/MACHINING_MODE
+    [7] /MACHINE/CONTROLLER/WARNING
 模型里的采集通道 EdgeSersors: 12 个采样项
     [0] /AXIS@X/POWER@1
     [1] /AXIS@X/ACCELERATION@X
     ...（X/Y/Z/C 各一路 + 主轴两路，共 12 项）
-GET /STATUS = 1
-SET /STATUS = 42 成功
+GET /MACHINE/STATUS = 1
+SET /MACHINE/STATUS = 42 成功
 check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
 文件回传路径: D:\...\166587125\demo.txt
   远端文件 demo.txt (14 字节)
 收到采样 [Sample/166587125/EdgeSersors] 通道=EdgeSersors 采样周期=1ms 上报周期=100ms 采样项=12
-    表头 paths(20 项) = ["/AXIS@X/POWER@1","/AXIS@X/ACCELERATION@X",...,"/AXIS@S/ACCELERATION@Y"]
+    表头 paths(20 项) = ["/MACHINE/AXIS@X/POWER@1","/MACHINE/AXIS@X/ACCELERATION@X",...,"/MACHINE/AXIS@S/ACCELERATION@Y"]
     原始报文: {"paths":[...同上 12 项...],"id":"EdgeSersors","beginTime":"1789573512114",
               "data":[{"data":[800.0,812.5,...(中间省略)...,1100.0]},        ← 功率：100 个值
                       {"data":[[-1.0,-0.875,-0.75,-0.625],...]},          ← 振动：每槽一批
                       ...],"interval":1,"uploadInterval":100}
     /AXIS@X/POWER@1  编码=raw 本轮 100 个值: [800.0, 812.5, 825.0, 837.5, ...]
     ...
-    /AXIS@S/POWER@2  编码=raw 本轮 100 个值: [2175.0, 2187.5, 2200.0, ...]   ← 主轴第二路
-    /AXIS@S/ACCELERATION@Y 批量采样: 100 个槽位 × 每槽约 4 点 = 400 点，首个=0.875
+    /MACHINE/AXIS@S/POWER@2  编码=raw 本轮 100 个值: [2175.0, 2187.5, 2200.0, ...]   ← 主轴第二路
+    /MACHINE/AXIS@S/ACCELERATION@Y 批量采样: 100 个槽位 × 每槽约 4 点 = 400 点，首个=0.875
     按行消费: 400 行（数据最多的那一列的点数）
       行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-1.0  /AXIS@Y/POWER@1=1137.5  ...
       行[1] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-0.875  /AXIS@Y/POWER@1=1137.5  ...
       ...（共 400 行，这里只打前 8 行）
 收到采样 [Sample/166587125/sample_channel0] 通道=sample_channel0 采样周期=1000ms 上报周期=1000ms 采样项=8
-    表头 paths(8 项) = ["/PART_COUNT","/FEED_OVERRIDE","/CONTROLLER/PROGRAM","/CONTROLLER/TOOL_NUMBER","/AXIS@S/SPEED","/STATUS","/MACHINING_MODE","/CONTROLLER/WARNING"]
-    /PART_COUNT      编码=raw 本轮 1 个值: [30]
-    /FEED_OVERRIDE   编码=raw 本轮 1 个值: [70]
-    /CONTROLLER/PROGRAM 编码=raw 本轮 1 个值: [1002]
-    /CONTROLLER/TOOL_NUMBER 编码=raw 本轮 1 个值: [3]
-    /AXIS@S/SPEED    编码=raw 本轮 1 个值: [4200]
-    /STATUS          编码=raw 本轮 1 个值: [1]
-    /MACHINING_MODE  编码=raw 本轮 1 个值: [1]
-    /CONTROLLER/WARNING 编码=raw 本轮 1 个值: [0]
+    表头 paths(8 项) = ["/MACHINE/PART_COUNT","/MACHINE/FEED_OVERRIDE","/MACHINE/CONTROLLER/PROGRAM","/MACHINE/CONTROLLER/TOOL_NUMBER","/MACHINE/AXIS@S/SPEED","/MACHINE/STATUS","/MACHINE/MACHINING_MODE","/MACHINE/CONTROLLER/WARNING"]
+    /MACHINE/PART_COUNT      编码=raw 本轮 1 个值: [30]
+    /MACHINE/FEED_OVERRIDE   编码=raw 本轮 1 个值: [70]
+    /MACHINE/CONTROLLER/PROGRAM 编码=raw 本轮 1 个值: [1002]
+    /MACHINE/CONTROLLER/TOOL_NUMBER 编码=raw 本轮 1 个值: [3]
+    /MACHINE/AXIS@S/SPEED    编码=raw 本轮 1 个值: [4200]
+    /MACHINE/STATUS          编码=raw 本轮 1 个值: [1]
+    /MACHINE/MACHINING_MODE  编码=raw 本轮 1 个值: [1]
+    /MACHINE/CONTROLLER/WARNING 编码=raw 本轮 1 个值: [0]
     按行消费: 1 行（数据最多的那一列的点数）
-      行[0] /PART_COUNT=30  /FEED_OVERRIDE=70  /CONTROLLER/PROGRAM=1002  /CONTROLLER/TOOL_NUMBER=3  /AXIS@S/SPEED=4200  /STATUS=1  /MACHINING_MODE=1  /CONTROLLER/WARNING=0
+      行[0] /MACHINE/PART_COUNT=30  /MACHINE/FEED_OVERRIDE=70  /MACHINE/CONTROLLER/PROGRAM=1002  /MACHINE/CONTROLLER/TOOL_NUMBER=3  /MACHINE/AXIS@S/SPEED=4200  /MACHINE/STATUS=1  /MACHINE/MACHINING_MODE=1  /MACHINE/CONTROLLER/WARNING=0
 收到事件 [Event/166587125] id=010307 key=PART_COUNT value=60
 ...
 共收到 12 条事件、65 条采样上报
@@ -678,7 +678,7 @@ build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 
 | 文件 | 首次启动写什么 |
 |------|----------------|
 | `bin/sn.txt` | 设备 SN：`V2` + 9 位**十六进制**（大写，且保证含 A~F 字母，不会是一串纯数字），由 `ncl_sn_read()` 在文件缺失时生成并落盘（见 4.1）。示例不自己造 SN，跟着库走 |
-| `conf/model/nclink.json` | 设备模型：一台数控机床（X/Y/Z/C 四轴 + 主轴 S + 数控系统），带两个采样通道：`sample_channel0`（机床运行状态，1 s 采样 / 1 s 上报，八项）、`EdgeSersors`（5 轴的功率与振动，**二十项** = 每轴 1 个功率 + 3 个方向的加速度；路径形如 `/AXIS@S/POWER@1`、`/AXIS@S/ACCELERATION@X`）。首次启动时由示例自举（模型编译在代码里：`examples/device_model.c`，五个语言的示例共用这一份），之后以这个文件为准 |
+| `conf/model/nclink.json` | 设备模型：一台数控机床（X/Y/Z/C 四轴 + 主轴 S + 数控系统），带两个采样通道：`sample_channel0`（机床运行状态，1 s 采样 / 1 s 上报，八项）、`EdgeSersors`（5 轴的功率与振动，**二十项** = 每轴 1 个功率 + 3 个方向的加速度；路径形如 `/MACHINE/AXIS@S/POWER@1`、`/MACHINE/AXIS@S/ACCELERATION@X`）。首次启动时由示例自举（模型编译在代码里：`examples/device_model.c`，五个语言的示例共用这一份），之后以这个文件为准 |
 | `conf/mqtt.cfg` | 本机 broker：`url=tcp://127.0.0.1:1883`，`username=`/`password=` 留空 = 匿名连接（空值不会写进 MQTT 连接报文） |
 
 之后以文件为准，示例不再覆盖：换模型改 `conf/model/nclink.json`（或走 REST 的
@@ -692,14 +692,14 @@ build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 
 
 | 采样项 id | 路径（表头里的名字） | 示例工具 | 含义 |
 |-----------|----------------------|----------|------|
-| `010307` | `/PART_COUNT` | `plc/getCount` | 加工计件（件） |
-| `010305` | `/FEED_OVERRIDE` | `plc/getFeedOverride` | 进给倍率（%） |
-| `01035409` | `/CONTROLLER/PROGRAM` | `plc/getProgram` | 当前加工程序名 |
-| `01035413` | `/CONTROLLER/TOOL_NUMBER` | `plc/getToolNumber` | 当前刀号 |
-| `01035506` | `/AXIS@S/SPEED` | `plc/getSpeedS` | 主轴转速（r/min；SPEED 挂在主轴 S 轴上） |
-| `010302` | `/STATUS` | `plc/getValue`（可写：`plc/setValue`） | 设备状态 |
-| `010309` | `/MACHINING_MODE` | `plc/getMachiningMode` | 加工模式（0 手动 / 1 录入 / 2 自动） |
-| `01035412` | `/CONTROLLER/WARNING` | `plc/getWarning` | 报警号（`0` = 无报警） |
+| `010307` | `/MACHINE/PART_COUNT` | `plc/getCount` | 加工计件（件） |
+| `010305` | `/MACHINE/FEED_OVERRIDE` | `plc/getFeedOverride` | 进给倍率（%） |
+| `01035409` | `/MACHINE/CONTROLLER/PROGRAM` | `plc/getProgram` | 当前加工程序名 |
+| `01035413` | `/MACHINE/CONTROLLER/TOOL_NUMBER` | `plc/getToolNumber` | 当前刀号 |
+| `01035506` | `/MACHINE/AXIS@S/SPEED` | `plc/getSpeedS` | 主轴转速（r/min；SPEED 挂在主轴 S 轴上） |
+| `010302` | `/MACHINE/STATUS` | `plc/getValue`（可写：`plc/setValue`） | 设备状态 |
+| `010309` | `/MACHINE/MACHINING_MODE` | `plc/getMachiningMode` | 加工模式（0 手动 / 1 录入 / 2 自动） |
+| `01035412` | `/MACHINE/CONTROLLER/WARNING` | `plc/getWarning` | 报警号（`0` = 无报警） |
 
 模型里还有进给速度（`010303`）、主轴倍率（`010306`）等其他数据项，没进这个通道；
 要采就把 id 加进 `ids`（见 4.5 的 `addSample`）。
@@ -720,7 +720,7 @@ build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 
 | `01035104` | `/AXIS@Y/POWER@1` | `plc/getPowerY` | 1 |
 | `01035204` | `/AXIS@Z/POWER@1` | `plc/getPowerZ` | 1 |
 | `01035304` | `/AXIS@C/POWER@1` | `plc/getPowerC` | 1 |
-| `01035504` | `/AXIS@S/POWER@1` | `plc/getPowerS` | 1 |
+| `01035504` | `/MACHINE/AXIS@S/POWER@1` | `plc/getPowerS` | 1 |
 | `01035005` | `/AXIS@X/ACCELERATION@X` | `plc/getAccelerationXX` | 4 |
 | `01035006` | `/AXIS@X/ACCELERATION@Y` | `plc/getAccelerationXY` | 4 |
 | `01035007` | `/AXIS@X/ACCELERATION@Z` | `plc/getAccelerationXZ` | 4 |
@@ -733,9 +733,9 @@ build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 
 | `01035305` | `/AXIS@C/ACCELERATION@X` | `plc/getAccelerationCX` | 4 |
 | `01035306` | `/AXIS@C/ACCELERATION@Y` | `plc/getAccelerationCY` | 4 |
 | `01035307` | `/AXIS@C/ACCELERATION@Z` | `plc/getAccelerationCZ` | 4 |
-| `01035505` | `/AXIS@S/ACCELERATION@X` | `plc/getAccelerationSX` | 4 |
-| `01035506` | `/AXIS@S/ACCELERATION@Y` | `plc/getAccelerationSY` | 4 |
-| `01035507` | `/AXIS@S/ACCELERATION@Z` | `plc/getAccelerationSZ` | 4 |
+| `01035505` | `/MACHINE/AXIS@S/ACCELERATION@X` | `plc/getAccelerationSX` | 4 |
+| `01035506` | `/MACHINE/AXIS@S/ACCELERATION@Y` | `plc/getAccelerationSY` | 4 |
+| `01035507` | `/MACHINE/AXIS@S/ACCELERATION@Z` | `plc/getAccelerationSZ` | 4 |
 
 消费端按行读（见 4.5 的"按行消费"）：行数 400（振动列的点数），功率
 列在同一个槽位的 4 行里读到同一个点。上报周期写 100 ms：Linux 上实测 ≈118 ms 一条，
@@ -743,24 +743,31 @@ Windows 上（库里对短等待走高精度计时器，见 4.5）实测 ≈222 
 主要是取值本身的开销（每槽 12 次完整 Query）。C 与 C++ 两个客户端示例的回调都这么消费。
 
 轴上的量都按"轴 + 物理量"写：主轴转速就是主轴 S 轴的 `SPEED` 数据项（`01035506` →
-`/AXIS@S/SPEED`，工具 `plc/getSpeedS`），它是 S 轴上的单路量，走的是通道 0（见上）。
+`/MACHINE/AXIS@S/SPEED`，工具 `plc/getSpeedS`），它是 S 轴上的单路量，走的是通道 0（见上）。
 设备端与两个客户端示例会把轴上的这几项按"路径 含义"打出来，同一个部件多路传感器
 时含义后面跟 `#<number>`，一眼能看出是哪一路：
 
 ```
-/AXIS@S/POWER@1          主轴功率 #1
-/AXIS@S/SPEED            主轴转速
-/AXIS@S/ACCELERATION@Y   主轴加速度 #2
+/MACHINE/AXIS@S/POWER@1          主轴功率 #1
+/MACHINE/AXIS@S/SPEED            主轴转速
+/MACHINE/AXIS@S/ACCELERATION@Y   主轴加速度 #2
 ```
 
-注意路径的组成：挂在设备（`MACHINE`）下的数据项是 `/<TYPE>`，挂在组件
-（`CONTROLLER`）下的数据项才带组件名，挂在轴（`AXIS`）下的则是
-`/AXIS@<轴号>/<类型>`（主轴是 `/AXIS@S/...`）。
+注意路径的组成：**从设备开始，一层一个路径段**，段名就是那一层的 `type`
+（组件另有 `number` 时写成 `<type>@<number>`）。所以挂在设备（`MACHINE`）下的数据项是
+`/MACHINE/<TYPE>`，挂在组件（`CONTROLLER`）下的是 `/MACHINE/CONTROLLER/<TYPE>`，
+挂在轴（`AXIS`）下的则是 `/MACHINE/AXIS@<轴号>/<类型>`（主轴是 `/MACHINE/AXIS@S/...`）。
+
+路径只有这一种算法：**向上遍历父节点拼接**（根节点只出一个 `/`，设备段是它下面
+所有节点的前缀）。数据对象上那个可选的 `source` 只是"父路径的简写"——写了就用它，
+但它必须和父节点拼接的结果**一模一样**，否则模型加载时会告警（`source` 优先，
+但两份路径不一致的模型本身就是错的：客户端不认 `source`、自己走一遍树就会得到别的
+路径）。适配器生成的模型里**一个 `source` 都不写**：树的形状已经说明了一切。
 
 **数据项自己也可以带 `number`**：一个部件上挂多路同类传感器时，就是"同 `type`、不同
 `number`、不同 id"的几个数据项，路径变成 `/<父路径>/<type>@<number>`
-（`/AXIS@S/POWER@1`、`/AXIS@S/POWER@2`）。没有 `number` 的项就是单路，路径不带后缀
-（`/AXIS@S/SPEED`）。`number` 是字符串、内容自定，示例里用 `"1"`、`"2"`；模型文本里它
+（`/MACHINE/AXIS@S/POWER@1`、`/MACHINE/AXIS@S/POWER@2`）。没有 `number` 的项就是单路，路径不带后缀
+（`/MACHINE/AXIS@S/SPEED`）。`number` 是字符串、内容自定，示例里用 `"1"`、`"2"`；模型文本里它
 写在 `type` 之后、`dataType` 之前。采样表头、工具绑定、按路径查询都用带 `number` 的
 完整路径，所以多路传感器在采样报文里天然是各自一列。
 
@@ -788,7 +795,7 @@ SN 是设备身份，也是所有主题的地址。两种来源必须分清：
 | `Set/Request/<sn>` / `Set/Response/<sn>` | 客户端 → 设备 | 写值 |
 | `Probe/Query/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 探测（回传模型/版本） |
 | `Method/Call/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 方法调用（`async: true` 时异步） |
-| `Method/Status/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 异步调用的进度（按 `handler`） |
+| `Method/MACHINE/STATUS/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 异步调用的进度（按 `handler`） |
 | `Method/Result/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 异步调用的结果（按 `handler`） |
 | `Sample/<sn>/<通道id>` | 设备 → 订阅方 | 采样上报 |
 | `Event/<sn>` | 设备 → 订阅方 | 事件推送 |
@@ -829,7 +836,7 @@ ncl_client_method_result(client, sn, handler, 5000, &result);
 
 ```c
 ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
-ncl_query_request_item *item = ncl_query_request_item_new("/STATUS");
+ncl_query_request_item *item = ncl_query_request_item_new("/MACHINE/STATUS");
 ncl_message_add_query_request_item(request, item);   /* 所有权转移 */
 ncl_message_finalise(request);                       /* 补 @id（UUID） */
 char *json = ncl_message_write_string(request);
@@ -850,7 +857,7 @@ ncl_message *msg = ncl_message_parse(topic, payload, payload_len);
   {"id":"02","type":"PLC",
    "configs":[{"id":"ch1","type":"SAMPLE_CHANNEL",
                "sampleInterval":1000,"uploadInterval":5000,
-               "ids":[{"id":"/STATUS"},{"id":"030002"}]}],
+               "ids":[{"id":"/MACHINE/STATUS"},{"id":"030002"}]}],
    "dataItems":[{"id":"030001","type":"STATUS"},
                 {"id":"030002","type":"PART_COUNT"}],
    "version":"2.0"}]}
@@ -862,15 +869,15 @@ ncl_message *msg = ncl_message_parse(topic, payload, payload_len);
 |----------|------|
 | 根节点 | `/` + type，即 `/NC_LINK_ROOT` |
 | 设备节点 | 根路径 + `/` + type，即 `/NC_LINK_ROOT/PLC` |
-| 数据项/配置项，父是设备 | `/<type>[@<number>]`，即 `/STATUS` |
+| 数据项/配置项，父是设备 | `/<type>[@<number>]`，即 `/MACHINE/STATUS` |
 | 数据项/配置项，父是组件 | 父路径 + `/<type>[@<number>]` |
 | 节点带 `source` 字段 | `/<source>/<type>`，**覆盖**父路径 |
 
 客户端拿到模型后可以路径 ↔ id 互查：
 
 ```c
-char *id = ncl_client_get_id(client, "/STATUS");    /* "030001" */
-char *path = ncl_client_get_path(client, "030001"); /* "/STATUS" */
+char *id = ncl_client_get_id(client, "/MACHINE/STATUS");    /* "030001" */
+char *path = ncl_client_get_path(client, "030001"); /* "/MACHINE/STATUS" */
 ```
 
 读写接口的 `path` 参数：以 `/` 开头按路径解释；否则按节点 id 查模型再换算成路径
@@ -886,7 +893,7 @@ ncl_server_register_tool(server, "plc", instance, methods, method_count,
 ```
 
 绑定键形如 `<operation>#<path>`，例如
-`get_value#/STATUS`、`set_value#/CONTROLLER/FILE`。
+`get_value#/MACHINE/STATUS`、`set_value#/MACHINE/CONTROLLER/FILE`。
 
 | operation（枚举 → 字符串） | 含义 |
 |---------------------------|------|
@@ -916,7 +923,7 @@ ncl_message_set_method(request, "/plc/setValue");   /* 也接受 "plc/setValue" 
 |------|------|
 | `sampleInterval` | 采样周期（毫秒） |
 | `uploadInterval` | 上报周期（毫秒），内部按「采样次数」向上取整 |
-| `ids` | 采样项，可写路径（`/STATUS`）或节点 id（`030002`） |
+| `ids` | 采样项，可写路径（`/MACHINE/STATUS`）或节点 id（`030002`） |
 
 ```c
 ncl_server_init_samples(server);              /* 按模型启动全部通道 */
@@ -990,7 +997,7 @@ ncl_server_stop_all_samples(server);
 const char *json =
     "{\"id\":\"chExt\",\"type\":\"SAMPLE_CHANNEL\","
     "\"sampleInterval\":40,\"uploadInterval\":80,"
-    "\"ids\":[{\"id\":\"/EXT/A@0\"},{\"id\":\"/STATUS\"}]}";
+    "\"ids\":[{\"id\":\"/EXT/A@0\"},{\"id\":\"/MACHINE/STATUS\"}]}";
 ncl_node *config = /* ncl_node_from_json(...) */;
 ncl_err rc = ncl_server_add_sample(server, config);   /* 前提：/EXT/A@0 上有工具绑定 */
 ```
@@ -1125,7 +1132,7 @@ if (!ncl_message_sample_is_complete(msg)) {
 一条真实报文（字段顺序按规范固定）：
 
 ```json
-{"paths":["/STATUS","/PART_COUNT"],"id":"ch1","beginTime":"1789450135470",
+{"paths":["/MACHINE/STATUS","/MACHINE/PART_COUNT"],"id":"ch1","beginTime":"1789450135470",
  "data":[{"data":[0,0]},{"data":[129,139]}],"interval":1000,"uploadInterval":2000}
 ```
 
@@ -1787,7 +1794,7 @@ ncl_json *data = ncl_message_get_data(msg);       /* 仅 QUERY_RESPONSE 用这�
 ncl_node *root = ncl_root_node_parse(json_text);   /* 解析 + 后构造（算路径） */
 ncl_node *device = ncl_node_device_at(root, 0);
 ncl_node *item = ncl_node_data_item_at(device, 0);
-const char *path = ncl_node_path(item);            /* "/STATUS" */
+const char *path = ncl_node_path(item);            /* "/MACHINE/STATUS" */
 ncl_node *found = ncl_node_find_by_id(root, "030001");
 ncl_node *copy = ncl_node_clone(item);             /* 深拷贝 */
 ncl_node_free(root);
@@ -1877,13 +1884,13 @@ ncl_client *client = ncl_client_holder_get("V203243111F");
 
 /* 便捷读值 */
 ncl_json *value = NULL;
-ncl_client_get_value(client, "/STATUS", 5000, &value);
-ncl_client_get_value_range(client, "/PART_COUNT", 0, 9, 5000, &value);
+ncl_client_get_value(client, "/MACHINE/STATUS", 5000, &value);
+ncl_client_get_value_range(client, "/MACHINE/PART_COUNT", 0, 9, 5000, &value);
 long long length;
-ncl_client_get_length(client, "/STATUS", 5000, &length);
+ncl_client_get_length(client, "/MACHINE/STATUS", 5000, &length);
 
 /* 写值：返回 NCL_OK 表示设备应答 OK；NG 返回 NCL_ERR */
-ncl_client_set_value(client, "/STATUS", ncl_json_new_int(7), 5000);
+ncl_client_set_value(client, "/MACHINE/STATUS", ncl_json_new_int(7), 5000);
 ncl_client_set_value_index(client, "/LIST", ncl_json_new_string("x"), 2, 5000);
 
 /* 探测 / 心跳 */
@@ -2022,7 +2029,7 @@ ncl_server_subscribe(server);           /* 订 6 个请求主题 */
 ncl_server_register_tool(server, "file", instance, methods, n_methods,
                          bindings, n_bindings);
 ncl_server_register_builtin_tool(server);   /* /nclinkServer/addSample、removeSample */
-ncl_server_register_file_tool(server);      /* /CONTROLLER/FILE 的 5 个方法 */
+ncl_server_register_file_tool(server);      /* /MACHINE/CONTROLLER/FILE 的 5 个方法 */
 ```
 
 #### 离线调用（不起 MQTT 也能测）
@@ -2165,7 +2172,7 @@ curl -X POST http://127.0.0.1:9008/api/nclinkServer/addSample \
      -H 'Content-Type: application/json' \
      -d '{"request":{"id":"ch1","type":"SAMPLE_CHANNEL",
                     "sampleInterval":1000,"uploadInterval":2000,
-                    "ids":[{"id":"/STATUS"},{"id":"030002"}]}}'
+                    "ids":[{"id":"/MACHINE/STATUS"},{"id":"030002"}]}}'
 # → {"status":true,"data":true}
 ```
 
@@ -2285,7 +2292,7 @@ ncl_server_register_file_tool(server);   /* 注册 file 工具 + 5 条绑定 + 2
 ncl_server_start_ftp(server);            /* 可选：设备自己也服务 FTP（读 bin/ftp.txt，默认 2121） */
 ```
 
-注册后，`/CONTROLLER/FILE` 上就有 `write/read/ll/mkdir/delete` 五个方法，外加文件
+注册后，`/MACHINE/CONTROLLER/FILE` 上就有 `write/read/ll/mkdir/delete` 五个方法，外加文件
 通道的握手方法 `file/openFileChannel` / `file/closeFileChannel`。**握手之前设备没有
 对端**：文件方法一律答 `NoFileChannelException`（`NCL_ERR_NO_CHANNEL`）。对端只有
 两种来源：
@@ -2569,7 +2576,7 @@ for (size_t i = 0; i < ncl_strvec_len(paths); i++) {
     ncl_log_info("第 %u 列: %s", (unsigned)i, ncl_strvec_at(paths, i));
 }
 /* 需要一行字符串（日志/CSV 表头）时： */
-char *line = ncl_message_sample_header(msg, ";");   /* "/STATUS;/AXIS@0/POSITION" */
+char *line = ncl_message_sample_header(msg, ";");   /* "/MACHINE/STATUS;/AXIS@0/POSITION" */
 free(line);
 ```
 
@@ -2622,7 +2629,7 @@ curl -X POST http://<设备IP>:9008/api/nclinkServer/addSample \
      -H 'Content-Type: application/json' \
      -d '{"request":{"id":"ch1","type":"SAMPLE_CHANNEL",
                     "sampleInterval":1000,"uploadInterval":2000,
-                    "ids":[{"id":"/STATUS"},{"id":"/AXIS@0/POSITION"}]}}'
+                    "ids":[{"id":"/MACHINE/STATUS"},{"id":"/MACHINE/AXIS@0/POSITION"}]}}'
 
 # 停掉
 curl -X POST http://<设备IP>:9008/api/nclinkServer/removeSample \
@@ -2721,7 +2728,7 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_client_probe_set(ncl_client *client, ncl_message *request, unsigned timeout_ms, ncl_message **out);`
 - `ncl_err ncl_client_method_call(ncl_client *client, ncl_message *request, unsigned timeout_ms, ncl_message **out);`
 - `ncl_err ncl_client_method_call_async(ncl_client *client, ncl_message *request, unsigned timeout_ms, ncl_message **out);` — Set "async" on @p request and issue it (takes ownership of the request).
-- `ncl_err ncl_client_method_status(ncl_client *client, const char *object_id, const char *handler, unsigned timeout_ms, ncl_message **out);` — Method/Status query: @p object_id is the "id" field (the device id) and
+- `ncl_err ncl_client_method_status(ncl_client *client, const char *object_id, const char *handler, unsigned timeout_ms, ncl_message **out);` — Method/MACHINE/STATUS query: @p object_id is the "id" field (the device id) and
 - `ncl_err ncl_client_method_result(ncl_client *client, const char *object_id, const char *handler, unsigned timeout_ms, ncl_message **out);` — Method/Result query: while the call runs the response is code=PENDING with no
 - `ncl_err ncl_client_get_value(ncl_client *client, const char *path, unsigned timeout_ms, ncl_json **out);` — Read a single value: *out receives a clone of values[0].
 - `ncl_err ncl_client_get_value_range(ncl_client *client, const char *path, int start, int end, unsigned timeout_ms, ncl_json **out);` — Read the values in the index range [start, end].
@@ -2892,7 +2899,7 @@ Copyright (c) 2026 huienming
 - `ncl_file_client_tool *ncl_file_client_tool_create(ncl_client *client);`
 - `void ncl_file_client_tool_free(ncl_file_client_tool *tool);`
 - `bool ncl_file_client_tool_detect(ncl_file_client_tool *tool);` — Create <cwd>/<sn>.
-- `bool ncl_file_client_tool_write(ncl_file_client_tool *tool, const char *local_file_path);` — Upload @p local_file_path with "set" on /CONTROLLER/FILE.
+- `bool ncl_file_client_tool_write(ncl_file_client_tool *tool, const char *local_file_path);` — Upload @p local_file_path with "set" on /MACHINE/CONTROLLER/FILE.
 - `char *ncl_file_client_tool_read(ncl_file_client_tool *tool, const char *remote_file_path);` — Download @p remote_file_path with "get_value"; returns the heap local path
 - `ncl_err ncl_file_client_tool_ll(ncl_file_client_tool *tool, const char *remote_dir, ncl_ptrvec *out);` — List @p remote_dir with "get_attributes".
 - `bool ncl_file_client_tool_mkdir(ncl_file_client_tool *tool, const char *remote_dir);` — Create @p remote_dir with "add".
@@ -3509,8 +3516,8 @@ Copyright (c) 2026 huienming
 | `NCL_TOPIC_PROBE_VERSION_PREFIX` | "Probe/Version/" |
 | `NCL_TOPIC_METHOD_CALL_REQUEST_PREFIX` | "Method/Call/Request/" |
 | `NCL_TOPIC_METHOD_CALL_RESPONSE_PREFIX` | "Method/Call/Response/" |
-| `NCL_TOPIC_METHOD_STATUS_REQUEST_PREFIX` | "Method/Status/Request/" |
-| `NCL_TOPIC_METHOD_STATUS_RESPONSE_PREFIX` | "Method/Status/Response/" |
+| `NCL_TOPIC_METHOD_STATUS_REQUEST_PREFIX` | "Method/MACHINE/STATUS/Request/" |
+| `NCL_TOPIC_METHOD_STATUS_RESPONSE_PREFIX` | "Method/MACHINE/STATUS/Response/" |
 | `NCL_TOPIC_METHOD_RESULT_REQUEST_PREFIX` | "Method/Result/Request/" |
 | `NCL_TOPIC_METHOD_RESULT_RESPONSE_PREFIX` | "Method/Result/Response/" |
 | `NCL_TOPIC_EVENT_PREFIX` | "Event/" |

@@ -705,11 +705,29 @@ const char *ncl_node_path(const ncl_node *node)
     return node->path;
 }
 
+/**
+ * The prefix a node's own path hangs from. NULL, "" and "/" all mean "nothing
+ * above this node" - the root separator is not a segment (otherwise a device
+ * would come out as "//MACHINE").
+ */
+static const char *ncl_path_prefix(const char *parent_path)
+{
+    if (parent_path == NULL || parent_path[0] == '\0') {
+        return "";
+    }
+    if (parent_path[0] == NCL_PATH_SEPARATOR[0] && parent_path[1] == '\0') {
+        return "";
+    }
+    return parent_path;
+}
+
+/** <parent>/<type>[@<number>] - the path a node's parent chain gives it. */
 static ncl_err ncl_node_build_path(ncl_node *node, const char *parent_path)
 {
     const char *sep = NCL_PATH_SEPARATOR;
     char *built = NULL;
 
+    parent_path = ncl_path_prefix(parent_path);
     if (node->number != NULL) {
         ncl_asprintf(&built, "%s%s%s%s%s", parent_path, sep,
                      node->node_type_name != NULL ? node->node_type_name : "",
@@ -726,10 +744,80 @@ static ncl_err ncl_node_build_path(ncl_node *node, const char *parent_path)
     return NCL_OK;
 }
 
+/**
+ * The path a node gets from its `source`, or NULL when it has none. `source` is
+ * the shorthand for the parent path (the chain of parents above this node), so
+ * the answer is <prefix>/<type>[@<number>] - exactly what walking the parents
+ * up gives when the model is nested the way it is described.
+ */
+static char *ncl_node_source_path(const ncl_node *node, const char *source)
+{
+    char *built = NULL;
+
+    if (source[0] == NCL_PATH_SEPARATOR[0]) {
+        if (node->number != NULL) {
+            ncl_asprintf(&built, "%s%s%s%s", source, NCL_PATH_SEPARATOR,
+                         node->node_type_name != NULL ? node->node_type_name : "",
+                         NCL_PATH_TAG_SEPARATOR, node->number);
+        } else {
+            ncl_asprintf(&built, "%s%s%s", source, NCL_PATH_SEPARATOR,
+                         node->node_type_name != NULL ? node->node_type_name : "");
+        }
+        return built;
+    }
+    if (node->number != NULL) {
+        ncl_asprintf(&built, "%s%s%s%s%s", NCL_PATH_SEPARATOR, source,
+                     NCL_PATH_SEPARATOR,
+                     node->node_type_name != NULL ? node->node_type_name : "",
+                     NCL_PATH_TAG_SEPARATOR, node->number);
+    } else {
+        ncl_asprintf(&built, "%s%s%s%s", NCL_PATH_SEPARATOR, source,
+                     NCL_PATH_SEPARATOR,
+                     node->node_type_name != NULL ? node->node_type_name : "");
+    }
+    return built;
+}
+
+/**
+ * `source` is preferred when it is there, but the two ways of getting here must
+ * agree: walking the parents up has to give the same path, otherwise the model
+ * says one thing and its own shape says another - and a client that walks the
+ * tree (nobody has to honour `source`) would address the node differently.
+ */
+static ncl_err ncl_node_apply_source(ncl_node *node, const char *parent_path)
+{
+    const char *source = node->source;
+    char *from_source;
+    ncl_strbuf walked;
+
+    if (ncl_str_is_blank(source)) {
+        return NCL_OK;
+    }
+    from_source = ncl_node_source_path(node, source);
+    if (from_source == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    /* What the parent chain would have produced, for the comparison only. */
+    ncl_strbuf_init(&walked);
+    if (ncl_node_build_path(node, parent_path) != NCL_OK) {
+        ncl_strbuf_free(&walked);
+        ncl_mem_free(from_source);
+        return NCL_ERR_NOMEM;
+    }
+    if (node->path != NULL && strcmp(node->path, from_source) != 0) {
+        ncl_log_warn("模型节点 %s 的 source（%s → %s）与按父节点拼出来的路径"
+                     "（%s）不一致，以 source 为准",
+                     node->id != NULL ? node->id : "?", source, from_source,
+                     node->path);
+    }
+    ncl_mem_free(node->path);
+    node->path = from_source;
+    return NCL_OK;
+}
+
 ncl_err ncl_node_set_path(ncl_node *node, const char *parent_path)
 {
     size_t i;
-    const char *effective_parent;
 
     if (node == NULL) {
         return NCL_ERR_INVALID_ARG;
@@ -745,52 +833,19 @@ ncl_err ncl_node_set_path(ncl_node *node, const char *parent_path)
 
     case NCL_NODE_DATA_ITEM:
     case NCL_NODE_CONFIG:
-        /* setPath(): a device parent resets the prefix, and an
-         * explicit source overrides the whole path. */
-        effective_parent = parent_path;
-        if (node->parent != NULL && node->parent->type == NCL_NODE_DEVICE) {
-            effective_parent = "";
-        }
-        if (node->source != NULL && node->source[0] != '\0') {
-            char *source_path;
-            char *built = NULL;
-            if (node->source[0] == NCL_PATH_SEPARATOR[0]) {
-                source_path = ncl_strdup(node->source);
-            } else {
-                ncl_asprintf(&source_path, "%s%s", NCL_PATH_SEPARATOR, node->source);
-            }
-            if (source_path == NULL) {
-                return NCL_ERR_NOMEM;
-            }
-            if (node->number != NULL && node->number[0] != '\0') {
-                ncl_asprintf(&built, "%s%s%s%s%s", source_path, NCL_PATH_SEPARATOR,
-                             node->node_type_name != NULL ? node->node_type_name : "",
-                             NCL_PATH_TAG_SEPARATOR, node->number);
-            } else {
-                ncl_asprintf(&built, "%s%s%s", source_path, NCL_PATH_SEPARATOR,
-                             node->node_type_name != NULL ? node->node_type_name : "");
-            }
-            ncl_mem_free(source_path);
-            if (built == NULL) {
-                return NCL_ERR_NOMEM;
-            }
-            ncl_mem_free(node->path);
-            node->path = built;
-            return NCL_OK;
-        }
-        return ncl_node_build_path(node, effective_parent);
-
     case NCL_NODE_COMPONENT:
     case NCL_NODE_DEVICE:
-        effective_parent = parent_path;
-        if (node->parent != NULL && node->parent->type == NCL_NODE_DEVICE) {
-            effective_parent = "";
+        /* One rule for every kind of child: <parent>/<type>[@<number>], with
+         * `source` preferred when the node carries one - and checked against
+         * the parent chain, so the two can never disagree. */
+        if (ncl_node_build_path(node, parent_path) != NCL_OK) {
+            return NCL_ERR_NOMEM;
         }
-        {
-            ncl_err rc = ncl_node_build_path(node, effective_parent);
-            if (rc != NCL_OK) {
-                return rc;
-            }
+        if (ncl_node_apply_source(node, parent_path) != NCL_OK) {
+            return NCL_ERR_NOMEM;
+        }
+        if (node->type == NCL_NODE_DATA_ITEM || node->type == NCL_NODE_CONFIG) {
+            return NCL_OK;
         }
         for (i = 0; i < ncl_ptrvec_len(&node->components); i++) {
             ncl_err rc = ncl_node_set_path(ncl_node_component_at(node, i),
@@ -1295,16 +1350,14 @@ ncl_node *ncl_root_node_post_construct(ncl_node *root)
         return NULL;
     }
 
-    /* 1. wire relations and give the root its derived path */
-    {
-        char *path = NULL;
-        if (ncl_asprintf(&path, "%s%s", NCL_PATH_SEPARATOR,
-                         root->node_type_name != NULL ? root->node_type_name : "")
-            != NCL_OK) {
-            return NULL;
-        }
-        ncl_mem_free(root->path);
-        root->path = path;
+    /* 1. wire relations and give the root its derived path. The root is the
+     * separator itself, not a segment: devices hang directly under "/", so a
+     * device of type MACHINE answers on "/MACHINE" and everything below it
+     * keeps that prefix (walking the parents gives what `source` says). */
+    ncl_mem_free(root->path);
+    root->path = ncl_strdup(NCL_PATH_SEPARATOR);
+    if (root->path == NULL) {
+        return NULL;
     }
     for (i = 0; i < ncl_ptrvec_len(&root->devices); i++) {
         ncl_node *device = ncl_node_device_at(root, i);

@@ -41,10 +41,10 @@ namespace Nclink.Demo
                             PrintAxisQuantities(device_node);
                         }
 
-                        Console.WriteLine("GET /STATUS = {0}", device.GetLong("/STATUS"));
+                        Console.WriteLine("GET /STATUS = {0}", device.GetLong("/MACHINE/STATUS"));
                         try
                         {
-                            device.SetValue("/STATUS", "42");
+                            device.SetValue("/MACHINE/STATUS", "42");
                             Console.WriteLine("SET /STATUS = 42 ok");
                         }
                         catch (NclinkException error)

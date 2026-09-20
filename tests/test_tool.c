@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "nclink/ncl_message.h"
+#include "nclink/ncl_model.h"
 #include "nclink/ncl_tool.h"
 
 /* ---------------------------------------------------------------- fixture -- */
@@ -299,7 +300,7 @@ static void test_model(void)
     ncl_strbuf_init(&err);
     device = ncl_json_new_object();
     NCL_CHECK(device != NULL);
-    (void)ncl_json_obj_set_string(device, "type", "CNC");
+    (void)ncl_json_obj_set_string(device, "type", "MACHINE");
     (void)ncl_json_obj_set_string(device, "id", "V9");
     (void)ncl_json_obj_set_string(device, "name", "夹具机床");
 
@@ -314,7 +315,7 @@ static void test_model(void)
     NCL_TEST_CASE("the model carries one data item per declared point");
     node = ncl_json_arr_get(ncl_json_obj_get(model, "devices"), 0);
     NCL_CHECK(node != NULL);
-    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "type"), "CNC");
+    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "type"), "MACHINE");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "id"), "V9");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "name"), "夹具机床");
     /* 4 declared points, but /MACHINE/RESET only answers calls: a method is not a
@@ -326,7 +327,9 @@ static void test_model(void)
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "/MACHINE/STATUS@RUN");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "type"), "STATUS");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "number"), "RUN");
-    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "source"), "MACHINE");
+    /* 没有 source：模型树自己就能走出一条与我们声明的路径一模一样的路径，
+     * 所以这里不留"另一条路"，免得两个算法给出两个路径。 */
+    NCL_CHECK(ncl_json_obj_get(item, "source") == NULL);
     /* The tail without "@" keeps the path as its type, exactly like the
      * configuration driven model does; a writable point is marked settable. */
     item = ncl_json_arr_get(items, 2);
@@ -388,8 +391,9 @@ static void test_model(void)
             device_node = ncl_json_arr_get(ncl_json_obj_get(model2, "devices"),
                                            0);
             /* The device node answers on the segment its points use. */
-            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(device_node, "source"),
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(device_node, "type"),
                              "MACHINE");
+            NCL_CHECK(ncl_json_obj_get(device_node, "source") == NULL);
             /* One component, named CONTROLLER, with the PROGRAM under it. */
             {
                 ncl_json *components =
@@ -408,9 +412,7 @@ static void test_model(void)
                     "/MACHINE/CONTROLLER/PROGRAM");
                 NCL_CHECK_EQ_STR(
                     ncl_json_obj_get_string(component_item, "type"), "PROGRAM");
-                NCL_CHECK_EQ_STR(
-                    ncl_json_obj_get_string(component_item, "source"),
-                    "MACHINE/CONTROLLER");
+                NCL_CHECK(ncl_json_obj_get(component_item, "source") == NULL);
             }
             /* The point without a component still hangs on the device. */
             {
@@ -421,8 +423,7 @@ static void test_model(void)
                 direct_item = ncl_json_arr_get(direct, 0);
                 NCL_CHECK_EQ_STR(ncl_json_obj_get_string(direct_item, "name"),
                                  "/MACHINE/STATUS");
-                NCL_CHECK_EQ_STR(ncl_json_obj_get_string(direct_item, "source"),
-                                 "MACHINE");
+                NCL_CHECK(ncl_json_obj_get(direct_item, "source") == NULL);
             }
             ncl_json_free(model2);
         }
@@ -430,6 +431,72 @@ static void test_model(void)
 }
 
 /* ---------------------------------------------------------------- helpers -- */
+
+/*
+ * 模型树走出来的路径，必须和声明里的路径一模一样 —— 这是"source 与父节点拼接
+ * 不能给出两个结果"的另一半：声明里没有 source，所以这里测的就是父节点拼接。
+ */
+static void test_model_paths_match_declaration(void)
+{
+    ncl_tool_decl decl = fixture_decl();
+    ncl_strbuf err;
+    ncl_json *device;
+    ncl_json *model;
+    char *text;
+    size_t i;
+
+    ncl_strbuf_init(&err);
+    device = ncl_json_new_object();
+    (void)ncl_json_obj_set_string(device, "type", "MACHINE");
+    model = ncl_tool_model(&decl, device, &err);
+    ncl_json_free(device);
+
+    NCL_TEST_CASE("模型树走出来的路径 == 声明的路径（父节点拼接与 source 一个结果）");
+    NCL_CHECK(model != NULL);
+    if (model != NULL) {
+        ncl_node *root;
+        ncl_node_map paths;
+
+        text = ncl_json_write_string(model);
+        ncl_json_free(model);
+        NCL_CHECK(text != NULL);
+        root = text != NULL ? ncl_root_node_parse(text) : NULL;
+        ncl_free_safe(text);
+        NCL_CHECK(root != NULL);
+        if (root != NULL) {
+            ncl_node_map_init(&paths);
+            NCL_CHECK_EQ_INT(ncl_root_node_path_map(root, &paths), NCL_OK);
+            for (i = 0; i < decl.point_count; i++) {
+                char id[32];
+                ncl_node *node;
+
+                if (!decl.points[i].readable && !decl.points[i].writable) {
+                    continue; /* a method: it is not a data item */
+                }
+                snprintf(id, sizeof(id), "p%u", (unsigned)i);
+                node = ncl_node_find_by_id(root, id);
+                NCL_CHECK(node != NULL);
+                if (node != NULL) {
+                    NCL_CHECK_EQ_STR(ncl_node_path(node), decl.points[i].path);
+                }
+                /* 反向也要能查到：拿声明的路径去模型里找节点。 */
+                NCL_CHECK(ncl_node_map_get(&paths, decl.points[i].path) != NULL);
+            }
+            ncl_node_map_free(&paths);
+            ncl_node_free(root);
+        }
+    }
+
+    NCL_TEST_CASE("配置里的设备类型和点位路径的设备段必须是同一个名字");
+    device = ncl_json_new_object();
+    (void)ncl_json_obj_set_string(device, "type", "ROBOT");
+    ncl_strbuf_reset(&err);
+    model = ncl_tool_model(&decl, device, &err);
+    NCL_CHECK(model == NULL);
+    NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "设备段") != NULL);
+    ncl_json_free(device);
+    ncl_strbuf_free(&err);
+}
 
 static void test_helpers(void)
 {
@@ -931,6 +998,7 @@ NCL_TEST_MAIN_BEGIN()
     test_declaration();
     test_validate();
     test_model();
+    test_model_paths_match_declaration();
     test_helpers();
     test_register_and_invoke();
     test_pending();

@@ -16,8 +16,8 @@ import java.util.Map;
  *     device.registerTool("plc",
  *         new String[] {"getStatus", "getCount"},
  *         new Server.Binding[] {
- *             new Server.Binding("/STATUS", Operation.GET_VALUE, "getStatus"),
- *             new Server.Binding("/PART_COUNT", Operation.GET_VALUE, "getCount")},
+ *             new Server.Binding("/MACHINE/STATUS", Operation.GET_VALUE, "getStatus"),
+ *             new Server.Binding("/MACHINE/PART_COUNT", Operation.GET_VALUE, "getCount")},
  *         (method, params) -> "getStatus".equals(method) ? 1 : 42);
  *     device.registerBuiltinTool();
  *     device.subscribe();          // 订阅 6 个请求主题
