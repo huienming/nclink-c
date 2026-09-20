@@ -20,6 +20,7 @@ adapters/
 ├── src/core/                 # 与协议无关的骨架（驱动接口、地址解析、模块装载、审计）
 ├── src/app/                  # 宿主主体（声明/点表 → 模型、操作注册、轮询、MQTT、采样）
 ├── src/main.c                # ncl_adapter 可执行文件（一台 NC-Link 设备程序）
+├── plugins/<适配器>.c        # 适配器本体：一个文件一个 tool，编成 plugins/ncl_driver_<名字>.dll|.so
 └── tests/                    # 装载器、宿主、黄金报文与 mock 靶机的集成测试
 ```
 
@@ -28,8 +29,11 @@ adapters/
 
 ## 写一个适配器：一个文件（推荐）
 
-适配器作者只看一个头 —— `nclink/ncl_tool.h` —— 写一个 `.c` 文件：连接开一次，一个
-dispatch 服务全部点位，最后一行交出模块入口。
+适配器作者只看一个头 —— `nclink/ncl_tool.h` —— 在 **`adapters/plugins/`** 下写一个
+`.c` 文件：连接开一次，一个 dispatch 服务全部点位，最后一行交出模块入口。文件放进那个
+目录就会被编成 `plugins/ncl_driver_<文件名>.dll|.so`（`file(GLOB adapters/plugins/*.c)`），
+**不用改 CMake**——这是"一个文件一个适配器"的另一半。协议字节不进这个文件：它在
+`clients/<协议>/` 里，适配器只调用它。
 
 ```c
 #include "nclink/ncl_tool.h"
@@ -71,7 +75,7 @@ NCL_TOOL_MODULE("1.0.0", "某品牌机床适配器")
 模块文件按 `ncl_driver_<tool 名>.dll`（Linux/macOS 是 `libncl_driver_<名字>.so`）放进
 `plugins/` 即可。现场三条命令：`ncl_adapter --plugins`（列工具与点位/方法个数）、
 `--probe <路径>`（单点试读）、`--once`（跑一遍自检）。可抄的样板：
-`clients/focas/focas_tool.c`（FANUC，19 个点位 + 2 个方法）、
+`adapters/plugins/focas.c`（FANUC，19 个点位 + 2 个方法）、
 `adapters/tests/module_tool_basic.c`（最小夹具）。
 
 ## 驱动接口（内部一层：协议客户端，以及老式驱动模块）
@@ -147,7 +151,7 @@ ncl_json *stats = ncl_audit_stats();       /* 计数、直方图、最近 8 条�
 - **声明式适配器的账由宿主记**：`ncl_tool_register()` 收一个 `ncl_tool_audit *`，
   core 里的 shim 在每次点位调用前后把「路径、操作、结果、耗时」交给它，写操作还会先
   经点位读一次旧值。模块唯一要做的是**可选**地交出原始帧：`NCL_TOOL_END_WITH_RAW(fn)`
-  一行（见 `clients/focas/focas_tool.c`）。适配器作者不写任何审计代码。
+  一行（见 `adapters/plugins/focas.c`）。适配器作者不写任何审计代码。
 
 ## 写一个新驱动
 

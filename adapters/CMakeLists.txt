@@ -4,7 +4,7 @@
 # Two layers, on purpose:
 #
 #   nclink_drivers   the static library: driver interface, configuration,
-#                    point map, model generation, MQTT session, audit.
+#                    model generation, MQTT session, audit, adapters.
 #   ncl_adapter      the device program: one ncl_server plus whatever the
 #                    configuration loads.
 #
@@ -12,14 +12,13 @@
 # FINS, S7, FOCAS ...): they are the reusable half a site-specific adapter
 # talks through, so an adapter never carries protocol bytes.
 #
-# A client can also arrive as a *module* (ncl_driver_<protocol>.dll / .so) that
-# the program loads at start-up; see ../clients/CMakeLists.txt and
-# include/nclink_adapter/ncl_module.h. A client built as a module is left out
-# of the built-in registry, so the module is what registers it.
+# Plugins/ below is where the *adapters* live: one .c file each, and every file
+# is built as plugins/ncl_driver_<name>.dll|.so that the host loads at start-up
+# (see include/nclink/ncl_tool.h). Adding a brand is dropping a file in there -
+# no CMake edit, which is the whole point of the one-file adapter.
 
 file(GLOB_RECURSE NCLINK_ADAPTER_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/registry/*.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/app/*.c")
 
 add_library(nclink_drivers STATIC ${NCLINK_ADAPTER_SOURCES})
@@ -31,6 +30,36 @@ target_include_directories(nclink_drivers
 
 target_link_libraries(nclink_drivers PUBLIC nclink::core nclink::clients)
 
+# One file, one adapter: every adapters/plugins/<name>.c becomes the module
+# plugins/ncl_driver_<name>.dll (libncl_driver_<name>.so), which the host finds
+# by the name the configuration uses.
+if(NCLINK_BUILD_PLUGINS)
+    file(GLOB NCLINK_PLUGIN_SOURCES CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/plugins/*.c")
+    foreach(source IN LISTS NCLINK_PLUGIN_SOURCES)
+        get_filename_component(name "${source}" NAME_WE)
+        set(target "ncl_driver_${name}")
+        add_library(${target} MODULE "${source}")
+        target_link_libraries(${target} PRIVATE nclink_drivers)
+        target_include_directories(${target} PRIVATE
+                "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/clients")
+        set_target_properties(${target} PROPERTIES
+                OUTPUT_NAME "ncl_driver_${name}"
+                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
+                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins")
+        if(MSVC)
+            target_compile_options(${target} PRIVATE /W4 /wd4996 /utf-8)
+            target_compile_definitions(${target} PRIVATE
+                    _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+        else()
+            target_compile_options(${target} PRIVATE -Wall -Wextra -Wshadow
+                    -Wstrict-prototypes -Wmissing-prototypes)
+        endif()
+    endforeach()
+    message(STATUS "nclink: adapters are built as modules -> "
+            "${CMAKE_BINARY_DIR}/plugins")
+endif()
+
 if(MSVC)
     target_compile_options(nclink_drivers PRIVATE /W4 /wd4996 /utf-8)
     target_compile_definitions(nclink_drivers PRIVATE
@@ -38,17 +67,6 @@ if(MSVC)
 else()
     target_compile_options(nclink_drivers PRIVATE -Wall -Wextra -Wshadow
             -Wstrict-prototypes -Wmissing-prototypes)
-endif()
-
-# Protocol clients as loadable modules: the device program picks them up from
-# its plugin directory, so "which brands this box speaks" is a deployment
-# decision. Turning this off puts every client back into the built-in registry
-# (one self contained binary, no plugin directory). The option itself is
-# declared in the root CMakeLists.txt (the clients subdirectory is configured
-# first and builds the module).
-if(NCLINK_BUILD_PLUGINS)
-    target_compile_definitions(nclink_drivers PRIVATE
-            NCL_DRIVER_FOCAS_IS_PLUGIN=1)
 endif()
 
 if(NCLINK_BUILD_TESTS)

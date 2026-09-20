@@ -45,36 +45,6 @@ else()
             -Wstrict-prototypes -Wmissing-prototypes)
 endif()
 
-# The FOCAS client as a loadable module, until adapters take that role.
-# It links nclink_drivers rather than nclink_clients because a client is still
-# an ncl_driver_ops implementation: the ops runtime (ncl_driver_new,
-# ncl_driver_result_*, the error tiers) lives in the adapter layer until the
-# clients get their own idiomatic API.
-if(NCLINK_BUILD_PLUGINS)
-    # The FANUC adapter is a declaration now (focas_tool.c): the point map lives
-    # in the module and the host builds the model and the bindings from it. The
-    # driver sources are still what does the talking - the tool drives them
-    # through ncl_driver_read_one().
-    add_library(ncl_driver_focas MODULE
-            focas/focas_driver.c
-            focas/focas_codec.c
-            focas/focas_tool.c)
-    set_target_properties(ncl_driver_focas PROPERTIES
-            OUTPUT_NAME "ncl_driver_focas"
-            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins")
-    target_link_libraries(ncl_driver_focas PRIVATE nclink_drivers)
-    if(MSVC)
-        target_compile_options(ncl_driver_focas PRIVATE /W4 /wd4996 /utf-8)
-        target_compile_definitions(ncl_driver_focas PRIVATE
-                _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
-    else()
-        target_compile_options(ncl_driver_focas PRIVATE -Wall -Wextra -Wshadow
-                -Wstrict-prototypes -Wmissing-prototypes)
-    endif()
-    message(STATUS "nclink: protocol clients are built as plugins -> "
-            "${CMAKE_BINARY_DIR}/plugins")
-endif()
 
 if(NCLINK_BUILD_TESTS)
     add_subdirectory(tests)

@@ -643,13 +643,9 @@ void ncl_driver_register_builtin(void)
     (void)ncl_driver_register_protocol("lsv2", ncl_lsv2_create);
     (void)ncl_driver_register_protocol("syntec", ncl_syntec_create);
     (void)ncl_driver_register_protocol("knd", ncl_knd_create);
-#ifdef NCL_DRIVER_FOCAS_IS_PLUGIN
-    /* focas ships as a module (plugins/ncl_driver_focas.dll): the host loads it
-     * and registers the factory it hands over. Leaving it out here is what
-     * keeps "one protocol, one factory" true in that build. */
-#else
-    (void)ncl_driver_register_protocol("focas", ncl_focas_create);
-#endif
+    /* focas is not here: the FANUC adapter declares its points and talks to the
+     * FOCAS client itself (adapters/plugins/focas.c), so there is no protocol
+     * factory to register. */
 }
 
 ncl_driver *ncl_driver_create(const char *protocol)

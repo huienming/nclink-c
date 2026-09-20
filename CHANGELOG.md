@@ -5,9 +5,27 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 变更：适配器搬进 `adapters/plugins/`，`clients/` 只留协议
+
+分层原先反了：适配器（点位声明、跟 NC-Link 对接的那一层）放在 `clients/focas/` 里，
+而它用的 `ncl_driver_ops` 运行时属于适配器层（`include/nclink_adapter/`），等于客户端
+反向依赖适配器。现在按"client = 原始协议，adapter = 跟 NC-Link 对接"分开：
+
+- FANUC 适配器搬到 **`adapters/plugins/focas.c`**，编成 `plugins/ncl_driver_focas.dll`。
+- **`adapters/plugins/` 自动发现**：`file(GLOB adapters/plugins/*.c)`，每个文件一个
+  module 目标、输出 `plugins/ncl_driver_<文件名>.dll|.so`。新增品牌＝丢一个文件进去，
+  不用改 CMake（客户编译链路 P4 会用同一条规则）。
+- 从内置协议注册表里去掉 `focas`：适配器现在声明点位、自己调用 FOCAS 客户端，
+  不再对外提供一个"协议工厂"，`NCL_DRIVER_FOCAS_IS_PLUGIN` 这个开关随之删除。
+
+下一步（同一件事的另一半）：把 `clients/focas/` 变成**纯协议**——会话式惯用 API
+（`ncl_focas_open/read/close/last_frame`，类型用字符串名、不认识 `ncl_address`/`ncl_dtype`），
+适配器只调用它；随后 `ncl_driver_ops` 这一层在客户端里退场（含 `clients/*/ncl_*_driver.h`
+的包装与对应测试）。
+
 ### 变更（破坏性）：配置点表与驱动管理器删除 —— 点位声明在适配器模块里
 
-FANUC 适配器已经改成"一个文件 + 点位声明"（`clients/focas/focas_tool.c`），配置点表
+FANUC 适配器已经改成"一个文件 + 点位声明"（`adapters/plugins/focas.c`），配置点表
 那条路随之删除：
 
 - 删掉 `nclink_adapter/ncl_driver_manager.h` 与 `adapters/src/registry/driver_manager.c`：
