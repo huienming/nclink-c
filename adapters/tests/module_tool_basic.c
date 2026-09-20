@@ -79,12 +79,12 @@ static ncl_err test_dispatch(void *ctx, const ncl_tool_point *self,
 
 NCL_TOOL_BEGIN("test_tool_basic", "夹具：一个文件的小适配器", 500, 0,
                test_open, test_close)
-    NCL_POINT_SAMPLED_ARG("/MACHINE/RUN", test_dispatch, &k_run)
-    NCL_POINT_RW_ARG("/MACHINE/MODE", test_dispatch, &k_mode)
+    NCL_DATAITEM_SAMPLED_ARG("/MACHINE/RUN", test_dispatch, &k_run)
+    NCL_DATAITEM_RW_ARG("/MACHINE/MODE", test_dispatch, &k_mode)
     /* 声明了、但还没有帧可读的点位：模型里有它，问它答"待抓包"，自检不算失败。 */
-    NCL_POINT_PENDING("/MACHINE/ALARM", "报警：待抓包（帧还没抓到）")
+    NCL_DATAITEM_PENDING("/MACHINE/ALARM", "报警：待抓包（帧还没抓到）")
     /* 配置型数据：PARAMETER 在数据字典里属"不常变"，因此进 CONTROLLER 组件的 configs。 */
-    NCL_POINT_ARG("/MACHINE/CONTROLLER/PARAMETER", test_dispatch, &k_param)
+    NCL_CONFIG_ARG("/MACHINE/CONTROLLER/PARAMETER", test_dispatch, &k_param)
 NCL_TOOL_END()
 
 /* The last line of the file: who this module is. */

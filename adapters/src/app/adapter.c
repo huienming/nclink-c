@@ -40,7 +40,7 @@ typedef struct {
     bool      writable;
     bool      sampled;
     /** False for a point that is declared but not readable yet (a pending
-     *  point, see ncl_link's NCL_POINT_PENDING): it stays in the list so the
+     *  point, see ncl_link's NCL_DATAITEM_PENDING / NCL_CONFIG_PENDING): it stays in the list so the
      *  self check can name it, but no round ever reads it - it cannot succeed,
      *  and a round is not the place to learn that again every second. */
     bool      available;

@@ -121,9 +121,10 @@ static ncl_err fixture_dispatch(void *ctx, const ncl_tool_point *self,
 
 NCL_TOOL_BEGIN("cnc", "FANUC 数控机床（夹具）", 1000, 2000,
                fixture_open, fixture_close)
-    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@RUN", fixture_dispatch, &k_run_item)
-    NCL_POINT("/MACHINE/NAME", fixture_dispatch)
-    NCL_POINT_RW("/MACHINE/MODE", fixture_dispatch)
+    NCL_DATAITEM_SAMPLED_ARG("/MACHINE/STATUS@RUN", fixture_dispatch, &k_run_item)
+    /* 表 6 的 NAME 属"不常变"的元信息：进模型的 configs，不进采样通道。 */
+    NCL_CONFIG("/MACHINE/NAME", fixture_dispatch)
+    NCL_DATAITEM_RW("/MACHINE/MODE", fixture_dispatch)
     NCL_METHOD("/MACHINE/RESET", fixture_dispatch)
 NCL_TOOL_END_WITH_RAW(fixture_last_raw)
 
@@ -259,7 +260,7 @@ static void test_validate(void)
     broken = decl;
     broken.points = points;
     broken.point_count = 1;
-    expect_refused(&broken, "不能进采样通道");
+    expect_refused(&broken, "配置型数据不得作为采样数据源");
 
     NCL_TEST_CASE("a point may name itself when its path tail would collide");
     {
@@ -396,7 +397,7 @@ static void test_model(void)
 
         nested[0] = decl.points[0];
         nested[0].path = "/MACHINE/CONTROLLER/PROGRAM";
-        nested[1] = decl.points[1];
+        nested[1] = decl.points[2]; /* a data item (points[1] 是 config) */
         nested[1].path = "/MACHINE/STATUS";
         nested_decl.points = nested;
         nested_decl.point_count = 2;
@@ -681,14 +682,14 @@ static ncl_message *set_value(const char *path, long long value)
  * 自己的声明表，夹具那张表不动，别的用例不受影响。
  */
 static const ncl_tool_point k_pending_points[] = {
-    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS", fixture_dispatch, &k_run_item)
-    NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING", "报警：待抓包（cnc_rdalmmsg2）")
-    NCL_POINT_PENDING_NAMED("/MACHINE/AXIS@X/POSITION@CMD",
-                            "AXIS_X.POSITION_CMD",
-                            "目标位置：待抓包（cnc_rdposition）")
-    NCL_POINT_PENDING_NAMED("/MACHINE/AXIS@Y/POSITION@CMD",
-                            "AXIS_Y.POSITION_CMD",
-                            "目标位置：待抓包（cnc_rdposition）")
+    NCL_DATAITEM_SAMPLED_ARG("/MACHINE/STATUS", fixture_dispatch, &k_run_item)
+    NCL_DATAITEM_PENDING_SAMPLED("/MACHINE/WARNING", "报警：待抓包（cnc_rdalmmsg2）")
+    NCL_DATAITEM_PENDING_NAMED("/MACHINE/AXIS@X/POSITION@CMD",
+                               "AXIS_X.POSITION_CMD",
+                               "目标位置：待抓包（cnc_rdposition）")
+    NCL_DATAITEM_PENDING_NAMED("/MACHINE/AXIS@Y/POSITION@CMD",
+                               "AXIS_Y.POSITION_CMD",
+                               "目标位置：待抓包（cnc_rdposition）")
 };
 
 static ncl_tool_decl pending_decl(void)

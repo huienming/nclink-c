@@ -876,7 +876,8 @@ ncl_message *msg = ncl_message_parse(topic, payload, payload_len);
 （`STATUS`/`WARNING`/`PART_COUNT`/`PROGRAM`/`POSITION`/`SPEED`…，**采样通道只能引用它们**），
 **`configs`** 是参数、坐标系、刀具表这类不常变的配置型数据（`PARAMETER`/`COORDINATE`/
 `TOOL`/`TOOLPARAM`/`VARIABLE`/`MODEL`…，可查询可修改，但不得作为采样数据源）；
-采样通道对象本身也放在 `configs` 里。哪一类由 `type` 决定（见手册 4.3 与适配器文档）。
+采样通道对象本身也放在 `configs` 里。适配器声明点位时用 `NCL_DATAITEM_*` / `NCL_CONFIG_*`
+两族宏指明归置（`NCL_CONFIG_*` 没有 `_SAMPLED` 形式），宿主据此把数据对象放进两个数组。
 
 客户端拿到模型后可以路径 ↔ id 互查：
 

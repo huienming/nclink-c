@@ -15,8 +15,8 @@
  * belongs to, so a compiler checks it and no one has to keep two files in step.
  *
  * 默认采样通道按现场口径只放四样：设备状态、加工计件、程序名称、报警。位置、速度
- * 一律按需读 —— 要上报就把那一行的 NCL_POINT_* 换成 NCL_POINT_SAMPLED_*。
- * 报警与五个目标位置现在还没有抓包（NCL_POINT_PENDING*）：模型里有、问起来有明确
+ * 一律按需读 —— 要上报就把那一行的 NCL_DATAITEM_ARG 换成 NCL_DATAITEM_SAMPLED_ARG。
+ * 报警与五个目标位置现在还没有抓包（NCL_DATAITEM_PENDING_*）：模型里有、问起来有明确
  * 答复，但取不到值。
  *
  * Everything the points need - which FOCAS item, which reply block, which type
@@ -81,7 +81,7 @@ static const focas_point k_program       = {"EXEPRGNAME2", 0, NCL_DTYPE_STRING, 
  *   实际位置 REAL：`ACTF@4k`（01 册 §3.2：cnc_actf = 全部轴绝对位置 float 数组）。
  *   目标位置 CMD ：在声明表里，但**帧还没抓到** —— 01 册 §2.3 的 Cb 码表里没有
  *                  坐标类调用（cnc_absolute / cnc_rdposition 都没进到协议层），
- *                  所以那边用 NCL_POINT_PENDING_NAMED 声明：模型里有它，问它会
+ *                  所以那边用 NCL_DATAITEM_PENDING_NAMED 声明：模型里有它，问它会
  *                  拿到"待抓包"，不给假值（见 31 册待真机清单）。
  *
  * 机床没有的轴：驱动在载荷不足时直接报错（focas_read_one：偏移超出载荷 ->
@@ -275,49 +275,49 @@ static ncl_err focas_dispatch(void *ctx, const ncl_tool_point *self,
 NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", 1000, 1000,
                focas_open, focas_close)
     /* 默认采样通道只放四样（现场口径）：设备状态、加工计件、程序名称、报警。
-     * 其余（位置/速度）一律按需读 —— 要上报就把对应的 NCL_POINT_* 换成
-     * NCL_POINT_SAMPLED_*。 */
-    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS", focas_dispatch, &k_status)
-    NCL_POINT_SAMPLED_ARG("/MACHINE/PART_COUNT", focas_dispatch, &k_part_count)
+     * 其余（位置/速度）一律按需读 —— 要上报就把对应的 NCL_DATAITEM_* 换成
+     * NCL_DATAITEM_SAMPLED_*。 */
+    NCL_DATAITEM_SAMPLED_ARG("/MACHINE/STATUS", focas_dispatch, &k_status)
+    NCL_DATAITEM_SAMPLED_ARG("/MACHINE/PART_COUNT", focas_dispatch, &k_part_count)
     /* PROGRAM 属于 CONTROLLER 组件（表 2：组件对象）*/
-    NCL_POINT_SAMPLED_ARG("/MACHINE/CONTROLLER/PROGRAM", focas_dispatch,
+    NCL_DATAITEM_SAMPLED_ARG("/MACHINE/CONTROLLER/PROGRAM", focas_dispatch,
                           &k_program)
     /* 报警（表 6 的 WARNING）：进默认采样通道，但帧还没抓到（01 册 §2.3 的码表里
      * 没有 cnc_rdalmmsg2），所以先占着通道、取值为 null，自检把它算成"待抓包"。
-     * 抓包补上之后换成 NCL_POINT_SAMPLED_ARG("/MACHINE/WARNING", …, &k_warning)。 */
-    NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING",
+     * 抓包补上之后换成 NCL_DATAITEM_SAMPLED_ARG("/MACHINE/WARNING", …, &k_warning)。 */
+    NCL_DATAITEM_PENDING_SAMPLED("/MACHINE/WARNING",
                               "报警：帧待抓包（cnc_rdalmmsg2，01 册 §2.3 / 31 册）")
     /* 五轴的位置：每轴两个 —— 实际（REAL，读得到）与目标（CMD，待抓包），都按需读。
      * 路径尾段重名，所以显式给名字：调用地址形如 focas/AXIS_X.POSITION_REAL。 */
-    NCL_POINT_NAMED("/MACHINE/AXIS@X/POSITION@REAL", focas_dispatch,
+    NCL_DATAITEM_NAMED("/MACHINE/AXIS@X/POSITION@REAL", focas_dispatch,
                     &k_axis_x_position_real, "AXIS_X.POSITION_REAL")
-    NCL_POINT_NAMED("/MACHINE/AXIS@Y/POSITION@REAL", focas_dispatch,
+    NCL_DATAITEM_NAMED("/MACHINE/AXIS@Y/POSITION@REAL", focas_dispatch,
                     &k_axis_y_position_real, "AXIS_Y.POSITION_REAL")
-    NCL_POINT_NAMED("/MACHINE/AXIS@Z/POSITION@REAL", focas_dispatch,
+    NCL_DATAITEM_NAMED("/MACHINE/AXIS@Z/POSITION@REAL", focas_dispatch,
                     &k_axis_z_position_real, "AXIS_Z.POSITION_REAL")
-    NCL_POINT_NAMED("/MACHINE/AXIS@A/POSITION@REAL", focas_dispatch,
+    NCL_DATAITEM_NAMED("/MACHINE/AXIS@A/POSITION@REAL", focas_dispatch,
                     &k_axis_a_position_real, "AXIS_A.POSITION_REAL")
-    NCL_POINT_NAMED("/MACHINE/AXIS@C/POSITION@REAL", focas_dispatch,
+    NCL_DATAITEM_NAMED("/MACHINE/AXIS@C/POSITION@REAL", focas_dispatch,
                     &k_axis_c_position_real, "AXIS_C.POSITION_REAL")
-    NCL_POINT_PENDING_NAMED("/MACHINE/AXIS@X/POSITION@CMD", "AXIS_X.POSITION_CMD",
+    NCL_DATAITEM_PENDING_NAMED("/MACHINE/AXIS@X/POSITION@CMD", "AXIS_X.POSITION_CMD",
                             "目标位置：帧待抓包（cnc_rdposition）")
-    NCL_POINT_PENDING_NAMED("/MACHINE/AXIS@Y/POSITION@CMD", "AXIS_Y.POSITION_CMD",
+    NCL_DATAITEM_PENDING_NAMED("/MACHINE/AXIS@Y/POSITION@CMD", "AXIS_Y.POSITION_CMD",
                             "目标位置：帧待抓包（cnc_rdposition）")
-    NCL_POINT_PENDING_NAMED("/MACHINE/AXIS@Z/POSITION@CMD", "AXIS_Z.POSITION_CMD",
+    NCL_DATAITEM_PENDING_NAMED("/MACHINE/AXIS@Z/POSITION@CMD", "AXIS_Z.POSITION_CMD",
                             "目标位置：帧待抓包（cnc_rdposition）")
-    NCL_POINT_PENDING_NAMED("/MACHINE/AXIS@A/POSITION@CMD", "AXIS_A.POSITION_CMD",
+    NCL_DATAITEM_PENDING_NAMED("/MACHINE/AXIS@A/POSITION@CMD", "AXIS_A.POSITION_CMD",
                             "目标位置：帧待抓包（cnc_rdposition）")
-    NCL_POINT_PENDING_NAMED("/MACHINE/AXIS@C/POSITION@CMD", "AXIS_C.POSITION_CMD",
+    NCL_DATAITEM_PENDING_NAMED("/MACHINE/AXIS@C/POSITION@CMD", "AXIS_C.POSITION_CMD",
                             "目标位置：帧待抓包（cnc_rdposition）")
-    NCL_POINT_NAMED("/MACHINE/AXIS@X/SPEED", focas_dispatch, &k_axis_x_speed,
+    NCL_DATAITEM_NAMED("/MACHINE/AXIS@X/SPEED", focas_dispatch, &k_axis_x_speed,
                     "AXIS_X.SPEED")
-    NCL_POINT_NAMED("/MACHINE/AXIS@Y/SPEED", focas_dispatch, &k_axis_y_speed,
+    NCL_DATAITEM_NAMED("/MACHINE/AXIS@Y/SPEED", focas_dispatch, &k_axis_y_speed,
                     "AXIS_Y.SPEED")
-    NCL_POINT_NAMED("/MACHINE/AXIS@Z/SPEED", focas_dispatch, &k_axis_z_speed,
+    NCL_DATAITEM_NAMED("/MACHINE/AXIS@Z/SPEED", focas_dispatch, &k_axis_z_speed,
                     "AXIS_Z.SPEED")
-    NCL_POINT_NAMED("/MACHINE/AXIS@A/SPEED", focas_dispatch, &k_axis_a_speed,
+    NCL_DATAITEM_NAMED("/MACHINE/AXIS@A/SPEED", focas_dispatch, &k_axis_a_speed,
                     "AXIS_A.SPEED")
-    NCL_POINT_NAMED("/MACHINE/AXIS@C/SPEED", focas_dispatch, &k_axis_c_speed,
+    NCL_DATAITEM_NAMED("/MACHINE/AXIS@C/SPEED", focas_dispatch, &k_axis_c_speed,
                     "AXIS_C.SPEED")
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
     NCL_METHOD_NAMED("/MACHINE/SESSION", focas_dispatch, &k_session, "SESSION")

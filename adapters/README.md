@@ -44,26 +44,34 @@ static ncl_err dispatch(void *ctx, const ncl_tool_point *self, ncl_operation op,
                         const ncl_json *params, ncl_json **result, char **reason) { }
 
 NCL_TOOL_BEGIN("mybox", "某品牌机床（只读）", 1000, 1000, open_box, close_box)
-    NCL_POINT_SAMPLED_ARG("/BOX/RUN", dispatch, &k_run)    /* 可读 + 进采样通道 */
-    NCL_POINT_ARG("/BOX/NAME", dispatch, &k_name)          /* 只按需读 */
-    NCL_POINT_RW_ARG("/BOX/MODE", dispatch, &k_mode)       /* 可读可写 */
+    NCL_DATAITEM_SAMPLED_ARG("/BOX/RUN", dispatch, &k_run)    /* 感知量：可读 + 进采样通道 */
+    NCL_DATAITEM_ARG("/BOX/TEMPERATURE", dispatch, &k_temp)   /* 感知量：只按需读 */
+    NCL_DATAITEM_RW_ARG("/BOX/MODE", dispatch, &k_mode)       /* 感知量：可读可写 */
+    NCL_CONFIG_ARG("/BOX/CONTROLLER/PARAMETER", dispatch, &k_param)  /* 配置型：只按需读 */
     NCL_METHOD_NAMED("/BOX/RESET", dispatch, &k_reset, "RESET")
 NCL_TOOL_END()
 
 NCL_TOOL_MODULE("1.0.0", "某品牌机床适配器")
 ```
 
+**一个点位先说清是哪一类数据对象**（册 3 §5.4/§5.5）：`NCL_DATAITEM_*` 是物理量/感知量
+（进模型的 `dataItems`，**能进采样通道**），`NCL_CONFIG_*` 是参数、坐标系、刀具表这类
+不常变的数据（进模型的 `configs`，可查询可修改，但**没有 SAMPLED 形式** —— 册 3 表 1
+注 b：配置中的数据对象不得作为采样数据源）；`NCL_METHOD_*` 不是数据对象，只响应调用。
+两族的形状一一对应（`_ARG` / `_WRITE` / `_RW` / `_NAMED` / `_PENDING`），名字里的
+`DATAITEM`/`CONFIG` 就是模型里的两个数组。
+
 宿主拿这份声明生成模型、OpenAPI schema 与绑定：`path` 就是模型路径，采样通道取
 `NCL_TOOL_BEGIN` 的周期，方法调用地址是 `<tool 名>/<点位名>`（点位名默认取路径尾段；
 同一条路径下重名时用 `*_NAMED` 宏显式给名字）。`sampled` 只要求点位可读，周期给 0
 就表示"这个声明不生成采样通道"（现场仍可在模型文件里加、调）。
 
-**哪些点位进默认采样通道，是声明说了算**：`NCL_POINT_SAMPLED_*` 的点位进通道，
-`NCL_POINT_*`（不带 SAMPLED）只按需读。现场口径常常是"只报状态、计件、程序名、报警"
+**哪些点位进默认采样通道，是声明说了算**：`NCL_DATAITEM_SAMPLED_*` 的点位进通道，
+`NCL_DATAITEM_*`（不带 SAMPLED）只按需读。现场口径常常是"只报状态、计件、程序名、报警"
 这类少量点位，那就只把那几行写成 `*_SAMPLED_*`，别的保持按需读 —— 改一行、重编模块即可。
 
-**已经定下来、但协议调用还没抓到帧的点位**用 `NCL_POINT_PENDING[_SAMPLED](路径, 理由)`
-声明（重名的用 `NCL_POINT_PENDING_NAMED(路径, 名字, 理由)`）：它在模型里看得见，
+**已经定下来、但协议调用还没抓到帧的点位**用 `NCL_DATAITEM_PENDING[_SAMPLED](路径, 理由)`
+声明（重名的用 `NCL_DATAITEM_PENDING_NAMED(路径, 名字, 理由)`）：它在模型里看得见，
 客户端 `Query` 它会拿到"还读不了 + 理由"（不是"没有这个点位"），宿主在自检里把它报成
 `<待抓包>` 而不是失败、在轮询里直接跳过。`*_PENDING_SAMPLED` 会占住采样通道的位置
 （抓包补上之前那一列是 `null`），所以现场一开始就看得见"报警这一列将来会有"。
@@ -616,18 +624,19 @@ broker 的部署不受影响。**broker 没起来不致命**：`ncl_adapter_brok
 的缀在后面（位置（实际）/位置（目标）），本册查不到的 type 照原名。**名字与路径无关**，
 改名字不会动路径（路径只由 type 与 number 拼）。
 
-**数据对象分两种，由 `type` 决定放哪儿**（第 3 部分 5.3/5.4/5.5）：
+**数据对象分两种，写声明时就得说清楚是哪一类**（第 3 部分 5.3/5.4/5.5）：
 
-- `dataItems` —— **可以采集的数据**：物理量（`POSITION`/`SPEED`/`CURRENT`…）与从设备
+- `NCL_DATAITEM_*` → `dataItems` —— **可以采集的数据**：物理量（`POSITION`/`SPEED`/`CURRENT`…）与从设备
   感知的实时量（`STATUS`/`WARNING`/`PART_COUNT`/`PROGRAM`/`WORK_MODE`…）。采样通道
   只能引用它们。
-- `configs` —— **配置信息**：参数、坐标系、刀具表这类不常变的数据（`PARAMETER`、
+- `NCL_CONFIG_*` → `configs` —— **配置信息**：参数、坐标系、刀具表这类不常变的数据（`PARAMETER`、
   `COORDINATE`、`TOOL`、`TOOLPARAM`、`VARIABLE`、`FILE`、`MODEL`/`NUMBER`/`VERSION` 等
   元信息）。它们照样有路径、照样能读（按需），但**表 1 注 b 说配置不得作为采样数据源**，
-  所以把这类点声明成 `NCL_POINT_SAMPLED_*` 会被校验直接拒掉。
+  所以 `NCL_CONFIG_*` 一族根本没有 `_SAMPLED` 形式；手写表把 `config` 与 `sampled`
+  同时置位，校验会直接拒掉。
 
-作者不用写开关：类型来自数据字典，归置跟着类型来；厂商自定的 `type` 默认按 `dataItems`。
-采样通道对象自己也是 `configs` 的一员。
+类型名来自数据字典，归置来自宏 —— 两边对不上时（比如 `PARAMETER` 写成了 `NCL_DATAITEM_*`）
+宿主会打一条告警提醒核对。采样通道对象自己也是 `configs` 的一员。
 可运行的配置样例见 `tests/test_adapter.c` 里的 `kConfig`。
 
 ## FANUC 适配器模块（`ncl_driver_focas`）
@@ -664,10 +673,10 @@ ncl_adapter -c conf/fanuc.json -b tcp://10.0.0.9:1883
 
 带 ✅ 的就是 01 册 §2.3 实证过的布局；最后一行**默认不写进点表**——按需读一个没
 核对过的字段可以，每秒往总线上报一个没人核对过的名字不行，要用就自己加一条，
-先别开采样（用 `NCL_POINT_ARG` 而不是 `NCL_POINT_SAMPLED_*`）。
+先别开采样（用 `NCL_DATAITEM_ARG` 而不是 `NCL_DATAITEM_SAMPLED_*`）。
 
 **默认采样通道只有四样**（现场口径）：设备状态、加工计件、程序名称、报警。位置、速度
-一律按需读（`NCL_POINT_ARG`）；要上报就把那一行换成 `NCL_POINT_SAMPLED_ARG`，
+一律按需读（`NCL_DATAITEM_ARG`）；要上报就把那一行换成 `NCL_DATAITEM_SAMPLED_ARG`，
 反过来不想上报就把 `*_SAMPLED_*` 换回普通宏。
 
 **FANUC 自己的 ODBST 位域不进模型**（`STATINFO` 里那种"手动/自动/编辑/移动/急停"位）：

@@ -223,21 +223,6 @@ static bool tool_is_config_type(const char *type)
     return false;
 }
 
-/** "…/POSITION@REAL" -> "POSITION"（点位尾段的 type 部分）。 */
-static void point_tail_type(const char *path, char *out, size_t cap)
-{
-    const char *last = strrchr(path, '/');
-    const char *tail = last != NULL ? last + 1 : path;
-    const char *at = strchr(tail, '@');
-    size_t len = at != NULL ? (size_t)(at - tail) : strlen(tail);
-
-    if (len >= cap) {
-        len = cap - 1;
-    }
-    memcpy(out, tail, len);
-    out[len] = '\0';
-}
-
 const char *ncl_tool_point_name(const ncl_tool_point *point)
 {
     const char *slash;
@@ -355,19 +340,15 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
                         point->path);
             return NCL_ERR_INVALID_ARG;
         }
-        if (point->sampled) {
+        if (point->config && point->sampled) {
             /* 配置型数据对象（参数、坐标系、刀具表…）进模型的 configs，
-             * 而采样通道只能引用 dataItems（册 3 表 1 注 b）。 */
-            char tail_type[64];
-
-            point_tail_type(point->path, tail_type, sizeof(tail_type));
-            if (tool_is_config_type(tail_type)) {
-                err_appendf(err,
-                            "点位 %s 是配置型数据（%s），不能进采样通道："
-                            "把它声明成按需读，或者换一个感知量的 type",
-                            point->path, tail_type);
-                return NCL_ERR_INVALID_ARG;
-            }
+             * 而采样通道只能引用 dataItems（册 3 表 1 注 b）。NCL_CONFIG_*
+             * 一族没有 SAMPLED 形式，这里拦的是手写这张表的情况。 */
+            err_append1(err,
+                        "the point %s is a config and cannot be sampled"
+                        "（配置型数据不得作为采样数据源，册 3 表 1 注 b）",
+                        point->path);
+            return NCL_ERR_INVALID_ARG;
         }
         for (op = 0; op < 3; op++) {
             if (point_declares(point, k_operations[op])) {
@@ -737,7 +718,14 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
             }
         }
         split_type_number(tail, &type, &number);
-        config_kind = tool_is_config_type(type);
+        config_kind = point->config;
+        /* 归类由声明说了算（NCL_CONFIG_* / NCL_DATAITEM_*），字典那张表只用来
+         * 核对：把 PARAMETER 这类配置型名字声明成 dataItem 通常是写错了。 */
+        if (!config_kind && tool_is_config_type(type)) {
+            ncl_log_warn("点位 %s 的类型 %s 在数据字典里属配置型，却被声明成 "
+                         "dataItem（会进采样候选）——确认一下",
+                         point->path, type);
+        }
         if (component == NULL) {
             /* 设备自己那两层：dataItems 放感知量，configs 放配置型数据。 */
             target = config_kind ? configs : items;
@@ -986,7 +974,7 @@ static void shim_read_old_value(const ncl_tool_shim *shim, ncl_json **old_value)
 
 /**
  * The answer a point that is declared but not readable yet gives (see
- * NCL_POINT_PENDING): the declaration's own summary is the reason. Nothing went
+ * NCL_DATAITEM_PENDING / NCL_CONFIG_PENDING): the declaration's own summary is the reason. Nothing went
  * over the wire, so the §6 trail stays empty - a request that never happened is
  * not a request.
  */

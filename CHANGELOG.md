@@ -5,6 +5,29 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 变更：声明宏分成两族 —— `NCL_DATAITEM_*` 与 `NCL_CONFIG_*`
+
+数据对象有两种，声明里就得写清是哪一种，宏名替你说这句话（`NCL_POINT_*` 一族随之退场）：
+
+- **`NCL_DATAITEM_*`**（dataItems）：物理量、从设备感知的实时量 —— 能进采样通道。
+  形状齐全：`_SAMPLED`（进默认通道）、`_WRITE`、`_RW`、`_ARG`、`_NAMED`、
+  `_PENDING[(_SAMPLED)]`。
+- **`NCL_CONFIG_*`**（configs）：参数、坐标系、刀具表、元信息这类不常变的数据 ——
+  **没有 `_SAMPLED` 形式**（册 3 表 1 注 b：配置中的数据对象不得作为采样数据源）。
+  其余形状与 dataItem 一一对应：`_WRITE`、`_RW`、`_ARG`、`_NAMED`、`_PENDING`。
+- `NCL_METHOD(_ARG|_NAMED)` 不变：方法不是数据对象。
+
+实现：`ncl_tool_point` 多一个 `config` 标志，`ncl_tool_model()` 据它把点放进设备/组件的
+`dataItems` 或 `configs`（不再按 type 猜）；`ncl_tool_validate()` 拒绝 `config && sampled`
+（手写表时的兜底）。数据字典那张"配置型 type"清单保留下来**做核对**：把 `PARAMETER`
+这类名字声明成 `NCL_DATAITEM_*` 时打一条告警，提醒复核。
+
+改动面：`include/nclink/ncl_tool.h`（23 个宏重排成两族）、`src/core/tool.c`、
+`adapters/plugins/focas.c`（19 个点全部改为 `NCL_DATAITEM_*`）、适配器与核心夹具
+（`/MACHINE/NAME` 现在是 `NCL_CONFIG`，`/MACHINE/CONTROLLER/PARAMETER` 也是）、
+文档（`adapters/README.md`、`FANUC-ADAPTER.md` §5 宏表、32 册 §5.1.1、`MANUAL.md` 4.3）。
+验证：`build.ps1` 41/41；`--model` 输出里 dataItems / configs 各自的成员与预期一致。
+
 ### 变更：数据对象分两种 —— `dataItems`（感知量）与 `configs`（配置型数据）
 
 第 3 部分把数据对象放在两个数组里，第 4 部分的数据项按"变不变"归置：

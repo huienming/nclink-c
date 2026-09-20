@@ -125,7 +125,7 @@ const ncl_json *ncl_adapter_point_value(const ncl_adapter *adapter,
 
 /**
  * False for a point that is declared but cannot be read yet - a "pending" point
- * (see NCL_POINT_PENDING in nclink/ncl_tool.h). It is in the model and answers a
+ * (see NCL_DATAITEM_PENDING / NCL_CONFIG_PENDING in nclink/ncl_tool.h). It is in the model and answers a
  * clear "not available yet" to a client that asks for it, but the polling rounds
  * leave it alone: it cannot answer, and a round is not where that should be
  * learned once per second. A host that walks the points itself should check this
