@@ -283,7 +283,16 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
                         point->path);
             return NCL_ERR_INVALID_ARG;
         }
-        if (point->fn == NULL) {
+        if (!point->available) {
+            /* Declared but not readable yet: there is no function and there may
+             * be nothing to call, so the only thing it has to carry is the
+             * reason the site will be shown ("frame not captured yet"). */
+            if (ncl_str_is_blank(point->summary)) {
+                err_append1(err, "the pending point %s needs a summary",
+                            point->path);
+                return NCL_ERR_INVALID_ARG;
+            }
+        } else if (point->fn == NULL) {
             err_append1(err, "the point %s has no function", point->path);
             return NCL_ERR_INVALID_ARG;
         }
@@ -301,7 +310,7 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
                 declared++;
             }
         }
-        if (declared == 0) {
+        if (declared == 0 && point->available) {
             err_append1(err, "the point %s declares no operation", point->path);
             return NCL_ERR_INVALID_ARG;
         }
@@ -418,7 +427,7 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         const ncl_tool_point *point = &decl->points[i];
         const char *slash;
 
-        if (!point->readable && !point->writable) {
+        if (point->callable && !point->readable && !point->writable) {
             continue; /* a method only: it belongs in the schema, not here */
         }
         slash = strchr(point->path + 1, '/');
@@ -480,7 +489,7 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         ncl_json *item;
         ncl_json *target = items;
 
-        if (!point->readable && !point->writable) {
+        if (point->callable && !point->readable && !point->writable) {
             continue;
         }
         item = ncl_json_new_object();
@@ -731,6 +740,21 @@ static void shim_read_old_value(const ncl_tool_shim *shim, ncl_json **old_value)
                           old_value, NULL);
 }
 
+/**
+ * The answer a point that is declared but not readable yet gives (see
+ * NCL_POINT_PENDING): the declaration's own summary is the reason. Nothing went
+ * over the wire, so the §6 trail stays empty - a request that never happened is
+ * not a request.
+ */
+static ncl_err shim_unavailable(const ncl_tool_shim *shim, char **reason)
+{
+    return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED, "%s：%s",
+                         shim->point->path,
+                         shim->point->summary != NULL
+                             ? shim->point->summary
+                             : "还读不了（待抓包）");
+}
+
 static ncl_err shim_read(void *instance, const ncl_json *params,
                          ncl_json **result, char **reason)
 {
@@ -738,6 +762,9 @@ static ncl_err shim_read(void *instance, const ncl_json *params,
     int64_t started = ncl_time_monotonic_millis();
     ncl_err rc;
 
+    if (!shim->point->available) {
+        return shim_unavailable(shim, reason);
+    }
     rc = shim->point->fn(shim->ctx, shim->point, NCL_OP_GET_VALUE, params, result,
                          reason);
     shim_report(shim, NCL_OP_GET_VALUE, rc,
@@ -753,6 +780,9 @@ static ncl_err shim_write(void *instance, const ncl_json *params,
     int64_t started = ncl_time_monotonic_millis();
     ncl_err rc;
 
+    if (!shim->point->available) {
+        return shim_unavailable(shim, reason);
+    }
     shim_read_old_value(shim, &old_value);
     rc = shim->point->fn(shim->ctx, shim->point, NCL_OP_SET_VALUE, params, result,
                          reason);
@@ -773,6 +803,9 @@ static ncl_err shim_call(void *instance, const ncl_json *params,
     int64_t started = ncl_time_monotonic_millis();
     ncl_err rc;
 
+    if (!shim->point->available) {
+        return shim_unavailable(shim, reason);
+    }
     rc = shim->point->fn(shim->ctx, shim->point, NCL_OP_FUNC_CALL, params, result,
                          reason);
     shim_report(shim, NCL_OP_FUNC_CALL, rc,

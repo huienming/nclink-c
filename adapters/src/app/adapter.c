@@ -39,6 +39,13 @@ typedef struct {
     char     *path;     /**< owned, the point's model path */
     bool      writable;
     bool      sampled;
+    /** False for a point that is declared but not readable yet (a pending
+     *  point, see ncl_link's NCL_POINT_PENDING): it stays in the list so the
+     *  self check can name it, but no round ever reads it - it cannot succeed,
+     *  and a round is not the place to learn that again every second. */
+    bool      available;
+    /** Borrowed from the declaration: why it is not readable yet. */
+    const char *summary;
     ncl_node *node;     /**< borrowed, resolved after the model is up */
 } adapter_point;
 
@@ -263,6 +270,8 @@ static ncl_err load_declared_points(ncl_adapter *adapter)
         point->path = ncl_strdup(declared->path);
         point->writable = declared->writable;
         point->sampled = declared->sampled;
+        point->available = declared->available;
+        point->summary = declared->summary;
         if (point->path == NULL) {
             return NCL_ERR_NOMEM;
         }
@@ -772,6 +781,22 @@ const ncl_json *ncl_adapter_point_value(const ncl_adapter *adapter,
                : NULL;
 }
 
+bool ncl_adapter_point_available(const ncl_adapter *adapter, size_t index)
+{
+    if (adapter == NULL || index >= adapter->point_count) {
+        return false;
+    }
+    return adapter->points[index].available;
+}
+
+const char *ncl_adapter_point_summary(const ncl_adapter *adapter, size_t index)
+{
+    if (adapter == NULL || index >= adapter->point_count) {
+        return NULL;
+    }
+    return adapter->points[index].summary;
+}
+
 
 const char *ncl_adapter_broker_url(const ncl_adapter *adapter)
 {
@@ -869,6 +894,13 @@ ncl_err ncl_adapter_poll_one(ncl_adapter *adapter, const char *path,
         err_append1(err, "no such point", path);
         return NCL_ERR_NOT_FOUND;
     }
+    if (!point->available) {
+        /* Declared, in the model, but the frame it needs is not captured yet:
+         * there is nothing to read, and saying so is the whole answer. */
+        err_appendf(err, "%s 还读不了（%s）", point->path,
+                    point->summary != NULL ? point->summary : "待抓包");
+        return NCL_ERR_NOT_SUPPORTED;
+    }
     result = read_declared_point(adapter, point->path, &value, err);
     if (result != NCL_OK) {
         err_append1(err, "cannot read %s", point->path);
@@ -893,8 +925,12 @@ ncl_err ncl_adapter_poll(ncl_adapter *adapter, ncl_strbuf *err)
         return NCL_ERR_INVALID_ARG;
     }
     for (i = 0; i < adapter->point_count; i++) {
-        ncl_err result = ncl_adapter_poll_one(adapter, adapter->points[i].path,
-                                              err);
+        ncl_err result;
+
+        if (!adapter->points[i].available) {
+            continue; /* nothing to read yet: not a failure, just not there */
+        }
+        result = ncl_adapter_poll_one(adapter, adapter->points[i].path, err);
 
         if (result != NCL_OK && first == NCL_OK) {
             first = result;
@@ -914,9 +950,12 @@ ncl_err ncl_adapter_poll_round(ncl_adapter *adapter, size_t *failed,
         return NCL_ERR_INVALID_ARG;
     }
     for (i = 0; i < adapter->point_count; i++) {
-        ncl_err result = ncl_adapter_poll_one(adapter, adapter->points[i].path,
-                                              err);
+        ncl_err result;
 
+        if (!adapter->points[i].available) {
+            continue; /* 待抓包的点位不进轮询，也不计失败（自检会单独列出来） */
+        }
+        result = ncl_adapter_poll_one(adapter, adapter->points[i].path, err);
         if (result == NCL_OK) {
             continue;
         }

@@ -114,6 +114,22 @@ const char *ncl_adapter_point_path(const ncl_adapter *adapter, size_t index);
 const ncl_json *ncl_adapter_point_value(const ncl_adapter *adapter,
                                         size_t index);
 
+/**
+ * False for a point that is declared but cannot be read yet - a "pending" point
+ * (see NCL_POINT_PENDING in nclink/ncl_tool.h). It is in the model and answers a
+ * clear "not available yet" to a client that asks for it, but the polling rounds
+ * leave it alone: it cannot answer, and a round is not where that should be
+ * learned once per second. A host that walks the points itself should check this
+ * first; ncl_adapter_poll_one() on such a point is NCL_ERR_NOT_SUPPORTED.
+ */
+bool ncl_adapter_point_available(const ncl_adapter *adapter, size_t index);
+
+/**
+ * Why the point at @p index is not readable yet, or NULL. Borrowed from the
+ * declaration - it lives as long as the module that declared it.
+ */
+const char *ncl_adapter_point_summary(const ncl_adapter *adapter, size_t index);
+
 /* Broker ---------------------------------------------------------------- */
 
 /** Broker URL the configuration named, or NULL when the adapter is offline. */

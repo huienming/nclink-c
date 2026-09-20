@@ -105,9 +105,10 @@ cd D:\fanuc
 2026-09-20 14:04:22.719 INFO [50060] /MACHINE/STATUS = running
 2026-09-20 14:04:22.719 INFO [50060] /MACHINE/PART_COUNT = "1234"
 2026-09-20 14:04:22.719 INFO [50060] /MACHINE/CONTROLLER/PROGRAM = "O1234"
+2026-09-20 14:04:22.719 WARNING [50060] /MACHINE/WARNING = <待抓包>（报警：帧待抓包（cnc_rdalmmsg2，01 册 §2.3 / 31 册））
 2026-09-20 14:04:22.719 INFO [50060] /MACHINE/AXIS@X/POSITION@REAL = 12.345
-2026-09-20 14:04:22.723 WARNING [50060] /MACHINE/AXIS@X/POSITION@CMD = <读取失败>（…还没抓到这个调用的帧…）
-自检：30 个点位，6 个读取失败      # 5 条目标位置 + 报警待抓包，见第 7 节；退出码 1
+2026-09-20 14:04:22.723 WARNING [50060] /MACHINE/AXIS@X/POSITION@CMD = <待抓包>（目标位置：帧待抓包（cnc_rdposition））
+自检：30 个点位（24 个可读，6 个待抓包），0 个读取失败      # 退出码 0
 ```
 
 `--probe` 打的是单点结果（客户端视角，带 OK/NG 与原因）：
@@ -115,10 +116,15 @@ cd D:\fanuc
 ```
 > .\bin\ncl_adapter.exe -c conf\fanuc.json --probe /MACHINE/PART_COUNT
 /MACHINE/PART_COUNT = 1234          # 退出码 0；读不到时打印 NG 与原因，退出码 1
+> .\bin\ncl_adapter.exe -c conf\fanuc.json --probe /MACHINE/WARNING
+/MACHINE/WARNING: NG —— /MACHINE/WARNING：报警：帧待抓包（cnc_rdalmmsg2，01 册 §2.3 / 31 册）
 ```
 
 读到不出来的点位会打 `<读取失败>`；**只要有一个点位没读到，退出码就是 1**，所以
-`run-once.ps1` 可以直接用来看"这台机器接好了没有"。**自检全过不等于点表全对**：
+`run-once.ps1` 可以直接用来看"这台机器接好了没有"。**"待抓包"不算读取失败**：那 6 个点位
+（5 条目标位置 + 报警）的 FOCAS 调用还没抓到帧（见第 7 节），自检给它们打 `<待抓包>` 并把
+原因写出来，**不计数**，退出码照旧是 0 —— 现场不会因为"我们还没抓包"而以为机床坏了。
+**自检全过不等于点表全对**：
 数值是否合理要看表（见第 5 节）。机床不在线时，自检在第一个传输层错误后停止，
 不会把每个点位都各等一次超时。
 
@@ -172,6 +178,8 @@ static const focas_point k_part_count = {"RDCOUNT", 0, NCL_DTYPE_INT32, 1, FOCAS
 NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS", focas_dispatch, &k_status)
 NCL_POINT_SAMPLED_ARG("/MACHINE/PART_COUNT", focas_dispatch, &k_part_count)
 NCL_POINT_SAMPLED_ARG("/MACHINE/CONTROLLER/PROGRAM", focas_dispatch, &k_program)
+/* 报警进采样通道，但帧还没抓到：先占着位置，值先给 null（自检算"待抓包"，不算失败） */
+NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalmmsg2）")
 ```
 
 **点位名按标准第 4 部分（32 册）来的**，不是自己起的：`STATUS`、`PART_COUNT`、`PROGRAM`、
@@ -180,13 +188,20 @@ NCL_POINT_SAMPLED_ARG("/MACHINE/CONTROLLER/PROGRAM", focas_dispatch, &k_program)
 （`/MACHINE/FANUC_ODBST@…`），不占用 `STATUS`。
 
 `focas_point` 四个字段就是原来的 `addr`：`area`（FOCAS 数据项）、`offset`（应答块序号）、
-`dtype`、`length`（元素个数）。三种声明宏：
+`dtype`、`length`（元素个数）。四种声明宏：
 
 | 宏 | 含义 |
 |---|---|
 | `NCL_POINT_SAMPLED_ARG(路径, 函数, 地址)` | 可读，**并进采样通道** |
 | `NCL_POINT_ARG(路径, 函数, 地址)` | 只按需读（Query），不参与周期采样 |
+| `NCL_POINT_PENDING[_SAMPLED](路径, 理由)` | **待抓包**：声明了、模型里有、问它有明确答复，但没有函数可调（见下） |
 | `NCL_METHOD_NAMED(路径, 函数, 参数, 名字)` | 方法调用（不进模型取值） |
+
+`*_PENDING` 是给"架构上已经定下来、协议调用还没抓到帧"的点位用的：它在模型里看得见，
+客户端 `Query` 它会拿到一句明确的"还没抓包"（而不是"没有这个点位"），自检把它报成
+`<待抓包>` 而不是失败。抓包补上之后，把那一行换成普通的 `NCL_POINT_*`（要进采样通道就用
+`*_SAMPLED_*`）即可，别的地方一行都不用改。路径尾段会重名的用它自己的
+`NCL_POINT_PENDING_NAMED(路径, 名字, 理由)`。
 
 `area` 的写法是 FOCAS 特有的（照抄即可）：
 
@@ -200,25 +215,31 @@ NCL_POINT_SAMPLED_ARG("/MACHINE/CONTROLLER/PROGRAM", focas_dispatch, &k_program)
   只写 `{"area": "EXEPRGNAME2"}` 也能用（驱动会把被拆开的数字再拼回去），但显式写
   `offset` 最不容易误读。
 
-出厂点位（5 轴；共 30 个取值 + 2 个方法 —— 24 个可采样，6 个"待抓包"按需读）：
+出厂点位（5 轴；共 30 个取值 + 2 个方法）。**默认采样通道只放四样**（现场口径）：设备状态、
+加工计件、程序名称、报警；位置、速度、私有位一律按需读：
 
 | 模型路径 | FOCAS 数据项 | 含义 | 采样 |
 |---|---|---|---|
 | `/MACHINE/STATUS` | `STATINFO`（前 10 个 int16） | 运行状态：`running` / `free` / `holding`（标准三态） | ✔ |
 | `/MACHINE/PART_COUNT` | `RDCOUNT` | 加工件数（**字符串**，标准表 7 如此） | ✔ |
 | `/MACHINE/CONTROLLER/PROGRAM` | `EXEPRGNAME2` | 主程序名（36 字节字符串；挂在 CONTROLLER 组件下） | ✔ |
-| `/MACHINE/AXIS@X|Y|Z|A|C/POSITION@REAL` | `ACTF@0|4|8|12|16` | 5 轴实际位置 | ✔ |
-| `/MACHINE/AXIS@X|Y|Z|A|C/POSITION@CMD` | 待抓包 | 5 轴目标位置（**FOCAS 侧还没抓到帧**，读数报错，见第 7 节） | ✘ 按需读 |
-| `/MACHINE/AXIS@X|Y|Z|A|C/SPEED` | `ACTS@0|4|8|12|16` | 5 轴速度（**量纲待核**，见第 7 节） | ✔ |
-| `/MACHINE/FANUC_ODBST@MANUAL` `@RUN` `@EDIT` `@MOTION` `@MSTB` `@EMERGENCY` `@ALARM` `@SPINDLE` `@OPERATOR` `@DUMMY` `@AUTO` | `STATINFO@0…@16` 与块 1/2 | FANUC 私有状态位（标准里没有这些名字） | ✔ |
-| `/MACHINE/WARNING` | 待抓包 | 报警（标准 `WARNING`：JSON `number`/`text`；FOCAS 侧要 `cnc_rdalmmsg2`，**还没抓到帧**） | ✘ 按需读 |
+| `/MACHINE/WARNING` | 待抓包（`cnc_rdalmmsg2`） | 报警（标准 `WARNING`：JSON `number`/`text`）—— 占着通道，**但现在取值为 `null`**（见第 7 节） | ✔（值为 null） |
+| `/MACHINE/AXIS@X|Y|Z|A|C/POSITION@REAL` | `ACTF@0|4|8|12|16` | 5 轴实际位置 | ✘ 按需读 |
+| `/MACHINE/AXIS@X|Y|Z|A|C/POSITION@CMD` | 待抓包（`cnc_rdposition`） | 5 轴目标位置（**FOCAS 侧还没抓到帧**，问它答"待抓包"，见第 7 节） | ✘ 按需读 |
+| `/MACHINE/AXIS@X|Y|Z|A|C/SPEED` | `ACTS@0|4|8|12|16` | 5 轴速度（**量纲待核**，见第 7 节） | ✘ 按需读 |
+| `/MACHINE/FANUC_ODBST@MANUAL` `@RUN` `@EDIT` `@MOTION` `@MSTB` `@EMERGENCY` `@ALARM` `@SPINDLE` `@OPERATOR` `@DUMMY` `@AUTO` | `STATINFO@0…@16` 与块 1/2 | FANUC 私有状态位（标准里没有这些名字） | ✘ 按需读 |
 | `RDLIFE` `RDPARAM` `RDMACRO` `RDTOFS` `RDPROGDIR3` | 同名项 | 刀具寿命 / 参数 / 宏变量 / 刀补 / 程序目录（**字段布局待真机核对**） | ✘ |
 
+- 进采样通道的就是表里 ✔ 的四个：**设备状态、加工计件、程序名称、报警**。要上报别的
+  （某个轴的位置、速度、某个私有位），把那一行的 `NCL_POINT_ARG(...)` 换成
+  `NCL_POINT_SAMPLED_ARG(...)` 重编模块；反过来说不想上报就把 `*_SAMPLED_*` 换回普通宏。
+  通道本身开在模型里（`configs[0].ids`），周期在配置/模型文件里调，现场不用重编。
 - 最后一行**默认不写进点表**：按需读一个没核对过的字段可以，每秒往总线上报一个没人
   核对过的名字不行。要试就照着加一条 `focas_point` + 一行 `NCL_POINT_ARG`（只按需读，
   别用 `NCL_POINT_SAMPLED_ARG`）。
 - 轴点位的**路径尾段会重名**（`POSITION@REAL`/`POSITION@CMD`/`SPEED` 各 5 条），所以它们用
-  `NCL_POINT_SAMPLED_NAMED` 显式给名字（`"AXIS_X.POSITION_REAL"`…），方法调用地址就是
+  `NCL_POINT_NAMED`（待抓包的用 `NCL_POINT_PENDING_NAMED`）显式给名字
+  （`"AXIS_X.POSITION_REAL"`…），方法调用地址就是
   `focas/AXIS_X.POSITION_REAL`；名字在同一个 tool 里必须唯一，重复会被宿主在装载时拒绝。
 - **机床没有的轴**：读那一条会报错（驱动在应答载荷不足时返回 `NCL_ERR_RANGE` 或
   `NCL_FOCAS_ERR_LENGTH`），不会给出 0 之类的假值。5 轴是出厂配置，实际轴少的机床
@@ -275,19 +296,24 @@ plugins\
   `set_value` 会明确返回"不支持"。要写就走机床自己的通道。
 - **五处字段布局待真机核对**：`RDLIFE` / `RDPARAM` / `RDMACRO` / `RDTOFS` /
   `RDPROGDIR3`（要用就自己加点位，别开采样）。
-- **两个"待抓包"点位**：`/MACHINE/AXIS@k/POSITION@CMD`（目标位置）与 `/MACHINE/WARNING`
+- **两组"待抓包"点位（共 6 个）**：`/MACHINE/AXIS@k/POSITION@CMD`（5 个目标位置）与
+  `/MACHINE/WARNING`
   （报警：报警号 + 文本）。FOCAS 侧对应的调用（`cnc_rdposition`、`cnc_rdalmmsg2`）在
-  01 册 §2.3 里**没有抓到帧**，所以现在**读它们一定报错**（原因写在返回里），不给假值、
-  也不进采样通道。真机抓一次就能补上，清单在 31 册 §1 #8。
+  01 册 §2.3 里**没有抓到帧**，所以它们现在是 `NCL_POINT_PENDING*`：模型里有、`Query`
+  有明确答复（理由写在返回里）、自检报 `<待抓包>`，但**取不到值**，不给假值。
+  差别只有一条：**报警（`/MACHINE/WARNING`）按现场口径已经占着默认采样通道** ——
+  通道里现在有这一列，抓包补上之前每周期都是 `null`（不是"没有报警"，是"还没抓到帧"）；
+  五个目标位置是纯按需读，不在通道里。真机抓一次就能补上，清单在 31 册 §1 #8。
 - **坐标缩放**：位置/速度按 01 册 §2.3 实测的 **float 数组**读。Fwlib32 手册里
   `cnc_actf` 的 `ODBACT` 还有 `data + dec`（小数点位数）形态，若真机上是这种形态，
   数值会明显偏大/偏小——用 `--once --raw` 抓一次原始报文再定（`log\out.txt` 里有
   hex）。这条列在 31 册 §1 #7 一起核对。
 - **不做**：PMC 梯形图、程序上传/下载（`cnc_upload4`
   等）、伺服波形、Focas2 Logger。需要的话按 01 册继续扩驱动（改 `plugins` 里的模块）。
-- 采样与轮询**各读一遍机床**（模型值由轮询刷新，采样通道负责上报）：一轮约
-  24 次交换（24 个可采样点位）。嫌报文多就把 `--interval` 调大，或把某个点位从
-  `NCL_POINT_SAMPLED_ARG` 换成 `NCL_POINT_ARG`（只按需读）。
+- 采样与轮询**各读一遍机床**：轮询刷新模型里的值（读 24 个可读点位，6 个待抓包的跳过），
+  采样通道按 `sample.intervalMs` 读通道里的 4 个点位（状态 / 计件 / 程序名 / 报警）并按
+  `uploadMs` 上报。嫌报文多就把 `--interval` 调大，把某个点位从 `NCL_POINT_SAMPLED_ARG`
+  换成 `NCL_POINT_ARG`（只按需读），或者把采样周期调大。
 
 ---
 

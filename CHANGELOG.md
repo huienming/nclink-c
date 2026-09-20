@@ -5,6 +5,33 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 变更：默认采样通道只放"状态 / 计件 / 程序名 / 报警"，点位可声明成"待抓包"
+
+现场口径：进默认采样通道的只有四样 —— **设备状态、加工计件、程序名称、报警**
+（`/MACHINE/STATUS`、`/MACHINE/PART_COUNT`、`/MACHINE/CONTROLLER/PROGRAM`、
+`/MACHINE/WARNING`）。位置、速度、厂商私有位一律按需读（`NCL_POINT_ARG`）；要上报就把那一行
+换成 `NCL_POINT_SAMPLED_ARG`，不想上报就换回来 —— 改的是声明，不是配置。
+
+- 声明层新增 **`available`** 字段与 `NCL_POINT_PENDING[_SAMPLED][_NAMED](路径[, 名字], 理由)`
+  （`include/nclink/ncl_tool.h`），给"架构上已经定下来、协议调用还没抓到帧"的点位用：
+  它在模型里看得见、`Query` 它会拿到理由明确的 `NCL_ERR_NOT_SUPPORTED`（不是"没有这个点位"）、
+  轮询直接跳过；`*_PENDING_SAMPLED` 会占住采样通道的位置（抓包补上之前那一列是 `null`）。
+  抓包补上以后把宏换成普通 `NCL_POINT_*` 即可，别处一行都不用改。理由（`summary`）是必填的。
+- 宿主侧（`adapters/src/app/adapter.c`）：待抓包的点位**不进轮询、不计失败**；
+  新增 `ncl_adapter_point_available()` / `ncl_adapter_point_summary()` 给自检与状态页用；
+  `--once` 现在打 `自检：30 个点位（24 个可读，6 个待抓包），0 个读取失败` 并**退出码 0**
+  （`--probe` 一个待抓包点位仍退出 1：问的是一个读不到的点位）。
+- FANUC 适配器（`adapters/plugins/focas.c`，模块版本 1.2.0）：`/MACHINE/WARNING` 与五个
+  `POSITION@CMD` 改成 `NCL_POINT_PENDING*` —— 报警按现场口径**留在采样通道里**（抓包前取值
+  `null`），五个目标位置按需读；位置、速度、私有位全部改成按需读。删掉 `FOCAS_PENDING` 这种
+  点位类型（"读不了"现在由声明表达，不由适配器里的分支表达）。
+- 测试：`tests/test_tool.c` 新增待抓包用例（校验、模型与采样通道、`Query` 的答复与"没上线
+  就不记审计"），`adapters/tests/module_tool_basic.c` 加了一个待抓包点位，`test_adapter_tool.c`
+  断言宿主侧的跳过与不漏计。
+- 文档：`adapters/FANUC-ADAPTER.md` §3/§5/§7、`adapters/README.md`（作者指南 + FANUC 一节）、
+  [32 册](protocal/docs/32-标准第4部分-数据项定义.md) §5.2/§5.3、[31 册](protocal/docs/31-待真机抓包清单.md)
+  §1 #8 同步。
+
 ### 变更：点位名对齐标准第 4 部分（数据项定义），模型树加组件层
 
 读了标准第 4 部分原文（送审讨论稿）并记成 [32 册](protocal/docs/32-标准第4部分-数据项定义.md)，
@@ -25,11 +52,11 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 - **三个"待抓包"点位**：目标位置 `/MACHINE/AXIS@k/POSITION@CMD`、报警
   `/MACHINE/WARNING`（标准表 6 的 `WARNING`：JSON `number`/`text`）、以及 `ACTS`
   的量纲归属。对应的 FOCAS 调用（`cnc_rdposition`、`cnc_rdalmmsg2`、`cnc_rdaxisdata`）
-  在 01 册 §2.3 里都没抓到帧 → 现在**读它们返回明确的"还没抓到帧"错误**，不给假值、
-  也不进采样通道；清单进了 [31 册](protocal/docs/31-待真机抓包清单.md) §1 #8。
+  在 01 册 §2.3 里都没抓到帧 → 现在**读它们返回明确的"还没抓到帧"错误**，不给假值
+  （当时是"按需读 + 读失败"；采样口径与"待抓包"的进位方式见上一条变更）；
+  清单进了 [31 册](protocal/docs/31-待真机抓包清单.md) §1 #8。
   机床没有的轴同理：驱动在载荷不足时报错（`NCL_ERR_RANGE` / `NCL_FOCAS_ERR_LENGTH`）。
-- 出厂点位：**30 个取值（24 个可采样 + 6 个待抓包按需读）+ 2 个方法**；`--once`
-  现在会报 6 个失败（原因都是"还没抓到帧"），这是预期状态，见 FANUC 分册第 7 节。
+- 出厂点位：**30 个取值（24 个可读 + 6 个待抓包）+ 2 个方法**（采样口径见上一条变更）。
 
 ### 变更：适配器搬进 `adapters/plugins/`，`clients/` 只留协议
 

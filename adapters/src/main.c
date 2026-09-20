@@ -300,13 +300,17 @@ static ncl_err check_tools(const ncl_json *config, const char *plugin_dir,
 /**
  * Print the value of every point, for --once and for a first bring-up.
  *
+ * 待抓包的点位（声明了、但那个协议调用还没抓到帧）单独列出来，不算失败 ——
+ * 它们是"还没有"，不是"机床坏了"。@p pending 收到它们的个数。
+ *
  * @return how many points could not be read - --once turns that into the
  *         process exit code, so a site script can tell "自检全过" from "有机床
  *         点位没读到" without reading the log.
  */
-static size_t dump_points(ncl_adapter *adapter)
+static size_t dump_points(ncl_adapter *adapter, size_t *pending)
 {
     size_t failed = 0;
+    size_t waiting = 0;
     size_t i;
 
     for (i = 0; i < ncl_adapter_point_count(adapter); i++) {
@@ -315,6 +319,14 @@ static size_t dump_points(ncl_adapter *adapter)
         char *text = NULL;
         ncl_strbuf note;
 
+        if (!ncl_adapter_point_available(adapter, i)) {
+            const char *why = ncl_adapter_point_summary(adapter, i);
+
+            ncl_log_warn("%s = <待抓包>（%s）", path,
+                         why != NULL ? why : "还没有抓到帧");
+            waiting++;
+            continue;
+        }
         /* The adapter knows how this point is served - a driver or a declared
          * module - so the self check goes through it rather than the manager. */
         ncl_strbuf_init(&note);
@@ -329,6 +341,9 @@ static size_t dump_points(ncl_adapter *adapter)
         text = ncl_json_write_string(value);
         ncl_log_info("%s = %s", path, text != NULL ? text : "?");
         ncl_free_safe(text);
+    }
+    if (pending != NULL) {
+        *pending = waiting;
     }
     return failed;
 }
@@ -493,10 +508,13 @@ int main(int argc, char **argv)
     if (args.probe != NULL) {
         exit_code = probe_point(adapter, args.probe);
     } else if (args.once) {
-        size_t failed = dump_points(adapter);
+        size_t pending = 0;
+        size_t failed = dump_points(adapter, &pending);
 
-        printf("自检：%u 个点位，%u 个读取失败\n",
-               (unsigned)ncl_adapter_point_count(adapter), (unsigned)failed);
+        printf("自检：%u 个点位（%u 个可读，%u 个待抓包），%u 个读取失败\n",
+               (unsigned)ncl_adapter_point_count(adapter),
+               (unsigned)(ncl_adapter_point_count(adapter) - pending),
+               (unsigned)pending, (unsigned)failed);
         if (failed > 0) {
             exit_code = 1; /* a self check that could not read is a failure */
         }

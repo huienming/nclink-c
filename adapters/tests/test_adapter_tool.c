@@ -108,10 +108,14 @@ NCL_TEST_MAIN_BEGIN()
     }
     NCL_CHECK_EQ_STR(decl->name, "test_tool_basic");
     NCL_CHECK_EQ_INT(decl->sample_ms, 500);
-    NCL_CHECK_EQ_INT(decl->point_count, 2);
+    NCL_CHECK_EQ_INT(decl->point_count, 3);
     NCL_CHECK_EQ_STR(decl->points[0].path, "/TEST/RUN");
     NCL_CHECK(decl->points[0].sampled);
     NCL_CHECK(decl->points[1].writable);
+    /* 第三个点位是"待抓包"：声明了、可查，但没有函数。 */
+    NCL_CHECK(!decl->points[2].available);
+    NCL_CHECK(decl->points[2].fn == NULL);
+    NCL_CHECK_EQ_STR(decl->points[2].summary, "报警：待抓包（帧还没抓到）");
     NCL_CHECK_EQ_INT(ncl_tool_validate(decl, &err), NCL_OK);
 
 
@@ -148,10 +152,17 @@ NCL_TEST_MAIN_BEGIN()
         ncl_json *channel =
             ncl_json_arr_get(ncl_json_obj_get(node, "configs"), 0);
 
-        NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 2);
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 3);
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 0), "name"),
                          "/TEST/RUN");
+        /* 待抓包的点位也在模型里，理由是它的 description。 */
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
+                             ncl_json_arr_get(items, 2), "name"),
+                         "/TEST/ALARM");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
+                             ncl_json_arr_get(items, 2), "description"),
+                         "报警：待抓包（帧还没抓到）");
         NCL_CHECK(channel != NULL);
         if (channel != NULL) {
             NCL_CHECK_EQ_STR(ncl_json_obj_get_string(channel, "id"),
@@ -247,9 +258,28 @@ NCL_TEST_MAIN_BEGIN()
             NCL_CHECK(adapter != NULL);
             if (adapter != NULL) {
                 NCL_CHECK(ncl_adapter_tool(adapter) == decl);
-                NCL_CHECK_EQ_INT(ncl_adapter_point_count(adapter), 2);
+                NCL_CHECK_EQ_INT(ncl_adapter_point_count(adapter), 3);
                 NCL_CHECK_EQ_STR(ncl_adapter_point_path(adapter, 0),
                                  "/TEST/RUN");
+                /* 待抓包的点位在列表里（自检要点名它），但读取直接说清楚，
+                 * 不走服务器、也不进轮询失败数。 */
+                NCL_CHECK(!ncl_adapter_point_available(adapter, 2));
+                NCL_CHECK_EQ_STR(ncl_adapter_point_summary(adapter, 2),
+                                 "报警：待抓包（帧还没抓到）");
+                ncl_strbuf_reset(&err);
+                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/TEST/ALARM",
+                                                      &err),
+                                 NCL_ERR_NOT_SUPPORTED);
+                NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "待抓包") != NULL);
+                {
+                    size_t failed = 99;
+
+                    ncl_strbuf_reset(&err);
+                    NCL_CHECK_EQ_INT(ncl_adapter_poll_round(adapter, &failed,
+                                                            &err),
+                                     NCL_OK);
+                    NCL_CHECK_EQ_INT(failed, 0);
+                }
 
                 /* The host's own read path (what --once and the poll loop use)
                  * goes through the module's binding. */

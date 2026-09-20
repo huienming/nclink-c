@@ -58,6 +58,17 @@ NCL_TOOL_MODULE("1.0.0", "某品牌机床适配器")
 同一条路径下重名时用 `*_NAMED` 宏显式给名字）。`sampled` 只要求点位可读，周期给 0
 就表示"这个声明不生成采样通道"（现场仍可在模型文件里加、调）。
 
+**哪些点位进默认采样通道，是声明说了算**：`NCL_POINT_SAMPLED_*` 的点位进通道，
+`NCL_POINT_*`（不带 SAMPLED）只按需读。现场口径常常是"只报状态、计件、程序名、报警"
+这类少量点位，那就只把那几行写成 `*_SAMPLED_*`，别的保持按需读 —— 改一行、重编模块即可。
+
+**已经定下来、但协议调用还没抓到帧的点位**用 `NCL_POINT_PENDING[_SAMPLED](路径, 理由)`
+声明（重名的用 `NCL_POINT_PENDING_NAMED(路径, 名字, 理由)`）：它在模型里看得见，
+客户端 `Query` 它会拿到"还读不了 + 理由"（不是"没有这个点位"），宿主在自检里把它报成
+`<待抓包>` 而不是失败、在轮询里直接跳过。`*_PENDING_SAMPLED` 会占住采样通道的位置
+（抓包补上之前那一列是 `null`），所以现场一开始就看得见"报警这一列将来会有"。
+抓包补上以后，把那一行换成普通宏、别的什么都不用改。
+
 参数有三条通道，别混：
 
 | 参数 | 从哪来 |
@@ -75,7 +86,7 @@ NCL_TOOL_MODULE("1.0.0", "某品牌机床适配器")
 模块文件按 `ncl_driver_<tool 名>.dll`（Linux/macOS 是 `libncl_driver_<名字>.so`）放进
 `plugins/` 即可。现场三条命令：`ncl_adapter --plugins`（列工具与点位/方法个数）、
 `--probe <路径>`（单点试读）、`--once`（跑一遍自检）。可抄的样板：
-`adapters/plugins/focas.c`（FANUC，19 个点位 + 2 个方法）、
+`adapters/plugins/focas.c`（FANUC，30 个点位 + 2 个方法，其中 6 个"待抓包"）、
 `adapters/tests/module_tool_basic.c`（最小夹具）。
 
 ## 驱动接口（内部一层：协议客户端，以及老式驱动模块）
@@ -599,7 +610,8 @@ broker 的部署不受影响。**broker 没起来不致命**：`ncl_adapter_brok
 
 FANUC 现场要的是"一条链路、一个进程、一个设备"：一边是机床（FOCAS/TCP 8193），
 一边是 NC-Link（MQTT + REST + 采样 + 审计）。程序就是宿主 `ncl_adapter`，FANUC 的
-适配器是它启动时装载的一个模块，点表写在配置里：
+适配器是它启动时装载的一个模块，**点表声明在模块里**（`adapters/plugins/focas.c`），
+配置里只有连接参数：
 
 ```sh
 ncl_adapter -c conf/fanuc.json            # 一直跑，Ctrl+C 退出
@@ -608,26 +620,31 @@ ncl_adapter -c conf/fanuc.json --plugins  # 看装载到了哪些模块，然后
 ncl_adapter -c conf/fanuc.json -b tcp://10.0.0.9:1883
 ```
 
-`conf/fanuc.json` 里与 FANUC 有关的就三处：`plugins.load`（要装载哪些模块）、
-`drivers[0].parameters`（机床地址与超时）、`drivers[0].points`（点表）。
+`conf/fanuc.json` 里与 FANUC 有关的就两处：`plugins.load`（装载哪个模块）、
+`tools[0].parameters`（机床地址与超时）。点表不在这里 —— 它随模块走，一行一个点位。
 现场手册是 [`FANUC-ADAPTER.md`](FANUC-ADAPTER.md)（打包时进包内 `README.md`）。
 
-出厂点表（`conf/fanuc.json` 里 19 条，模型路径都挂在 `/CNC` 下）：
+出厂点表（模块里 30 个取值 + 2 个方法，模型路径都挂在 `/MACHINE` 下）：
 
-| 模型路径 | FOCAS 项 | 块 | 读法 | 采样 |
+| 模型路径 | FOCAS 项 | 块 | 读法 | 默认采样 |
 |---|---|---|---|---|
-| `/CNC/STATUS@MANUAL` … `@OPERATOR` | `STATINFO@0/2/4/6/8/10/12/14/16` | 0 | 块 0 负载的九个 int16（`manual, run, edit, motion, mstb, emergency, alarm, spindle, oper`） | ✅ |
-| `/CNC/STATUS@DUMMY` | `STATINFO` | 1 | 标量（ODBST.dummy） | ✅ |
-| `/CNC/STATUS@AUTO` | `STATINFO` | 2 | 标量（ODBST.aut） | ✅ |
-| `/CNC/PART_COUNT` | `RDCOUNT` | 0 | int32 | ✅ |
-| `/CNC/PROGRAM@NAME` | `EXEPRGNAME2` | 0 | 字符串（`char name[36]` + 两个 long） | ✅ |
-| `/CNC/AXIS@k/POSITION` | `ACTF@4k` | 0 | float32，轴 k 的字节偏移 `4k` | ✅ |
-| `/CNC/AXIS@k/SPEED` | `ACTS@4k` | 0 | float32，同上 | ✅ |
+| `/MACHINE/STATUS` | `STATINFO@0…@16` | 0 | 块 0 负载的前十个 int16，取 RUN/EMERGENCY 推标准三态 `running`/`free`/`holding` | ✅ |
+| `/MACHINE/PART_COUNT` | `RDCOUNT` | 0 | int32，按标准表 7 报成**字符串** | ✅ |
+| `/MACHINE/CONTROLLER/PROGRAM` | `EXEPRGNAME2` | 0 | 字符串（`char name[36]` + 两个 long），挂在 CONTROLLER 组件下 | ✅ |
+| `/MACHINE/WARNING` | 待抓包（`cnc_rdalmmsg2`） | — | 报警（标准 `WARNING`）；**占着采样通道，抓包补上之前是 `null`** | ✅ |
+| `/MACHINE/AXIS@k/POSITION@REAL` | `ACTF@4k` | 0 | float32，轴 k 的字节偏移 `4k` | ❌ 按需读 |
+| `/MACHINE/AXIS@k/POSITION@CMD` | 待抓包（`cnc_rdposition`） | — | 目标位置（待抓包：问它答"还没抓到帧"） | ❌ 按需读 |
+| `/MACHINE/AXIS@k/SPEED` | `ACTS@4k` | 0 | float32，同上 | ❌ 按需读 |
+| `/MACHINE/FANUC_ODBST@MANUAL` … `@AUTO`（11 个） | `STATINFO@0/2/4/6/8/10/12/14/16` 与块 1/2 | 0/1/2 | FANUC 私有状态位（标准里没这些名字，带厂商前缀另起） | ❌ 按需读 |
 | `RDLIFE` `RDPARAM` `RDMACRO` `RDTOFS` `RDPROGDIR3` | 同名项 | 0 | 首个 int32，**字段布局待真机核对**（需自己加点位） | ❌ |
 
-前六类就是 01 册 §2.3 实证过的布局；最后一行**默认不写进点表**——按需读一个没
+带 ✅ 的就是 01 册 §2.3 实证过的布局；最后一行**默认不写进点表**——按需读一个没
 核对过的字段可以，每秒往总线上报一个没人核对过的名字不行，要用就自己加一条，
-先别开采样（`"sample": false`）。
+先别开采样（用 `NCL_POINT_ARG` 而不是 `NCL_POINT_SAMPLED_*`）。
+
+**默认采样通道只有四样**（现场口径）：设备状态、加工计件、程序名称、报警。位置、速度、
+私有位一律按需读（`NCL_POINT_ARG`）；要上报就把那一行换成 `NCL_POINT_SAMPLED_ARG`，
+反过来不想上报就把 `*_SAMPLED_*` 换回普通宏。
 
 四条现场经验写在这里：
 
@@ -644,8 +661,9 @@ ncl_adapter -c conf/fanuc.json -b tcp://10.0.0.9:1883
   每个点位都试一遍，是给自检和测试用的。
 - **轮询与采样会各读一遍机床**：采样通道发的是普通 Query（走 `get_value#…` 绑定，
   这条链路上是"读一次机床并上报"），而模型里的值只由 `ncl_adapter_poll_round()`
-  刷新（REST 和读模型的客户端看的是它）。现场嫌报文多就把 `--interval` 调大。
-  /CNC 这张表 3 轴一轮约 19 次交换。
+  刷新（REST 和读模型的客户端看的是它）。现场嫌报文多就把 `--interval` 调大，
+  或者把不必要上报的点位改回按需读。这张表一轮是 24 次读（30 个点位里 6 个待抓包的
+  跳过），采样通道另读它的 4 个。
 
 现场部署：把 `bin/ncl_adapter.exe`、`plugins/ncl_driver_focas.dll`、`conf/fanuc.json`
 与 `conf/mqtt.cfg` 放一份（`plugins/` 必须跟 `bin/` 同级），`bin/sn.txt` 会自动生成

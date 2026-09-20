@@ -588,6 +588,145 @@ static ncl_message *set_value(const char *path, long long value)
     return request;
 }
 
+/* ---------------------------------------------------------------- pending -- */
+
+/*
+ * 待抓包的点位：协议调用还没抓到帧，但架构上已经定下来了。它和普通点位的差别只有一条
+ * —— 没有函数可调。模型里有它、客户端问它有明确答复、采样通道里可能占着位置，唯独轮询
+ * 不碰它。
+ *
+ * 自己的声明表，夹具那张表不动，别的用例不受影响。
+ */
+static const ncl_tool_point k_pending_points[] = {
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS", fixture_dispatch, &k_run_item)
+    NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING", "报警：待抓包（cnc_rdalmmsg2）")
+    NCL_POINT_PENDING_NAMED("/MACHINE/AXIS@X/POSITION@CMD",
+                            "AXIS_X.POSITION_CMD",
+                            "目标位置：待抓包（cnc_rdposition）")
+    NCL_POINT_PENDING_NAMED("/MACHINE/AXIS@Y/POSITION@CMD",
+                            "AXIS_Y.POSITION_CMD",
+                            "目标位置：待抓包（cnc_rdposition）")
+};
+
+static ncl_tool_decl pending_decl(void)
+{
+    ncl_tool_decl decl = fixture_decl();
+
+    decl.points = k_pending_points;
+    decl.point_count =
+        sizeof(k_pending_points) / sizeof(k_pending_points[0]);
+    return decl;
+}
+
+static void test_pending(void)
+{
+    ncl_tool_decl decl = pending_decl();
+    ncl_strbuf err;
+    ncl_json *model;
+    char *model_json;
+    ncl_server_options options;
+    ncl_server *server;
+    ncl_tool_registration *registration = NULL;
+
+    NCL_TEST_CASE("a pending point is still a point: no function, but a reason");
+    ncl_strbuf_init(&err);
+    NCL_CHECK_EQ_INT(ncl_tool_validate(&decl, &err), NCL_OK);
+    NCL_CHECK_EQ_INT((int)err.len, 0);
+    NCL_CHECK(decl.points[1].readable);
+    NCL_CHECK(decl.points[1].sampled);
+    NCL_CHECK(!decl.points[1].available);
+    NCL_CHECK(decl.points[1].fn == NULL);
+    NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[1]), "WARNING");
+    /* 路径尾段重名的两个目标位置靠显式名字分开，校验也就不会把它们当成撞名。*/
+    NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[2]),
+                     "AXIS_X.POSITION_CMD");
+
+    NCL_TEST_CASE("a pending point has to say why it cannot be read yet");
+    {
+        ncl_tool_point points[2];
+        ncl_tool_decl broken = decl;
+
+        points[0] = decl.points[0];
+        points[1] = decl.points[1];
+        points[1].summary = NULL;
+        broken.points = points;
+        broken.point_count = 2;
+        expect_refused(&broken, "needs a summary");
+        points[1].summary = "   ";
+        expect_refused(&broken, "needs a summary");
+    }
+
+    NCL_TEST_CASE("the model carries it with its reason, and the channel keeps "
+                  "its place");
+    ncl_strbuf_reset(&err);
+    model = ncl_tool_model(&decl, NULL, &err);
+    NCL_CHECK(model != NULL);
+    if (model == NULL) {
+        ncl_strbuf_free(&err);
+        return;
+    }
+    {
+        ncl_json *node = ncl_json_arr_get(ncl_json_obj_get(model, "devices"), 0);
+        ncl_json *items = ncl_json_obj_get(node, "dataItems");
+        ncl_json *channel = ncl_json_arr_get(ncl_json_obj_get(node, "configs"), 0);
+        ncl_json *ids = ncl_json_obj_get(channel, "ids");
+        ncl_json *warning = ncl_json_arr_get(items, 1);
+
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 2);
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(warning, "name"),
+                         "/MACHINE/WARNING");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(warning, "description"),
+                         "报警：待抓包（cnc_rdalmmsg2）");
+        /* 默认采样通道：抽样的待抓包点位占着位置（现场要求报警进通道），
+         * 没抽样的目标位置不在通道里。 */
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(ids), 2);
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(ids, 1), "id"),
+                         "p1");
+    }
+    model_json = ncl_json_write_string(model);
+    ncl_json_free(model);
+    NCL_CHECK(model_json != NULL);
+
+    NCL_TEST_CASE("asking for it answers \"not readable yet\" - not \"no such "
+                  "point\" - and does not reach the tool");
+    memset(&options, 0, sizeof(options));
+    options.sn = "V000000001";
+    options.model_json = model_json;
+    server = ncl_server_create(&options);
+    ncl_free_safe(model_json);
+    NCL_CHECK(server != NULL);
+    if (server != NULL) {
+        ncl_message *request;
+        ncl_message *response;
+        ncl_query_response_item *item;
+        int trail_before = g_sink_requests;
+
+        NCL_CHECK_EQ_INT(ncl_tool_register(server, &decl, NULL, &k_sink,
+                                           &registration, &err),
+                         NCL_OK);
+        request = query("/MACHINE/WARNING");
+        response = ncl_server_invoke_query(server, request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            item = (ncl_query_response_item *)ncl_message_item_at(response, 0);
+            NCL_CHECK(item != NULL);
+            if (item != NULL) {
+                NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_NG);
+                NCL_CHECK(item->reason != NULL &&
+                          strstr(item->reason, "待抓包") != NULL);
+            }
+            ncl_message_free(response);
+        }
+        /* Nothing went over the wire, so the trail has no entry: a request
+         * that never happened is not a request. */
+        NCL_CHECK_EQ_INT(g_sink_requests, trail_before);
+        ncl_tool_unregister(&decl, registration);
+        ncl_server_free(server);
+    }
+    ncl_strbuf_free(&err);
+}
+
 static void test_register_and_invoke(void)
 {
     ncl_tool_decl decl = fixture_decl();
@@ -794,4 +933,5 @@ NCL_TEST_MAIN_BEGIN()
     test_model();
     test_helpers();
     test_register_and_invoke();
+    test_pending();
 NCL_TEST_MAIN_END()

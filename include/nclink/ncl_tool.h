@@ -144,6 +144,17 @@ struct ncl_tool_point {
     /** The function serving this point. Required. */
     ncl_point_fn fn;
     /**
+     * False when the point is declared but cannot be read yet - the protocol
+     * call it needs has not been captured, or the machine has not been seen.
+     * Such a point is still a point: it is in the model (the site sees what is
+     * coming) and asking for it answers a clear "not available yet" instead of
+     * "no such point". What the host never does is call @p fn - it cannot, the
+     * function is NULL - and a self check reports it as "not available"
+     * instead of "failed". Use NCL_POINT_PENDING() to declare one; every other
+     * macro leaves it true.
+     */
+    bool available;
+    /**
      * The author's own data for this point - a register address, a mapping
      * table entry, a protocol item name. Borrowed: the host never reads or
      * writes it, it only hands it back through @p self. NULL is fine. It is
@@ -197,6 +208,13 @@ typedef struct {
  *
  *   NCL_POINT_RW_ARG("/MACHINE/MODE", mode, &kModeEntry)
  *
+ * And the two PENDING forms declare a point whose protocol call is not
+ * captured yet - readable in the model, but no function behind it (see below):
+ *
+ *   NCL_POINT_PENDING("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalmmsg2）")
+ *   NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING", "...")
+ *   NCL_POINT_PENDING_NAMED(path, "AXIS_X.POSITION_CMD", "...")
+ *
  * NCL_TOOL_END closes the table and defines ncl_tool_declaration(), which hands
  * the host a filled in ncl_tool_decl by value: a module stores that value in
  * its descriptor, a test passes &decl around. It is a value rather than a file
@@ -205,34 +223,34 @@ typedef struct {
  * one (MSVC: "error C2099: 初始值设定项不是常量").
  */
 #define NCL_POINT(path_literal, fn)                                            \
-    { path_literal, true, false, false, false, NULL, fn, NULL, NULL },
+    { path_literal, true, false, false, false, NULL, fn, true, NULL, NULL },
 
 #define NCL_POINT_ARG(path_literal, fn, arg)                                   \
-    { path_literal, true, false, false, false, NULL, fn, arg, NULL },
+    { path_literal, true, false, false, false, NULL, fn, true, arg, NULL },
 
 #define NCL_POINT_SAMPLED(path_literal, fn)                                    \
-    { path_literal, true, false, false, true, NULL, fn, NULL, NULL },
+    { path_literal, true, false, false, true, NULL, fn, true, NULL, NULL },
 
 #define NCL_POINT_SAMPLED_ARG(path_literal, fn, arg)                           \
-    { path_literal, true, false, false, true, NULL, fn, arg, NULL },
+    { path_literal, true, false, false, true, NULL, fn, true, arg, NULL },
 
 #define NCL_POINT_WRITE(path_literal, fn)                                      \
-    { path_literal, false, true, false, false, NULL, fn, NULL, NULL },
+    { path_literal, false, true, false, false, NULL, fn, true, NULL, NULL },
 
 #define NCL_POINT_WRITE_ARG(path_literal, fn, arg)                             \
-    { path_literal, false, true, false, false, NULL, fn, arg, NULL },
+    { path_literal, false, true, false, false, NULL, fn, true, arg, NULL },
 
 #define NCL_POINT_RW(path_literal, fn)                                         \
-    { path_literal, true, true, false, false, NULL, fn, NULL, NULL },
+    { path_literal, true, true, false, false, NULL, fn, true, NULL, NULL },
 
 #define NCL_POINT_RW_ARG(path_literal, fn, arg)                                \
-    { path_literal, true, true, false, false, NULL, fn, arg, NULL },
+    { path_literal, true, true, false, false, NULL, fn, true, arg, NULL },
 
 #define NCL_METHOD(path_literal, fn)                                           \
-    { path_literal, false, false, true, false, NULL, fn, NULL, NULL },
+    { path_literal, false, false, true, false, NULL, fn, true, NULL, NULL },
 
 #define NCL_METHOD_ARG(path_literal, fn, arg)                                  \
-    { path_literal, false, false, true, false, NULL, fn, arg, NULL },
+    { path_literal, false, false, true, false, NULL, fn, true, arg, NULL },
 
 /*
  * The same five shapes with an explicit name, for a point whose path tail is
@@ -242,20 +260,50 @@ typedef struct {
  *                           "AXIS0.POSITION")
  */
 #define NCL_POINT_NAMED(path_literal, fn, arg, name_literal)                   \
-    { path_literal, true, false, false, false, name_literal, fn, arg, NULL },
+    { path_literal, true, false, false, false, name_literal, fn, true, arg, NULL },
 
 #define NCL_POINT_SAMPLED_NAMED(path_literal, fn, arg, name_literal)           \
-    { path_literal, true, false, false, true, name_literal, fn, arg, NULL },
+    { path_literal, true, false, false, true, name_literal, fn, true, arg, NULL },
 
 #define NCL_POINT_WRITE_NAMED(path_literal, fn, arg, name_literal)             \
-    { path_literal, false, true, false, false, name_literal, fn, arg, NULL },
+    { path_literal, false, true, false, false, name_literal, fn, true, arg, NULL },
 
 #define NCL_POINT_RW_NAMED(path_literal, fn, arg, name_literal)                \
-    { path_literal, true, true, false, false, name_literal, fn, arg, NULL },
+    { path_literal, true, true, false, false, name_literal, fn, true, arg, NULL },
 
 #define NCL_METHOD_NAMED(path_literal, fn, arg, name_literal)                  \
-    { path_literal, false, false, true, false, name_literal, fn, arg, NULL },
+    { path_literal, false, false, true, false, name_literal, fn, true, arg, NULL },
 
+
+/*
+ * 声明一个"已经定好、但现在还读不了"的点位：协议调用还没抓到帧，或者这台机床还没见到。
+ *
+ * 它仍然是个正常点位 —— 模型里有它（现场看得见后面有什么），客户端问它会拿到一句明确
+ * 的"还读不了"（而不是"没有这个点位"），只是从没有人调用它的函数（本来是 NULL）。
+ * *_SAMPLED 会占住默认采样通道：通道里现在就有这一列，抓包补上之前取值是 null，
+ * 自检把它算成"待抓包"而不是"失败"，所以现场不会误以为机床坏了。
+ *
+ * 抓包补上之后，把这一行换成正常的 NCL_POINT_*（要进通道就用 *_SAMPLED_*）即可，
+ * 别的什么都不用改。summary 是必填的 —— 它写着"为什么现在读不了"。
+ */
+#define NCL_POINT_PENDING(path_literal, summary_literal)                       \
+    { path_literal, true, false, false, false, NULL, NULL, false, NULL,        \
+      summary_literal },
+
+/** 同上，但已经占住默认采样通道（现在取值是 null，抓包后换宏即可）。 */
+#define NCL_POINT_PENDING_SAMPLED(path_literal, summary_literal)               \
+    { path_literal, true, false, false, true, NULL, NULL, false, NULL,         \
+      summary_literal },
+
+/** 同上，但路径尾段不能当方法名用（同名点位多，例如五个轴的目标位置）。 */
+#define NCL_POINT_PENDING_NAMED(path_literal, name_literal, summary_literal)   \
+    { path_literal, true, false, false, false, name_literal, NULL, false, NULL, \
+      summary_literal },
+
+#define NCL_POINT_PENDING_SAMPLED_NAMED(path_literal, name_literal,            \
+                                        summary_literal)                       \
+    { path_literal, true, false, false, true, name_literal, NULL, false, NULL, \
+      summary_literal },
 
 #define NCL_TOOL_BEGIN(name_literal, description_literal, sample_ms_value,     \
                        upload_ms_value, open_fn, close_fn)                     \
