@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "nclink/ncl_env.h"
+#include "nclink/ncl_file.h"
 #include "nclink_adapter/ncl_driver.h"
 #include "nclink_adapter/ncl_audit.h"
 #include "nclink/ncl_config.h"
@@ -37,7 +38,6 @@
 
 typedef struct {
     char     *path;     /**< owned, the point's model path */
-    bool      writable;
     bool      sampled;
     /** False for a point that is declared but not readable yet (a pending
      *  point, see ncl_link's NCL_DATAITEM_PENDING / NCL_CONFIG_PENDING): it stays in the list so the
@@ -58,6 +58,12 @@ struct ncl_adapter {
     const ncl_tool_decl   *decl;
     /** Owned: what ncl_tool_register() opened, released in ncl_adapter_free(). */
     ncl_tool_registration *registration;
+    /**
+     * The file tool is a tool of its own (ncl_file_tool_declaration()), so an
+     * adapter is two tools: the module's and this one. Owned the same way; NULL
+     * when the configuration turned it off ("file": false).
+     */
+    ncl_tool_registration *file_registration;
     char               *sn;
     /** Owned: the model document this device publishes - the one built from the
      *  declaration, or the file the configuration named. Kept after the server
@@ -213,6 +219,39 @@ static const ncl_tool_decl *pick_tool(const ncl_module_set *modules,
  * be a driver, so a site does not have to rewrite its connection settings while
  * an adapter moves over to a declaration.
  */
+static const ncl_json *tool_parameters(const ncl_json *config, const char *name);
+
+/** The configuration's switch: `"file": false` leaves the built in file tool
+ *  out (for a site that brings its own model file and its own delivery). */
+static bool file_tool_wanted(const ncl_json *config)
+{
+    return ncl_json_obj_get_bool(config, "file", true);
+}
+
+/**
+ * The file tool's parameters: the "tools" entry named "file" (if the site wrote
+ * one) plus the device's SN - the peer keeps a device's files under "/<sn>/",
+ * so the tool has to be told which SN it is (bin/sn.txt is only the fallback).
+ */
+static ncl_json *file_tool_parameters(const ncl_json *config, const char *sn)
+{
+    const ncl_json *given = tool_parameters(config, "file");
+    ncl_json *params = ncl_json_new_object();
+    size_t i;
+
+    if (params == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < ncl_json_obj_len(given); i++) {
+        (void)ncl_json_obj_set(params, ncl_json_obj_key_at(given, i),
+                               ncl_json_clone(ncl_json_obj_val_at(given, i)));
+    }
+    if (sn != NULL) {
+        (void)ncl_json_obj_set_string(params, "sn", sn);
+    }
+    return params;
+}
+
 static const ncl_json *tool_parameters(const ncl_json *config, const char *name)
 {
     const ncl_json *tools = ncl_json_obj_get(config, "tools");
@@ -258,7 +297,7 @@ static ncl_err load_declared_points(ncl_adapter *adapter)
     for (i = 0; i < declared_count; i++) {
         const ncl_tool_point *declared = &adapter->decl->points[i];
 
-        if (declared->readable) { /* writable implies readable */
+        if (!ncl_tool_point_is_method(declared)) {
             adapter->point_count++;
         }
     }
@@ -274,12 +313,11 @@ static ncl_err load_declared_points(ncl_adapter *adapter)
         const ncl_tool_point *declared = &adapter->decl->points[i];
         adapter_point *point;
 
-        if (!declared->readable) {
+        if (ncl_tool_point_is_method(declared)) {
             continue;
         }
         point = &adapter->points[at++];
         point->path = ncl_strdup(declared->path);
-        point->writable = declared->writable;
         point->sampled = declared->sampled;
         point->available = declared->available;
         point->summary = declared->summary;
@@ -659,6 +697,15 @@ ncl_adapter *ncl_adapter_create_with_modules(const ncl_json *config,
             ncl_adapter_free(adapter);
             return NULL;
         }
+        /* The file tool is a tool of its own: its FILE point joins the model.
+         * A site that brings its own model file says what it wants instead. */
+        if (file_tool_wanted(config) &&
+            ncl_tool_model_add(model, ncl_file_tool_declaration(), device,
+                               err) == NULL) {
+            err_append(err, "cannot add the file tool to the model");
+            ncl_adapter_free(adapter);
+            return NULL;
+        }
     }
 
     /* The broker first: the server takes the client at creation and needs the
@@ -713,6 +760,24 @@ ncl_adapter *ncl_adapter_create_with_modules(const ncl_json *config,
         }
         ncl_audit_session(adapter->decl->name, "open", NULL);
     }
+    /* The file tool: a real tool of its own (declaration included), so it lands
+     * in the model above and binds its own point here. Its parameters are the
+     * configuration's "tools" entry named "file", with the device's SN in it -
+     * the peer keeps files under /<sn>/. */
+    if (file_tool_wanted(config)) {
+        ncl_json *file_params = file_tool_parameters(config, adapter->sn);
+        ncl_err rc = ncl_file_tool_register(adapter->server, file_params,
+                                           &k_tool_audit,
+                                           &adapter->file_registration, err);
+
+        ncl_json_free(file_params);
+        if (rc != NCL_OK) {
+            ncl_adapter_free(adapter);
+            return NULL;
+        }
+        ncl_log_info("工具 %s 已注册（%u 个点位）", "file",
+                     (unsigned)ncl_file_tool_declaration()->point_count);
+    }
     return adapter;
 }
 
@@ -746,6 +811,7 @@ void ncl_adapter_free(ncl_adapter *adapter)
         ncl_audit_session(adapter->decl->name, "close", NULL);
     }
     ncl_tool_unregister(adapter->decl, adapter->registration);
+    ncl_tool_unregister(ncl_file_tool_declaration(), adapter->file_registration);
     if (adapter->mqtt != NULL) {
         ncl_mqtt_client_disconnect(adapter->mqtt);
         ncl_mqtt_client_destroy(adapter->mqtt);

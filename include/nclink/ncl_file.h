@@ -39,6 +39,7 @@
 #include "nclink/ncl_json.h"
 #include "nclink/ncl_message.h"
 #include "nclink/ncl_server.h"
+#include "nclink/ncl_tool.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -473,6 +474,32 @@ bool ncl_client_file_channel_id(ncl_client *client, char *out, size_t out_len);
  * NCL_ERR_NO_CHANNEL.
  */
 ncl_err ncl_server_register_file_tool(ncl_server *server);
+
+/**
+ * The same tool, as a **declaration**: a host that publishes more than one tool
+ * (an adapter plus this one, say) registers it like any other tool, and the
+ * model carries its FILE point next to the host's own points.
+ *
+ * One point, `/MACHINE/CONTROLLER/FILE` (the standard's `FILE`, a dict):
+ *
+ *   get_value        read a file out (the device pushes it to the peer)
+ *   get_attributes   the listing
+ *   add / delete     make or remove a directory, remove a file
+ *   call             start a transfer - the call's params carry the file and
+ *                    the channel (host / port / user / password / channelId),
+ *                    so the handshake rides with the call
+ *
+ * The context (the tool's state) is created by the declaration's open(), so
+ * every registration has its own; the tool is not registered until this is
+ * called.
+ */
+const ncl_tool_decl *ncl_file_tool_declaration(void);
+
+/** Register the file tool on @p server (params: the tool's "parameters" object,
+ *  "sn" included - the directory layout on the peer is "/<sn>/..."). */
+ncl_err ncl_file_tool_register(ncl_server *server, const ncl_json *params,
+                               const ncl_tool_audit *audit,
+                               ncl_tool_registration **out, ncl_strbuf *err);
 
 /**
  * Point the device at a fixed FTP endpoint (the "static peer"), for hosts that

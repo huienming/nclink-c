@@ -5,6 +5,64 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 变更：模型写 `dataType`（跟字典走）+ 刀具列表 `/MACHINE/CONTROLLER/TOOL`
+
+声明式工具生成的模型原来一项 `dataType` 都没有，而 `FILE`（dict）、刀具列表（list）这类
+集合类数据对象正是靠它告诉客户端"值是字典还是列表"。现在按字典（32 册）的"类型"列补上，
+作者不用声明：
+
+- `HASH`（dict / JSON 对象）：`WARNING`、`FILE`、`PARAMETER`、`PART`、`TOOLPARAM`；
+- `LIST`：`COORDINATE`、`SHELF_UNIT`、`TOOL`、`VARIABLE`；
+- 标量（string / number）不写这一项 —— 与手写的那份设备模型一致。
+
+同时 FANUC 适配器加上刀具列表点位：`NCL_CONFIG_PENDING("/MACHINE/CONTROLLER/TOOL", …)`
+—— 名字取自表 7 的 `TOOL`（刀具，list），FOCAS 侧是刀补表/刀具表那一族调用、帧还没核对
+（32 册 §5 把它列在"待核"里），所以先按待抓包声明：模型里有它、问它有明确答复、轮询跳过。
+
+改动面：`src/core/tool.c`（`k_data_types` 表 + `tool_data_type_of()` + 模型写入）、
+`adapters/plugins/focas.c`、`tests/test_tool.c`（"FILE 是 HASH、刀具是 LIST"的模型断言）、
+文档（`adapters/README.md`、32 册 §5、`MANUAL.md` 4.3）。
+
+> 现场有的点表用 `TOOL_PARAM` 这个名字（28 册交付清单、29 册现场模型、Brother / KEDE），
+> 那是现场自定名、本册没有；实现层只认册子上的名字 —— **刀具列表是 `TOOL`**（list）、
+> **刀具参数是 `TOOLPARAM`**（JSON 对象）。现场核过的另两处：`PARAMETER` 是 `HASH`
+> （参数本身是字典），`COORDINATE` 是 `LIST`（一张表，跟刀具表一样）。
+
+验证：`build.ps1` 41/41；test_tool 242 checks / 0 failures。
+
+### 变更：操作位扩到标准的全部 11 种 —— 集合类数据对象（list / dict）能声明了
+
+声明层原来只有三个位（`readable` / `writable` / `callable`），也就是 `get_value` /
+`set_value` / `call` 三种操作。而标准第 5 部分给集合类单独定义了 `get_length`、
+`get_keys`、`get_attributes`（表 11）与 `add`、`delete`（表 13）—— file 工具那五条
+绑定（`read`/`write`/`ll`/`mkdir`/`delete` 就是 `get_value`/`set_value`/
+`get_attributes`/`add`/`delete`）因此一直写不进声明，只能绕过声明层直接注册。
+
+现在 `ncl_tool_point` 只有一个 `ops` 位集（`NCL_OP_BIT(NCL_OP_*)`），`k_operations`
+扩到 11 个（含方法调用之后的 `status` / `result` / `cancel`），宿主按位注册绑定：
+
+- 宏名字不变（`_RW` = `get_value | set_value`），新增 `NCL_DATAITEM_OPS` /
+  `NCL_CONFIG_OPS` 让作者按位写全 —— 字典里 list / dict 的数据项就用它；
+- 方法名：`get_value`→`"<点位>.read"`、`set_value`→`"<点位>.write"`（不变），其余按操作名
+  加后缀（`"<点位>.get_attributes"`、`"<点位>.add"`…），方法调用仍是裸名；校验里
+  "名字不许含 `.read`/`.write`"扩成"不许含任何一个操作后缀"；
+- 校验：`sampled` 要求 `get_value`；`NCL_OP_WRITE_MASK`（`set_value` / `add` /
+  `delete`）要求 `get_value`（可写必然可读）；`ops == 0` 仍是"没有声明任何操作"；
+- `ncl_tool_point_handles()` / `ncl_tool_point_is_method()`：宿主、适配器与作者问的是
+  同一句（"这个点位答不答这个操作" / "它是不是方法"）；
+- 顺带修：`src/core/tool.c` 少 include 了 `ncl_logger.h`（`ncl_log_warn` 隐式声明，
+  MSVC C4013）。
+
+改动面：`include/nclink/ncl_general.h`（`NCL_OP_BIT` / `NCL_OP_COUNT` 与 Query /
+Write / Call / Value 四个掩码）、`include/nclink/ncl_tool.h`（字段、宏表与注释）、
+`src/core/tool.c`（校验、模型、11 个 shim、按位注册）、`adapters/src/app/adapter.c`、
+`adapters/src/main.c`、`tests/test_tool.c`、文档（`adapters/README.md`、
+`FANUC-ADAPTER.md` §5、32 册 §5、`MANUAL.md`）。
+
+验证：`build.ps1` 41/41；test_tool 237 checks / 0 failures（新增"集合类"用例：
+5 个操作 = 5 个方法 + 5 条绑定，`get_attributes` 与 `add` 原样送到点位函数、
+`add` 也记进审计、没声明的 `get_keys` 走不通）。
+
 ### 变更：禁"只写" —— `writable` 蕴含 `readable`，宏 11 → 9
 
 数据对象只有两种访问能力（可读、可写），而且**可写必然可读**：

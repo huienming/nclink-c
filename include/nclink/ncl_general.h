@@ -85,6 +85,37 @@ typedef enum {
     NCL_OP_FUNC_CANCEL
 } ncl_operation;
 
+/** How many operations there are - a point holds one bit each. */
+#define NCL_OP_COUNT ((unsigned)NCL_OP_FUNC_CANCEL + 1u)
+
+/** Bit of @p op, for a set of operations (see ncl_tool_point.ops). */
+#define NCL_OP_BIT(op) (1u << (unsigned)(op))
+
+/**
+ * The operations of the standard's "Query" instruction (册 5 §5.2.7):
+ * get_value / get_length / get_keys / get_attributes.
+ */
+#define NCL_OP_QUERY_MASK                                              \
+    (NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |    \
+     NCL_OP_BIT(NCL_OP_GET_KEYS) | NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
+
+/**
+ * The operations of the standard's "Set" instruction (册 5 §5.2.8):
+ * set_value / add / delete. Every one of them changes something, so a
+ * point that answers one of them has to be readable too.
+ */
+#define NCL_OP_WRITE_MASK                                              \
+    (NCL_OP_BIT(NCL_OP_SET_VALUE) | NCL_OP_BIT(NCL_OP_ADD) |          \
+     NCL_OP_BIT(NCL_OP_DELETE))
+
+/** The call family: a method call and the status / result / cancel it has. */
+#define NCL_OP_CALL_MASK                                               \
+    (NCL_OP_BIT(NCL_OP_FUNC_CALL) | NCL_OP_BIT(NCL_OP_FUNC_STATUS) |  \
+     NCL_OP_BIT(NCL_OP_FUNC_RESULT) | NCL_OP_BIT(NCL_OP_FUNC_CANCEL))
+
+/** Everything that reaches a value: a point with none of them is a method. */
+#define NCL_OP_VALUE_MASK (NCL_OP_QUERY_MASK | NCL_OP_WRITE_MASK)
+
 /** Keyword of @p op, e.g. "get_value" or "set_value". */
 const char *ncl_operation_to_string(ncl_operation op);
 

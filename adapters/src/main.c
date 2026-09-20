@@ -204,7 +204,7 @@ static void log_modules(const ncl_module_set *set)
             size_t p;
 
             for (p = 0; p < tool->point_count; p++) {
-                if (tool->points[p].readable) { /* writable implies readable */
+                if (!ncl_tool_point_is_method(&tool->points[p])) {
                     values++;
                 } else {
                     methods++;

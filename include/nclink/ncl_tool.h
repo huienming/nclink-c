@@ -45,18 +45,20 @@
  *     friends) and comes back as @p self->arg, so one dispatch function can
  *     serve a whole table of points and still know which entry it is on.
  *
- * A point declares what may be done with it: readable (Query/get_value),
- * writable (Set/set_value) and/or callable (a Method call). The same path may
- * be several of those at once - "read the mode, and write it" is one point
- * with both flags - and `sampled` asks the host to put the path in the sample
- * channel (which means the point has to be readable).
+ * A point declares which **operations** it answers - the standard's Query
+ * (get_value, get_length, get_keys, get_attributes), its Set (set_value,
+ * add, delete) and a method call, plus the status / result / cancel that
+ * follow one (册 5 §5.2.7/§5.2.8). One path may answer several of them -
+ * "read the mode, and write it" is one point with both bits - and
+ * `sampled` asks the host to put the path in the sample channel (which
+ * means the point has to answer get_value).
  *
- * A point that can be written is always readable as well: the validator
- * refuses a write only point. The trail wants the old value of a write and
- * a write nobody can read back is a write nobody can confirm. What a device
- * only takes as a command - a password, a reset pulse, a clear - is not a
- * data object at all: declare it with NCL_METHOD and let the call's params
- * carry the value.
+ * A point that changes something is readable as well: the validator refuses
+ * a point whose editing operation (NCL_OP_WRITE_MASK) is not next to
+ * get_value. The trail wants the old value of a write and a write nobody
+ * can read back is a write nobody can confirm. What a device only takes as
+ * a command - a password, a reset pulse, a clear - is not a data object at
+ * all: declare it with NCL_METHOD and let the call's params carry the value.
  *
  * Two deliberate omissions:
  *
@@ -137,12 +139,19 @@ typedef void (*ncl_tool_last_raw_fn)(void *ctx, ncl_tool_frames *out);
 struct ncl_tool_point {
     /** Model path, e.g. "/MACHINE/STATUS@RUN". Also how the point is addressed. */
     const char *path;
-    bool        readable; /**< Query / get_value may read it  */
-    bool        writable; /**< Set / set_value may write it   */
-    /* Writable implies readable: the validator refuses a write only point -
-     * the trail wants the old value, and what cannot be read back cannot be
-     * confirmed. A device that only takes a command gets a method instead. */
-    bool        callable; /**< a Method call may reach it     */
+    /**
+     * The operations this point answers: one bit per ncl_operation, written
+     * NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) | ... - the
+     * standard's Query / Set operations and a method call (册 5 §5.2.7/§5.2.8).
+     * The macros below fill it in; a point that names no value operation
+     * (NCL_OP_VALUE_MASK) is a **method** (ncl_tool_point_is_method()).
+     *
+     * Editing an operation changes something, so it is only allowed next to
+     * GET_VALUE (NCL_OP_WRITE_MASK implies GET_VALUE): the trail wants the old
+     * value of a write and what cannot be read back cannot be confirmed. A
+     * device that only takes a command gets a method instead.
+     */
+    unsigned    ops;
     /** Ask the host to sample this path (the point has to be readable). */
     bool        sampled;
     /** The function serving this point. Required. */
@@ -185,6 +194,28 @@ struct ncl_tool_point {
 };
 
 /**
+ * True when the point answers @p op. The host asks this before it binds an
+ * operation, and it is what makes a declaration's point table the whole
+ * truth about a point: an operation nobody named is never called.
+ */
+static inline bool ncl_tool_point_handles(const ncl_tool_point *point,
+                                          ncl_operation op)
+{
+    return point != NULL && (point->ops & NCL_OP_BIT(op)) != 0;
+}
+
+/**
+ * True when the point is a **method**: it names no value operation, so a
+ * call is the only way to reach it. A method is not a data object - it is
+ * in no model and in no sample channel - which is why the model writer and
+ * an adapter's point list both ask here.
+ */
+static inline bool ncl_tool_point_is_method(const ncl_tool_point *point)
+{
+    return point == NULL || (point->ops & NCL_OP_VALUE_MASK) == 0;
+}
+
+/**
  * One tool: what the host needs to build a model, a sample channel and the
  * bindings. NCL_TOOL_BEGIN/NCL_TOOL_END fill it in; its fields and its points
  * are borrowed and must outlive the server (a static declaration does).
@@ -215,22 +246,29 @@ typedef struct {
  * The declaration macros. One tool per file - that is the whole point - so the
  * generated names can be file scope and the author never sees them.
 /*
- * 声明宏：一个点位一行，先说清是**哪一类数据对象**（册 3 §5.4/§5.5），再说它能怎么被访问：
+ * 声明宏：一个点位一行，先写**哪一类数据对象**（册 3 §5.4/§5.5），再写它能被
+ * 怎么访问 —— 访问就是标准第 5 部分那些操作：Query（get_value / get_length /
+ * get_keys / get_attributes）、Set（set_value / add / delete）和方法调用（call）。
  *
  *   NCL_DATAITEM(路径, 函数, 数据)   dataItem：物理量、感知量 —— 能进采样通道
- *   NCL_CONFIG(路径, 函数, 数据)     config：参数、坐标系、刀具表、元信息 —— 不进采样通道
+ *   NCL_CONFIG(路径, 函数, 数据)     config：参数、坐标系、刀具表、文件… —— 不进采样通道
  *   NCL_METHOD(路径, 函数, 数据)     方法：不是数据对象，只响应调用
  *
- * 三个基本形之外只剩四个变体：
+ * 基本形之外还有这些形状：
  *
- *   _RW             可读可写（**可写必然可读**：只写的数据对象不许进模型 —— 审计
- *                   要记下写之前的旧值，读不回来的写也没法确认；真只写的东西
- *                   （口令、复位脉冲、清零）不是数据对象，写成 NCL_METHOD，
- *                   值走方法调用的参数）
  *   _SAMPLED        并进默认采样通道（**只有 dataItem 有** —— 册 3 表 1 注 b：
  *                   配置中的数据对象不得作为采样数据源）
+ *   _RW             可读可写（get_value | set_value）
+ *   _OPS            自报操作集：集合类数据对象（list / dict）要 get_length、
+ *                   get_keys、get_attributes、add、delete（册 5 表 11 / 表 13），
+ *                   就把要的操作按位写全，例如
+ *                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_ADD)
  *   _PENDING        协议调用还没抓到帧：把"函数, 数据"换成"理由"，理由必填
  *   _PENDING_SAMPLED  同上，并且占着采样通道（只有 dataItem 有）
+ *
+ * 两条校验兜底（手写这张表也拦得住）：**可写必然可读**（set_value / add / delete
+ * 都要求 get_value —— 审计要记写之前的旧值，读不回来的写也没法确认，真只写的
+ * 东西写成 NCL_METHOD，值走方法调用的参数）；**config 不许进采样通道**。
  *
  * 点位自己的数据（寄存器地址、协议项名、映射表条目）写在第三个参数上；点位没有自己的
  * 数据就写 NULL。一个 dispatch 服务整张表时，靠 self->arg 分辨自己落在哪一行。
@@ -247,34 +285,48 @@ typedef struct {
  * 路径唯一，推出来的名字就唯一，所以不用手写名字。
  */
 #define NCL_DATAITEM(path_literal, fn, arg)                                    \
-    { path_literal, true, false, false, false, fn, true, false, arg, NULL },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), false, fn, true, false,      \
+      arg, NULL },
 
 #define NCL_DATAITEM_SAMPLED(path_literal, fn, arg)                            \
-    { path_literal, true, false, false, true, fn, true, false, arg, NULL },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), true, fn, true, false,       \
+      arg, NULL },
 
 #define NCL_DATAITEM_RW(path_literal, fn, arg)                                 \
-    { path_literal, true, true, false, false, fn, true, false, arg, NULL },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE), \
+      false, fn, true, false, arg, NULL },
+
+/** 自报操作集：集合类数据对象用它写清 get_length / get_keys / add / delete 这些。 */
+#define NCL_DATAITEM_OPS(path_literal, fn, arg, ops_value)                     \
+    { path_literal, (ops_value), false, fn, true, false, arg, NULL },
 
 #define NCL_DATAITEM_PENDING(path_literal, summary_literal)                    \
-    { path_literal, true, false, false, false, NULL, false, false, NULL,       \
-      summary_literal },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), false, NULL, false,          \
+      false, NULL, summary_literal },
 
 #define NCL_DATAITEM_PENDING_SAMPLED(path_literal, summary_literal)            \
-    { path_literal, true, false, false, true, NULL, false, false, NULL,        \
-      summary_literal },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), true, NULL, false,           \
+      false, NULL, summary_literal },
 
 #define NCL_CONFIG(path_literal, fn, arg)                                      \
-    { path_literal, true, false, false, false, fn, true, true, arg, NULL },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), false, fn, true, true,       \
+      arg, NULL },
 
 #define NCL_CONFIG_RW(path_literal, fn, arg)                                   \
-    { path_literal, true, true, false, false, fn, true, true, arg, NULL },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE) |                             \
+          NCL_OP_BIT(NCL_OP_SET_VALUE), false, fn, true, true, arg, NULL },
+
+/** 同上，操作集自己写：文件（dict）、刀具表（list）这类集合就是用它。 */
+#define NCL_CONFIG_OPS(path_literal, fn, arg, ops_value)                       \
+    { path_literal, (ops_value), false, fn, true, true, arg, NULL },
 
 #define NCL_CONFIG_PENDING(path_literal, summary_literal)                      \
-    { path_literal, true, false, false, false, NULL, false, true, NULL,        \
-      summary_literal },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), false, NULL, false,          \
+      true, NULL, summary_literal },
 
 #define NCL_METHOD(path_literal, fn, arg)                                      \
-    { path_literal, false, false, true, false, fn, true, false, arg, NULL },
+    { path_literal, NCL_OP_BIT(NCL_OP_FUNC_CALL), false, fn, true, false,      \
+      arg, NULL },
 
 #define NCL_TOOL_BEGIN(name_literal, description_literal, sample_ms_value,     \
                        upload_ms_value, open_fn, close_fn)                     \
@@ -410,6 +462,19 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err);
  */
 ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                          ncl_strbuf *err);
+
+/**
+ * The same, for a host that publishes more than one tool: @p document is what
+ * the first call returned (NULL for the first), and the declaration's points
+ * are merged into the very same device - a component both tools use (the
+ * CONTROLLER, say) stays one component, and ids are renumbered so they stay
+ * unique across the document.
+ *
+ * Returns the document, or NULL with @p err set - @p document is the caller's
+ * and is left as it was.
+ */
+ncl_json *ncl_tool_model_add(ncl_json *document, const ncl_tool_decl *decl,
+                             const ncl_json *device, ncl_strbuf *err);
 
 /** What one registered declaration keeps alive (the per point shims). */
 typedef struct ncl_tool_registration ncl_tool_registration;

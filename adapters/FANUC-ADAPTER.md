@@ -207,18 +207,22 @@ NCL_DATAITEM_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rd
 | `NCL_DATAITEM(路径, 函数, 地址)` | `dataItems` | 可读（Query），只按需读 |
 | `NCL_DATAITEM_SAMPLED(路径, 函数, 地址)` | `dataItems` | 同上，**并进采样通道** |
 | `NCL_DATAITEM_RW(路径, 函数, 地址)` | `dataItems` | 可读可写 |
+| `NCL_DATAITEM_OPS(路径, 函数, 地址, 操作集)` | `dataItems` | 各操作按位自报（集合类用它：`get_length` / `get_keys` / `add` / `delete`） |
 | `NCL_DATAITEM_PENDING[_SAMPLED](路径, 理由)` | `dataItems` | **待抓包**：声明了、模型里有、问它有明确答复，但没有函数可调（见下） |
-| `NCL_CONFIG[_RW](路径, 函数, 地址)` | `configs` | 配置型（参数、坐标系、刀具表…）：可查询/可修改，**没有 SAMPLED 形式**（册 3 表 1 注 b） |
+| `NCL_CONFIG[_RW\|_OPS](路径, 函数, 地址[, 操作集])` | `configs` | 配置型（参数、坐标系、刀具表、文件…）：可查询/可修改，**没有 SAMPLED 形式**（册 3 表 1 注 b） |
 | `NCL_CONFIG_PENDING(路径, 理由)` | `configs` | 同上，"待抓包"的配置型 |
 | `NCL_METHOD(路径, 函数, 数据)` | 进不了模型 | 方法调用（不是数据对象） |
 
-两族就这 9 个宏，没有 `_ARG` / `_NAMED` 后缀：**数据总是第三个参数**（没有就写 `NULL`），
+两族就这 11 个宏，没有 `_ARG` / `_NAMED` 后缀：**数据总是第三个参数**（没有就写 `NULL`），
 **点位名字从路径自动推**（去掉设备段、`@`→`_`、`/`→`.`）—— `/MACHINE/AXIS@X/POSITION@REAL`
 就是 `AXIS_X.POSITION_REAL`，所以路径尾段重名也不用管。方法调用地址是 `<工具>/<名字>`。
 
-**可写必然可读**：没有只写的数据对象 —— 审计要记写之前的旧值，读不回来的写也没法确认；
-声明成"只写"会被校验拒掉。设备真只收命令的（口令、复位脉冲、清零）写成 `NCL_METHOD`，
-值走方法调用的参数。
+**操作按位写**：点位声明它答哪些操作（册 5 表 11 的 `get_value` / `get_length` /
+`get_keys` / `get_attributes`、表 13 的 `set_value` / `add` / `delete`）。`_RW` 就是
+前两者的组合；集合类（`FILE` 是 dict、刀具表 `TOOL` 是 list）用 `_OPS` 把
+`get_length`、`get_keys`、`add`、`delete` 这些写全。**可写必然可读**：`set_value` /
+`add` / `delete` 都要求 `get_value`（审计要记写之前的旧值，读不回来的写也没法确认）；
+设备真只收命令的（口令、复位脉冲、清零）写成 `NCL_METHOD`，值走方法调用的参数。
 
 `*_PENDING` 是给"架构上已经定下来、协议调用还没抓到帧"的点位用的：它在模型里看得见，
 客户端 `Query` 它会拿到一句明确的"还没抓包"（而不是"没有这个点位"），自检把它报成

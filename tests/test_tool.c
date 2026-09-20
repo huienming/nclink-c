@@ -152,14 +152,15 @@ static void test_declaration(void)
     NCL_CHECK(decl.close == fixture_close);
 
     NCL_TEST_CASE("a readable point may also be writable and carry its own data");
-    NCL_CHECK(decl.points[0].readable);
+    NCL_CHECK(ncl_tool_point_handles(&decl.points[0], NCL_OP_GET_VALUE));
     NCL_CHECK(decl.points[0].sampled);
-    NCL_CHECK(!decl.points[0].writable);
+    NCL_CHECK(!ncl_tool_point_handles(&decl.points[0], NCL_OP_SET_VALUE));
     NCL_CHECK(decl.points[0].arg == (const void *)&k_run_item);
-    NCL_CHECK(decl.points[2].readable);
-    NCL_CHECK(decl.points[2].writable);
-    NCL_CHECK(!decl.points[3].readable);
-    NCL_CHECK(decl.points[3].callable);
+    NCL_CHECK(ncl_tool_point_handles(&decl.points[2], NCL_OP_GET_VALUE));
+    NCL_CHECK(ncl_tool_point_handles(&decl.points[2], NCL_OP_SET_VALUE));
+    NCL_CHECK(!ncl_tool_point_handles(&decl.points[3], NCL_OP_GET_VALUE));
+    NCL_CHECK(ncl_tool_point_is_method(&decl.points[3]));
+    NCL_CHECK(ncl_tool_point_handles(&decl.points[3], NCL_OP_FUNC_CALL));
     NCL_CHECK(decl.points[3].arg == NULL);
 
     NCL_TEST_CASE("a well formed declaration validates");
@@ -223,7 +224,7 @@ static void test_validate(void)
     points[0].fn = NULL;
     expect_refused(&broken, "has no function");
     points[0] = decl.points[0];
-    points[0].readable = false;
+    points[0].ops = 0; /* no operation at all */
     points[0].sampled = false;
     points[0].fn = fixture_dispatch;
     broken.points = points;
@@ -232,17 +233,15 @@ static void test_validate(void)
 
     NCL_TEST_CASE("only a readable point may be sampled");
     points[0] = decl.points[0];
-    points[0].readable = false;
-    points[0].writable = true;
+    points[0].ops = NCL_OP_BIT(NCL_OP_SET_VALUE);
     broken.points = points;
     broken.point_count = 1;
     expect_refused(&broken, "sampled but not readable");
 
     NCL_TEST_CASE("a point that can be written can always be read too");
     points[0] = decl.points[0];
-    points[0].readable = false;
     points[0].sampled = false;
-    points[0].writable = true;
+    points[0].ops = NCL_OP_BIT(NCL_OP_SET_VALUE);
     points[0].fn = fixture_dispatch;
     broken.points = points;
     broken.point_count = 1;
@@ -271,7 +270,6 @@ static void test_validate(void)
     NCL_TEST_CASE("配置型数据（参数、坐标系、刀具表…）不能进采样通道");
     points[0] = decl.points[1]; /* /MACHINE/NAME：表 6 的元信息，属 configs */
     points[0].sampled = true;
-    points[0].readable = true;
     points[0].fn = fixture_dispatch;
     broken = decl;
     broken.points = points;
@@ -500,7 +498,7 @@ static void test_model_paths_match_declaration(void)
                 char id[32];
                 ncl_node *node;
 
-                if (!decl.points[i].readable && !decl.points[i].writable) {
+                if (ncl_tool_point_is_method(&decl.points[i])) {
                     continue; /* a method: it is not a data item */
                 }
                 snprintf(id, sizeof(id), "p%u", (unsigned)i);
@@ -685,6 +683,95 @@ static ncl_message *set_value(const char *path, long long value)
     return request;
 }
 
+static ncl_message *query_op(const char *path, const char *operation)
+{
+    ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+    ncl_query_request_item *item = ncl_query_request_item_new(path);
+
+    (void)ncl_params_set_string(&item->params, "operation", operation);
+    (void)ncl_message_set_message_id(request, "q2");
+    (void)ncl_message_add_query_request_item(request, item);
+    return request;
+}
+
+static ncl_message *set_op(const char *path, const char *operation,
+                           long long value)
+{
+    ncl_message *request = ncl_message_new(NCL_MSG_SET_REQUEST);
+    ncl_set_request_item *item = ncl_set_request_item_new(path);
+
+    (void)ncl_params_set_string(&item->params, "operation", operation);
+    (void)ncl_params_set_int(&item->params, "value", value);
+    (void)ncl_message_set_message_id(request, "s2");
+    (void)ncl_message_add_set_request_item(request, item);
+    return request;
+}
+
+/* ---------------------------------------------------------- 集合类数据对象 -- */
+
+/*
+ * list / dict 类型的数据对象：标准第 5 部分给它们单独定义了 get_length、
+ * get_keys、get_attributes（表 11）与 add、delete（表 13）。声明把要的操作按位
+ * 写全（NCL_DATAITEM_OPS / NCL_CONFIG_OPS），宿主按位绑 —— 文件（dict）就是这样。
+ */
+
+static ncl_operation g_collection_op;
+static int g_collection_attributes;
+static int g_collection_adds;
+
+static ncl_err collection_dispatch(void *ctx, const ncl_tool_point *self,
+                                   ncl_operation op, const ncl_json *params,
+                                   ncl_json **result, char **reason)
+{
+    (void)ctx;
+    (void)params;
+    g_collection_op = op;
+    switch (op) {
+    case NCL_OP_GET_VALUE:
+        return ncl_tool_reply_text(result, "{}");
+    case NCL_OP_GET_ATTRIBUTES:
+        g_collection_attributes++;
+        return ncl_tool_reply_text(result, "[]");
+    case NCL_OP_SET_VALUE:
+    case NCL_OP_DELETE:
+        return ncl_tool_reply_bool(result, true);
+    case NCL_OP_ADD:
+        g_collection_adds++;
+        return ncl_tool_reply_bool(result, true);
+    default:
+        break;
+    }
+    return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
+                         "unsupported operation on %s", self->path);
+}
+
+/** dict 的操作集 = 读、写、取属性、新建、删除；刀具列表（list）只要读那几种。 */
+static const ncl_tool_point k_collection_points[] = {
+    NCL_CONFIG_OPS("/MACHINE/CONTROLLER/FILE", collection_dispatch, NULL,
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) |
+                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES) |
+                       NCL_OP_BIT(NCL_OP_ADD) | NCL_OP_BIT(NCL_OP_DELETE))
+    NCL_CONFIG_OPS("/MACHINE/CONTROLLER/TOOL", collection_dispatch, NULL,
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
+                       NCL_OP_BIT(NCL_OP_GET_KEYS))
+    /* COORDINATE 与刀具表一样是一张表（LIST）。 */
+    NCL_CONFIG_OPS("/MACHINE/CONTROLLER/COORDINATE", collection_dispatch, NULL,
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
+                       NCL_OP_BIT(NCL_OP_GET_KEYS))
+};
+
+static ncl_tool_decl file_decl(void)
+{
+    ncl_tool_decl decl = fixture_decl();
+
+    decl.name = "file";
+    decl.sample_ms = 0; /* 文件不是采样源 */
+    decl.points = k_collection_points;
+    decl.point_count =
+        sizeof(k_collection_points) / sizeof(k_collection_points[0]);
+    return decl;
+}
+
 /* ---------------------------------------------------------------- pending -- */
 
 /*
@@ -727,7 +814,7 @@ static void test_pending(void)
     ncl_strbuf_init(&err);
     NCL_CHECK_EQ_INT(ncl_tool_validate(&decl, &err), NCL_OK);
     NCL_CHECK_EQ_INT((int)err.len, 0);
-    NCL_CHECK(decl.points[1].readable);
+    NCL_CHECK(ncl_tool_point_handles(&decl.points[1], NCL_OP_GET_VALUE));
     NCL_CHECK(decl.points[1].sampled);
     NCL_CHECK(!decl.points[1].available);
     NCL_CHECK(decl.points[1].fn == NULL);
@@ -1027,6 +1114,261 @@ static void test_register_and_invoke(void)
     ncl_strbuf_free(&err);
 }
 
+static void test_collection_ops(void)
+{
+    ncl_tool_decl decl = file_decl();
+    ncl_tool_decl broken;
+    ncl_tool_point point;
+    ncl_strbuf err;
+    ncl_json *model;
+    char *model_json;
+    ncl_server_options options;
+    ncl_server *server;
+    ncl_tool_registration *registration = NULL;
+
+    ncl_strbuf_init(&err);
+
+    NCL_TEST_CASE("操作集按位写全：dict 的读、写、取属性、新建、删除");
+    NCL_CHECK_EQ_INT(ncl_tool_validate(&decl, &err), NCL_OK);
+    NCL_CHECK_EQ_INT((int)err.len, 0);
+    NCL_CHECK(!ncl_tool_point_is_method(&decl.points[0]));
+    NCL_CHECK(ncl_tool_point_handles(&decl.points[0], NCL_OP_GET_ATTRIBUTES));
+    NCL_CHECK(ncl_tool_point_handles(&decl.points[0], NCL_OP_ADD));
+    NCL_CHECK(!ncl_tool_point_handles(&decl.points[0], NCL_OP_GET_KEYS));
+
+    NCL_TEST_CASE("只声明一个写操作（add）也要可读：可写必然可读");
+    broken = decl;
+    point = k_collection_points[0];
+    point.ops = NCL_OP_BIT(NCL_OP_ADD);
+    broken.points = &point;
+    broken.point_count = 1;
+    expect_refused(&broken, "can be written but not read");
+
+    NCL_TEST_CASE("声明里写不出来的操作名不许出现在点位名里");
+    point = k_collection_points[0];
+    point.path = "/MACHINE/CONTROLLER/FILE.add";
+    broken.points = &point;
+    broken.point_count = 1;
+    expect_refused(&broken, ".add");
+
+    model = ncl_tool_model(&decl, NULL, &err);
+    NCL_CHECK(model != NULL);
+    if (model == NULL) {
+        ncl_strbuf_free(&err);
+        return;
+    }
+
+    NCL_TEST_CASE("模型里 dataType 跟着字典走：FILE / 参数是 HASH，表类的是 LIST");
+    {
+        ncl_json *device =
+            ncl_json_arr_get(ncl_json_obj_get(model, "devices"), 0);
+        ncl_json *controller =
+            ncl_json_arr_get(ncl_json_obj_get(device, "components"), 0);
+        ncl_json *configs = ncl_json_obj_get(controller, "configs");
+        ncl_json *file_item = ncl_json_arr_get(configs, 0);
+        ncl_json *tool_item = ncl_json_arr_get(configs, 1);
+        ncl_json *coordinate_item = ncl_json_arr_get(configs, 2);
+
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(controller, "type"),
+                         "CONTROLLER");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(file_item, "type"), "FILE");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(file_item, "dataType"), "HASH");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(tool_item, "type"), "TOOL");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(tool_item, "dataType"), "LIST");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(coordinate_item, "type"),
+                         "COORDINATE");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(coordinate_item, "dataType"),
+                         "LIST");
+    }
+
+    model_json = ncl_json_write_string(model);
+    ncl_json_free(model);
+    NCL_CHECK(model_json != NULL);
+    if (model_json == NULL) {
+        ncl_strbuf_free(&err);
+        return;
+    }
+
+    memset(&options, 0, sizeof(options));
+    options.sn = "V000000002";
+    options.model_json = model_json;
+    server = ncl_server_create(&options);
+    ncl_free_safe(model_json);
+    NCL_CHECK(server != NULL);
+    if (server == NULL) {
+        ncl_strbuf_free(&err);
+        return;
+    }
+
+    NCL_TEST_CASE("宿主按位绑定：11 个操作 = 11 个方法 + 11 条绑定");
+    NCL_CHECK_EQ_INT(ncl_tool_register(server, &decl, NULL, &k_sink,
+                                       &registration, &err),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT((int)err.len, 0);
+    NCL_CHECK_EQ_INT(ncl_server_binding_count(server), 22);
+    NCL_CHECK_EQ_INT(ncl_server_operation_count(server), 11);
+
+    NCL_TEST_CASE("get_attributes 原样送到点位的函数");
+    {
+        ncl_message *request =
+            query_op("/MACHINE/CONTROLLER/FILE", "get_attributes");
+        ncl_message *response = ncl_server_invoke_query(server, request);
+        ncl_query_response_item *item;
+
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            item = (ncl_query_response_item *)ncl_message_item_at(response, 0);
+            NCL_CHECK(item != NULL);
+            if (item != NULL) {
+                NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_OK);
+            }
+            ncl_message_free(response);
+        }
+        ncl_message_free(request);
+        NCL_CHECK_EQ_INT(g_collection_attributes, 1);
+        NCL_CHECK_EQ_INT((int)g_collection_op, (int)NCL_OP_GET_ATTRIBUTES);
+    }
+
+    NCL_TEST_CASE("add 也算写：点位拿到 add，审计拿到被覆盖的值");
+    {
+        int writes_before = g_sink_writes;
+        ncl_message *request = set_op("/MACHINE/CONTROLLER/FILE", "add", 7);
+        ncl_message *response = ncl_server_invoke_set(server, request);
+
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_set_response_item *item =
+                (ncl_set_response_item *)ncl_message_item_at(response, 0);
+
+            NCL_CHECK(item != NULL);
+            if (item != NULL) {
+                NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_OK);
+            }
+            ncl_message_free(response);
+        }
+        ncl_message_free(request);
+        NCL_CHECK_EQ_INT(g_collection_adds, 1);
+        NCL_CHECK_EQ_INT((int)g_collection_op, (int)NCL_OP_ADD);
+        NCL_CHECK_EQ_INT(g_sink_writes, writes_before + 1);
+        NCL_CHECK_EQ_INT(g_sink_new, 7);
+        NCL_CHECK_EQ_STR(g_sink_path, "/MACHINE/CONTROLLER/FILE");
+    }
+
+    NCL_TEST_CASE("没声明的操作走不通：宿主只绑声明过的");
+    {
+        ncl_message *request =
+            query_op("/MACHINE/CONTROLLER/FILE", "get_keys");
+        ncl_message *response = ncl_server_invoke_query(server, request);
+
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_query_response_item *item =
+                (ncl_query_response_item *)ncl_message_item_at(response, 0);
+
+            NCL_CHECK(item != NULL);
+            if (item != NULL) {
+                NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_NG);
+            }
+            ncl_message_free(response);
+        }
+        ncl_message_free(request);
+    }
+
+    ncl_tool_unregister(&decl, registration);
+    ncl_server_free(server);
+    ncl_strbuf_free(&err);
+}
+
+/** The component of @p components that carries @p type, or NULL. */
+static ncl_json *find_component(ncl_json *components, const char *type)
+{
+    size_t i;
+
+    for (i = 0; i < ncl_json_arr_len(components); i++) {
+        ncl_json *component = ncl_json_arr_get(components, i);
+        const char *other = ncl_json_obj_get_string(component, "type");
+
+        if (other != NULL && strcmp(other, type) == 0) {
+            return component;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * 一个宿主发布多个工具（适配器自己的 + file 工具）：模型是一份 —— 两台工具的
+ * 点位挂在同一台设备下，共用的组件只出现一次，id 重排过所以不撞。
+ */
+static void test_several_tools(void)
+{
+    ncl_tool_decl first = fixture_decl();
+    ncl_tool_decl second = file_decl();
+    ncl_strbuf err;
+    ncl_json *model;
+    ncl_json *device;
+    ncl_json *components;
+    ncl_json *controller;
+    ncl_json *configs;
+
+    ncl_strbuf_init(&err);
+
+    NCL_TEST_CASE("两份声明合成一份模型：共用的组件只有一份，id 接着排");
+    model = ncl_tool_model(&first, NULL, &err);
+    NCL_CHECK(model != NULL);
+    if (model == NULL) {
+        ncl_strbuf_free(&err);
+        return;
+    }
+    NCL_CHECK(ncl_tool_model_add(model, &second, NULL, &err) == model);
+
+    device = ncl_json_arr_get(ncl_json_obj_get(model, "devices"), 0);
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(model, "devices")), 1);
+    /* 夹具的 dataItems（STATUS@RUN、MODE）与 configs（NAME + 采样通道）还在。 */
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(device, "dataItems")), 2);
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(device, "configs")), 2);
+    /* CONTROLLER 是两台工具共用的组件：只有一份。 */
+    components = ncl_json_obj_get(device, "components");
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(components), 1);
+    controller = find_component(components, "CONTROLLER");
+    NCL_CHECK(controller != NULL);
+    if (controller != NULL) {
+        configs = ncl_json_obj_get(controller, "configs");
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(configs), 3);
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(configs, 0),
+                                                 "type"),
+                         "FILE");
+        /* id 是模型自己的编号：第一台工具的点位排到 p2（它的方法不进模型），
+         * 第二台工具从 p3 接着排。路径才是身份，宿主按路径查节点。 */
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(configs, 0),
+                                                 "id"),
+                         "p3");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(configs, 2),
+                                                 "id"),
+                         "p5");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(configs, 2),
+                                                 "type"),
+                         "COORDINATE");
+    }
+
+    NCL_TEST_CASE("设备段不一样的声明合不进来");
+    {
+        ncl_tool_decl foreign = second;
+        ncl_tool_point point = k_collection_points[0];
+        ncl_strbuf probe;
+
+        point.path = "/PLC1/CONTROLLER/FILE";
+        foreign.points = &point;
+        foreign.point_count = 1;
+        ncl_strbuf_init(&probe);
+        NCL_CHECK(ncl_tool_model_add(model, &foreign, NULL, &probe) == NULL);
+        NCL_CHECK(probe.len > 0);
+        ncl_strbuf_free(&probe);
+    }
+
+    ncl_json_free(model);
+    ncl_strbuf_free(&err);
+}
+
 NCL_TEST_MAIN_BEGIN()
     test_declaration();
     test_validate();
@@ -1035,4 +1377,6 @@ NCL_TEST_MAIN_BEGIN()
     test_helpers();
     test_register_and_invoke();
     test_pending();
+    test_collection_ops();
+    test_several_tools();
 NCL_TEST_MAIN_END()

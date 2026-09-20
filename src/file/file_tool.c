@@ -306,6 +306,30 @@ static ncl_err file_tool_close_channel(void *instance, const ncl_json *params,
  *   value is the file name   -> same (that is what the client side sends);
  *   value is the local path  -> it was uploaded through HTTP, so take it.
  */
+/**
+ * The transfer call: the channel rides with it. A call that names a peer
+ * (host / port / user / channelId) opens the channel first - that is the
+ * handshake, now part of this call - and then the file moves, so one call
+ * does what "openFileChannel" + "write" used to do in two steps.
+ */
+static ncl_err file_tool_write(void *instance, const ncl_json *params,
+                               ncl_json **result, char **reason);
+
+static ncl_err file_tool_transfer(void *instance, const ncl_json *params,
+                                  ncl_json **result, char **reason)
+{
+    if (!ncl_str_is_blank(ncl_params_string(params, "host"))) {
+        ncl_json *opened = NULL;
+        ncl_err rc = file_tool_open_channel(instance, params, &opened, reason);
+
+        ncl_json_free(opened);
+        if (rc != NCL_OK) {
+            return rc;
+        }
+    }
+    return file_tool_write(instance, params, result, reason);
+}
+
 static ncl_err file_tool_write(void *instance, const ncl_json *params,
                                ncl_json **result, char **reason)
 {
@@ -657,6 +681,31 @@ static ncl_err file_state_require_peer(ncl_file_tool_state *state, char **reason
 }
 
 /**
+ * A state of its own, for the declaration path - there the state is the
+ * tool's context. NULL when there is no memory.
+ *
+ * 对端目录用的是"协议里的 SN"，也就是设备自己的 SN：客户端把文件放在
+ * <cwd>/<它寻址的那个 SN>/ 下，而它寻址的就是这个 SN。bin/sn.txt 是
+ * "设备从文件里读 SN"那条路用的（ncl_sn_read() 会生成它），两者可能不一样
+ * —— 用 bin/sn.txt 的话，显式指定 SN 的设备端就找不到客户端摆好的文件。
+ */
+static ncl_file_tool_state *file_state_create(const char *sn)
+{
+    ncl_file_tool_state *state =
+        (ncl_file_tool_state *)ncl_mem_calloc(1, sizeof(*state));
+
+    if (state == NULL) {
+        return NULL;
+    }
+    state->sn = ncl_strdup(sn);
+    if (state->sn == NULL) {
+        ncl_mem_free(state);
+        return NULL;
+    }
+    return state;
+}
+
+/**
  * Fetch (creating on demand) the file state of @p server.
  *
  * 对端只有两种来源：ncl_server_set_file_peer() 显式指定的静态对端，或客户端
@@ -671,19 +720,8 @@ static ncl_file_tool_state *file_state_of(ncl_server *server)
     if (state != NULL) {
         return state;
     }
-    state = (ncl_file_tool_state *)ncl_mem_calloc(1, sizeof(*state));
+    state = file_state_create(ncl_server_sn(server));
     if (state == NULL) {
-        return NULL;
-    }
-    /*
-     * 对端目录用的是"协议里的 SN"，也就是服务器自己的 SN：客户端把文件放在
-     * <cwd>/<它寻址的那个 SN>/ 下，而它寻址的就是这个 SN。bin/sn.txt 是
-     * "设备从文件里读 SN"那条路用的（ncl_sn_read() 会生成它），两者可能不一样
-     * ——用 bin/sn.txt 的话，显式指定 SN 的设备端就找不到客户端摆好的文件。
-     */
-    state->sn = ncl_strdup(ncl_server_sn(server));
-    if (state->sn == NULL) {
-        ncl_mem_free(state);
         return NULL;
     }
     if (state->peer_host != NULL) {
@@ -714,6 +752,97 @@ ncl_err ncl_server_register_file_tool(ncl_server *server)
                                     k_file_bindings,
                                     sizeof(k_file_bindings) /
                                         sizeof(k_file_bindings[0]));
+}
+
+/* ------------------------------------------------------- the declaration -- */
+
+/**
+ * The file point's function. The whole tool is this one dispatch and the
+ * operation says which way the file goes:
+ *
+ *   get_value        read it out (the device pushes it to the peer)
+ *   get_attributes   the listing (what "ll" serves)
+ *   add / delete     make / remove a directory, remove a file
+ *   call             **start a transfer**: the call's own params carry both
+ *                    the file and the channel it rides on (host / port /
+ *                    user / password / channelId) - the handshake is part of
+ *                    the call instead of two methods of its own.
+ */
+static ncl_err file_point_fn(void *ctx, const ncl_tool_point *self,
+                             ncl_operation op, const ncl_json *params,
+                             ncl_json **result, char **reason)
+{
+    (void)self;
+    switch (op) {
+    case NCL_OP_GET_VALUE:
+        return file_tool_read(ctx, params, result, reason);
+    case NCL_OP_GET_ATTRIBUTES:
+        return file_tool_ll(ctx, params, result, reason);
+    case NCL_OP_ADD:
+        return file_tool_mkdir(ctx, params, result, reason);
+    case NCL_OP_DELETE:
+        return file_tool_delete(ctx, params, result, reason);
+    case NCL_OP_FUNC_CALL:
+        return file_tool_transfer(ctx, params, result, reason);
+    default:
+        break;
+    }
+    return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
+                         "unsupported operation on %s", FILE_NODE_PATH);
+}
+
+/** The tool's context: its state, made from the configuration. */
+static void *file_tool_open(const ncl_json *params, char **err)
+{
+    const char *sn = ncl_tool_param_str(params, "sn", NULL);
+    char *owned = NULL;
+    ncl_file_tool_state *state;
+
+    if (sn == NULL) {
+        owned = ncl_sn_read();
+        sn = owned;
+    }
+    state = sn != NULL ? file_state_create(sn) : NULL;
+    ncl_free_safe(owned);
+    if (state == NULL && err != NULL) {
+        *err = ncl_strdup("文件工具起不来（拿不到 SN）");
+    }
+    return state;
+}
+
+static void file_tool_close(void *ctx)
+{
+    file_state_destroy(ctx);
+}
+
+NCL_TOOL_BEGIN("file", "文件传输（NC-Link 文件通道，字节走 FTP）", 0, 0,
+               file_tool_open, file_tool_close)
+    NCL_CONFIG_OPS("/MACHINE/CONTROLLER/FILE", file_point_fn, NULL,
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) |
+                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES) |
+                       NCL_OP_BIT(NCL_OP_ADD) | NCL_OP_BIT(NCL_OP_DELETE) |
+                       NCL_OP_BIT(NCL_OP_FUNC_CALL))
+NCL_TOOL_END()
+
+const ncl_tool_decl *ncl_file_tool_declaration(void)
+{
+    /* Built once: a declaration is a table, and a host registers the very
+     * same one with its own server (the state - the context - is per
+     * registration, created by file_tool_open()). */
+    static ncl_tool_decl declaration;
+
+    if (declaration.points == NULL) {
+        declaration = ncl_tool_declaration();
+    }
+    return &declaration;
+}
+
+ncl_err ncl_file_tool_register(ncl_server *server, const ncl_json *params,
+                               const ncl_tool_audit *audit,
+                               ncl_tool_registration **out, ncl_strbuf *err)
+{
+    return ncl_tool_register(server, ncl_file_tool_declaration(), params,
+                             audit, out, err);
 }
 
 ncl_err ncl_server_set_file_peer(ncl_server *server, const char *host, unsigned port,

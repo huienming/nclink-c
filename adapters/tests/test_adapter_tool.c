@@ -111,7 +111,7 @@ NCL_TEST_MAIN_BEGIN()
     NCL_CHECK_EQ_INT(decl->point_count, 4);
     NCL_CHECK_EQ_STR(decl->points[0].path, "/MACHINE/RUN");
     NCL_CHECK(decl->points[0].sampled);
-    NCL_CHECK(decl->points[1].writable);
+    NCL_CHECK(ncl_tool_point_handles(&decl->points[1], NCL_OP_SET_VALUE));
     /* 第三个点位是"待抓包"：声明了、可查，但没有函数。 */
     NCL_CHECK(!decl->points[2].available);
     NCL_CHECK(decl->points[2].fn == NULL);

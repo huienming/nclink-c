@@ -314,6 +314,11 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", 1000, 1000,
     NCL_DATAITEM("/MACHINE/AXIS@Z/SPEED", focas_dispatch, &k_axis_z_speed)
     NCL_DATAITEM("/MACHINE/AXIS@A/SPEED", focas_dispatch, &k_axis_a_speed)
     NCL_DATAITEM("/MACHINE/AXIS@C/SPEED", focas_dispatch, &k_axis_c_speed)
+    /* 刀具列表（表 7 的 TOOL，list）：FOCAS 侧是刀补表/刀具表那一族调用，帧还没核对
+     * 过（32 册 §5 把它列在"待核"里），所以先按待抓包声明 —— 模型里有它、问它有明确
+     * 答复、轮询跳过；核对完把这一行换成 NCL_CONFIG("/MACHINE/CONTROLLER/TOOL", …)。 */
+    NCL_CONFIG_PENDING("/MACHINE/CONTROLLER/TOOL",
+                       "刀具列表：帧待核对（cnc_rdtooldata / cnc_rdtoolrng）")
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
     NCL_METHOD("/MACHINE/SESSION", focas_dispatch, &k_session)
     NCL_METHOD("/MACHINE/ITEMS", focas_dispatch, &k_items)

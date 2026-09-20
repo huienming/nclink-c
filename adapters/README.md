@@ -58,11 +58,19 @@ NCL_TOOL_MODULE("1.0.0", "某品牌机床适配器")
 （进模型的 `dataItems`，**能进采样通道**），`NCL_CONFIG_*` 是参数、坐标系、刀具表这类
 不常变的数据（进模型的 `configs`，可查询可修改，但**没有 SAMPLED 形式** —— 册 3 表 1
 注 b：配置中的数据对象不得作为采样数据源）；`NCL_METHOD` 不是数据对象，只响应调用。
-就这 9 个宏，两族形状一一对应（`_RW` / `_SAMPLED` / `_PENDING`），名字里的
+就这 11 个宏，两族的形状一一对应（`_RW` / `_SAMPLED` / `_PENDING` / `_OPS`），名字里的
 `DATAITEM`/`CONFIG` 就是模型里的两个数组。**数据总是第三个参数**（没有就写 `NULL`），
 不需要 `_ARG` 后缀；点位名字**从路径自动推**（去设备段、`@`→`_`、`/`→`.`），
-不需要 `_NAMED`。**可写必然可读**：没有"只写"的数据对象（审计要记写之前的旧值，
-读不回来的写也没法确认），只写的东西写成 `NCL_METHOD`，值走方法调用的参数。
+不需要 `_NAMED`。
+
+**操作按位写**：一个点位声明它答哪些操作 —— Query（`get_value` / `get_length` /
+`get_keys` / `get_attributes`）、Set（`set_value` / `add` / `delete`）与方法调用
+（册 5 表 11 / 表 13）。`_RW` 就是 `get_value | set_value`；集合类（list / dict，
+文件、刀具表这类）还要 `get_length`、`get_keys`、`add`、`delete`，就用 `_OPS` 写全：
+`NCL_CONFIG_OPS("/MACHINE/CONTROLLER/FILE", dispatch, &k_file, NCL_OP_BIT(NCL_OP_GET_VALUE) | …)`。
+宿主按位注册绑定，没声明的操作照表 2 回 `Unsupported Operation`。
+**可写必然可读**：`set_value` / `add` / `delete` 都要求 `get_value`（审计要记写之前的
+旧值，读不回来的写也没法确认）；真只写的东西写成 `NCL_METHOD`，值走方法调用的参数。
 
 宿主拿这份声明生成模型、OpenAPI schema 与绑定：`path` 就是模型路径，采样通道取
 `NCL_TOOL_BEGIN` 的周期，方法调用地址是 `<tool 名>/<点位名>`（点位名从路径推，见上）。
@@ -641,6 +649,10 @@ broker 的部署不受影响。**broker 没起来不致命**：`ncl_adapter_brok
 
 类型名来自数据字典，归置来自宏 —— 两边对不上时（比如 `PARAMETER` 写成了 `NCL_DATAITEM_*`）
 宿主会打一条告警提醒核对。采样通道对象自己也是 `configs` 的一员。
+**取值形状也跟着字典走**：字典"类型"列是集合的，模型就写出来 —— dict / JSON 对象 →
+`"dataType": "HASH"`（`FILE`、`PARAMETER`、`TOOLPARAM`、`WARNING`、`PART`），list →
+`"LIST"`（`TOOL` 刀具列表、`COORDINATE`、`SHELF_UNIT`、`VARIABLE`）；标量
+（string / number）不写。作者不用声明，字典说了算。
 可运行的配置样例见 `tests/test_adapter.c` 里的 `kConfig`。
 
 ## FANUC 适配器模块（`ncl_driver_focas`）
