@@ -41,6 +41,7 @@ typedef struct {
     const char *plugins[8];    /**< --plugin: modules (name or file) */
     size_t      plugin_count;
     bool        plugins_list;  /**< --plugins: print what is loaded, exit */
+    bool        model_dump;    /**< --model: print the model, then exit */
     bool        offline;
     bool        once;
     const char *probe;         /**< --probe: read one point, print it, exit */
@@ -60,6 +61,9 @@ static void usage(const char *program)
     printf("  -P, --plugin-dir <目录>  适配器模块目录（默认 <root>/plugins）\n");
     printf("      --plugin <名字|文件> 再加载一个模块（可重复；名字= <dir>/ncl_driver_<名字>.*）\n");
     printf("      --plugins         列出已装载的适配器模块与协议，然后退出\n");
+    printf("      --model           打印这份声明生成的设备模型（JSON），然后退出\n");
+    printf("                        （这就是设备对外发布的模型；要现场调采样周期就\n");
+    printf("                         把它存成文件、在配置里用 \"model\" 指过去）\n");
     printf("      --offline         不连 MQTT，只跑 REST 与轮询\n");
     printf("      --once            轮询一次并打印，然后退出（自检）\n");
     printf("      --probe <路径>    读一个点位并打印（走的是和客户端一样的绑定），然后退出\n");
@@ -116,6 +120,9 @@ static bool parse_args(int argc, char **argv, adapter_args *args)
             args->plugins[args->plugin_count++] = argv[i];
         } else if (strcmp(argv[i], "--plugins") == 0) {
             args->plugins_list = true;
+        } else if (strcmp(argv[i], "--model") == 0) {
+            args->model_dump = true;
+            args->offline = true; /* showing the model is not going on the bus */
         } else if (strcmp(argv[i], "--offline") == 0) {
             args->offline = true;
         } else if (strcmp(argv[i], "--once") == 0) {
@@ -507,6 +514,16 @@ int main(int argc, char **argv)
 
     if (args.probe != NULL) {
         exit_code = probe_point(adapter, args.probe);
+    } else if (args.model_dump) {
+        char *text = ncl_json_write_pretty_string(ncl_adapter_model(adapter));
+
+        if (text == NULL) {
+            ncl_log_error("模型打印失败: 内存不足");
+            exit_code = 1;
+        } else {
+            printf("%s\n", text);
+            ncl_free_safe(text);
+        }
     } else if (args.once) {
         size_t pending = 0;
         size_t failed = dump_points(adapter, &pending);

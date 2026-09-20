@@ -38,6 +38,31 @@ static void test_parse_and_write(void)
     NCL_CHECK(j != NULL);
     NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(j, "a")), 3);
     ncl_json_free(j);
+
+    NCL_TEST_CASE("the readable writer is the same document, only laid out");
+    j = parse_ok("{\"id\":\"01\",\"devices\":[{\"type\":\"MACHINE\","
+                 "\"ids\":[{\"id\":\"p0\"}]}],\"configs\":[],\"empty\":{}}");
+    NCL_CHECK(j != NULL);
+    out = ncl_json_write_pretty_string(j);
+    NCL_CHECK_EQ_STR(
+        out,
+        "{\n"
+        "  \"id\": \"01\",\n"
+        "  \"devices\": [\n"
+        "    {\n"
+        "      \"type\": \"MACHINE\",\n"
+        "      \"ids\": [\n"
+        "        {\n"
+        "          \"id\": \"p0\"\n"
+        "        }\n"
+        "      ]\n"
+        "    }\n"
+        "  ],\n"
+        "  \"configs\": [],\n"
+        "  \"empty\": {}\n"
+        "}");
+    ncl_free_safe(out);
+    ncl_json_free(j);
 }
 
 static void test_numbers(void)

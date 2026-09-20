@@ -87,6 +87,9 @@ cd D:\fanuc
 # ②b 只看一个点位（排查某个点位时最省事；走的是和上位机一样的绑定）
 .\bin\ncl_adapter.exe -c conf\fanuc.json --probe /MACHINE/PART_COUNT
 
+# ②c 看一眼设备发布的模型（就是下面第 5 节那张表；存下来可以现场调采样周期）
+.\bin\ncl_adapter.exe -c conf\fanuc.json --model > conf\fanuc-model.json
+
 # ③ 接 broker 跑起来（Ctrl+C 退出）
 .\bin\ncl_adapter.exe -c conf\fanuc.json -b tcp://10.0.0.9:1883
 
@@ -138,6 +141,7 @@ cd D:\fanuc
 | `-P, --plugin-dir <目录>` | 模块目录，默认 `<root>\plugins` |
 | `--plugin <名字\|文件>` | 额外装载一个模块（可重复）；名字 = `<目录>\ncl_driver_<名字>.*` |
 | `--plugins` | 列出已装载的模块与协议，然后退出 |
+| `--model` | 打印这份声明生成的**设备模型 JSON**（设备对外发布的就是它），然后退出；采样周期要现场调就存成文件、用配置里的 `"model"` 指过去 |
 | `--port <端口>` | REST 端口，默认 8080，`0` ＝ 随机 |
 | `--interval <毫秒>` | 轮询周期，默认 1000 |
 | `--once` | 轮询一遍并打印，然后退出（自检；有读不到的点位时退出码为 1） |
@@ -159,6 +163,12 @@ cd D:\fanuc
 
 **本地看**：浏览器打开 `http://<运行机器的IP>:8080/swagger-ui`，能直接调
 `get_value`、看模型当前值；`/api/schema` 是 OpenAPI 3.0 文档。
+
+**调周期／换通道**：设备发布的模型是一份 JSON（设备 → 组件 → 数据项，外加一个采样通道
+`configs[0]`，通道里的 `ids` 就是参与采样的点位、`sampleInterval`/`uploadInterval` 是周期）。
+用 `--model` 把它打出来存成文件（例如 `conf\fanuc-model.json`），在配置里写一行
+`"model": "conf\\fanuc-model.json"` 指过去，之后**改这个文件就行，不用重编模块**：
+第 5 节里"哪些点位进默认采样通道"的现场口径就在它的 `ids` 里。
 
 请求主题是 `<SN>` 相关的 8 条（Query/Set/Method/Ping 各自的 Request），启动日志里会
 打印自己的 SN。**写操作不支持**（见第 7 节）。

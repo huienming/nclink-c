@@ -100,6 +100,15 @@ ncl_server *ncl_adapter_server(ncl_adapter *adapter);
  */
 const ncl_tool_decl *ncl_adapter_tool(const ncl_adapter *adapter);
 
+/**
+ * The model document this device publishes: either the one built from the
+ * declaration (one data item per declared point, one sample channel over the
+ * sampled ones) or the file the configuration named. Borrowed, owned by the
+ * adapter - a host that wants to show it or hand it to a site writes it out with
+ * ncl_json_write_pretty().
+ */
+const ncl_json *ncl_adapter_model(const ncl_adapter *adapter);
+
 /** Serial number the adapter answers for. */
 const char *ncl_adapter_sn(const ncl_adapter *adapter);
 

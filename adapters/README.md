@@ -85,7 +85,9 @@ NCL_TOOL_MODULE("1.0.0", "某品牌机床适配器")
 
 模块文件按 `ncl_driver_<tool 名>.dll`（Linux/macOS 是 `libncl_driver_<名字>.so`）放进
 `plugins/` 即可。现场三条命令：`ncl_adapter --plugins`（列工具与点位/方法个数）、
-`--probe <路径>`（单点试读）、`--once`（跑一遍自检）。可抄的样板：
+`--probe <路径>`（单点试读）、`--once`（跑一遍自检）；`--model` 把这份声明生成的
+**设备模型 JSON** 打出来（设备对外发布的就是它，要现场调采样周期就存成文件、在配置里
+用 `"model"` 指过去）。可抄的样板：
 `adapters/plugins/focas.c`（FANUC，30 个点位 + 2 个方法，其中 6 个"待抓包"）、
 `adapters/tests/module_tool_basic.c`（最小夹具）。
 

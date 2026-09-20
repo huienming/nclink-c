@@ -132,6 +132,15 @@ ncl_err ncl_json_write(const ncl_json *j, ncl_strbuf *out);
 /** Serialise into a freshly allocated string. */
 char *ncl_json_write_string(const ncl_json *j);
 
+/**
+ * The same document, laid out for a human: two spaces per level, one member per
+ * line, `": "` after a key. Used where the output is a *file* someone edits (a
+ * device model, for instance) rather than something on the wire. The bytes are
+ * the same JSON: it parses back to the identical document.
+ */
+ncl_err ncl_json_write_pretty(const ncl_json *j, ncl_strbuf *out);
+char *ncl_json_write_pretty_string(const ncl_json *j);
+
 /** Deep structural equality (object key order is not significant). */
 bool ncl_json_equals(const ncl_json *a, const ncl_json *b);
 

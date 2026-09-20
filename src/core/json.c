@@ -675,7 +675,20 @@ static void ncl_json_write_number(const ncl_json *j, ncl_strbuf *out)
     ncl_strbuf_puts(out, "0");
 }
 
-static ncl_err ncl_json_write_internal(const ncl_json *j, ncl_strbuf *out, int depth)
+/** Indent one level per @p depth - only used by the readable writer. */
+static ncl_err ncl_json_write_indent(ncl_strbuf *out, int depth)
+{
+    int i;
+    for (i = 0; i < depth; i++) {
+        if (ncl_strbuf_puts(out, "  ") != NCL_OK) {
+            return NCL_ERR_NOMEM;
+        }
+    }
+    return NCL_OK;
+}
+
+static ncl_err ncl_json_write_internal(const ncl_json *j, ncl_strbuf *out,
+                                       int depth, int indent)
 {
     size_t i;
     if (j == NULL) {
@@ -701,7 +714,15 @@ static ncl_err ncl_json_write_internal(const ncl_json *j, ncl_strbuf *out, int d
             if (i > 0) {
                 ncl_strbuf_putc(out, ',');
             }
-            ncl_json_write_internal(j->u.array.items[i], out, depth + 1);
+            if (indent) {
+                ncl_strbuf_putc(out, '\n');
+                ncl_json_write_indent(out, depth + 1);
+            }
+            ncl_json_write_internal(j->u.array.items[i], out, depth + 1, indent);
+        }
+        if (indent && j->u.array.len > 0) {
+            ncl_strbuf_putc(out, '\n');
+            ncl_json_write_indent(out, depth);
         }
         return ncl_strbuf_putc(out, ']');
     case NCL_JSON_OBJECT:
@@ -710,10 +731,21 @@ static ncl_err ncl_json_write_internal(const ncl_json *j, ncl_strbuf *out, int d
             if (i > 0) {
                 ncl_strbuf_putc(out, ',');
             }
+            if (indent) {
+                ncl_strbuf_putc(out, '\n');
+                ncl_json_write_indent(out, depth + 1);
+            }
             ncl_json_write_escaped(j->u.object.keys[i],
                                    strlen(j->u.object.keys[i]), out);
             ncl_strbuf_putc(out, ':');
-            ncl_json_write_internal(j->u.object.vals[i], out, depth + 1);
+            if (indent) {
+                ncl_strbuf_putc(out, ' ');
+            }
+            ncl_json_write_internal(j->u.object.vals[i], out, depth + 1, indent);
+        }
+        if (indent && j->u.object.len > 0) {
+            ncl_strbuf_putc(out, '\n');
+            ncl_json_write_indent(out, depth);
         }
         return ncl_strbuf_putc(out, '}');
     default:
@@ -726,7 +758,15 @@ ncl_err ncl_json_write(const ncl_json *j, ncl_strbuf *out)
     if (out == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    return ncl_json_write_internal(j, out, 0);
+    return ncl_json_write_internal(j, out, 0, 0);
+}
+
+ncl_err ncl_json_write_pretty(const ncl_json *j, ncl_strbuf *out)
+{
+    if (out == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return ncl_json_write_internal(j, out, 0, 1);
 }
 
 char *ncl_json_write_string(const ncl_json *j)
@@ -734,6 +774,17 @@ char *ncl_json_write_string(const ncl_json *j)
     ncl_strbuf sb;
     ncl_strbuf_init(&sb);
     if (ncl_json_write(j, &sb) != NCL_OK) {
+        ncl_strbuf_free(&sb);
+        return NULL;
+    }
+    return ncl_strbuf_detach(&sb);
+}
+
+char *ncl_json_write_pretty_string(const ncl_json *j)
+{
+    ncl_strbuf sb;
+    ncl_strbuf_init(&sb);
+    if (ncl_json_write_pretty(j, &sb) != NCL_OK) {
         ncl_strbuf_free(&sb);
         return NULL;
     }

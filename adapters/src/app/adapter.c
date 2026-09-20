@@ -59,6 +59,10 @@ struct ncl_adapter {
     /** Owned: what ncl_tool_register() opened, released in ncl_adapter_free(). */
     ncl_tool_registration *registration;
     char               *sn;
+    /** Owned: the model document this device publishes - the one built from the
+     *  declaration, or the file the configuration named. Kept after the server
+     *  takes its own copy so a host can show or save it (`--model`). */
+    ncl_json           *model;
     adapter_point      *points;
     size_t              point_count;
     /* MQTT session, owned: NULL when the configuration says offline. */
@@ -657,6 +661,15 @@ ncl_adapter *ncl_adapter_create_with_modules(const ncl_json *config,
         return NULL;
     }
 
+    /* A copy stays here: the server owns its own, and a host that wants to look
+     * at (or hand out) the model it is running should not have to guess it. */
+    adapter->model = ncl_json_clone(model);
+    if (adapter->model == NULL) {
+        ncl_json_free(model);
+        ncl_adapter_free(adapter);
+        return NULL;
+    }
+
     memset(&options, 0, sizeof(options));
     options.sn = adapter->sn;
     options.mqtt = adapter->mqtt;
@@ -735,6 +748,7 @@ void ncl_adapter_free(ncl_adapter *adapter)
         ncl_free_safe(adapter->points[i].path);
     }
     ncl_free_safe(adapter->points);
+    ncl_json_free(adapter->model);
     ncl_free_safe(adapter->sn);
     ncl_free_safe(adapter);
 }
@@ -750,6 +764,11 @@ ncl_server *ncl_adapter_server(ncl_adapter *adapter)
 const ncl_tool_decl *ncl_adapter_tool(const ncl_adapter *adapter)
 {
     return adapter != NULL ? adapter->decl : NULL;
+}
+
+const ncl_json *ncl_adapter_model(const ncl_adapter *adapter)
+{
+    return adapter != NULL ? adapter->model : NULL;
 }
 
 const char *ncl_adapter_sn(const ncl_adapter *adapter)
