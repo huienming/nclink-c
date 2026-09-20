@@ -15,6 +15,7 @@
 
 #include "nclink/ncl_message.h"
 #include "nclink/ncl_tool.h"
+#include "nclink_adapter/ncl_adapter.h"
 #include "nclink_adapter/ncl_module.h"
 
 #ifndef NCL_TEST_PLUGIN_DIR
@@ -109,6 +110,12 @@ NCL_TEST_MAIN_BEGIN()
     NCL_CHECK_EQ_INT(ncl_modules_register(modules, &err), NCL_OK);
     NCL_CHECK_EQ_INT((int)err.len, 0);
 
+    NCL_TEST_CASE("loading it twice is not an error and does not load two");
+    NCL_CHECK_EQ_INT(ncl_modules_add(modules, "test_tool_basic",
+                                     NCL_TEST_PLUGIN_DIR, &err),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_module_count(modules), 1);
+
     NCL_TEST_CASE("the declaration builds the model the device publishes");
     model = ncl_tool_model(decl, NULL, &err);
     NCL_CHECK(model != NULL);
@@ -201,6 +208,52 @@ NCL_TEST_MAIN_BEGIN()
         }
         ncl_tool_unregister(decl, registration);
         ncl_server_free(server);
+    }
+
+    NCL_TEST_CASE("the adapter builds the device from the loaded module");
+    {
+        ncl_json *config = ncl_json_parse_cstr(
+            "{ \"sn\": \"V000000001\","
+            "  \"tools\": [ { \"name\": \"test_tool_basic\","
+            "                 \"parameters\": { \"unit\": 3 } } ],"
+            "  \"device\": { \"type\": \"MACHINE\", \"id\": \"01\","
+            "                \"name\": \"夹具机床\" },"
+            "  \"sample\": { \"intervalMs\": 250, \"uploadMs\": 250 } }",
+            &err);
+        ncl_adapter *adapter;
+
+        NCL_CHECK(config != NULL);
+        if (config != NULL) {
+            adapter = ncl_adapter_create_with_modules(config, modules, &err);
+            ncl_json_free(config);
+            NCL_CHECK(adapter != NULL);
+            if (adapter != NULL) {
+                NCL_CHECK(ncl_adapter_tool(adapter) == decl);
+                NCL_CHECK_EQ_INT(ncl_adapter_point_count(adapter), 2);
+                NCL_CHECK_EQ_STR(ncl_adapter_point_path(adapter, 0),
+                                 "/TEST/RUN");
+                NCL_CHECK_EQ_INT(ncl_adapter_method_count(adapter), 0);
+
+                /* The host's own read path (what --once and the poll loop use)
+                 * goes through the module's binding. */
+                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/TEST/RUN",
+                                                      &err),
+                                 NCL_OK);
+                {
+                    const ncl_json *value =
+                        ncl_adapter_point_value(adapter, 0);
+                    long long got = 0;
+
+                    NCL_CHECK(value != NULL);
+                    NCL_CHECK(value != NULL && ncl_json_as_int(value, &got));
+                    NCL_CHECK_EQ_INT(got, 7);
+                }
+                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/TEST/NOPE",
+                                                      &err),
+                                 NCL_ERR_NOT_FOUND);
+                ncl_adapter_free(adapter);
+            }
+        }
     }
 
     ncl_modules_free(modules);

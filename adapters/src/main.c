@@ -43,6 +43,7 @@ typedef struct {
     bool        plugins_list;  /**< --plugins: print what is loaded, exit */
     bool        offline;
     bool        once;
+    const char *probe;         /**< --probe: read one point, print it, exit */
     bool        stats;         /**< --stats: the §6 counters, then exit */
     bool        raw;           /**< --raw: log the frames of each request */
     const char *operator_name; /**< who is driving, for the write audit */
@@ -61,6 +62,7 @@ static void usage(const char *program)
     printf("      --plugins         列出已装载的适配器模块与协议，然后退出\n");
     printf("      --offline         不连 MQTT，只跑 REST 与轮询\n");
     printf("      --once            轮询一次并打印，然后退出（自检）\n");
+    printf("      --probe <路径>    读一个点位并打印（走的是和客户端一样的绑定），然后退出\n");
     printf("      --stats           跑完 --once 再打印审计计数（§6），然后退出\n");
     printf("      --raw             审计里带上每次请求的原始报文 hex（§6）\n");
     printf("      --operator <名字> 写审计里的操作者（默认不写）\n");
@@ -119,6 +121,12 @@ static bool parse_args(int argc, char **argv, adapter_args *args)
         } else if (strcmp(argv[i], "--once") == 0) {
             args->once = true;
             args->offline = true;
+        } else if (strcmp(argv[i], "--probe") == 0) {
+            if (++i >= argc) {
+                return false;
+            }
+            args->probe = argv[i];
+            args->offline = true; /* a one shot probe stays off the bus */
         } else if (strcmp(argv[i], "--stats") == 0) {
             args->stats = true;
             args->once = true; /* the counters are only worth reading after a run */
@@ -178,6 +186,23 @@ static void log_modules(const ncl_module_set *set)
         return;
     }
     for (i = 0; i < ncl_module_count(set); i++) {
+        const ncl_tool_decl *tool = ncl_module_tool(set, i);
+
+        if (tool != NULL) {
+            /* A declared tool is not a protocol waiting for a driver: it serves
+             * its own points, so it is reported as a tool. */
+            ncl_log_info("适配器模块 %s：工具 \"%s\"%s%s（%u 个点位，%s）",
+                         ncl_module_path(set, i), ncl_module_name(set, i),
+                         ncl_module_version(set, i) != NULL ? " " : "",
+                         ncl_module_version(set, i) != NULL
+                             ? ncl_module_version(set, i)
+                             : "",
+                         (unsigned)tool->point_count,
+                         ncl_module_description(set, i) != NULL
+                             ? ncl_module_description(set, i)
+                             : "声明式适配器");
+            continue;
+        }
         ncl_log_info("适配器模块 %s：协议 \"%s\"%s%s%s（%s）",
                      ncl_module_path(set, i), ncl_module_name(set, i),
                      ncl_module_registered(set, i) ? "" : "（未注册）",
@@ -231,8 +256,32 @@ static ncl_module_set *load_modules(const adapter_args *args,
  * the useful sentence is "that module is not in the plugin directory", not
  * "unknown protocol" three layers down.
  */
+/**
+ * A configuration that names a protocol nobody can build is the most common
+ * bring-up mistake, so it is reported before the device starts. A protocol a
+ * loaded module *declares* counts as buildable too: such a module serves its
+ * points itself (the "drivers" entry it still matches only carries the
+ * connection parameters).
+ */
+static const char *tool_serving(const ncl_module_set *modules,
+                                const char *protocol)
+{
+    size_t i;
+
+    for (i = 0; modules != NULL && i < ncl_module_count(modules); i++) {
+        if (ncl_module_tool(modules, i) == NULL) {
+            continue;
+        }
+        if (ncl_module_name(modules, i) != NULL &&
+            strcmp(ncl_module_name(modules, i), protocol) == 0) {
+            return ncl_module_name(modules, i);
+        }
+    }
+    return NULL;
+}
+
 static ncl_err check_protocols(const ncl_json *config, const char *plugin_dir,
-                               ncl_strbuf *err)
+                               const ncl_module_set *modules, ncl_strbuf *err)
 {
     const ncl_json *drivers = ncl_json_obj_get(config, "drivers");
     size_t i;
@@ -244,7 +293,8 @@ static ncl_err check_protocols(const ncl_json *config, const char *plugin_dir,
         const char *protocol =
             ncl_json_obj_get_string(ncl_json_arr_get(drivers, i), "type");
 
-        if (ncl_str_is_blank(protocol) || ncl_driver_protocol_known(protocol)) {
+        if (ncl_str_is_blank(protocol) || ncl_driver_protocol_known(protocol) ||
+            tool_serving(modules, protocol) != NULL) {
             continue;
         }
         {
@@ -271,26 +321,82 @@ static ncl_err check_protocols(const ncl_json *config, const char *plugin_dir,
  */
 static size_t dump_points(ncl_adapter *adapter)
 {
-    ncl_driver_manager *manager = ncl_adapter_drivers(adapter);
     size_t failed = 0;
     size_t i;
 
     for (i = 0; i < ncl_adapter_point_count(adapter); i++) {
         const char *path = ncl_adapter_point_path(adapter, i);
-        ncl_json *value = NULL;
+        const ncl_json *value;
         char *text = NULL;
+        ncl_strbuf note;
 
-        if (ncl_driver_manager_read(manager, path, &value) != NCL_OK) {
-            ncl_log_warn("%s = <读取失败>", path);
+        /* The adapter knows how this point is served - a driver or a declared
+         * module - so the self check goes through it rather than the manager. */
+        ncl_strbuf_init(&note);
+        if (ncl_adapter_poll_one(adapter, path, &note) != NCL_OK) {
+            ncl_log_warn("%s = <读取失败>（%s）", path, ncl_strbuf_cstr(&note));
+            ncl_strbuf_free(&note);
             failed++;
             continue;
         }
+        ncl_strbuf_free(&note);
+        value = ncl_adapter_point_value(adapter, i);
         text = ncl_json_write_string(value);
         ncl_log_info("%s = %s", path, text != NULL ? text : "?");
         ncl_free_safe(text);
-        ncl_json_free(value);
     }
     return failed;
+}
+
+/**
+ * --probe "<路径>": read one point and print what came back.
+ *
+ * It is the first thing to run when a point does not look right: the same path,
+ * the same binding and the same code a client would get, without a broker, a
+ * REST port or a poll round in the way. Exit code 0 when the read answered OK.
+ */
+static int probe_point(ncl_adapter *adapter, const char *path)
+{
+    ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+    ncl_query_request_item *item;
+    ncl_message *response;
+    ncl_query_response_item *answer;
+    int exit_code = 1;
+
+    if (request == NULL) {
+        ncl_log_error("探测失败: 内存不足");
+        return 1;
+    }
+    item = ncl_query_request_item_new(path);
+    if (item == NULL) {
+        ncl_message_free(request);
+        return 1;
+    }
+    (void)ncl_params_set_string(&item->params, "operation", "get_value");
+    (void)ncl_message_set_message_id(request, "probe");
+    (void)ncl_message_add_query_request_item(request, item);
+    response = ncl_server_invoke_query(ncl_adapter_server(adapter), request);
+    ncl_message_free(request);
+    if (response == NULL) {
+        ncl_log_error("探测失败: 服务器没有应答");
+        return 1;
+    }
+    answer = (ncl_query_response_item *)ncl_message_item_at(response, 0);
+    if (answer != NULL && answer->code != NULL &&
+        strcmp(answer->code, NCL_KW_CODE_OK) == 0) {
+        char *text = ncl_json_as_text(ncl_query_response_item_data(answer));
+
+        printf("%s = %s\n", path, text != NULL ? text : "(无值)");
+        ncl_free_safe(text);
+        exit_code = 0;
+    } else {
+        printf("%s: %s%s%s\n", path,
+               answer != NULL && answer->code != NULL ? answer->code : "NG",
+               answer != NULL && answer->reason != NULL ? " —— " : "",
+               answer != NULL && answer->reason != NULL ? answer->reason : "");
+    }
+    ncl_message_free(response);
+    return exit_code;
 }
 
 int main(int argc, char **argv)
@@ -363,7 +469,7 @@ int main(int argc, char **argv)
         return 0;
     }
     ncl_strbuf_reset(&err);
-    if (check_protocols(config, plugin_dir, &err) != NCL_OK) {
+    if (check_protocols(config, plugin_dir, modules, &err) != NCL_OK) {
         ncl_log_error("%s", ncl_strbuf_cstr(&err));
         ncl_modules_free(modules);
         ncl_json_free(config);
@@ -372,7 +478,7 @@ int main(int argc, char **argv)
     }
 
     if (config_apply_broker(config, &args, &err) == NCL_OK) {
-        adapter = ncl_adapter_create(config, &err);
+        adapter = ncl_adapter_create_with_modules(config, modules, &err);
     } else {
         adapter = NULL;
     }
@@ -382,11 +488,18 @@ int main(int argc, char **argv)
         ncl_strbuf_free(&err);
         return 1;
     }
-    ncl_log_info("设备 %s：%u 个点位、%u 个方法（%u 条驱动链路）",
-                 ncl_adapter_sn(adapter),
-                 (unsigned)ncl_adapter_point_count(adapter),
-                 (unsigned)ncl_adapter_method_count(adapter),
-                 (unsigned)ncl_driver_manager_count(ncl_adapter_drivers(adapter)));
+    if (ncl_adapter_tool(adapter) != NULL) {
+        ncl_log_info("设备 %s：声明式适配器 \"%s\" 提供 %u 个点位（模型与绑定来自模块）",
+                     ncl_adapter_sn(adapter), ncl_adapter_tool(adapter)->name,
+                     (unsigned)ncl_adapter_point_count(adapter));
+    } else {
+        ncl_log_info("设备 %s：%u 个点位、%u 个方法（%u 条驱动链路）",
+                     ncl_adapter_sn(adapter),
+                     (unsigned)ncl_adapter_point_count(adapter),
+                     (unsigned)ncl_adapter_method_count(adapter),
+                     (unsigned)ncl_driver_manager_count(
+                         ncl_adapter_drivers(adapter)));
+    }
     if (ncl_adapter_broker_url(adapter) != NULL) {
         ncl_log_info("MQTT: %s（%s）", ncl_adapter_broker_url(adapter),
                      ncl_adapter_online(adapter) ? "已连接" : "待连接");
@@ -401,7 +514,9 @@ int main(int argc, char **argv)
         NCL_OK) {
         ncl_log_warn("部分链路未连通: %s", ncl_strbuf_cstr(&err));
     }
-    if (args.once) {
+    if (args.probe != NULL) {
+        exit_code = probe_point(adapter, args.probe);
+    } else if (args.once) {
         size_t failed = dump_points(adapter);
 
         printf("自检：%u 个点位，%u 个读取失败\n",

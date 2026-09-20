@@ -84,13 +84,24 @@ ncl_module_set *ncl_modules_create(void)
     return (ncl_module_set *)ncl_mem_calloc(1, sizeof(ncl_module_set));
 }
 
+/** Name of the module at @p entry, whichever generation it is. */
+static const char *module_name_of(const ncl_loaded_module *entry)
+{
+    if (entry == NULL) {
+        return NULL;
+    }
+    return entry->abi == NCL_TOOL_MODULE_ABI ? entry->tool->name
+                                             : entry->module->name;
+}
+
 static bool module_name_taken(const ncl_module_set *set, const char *name)
 {
     size_t i;
 
     for (i = 0; i < set->count; i++) {
-        if (set->items[i].module->name != NULL &&
-            ncl_strcasecmp(set->items[i].module->name, name) == 0) {
+        const char *taken = module_name_of(&set->items[i]);
+
+        if (taken != NULL && ncl_strcasecmp(taken, name) == 0) {
             return true;
         }
     }
@@ -446,16 +457,6 @@ static const ncl_loaded_module *module_at(const ncl_module_set *set,
         return NULL;
     }
     return &set->items[index];
-}
-
-/** Name of the module at @p entry, whichever generation it is. */
-static const char *module_name_of(const ncl_loaded_module *entry)
-{
-    if (entry == NULL) {
-        return NULL;
-    }
-    return entry->abi == NCL_TOOL_MODULE_ABI ? entry->tool->name
-                                             : entry->module->name;
 }
 
 static const char *module_version_of(const ncl_loaded_module *entry)

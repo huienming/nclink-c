@@ -38,6 +38,11 @@ typedef struct {
     char               *path;    /**< owned, the point's model path */
     bool                writable;
     bool                sampled;
+    /**
+     * Served by the module's own binding rather than by a driver: a declared
+     * tool reads through the server, exactly as a client would.
+     */
+    bool                via_server;
     ncl_node           *node;    /**< borrowed, resolved after the model is up */
 } adapter_point;
 
@@ -50,6 +55,13 @@ typedef struct {
 struct ncl_adapter {
     ncl_server         *server;
     ncl_driver_manager *manager;
+    /** The host's loaded modules (borrowed), and the declaration one of them
+     *  brought: with @p decl set, the points, the model and the bindings come
+     *  from the module and the configuration only carries parameters. */
+    const ncl_module_set  *modules;
+    const ncl_tool_decl   *decl;
+    /** Owned: what ncl_tool_register() opened, released in ncl_adapter_free(). */
+    ncl_tool_registration *registration;
     char               *sn;
     adapter_point      *points;
     size_t              point_count;
@@ -87,6 +99,179 @@ static void err_append1(ncl_strbuf *err, const char *fmt, const char *arg)
         (void)ncl_strbuf_puts(err, "; ");
     }
     (void)ncl_strbuf_printf(err, fmt, arg);
+}
+
+/** Same, for a diagnostic that needs more than one value. */
+static void err_appendf(ncl_strbuf *err, const char *fmt, ...)
+{
+    char buffer[256];
+    va_list args;
+
+    if (err == NULL) {
+        return;
+    }
+    va_start(args, fmt);
+    (void)vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    if (err->len > 0) {
+        (void)ncl_strbuf_puts(err, "; ");
+    }
+    (void)ncl_strbuf_puts(err, buffer);
+}
+
+/* ---------------------------------------------------------- declared tool -- */
+
+/**
+ * The declaration a loaded module brought, if any. One device serves one
+ * declared tool: two such modules would fight over the same device node and the
+ * same sample channel, so that is refused with both names.
+ */
+static const ncl_tool_decl *pick_tool(const ncl_module_set *modules,
+                                      bool *conflict, ncl_strbuf *err)
+{
+    const ncl_tool_decl *tool = NULL;
+    const char *first = NULL;
+    size_t i;
+
+    *conflict = false;
+    for (i = 0; modules != NULL && i < ncl_module_count(modules); i++) {
+        const ncl_tool_decl *candidate = ncl_module_tool(modules, i);
+
+        if (candidate == NULL) {
+            continue;
+        }
+        if (tool != NULL) {
+            err_appendf(err, "一个设备只能有一个声明式适配器模块（%s 和 %s）",
+                        first, ncl_module_name(modules, i));
+            *conflict = true;
+            return NULL;
+        }
+        tool = candidate;
+        first = ncl_module_name(modules, i);
+    }
+    return tool;
+}
+
+/**
+ * The "parameters" object a tool module opens with. Two shapes are accepted:
+ *
+ *   "tools":   [ { "name": "focas",   "parameters": { ... } } ]
+ *   "drivers": [ { "type": "focas",   "parameters": { ... } } ]
+ *
+ * The second one is what a configuration already holds when the module used to
+ * be a driver, so a site does not have to rewrite its connection settings while
+ * an adapter moves over to a declaration.
+ */
+static const ncl_json *tool_parameters(const ncl_json *config, const char *name)
+{
+    const ncl_json *tools = ncl_json_obj_get(config, "tools");
+    const ncl_json *drivers;
+    size_t i;
+
+    if (ncl_json_type_of(tools) == NCL_JSON_ARRAY) {
+        for (i = 0; i < ncl_json_arr_len(tools); i++) {
+            const ncl_json *entry = ncl_json_arr_get(tools, i);
+            const char *entry_name = ncl_json_obj_get_string(entry, "name");
+
+            if (entry_name != NULL && strcmp(entry_name, name) == 0) {
+                return ncl_json_obj_get(entry, "parameters");
+            }
+        }
+    }
+    drivers = ncl_json_obj_get(config, "drivers");
+    if (ncl_json_type_of(drivers) == NCL_JSON_ARRAY) {
+        for (i = 0; i < ncl_json_arr_len(drivers); i++) {
+            const ncl_json *entry = ncl_json_arr_get(drivers, i);
+            const char *type = ncl_json_obj_get_string(entry, "type");
+            const char *id = ncl_json_obj_get_string(entry, "id");
+
+            if ((type != NULL && strcmp(type, name) == 0) ||
+                (id != NULL && strcmp(id, name) == 0)) {
+                return ncl_json_obj_get(entry, "parameters");
+            }
+        }
+    }
+    return NULL;
+}
+
+/** Every point of the declaration is a model path of this device. */
+static ncl_err load_declared_points(ncl_adapter *adapter)
+{
+    size_t i;
+
+    adapter->point_count = adapter->decl->point_count;
+    adapter->points = (adapter_point *)ncl_mem_calloc(adapter->point_count,
+                                                      sizeof(adapter_point));
+    if (adapter->points == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    for (i = 0; i < adapter->point_count; i++) {
+        const ncl_tool_point *declared = &adapter->decl->points[i];
+        adapter_point *point = &adapter->points[i];
+
+        point->path = ncl_strdup(declared->path);
+        point->writable = declared->writable;
+        point->sampled = declared->sampled;
+        point->via_server = true;
+        if (point->path == NULL) {
+            return NCL_ERR_NOMEM;
+        }
+    }
+    return NCL_OK;
+}
+
+/**
+ * Read one declared point the way a client would - through the binding the
+ * module registered - so the point's own function runs and a protocol failure
+ * comes back as that module describes it.
+ *
+ * The numeric code of the failure does not survive the response (it carries OK
+ * or NG plus the message), so a failed read is reported as NCL_ERR_IO: that is
+ * tier 1, which makes ncl_adapter_poll_round() stop instead of paying one
+ * connect timeout per point when the machine is down.
+ */
+static ncl_err read_declared_point(ncl_adapter *adapter, const char *path,
+                                   ncl_json **value, ncl_strbuf *err)
+{
+    ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+    ncl_query_request_item *item;
+    ncl_message *response;
+    ncl_query_response_item *answer;
+    ncl_err result = NCL_OK;
+
+    if (request == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    item = ncl_query_request_item_new(path);
+    if (item == NULL) {
+        ncl_message_free(request);
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_params_set_string(&item->params, "operation", "get_value");
+    (void)ncl_message_set_message_id(request, "poll");
+    (void)ncl_message_add_query_request_item(request, item);
+    response = ncl_server_invoke_query(adapter->server, request);
+    ncl_message_free(request);
+    if (response == NULL) {
+        err_append1(err, "cannot read %s", path);
+        return NCL_ERR_STATE;
+    }
+    answer = (ncl_query_response_item *)ncl_message_item_at(response, 0);
+    if (answer == NULL || answer->code == NULL ||
+        strcmp(answer->code, NCL_KW_CODE_OK) != 0) {
+        err_append1(err, "cannot read %s", path);
+        if (answer != NULL && answer->reason != NULL) {
+            err_append(err, answer->reason);
+        }
+        result = NCL_ERR_IO;
+    } else {
+        *value = ncl_json_clone(ncl_query_response_item_data(answer));
+        if (*value == NULL) {
+            result = NCL_ERR_NOMEM;
+        }
+    }
+    ncl_message_free(response);
+    return result;
 }
 
 /* --------------------------------------------------------------- broker -- */
@@ -659,6 +844,13 @@ static ncl_json *load_model_document(const ncl_json *config, ncl_strbuf *err)
 
 ncl_adapter *ncl_adapter_create(const ncl_json *config, ncl_strbuf *err)
 {
+    return ncl_adapter_create_with_modules(config, NULL, err);
+}
+
+ncl_adapter *ncl_adapter_create_with_modules(const ncl_json *config,
+                                             const ncl_module_set *modules,
+                                             ncl_strbuf *err)
+{
     ncl_adapter *adapter;
     const ncl_json *device;
     const ncl_json *sample;
@@ -666,6 +858,7 @@ ncl_adapter *ncl_adapter_create(const ncl_json *config, ncl_strbuf *err)
     ncl_server_options options;
     ncl_json *model = NULL;
     ncl_err result;
+    bool tool_conflict = false;
 
     if (ncl_json_type_of(config) != NCL_JSON_OBJECT) {
         err_append(err, "the adapter configuration must be an object");
@@ -675,18 +868,29 @@ ncl_adapter *ncl_adapter_create(const ncl_json *config, ncl_strbuf *err)
     if (adapter == NULL) {
         return NULL;
     }
+    adapter->modules = modules;
+    adapter->decl = pick_tool(modules, &tool_conflict, err);
+    if (tool_conflict) {
+        ncl_adapter_free(adapter);
+        return NULL;
+    }
     adapter->manager = ncl_driver_manager_create();
     if (adapter->manager == NULL) {
         ncl_adapter_free(adapter);
         return NULL;
     }
-    result = load_drivers(adapter, config, err);
-    if (result != NCL_OK || ncl_driver_manager_count(adapter->manager) == 0) {
-        if (result == NCL_OK) {
-            err_append(err, "the configuration describes no driver");
+    if (adapter->decl == NULL) {
+        /* The configuration's point map: one driver per entry, the points from
+         * the file. A declared module needs none of that - it brings its own. */
+        result = load_drivers(adapter, config, err);
+        if (result != NCL_OK ||
+            ncl_driver_manager_count(adapter->manager) == 0) {
+            if (result == NCL_OK) {
+                err_append(err, "the configuration describes no driver");
+            }
+            ncl_adapter_free(adapter);
+            return NULL;
         }
-        ncl_adapter_free(adapter);
-        return NULL;
     }
 
     adapter->sn = ncl_json_obj_get_string(config, "sn") != NULL
@@ -702,27 +906,35 @@ ncl_adapter *ncl_adapter_create(const ncl_json *config, ncl_strbuf *err)
     sample = ncl_json_obj_get(config, "sample");
     methods = ncl_json_obj_get(config, "methods");
 
-    adapter->point_count = count_points(adapter->manager);
-    adapter->method_count = ncl_json_arr_len(methods);
-    if (adapter->point_count > 0) {
-        adapter->points = (adapter_point *)ncl_mem_calloc(adapter->point_count,
-                                                          sizeof(adapter_point));
+    if (adapter->decl != NULL) {
+        if (load_declared_points(adapter) != NCL_OK) {
+            err_append(err, "out of memory while reading the declaration");
+            ncl_adapter_free(adapter);
+            return NULL;
+        }
+    } else {
+        adapter->point_count = count_points(adapter->manager);
+        adapter->method_count = ncl_json_arr_len(methods);
+        if (adapter->point_count > 0) {
+            adapter->points = (adapter_point *)ncl_mem_calloc(
+                adapter->point_count, sizeof(adapter_point));
+        }
+        if (adapter->method_count > 0) {
+            adapter->methods = (adapter_method *)ncl_mem_calloc(
+                adapter->method_count, sizeof(adapter_method));
+        }
+        if ((adapter->point_count > 0 && adapter->points == NULL) ||
+            (adapter->method_count > 0 && adapter->methods == NULL)) {
+            ncl_adapter_free(adapter);
+            return NULL;
+        }
+        if (load_points(adapter) != NCL_OK) {
+            err_append(err, "out of memory while reading the point map");
+            ncl_adapter_free(adapter);
+            return NULL;
+        }
     }
-    if (adapter->method_count > 0) {
-        adapter->methods = (adapter_method *)ncl_mem_calloc(
-            adapter->method_count, sizeof(adapter_method));
-    }
-    if ((adapter->point_count > 0 && adapter->points == NULL) ||
-        (adapter->method_count > 0 && adapter->methods == NULL)) {
-        ncl_adapter_free(adapter);
-        return NULL;
-    }
-    if (load_points(adapter) != NCL_OK) {
-        err_append(err, "out of memory while reading the point map");
-        ncl_adapter_free(adapter);
-        return NULL;
-    }
-    {
+    if (adapter->decl == NULL) {
         size_t i;
 
         for (i = 0; i < adapter->method_count; i++) {
@@ -752,9 +964,17 @@ ncl_adapter *ncl_adapter_create(const ncl_json *config, ncl_strbuf *err)
         return NULL;
     }
     if (model == NULL) {
-        model = build_model(adapter, device,
-                            ncl_json_obj_get_int(sample, "intervalMs", 1000),
-                            ncl_json_obj_get_int(sample, "uploadMs", 1000));
+        if (adapter->decl != NULL) {
+            /* The declaration is the point map: one data item per declared
+             * point, one sample channel over the sampled ones, periods from the
+             * declaration. A configuration that names a "model" file still
+             * wins above - that is where a site tunes sampling. */
+            model = ncl_tool_model(adapter->decl, device, err);
+        } else {
+            model = build_model(adapter, device,
+                                ncl_json_obj_get_int(sample, "intervalMs", 1000),
+                                ncl_json_obj_get_int(sample, "uploadMs", 1000));
+        }
         if (model == NULL) {
             err_append(err, "cannot build the model");
             ncl_adapter_free(adapter);
@@ -791,7 +1011,18 @@ ncl_adapter *ncl_adapter_create(const ncl_json *config, ncl_strbuf *err)
         broker_subscribe(adapter);
     }
     resolve_nodes(adapter);
-    if (register_points(adapter, err) != NCL_OK) {
+    if (adapter->decl != NULL) {
+        /* The module opens its own connection and binds its own points; the
+         * configuration only supplies its "parameters". */
+        const ncl_json *parameters =
+            tool_parameters(config, adapter->decl->name);
+
+        if (ncl_tool_register(adapter->server, adapter->decl, parameters,
+                              &adapter->registration, err) != NCL_OK) {
+            ncl_adapter_free(adapter);
+            return NULL;
+        }
+    } else if (register_points(adapter, err) != NCL_OK) {
         ncl_adapter_free(adapter);
         return NULL;
     }
@@ -822,6 +1053,9 @@ void ncl_adapter_free(ncl_adapter *adapter)
     /* The server first: it stops the sample threads that publish through the
      * MQTT client this adapter owns. */
     ncl_server_free(adapter->server);
+    /* Then the declared tool: the server is gone, so nothing can call into it
+     * any more and close() runs exactly once. */
+    ncl_tool_unregister(adapter->decl, adapter->registration);
     if (adapter->mqtt != NULL) {
         ncl_mqtt_client_disconnect(adapter->mqtt);
         ncl_mqtt_client_destroy(adapter->mqtt);
@@ -853,6 +1087,11 @@ ncl_driver_manager *ncl_adapter_drivers(ncl_adapter *adapter)
     return adapter != NULL ? adapter->manager : NULL;
 }
 
+const ncl_tool_decl *ncl_adapter_tool(const ncl_adapter *adapter)
+{
+    return adapter != NULL ? adapter->decl : NULL;
+}
+
 const char *ncl_adapter_sn(const ncl_adapter *adapter)
 {
     return adapter != NULL ? adapter->sn : NULL;
@@ -869,6 +1108,17 @@ const char *ncl_adapter_point_path(const ncl_adapter *adapter, size_t index)
         return NULL;
     }
     return adapter->points[index].path;
+}
+
+const ncl_json *ncl_adapter_point_value(const ncl_adapter *adapter,
+                                        size_t index)
+{
+    if (adapter == NULL || index >= adapter->point_count) {
+        return NULL;
+    }
+    return adapter->points[index].node != NULL
+               ? adapter->points[index].node->value
+               : NULL;
 }
 
 size_t ncl_adapter_method_count(const ncl_adapter *adapter)
@@ -972,7 +1222,11 @@ ncl_err ncl_adapter_poll_one(ncl_adapter *adapter, const char *path,
         err_append1(err, "no such point", path);
         return NCL_ERR_NOT_FOUND;
     }
-    result = ncl_driver_manager_read(adapter->manager, point->path, &value);
+    if (point->via_server) {
+        result = read_declared_point(adapter, point->path, &value, err);
+    } else {
+        result = ncl_driver_manager_read(adapter->manager, point->path, &value);
+    }
     if (result != NCL_OK) {
         err_append1(err, "cannot read %s", point->path);
         ncl_json_free(value);
