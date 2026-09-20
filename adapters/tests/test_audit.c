@@ -12,7 +12,7 @@
 
 #include "nclink/ncl_logger.h"
 #include "nclink_adapter/ncl_audit.h"
-#include "nclink_adapter/ncl_driver_manager.h"
+#include "test_point_map.h"
 
 #define RAW_LOG_DIR "ncl_audit_log_test"
 
@@ -33,21 +33,26 @@ static const char kConfig[] =
     "  ]"
     "}";
 
-static ncl_driver_manager *make_manager(void)
+static test_point_map *make_map(void)
 {
-    ncl_driver_manager *manager = ncl_driver_manager_create();
+    test_point_map *manager = test_point_map_create(NULL);
     ncl_json *document = ncl_json_parse_cstr(kConfig, NULL);
+    ncl_strbuf err;
 
     if (manager == NULL || document == NULL) {
         ncl_json_free(document);
-        ncl_driver_manager_free(manager);
+        test_point_map_free(manager);
         return NULL;
     }
-    if (ncl_driver_manager_add_json(manager, document, NULL) != NCL_OK) {
+    ncl_strbuf_init(&err);
+    if (test_point_map_add_json(manager, document, &err) != NCL_OK) {
+        printf("    add_json said: %s\n", ncl_strbuf_cstr(&err));
+        ncl_strbuf_free(&err);
         ncl_json_free(document);
-        ncl_driver_manager_free(manager);
+        test_point_map_free(manager);
         return NULL;
     }
+    ncl_strbuf_free(&err);
     ncl_json_free(document);
     return manager;
 }
@@ -55,7 +60,7 @@ static ncl_driver_manager *make_manager(void)
 static void test_counters(void)
 {
     ncl_audit_options options;
-    ncl_driver_manager *manager;
+    test_point_map *manager;
     ncl_json *value = NULL;
     ncl_json *written;
     ncl_json *stats;
@@ -68,7 +73,7 @@ static void test_counters(void)
     NCL_CHECK(ncl_audit_enabled());
     NCL_CHECK(!ncl_audit_wants_raw());
 
-    manager = make_manager();
+    manager = make_map();
     NCL_CHECK(manager != NULL);
     if (manager == NULL) {
         return;
@@ -77,22 +82,22 @@ static void test_counters(void)
      * no point at all: a write is audited whether or not it happened. The
      * "a point must be marked writable" rule of §7 is the daemon's job, not the
      * manager's - test_adapter.c covers it where the device model lives. */
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/PLC1/STATUS", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/PLC1/STATUS", &value),
                      NCL_OK);
     ncl_json_free(value);
     value = NULL;
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/PLC1/SETPOINT", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/PLC1/SETPOINT", &value),
                      NCL_OK);
     ncl_json_free(value);
     value = NULL;
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/PLC1/NOPE", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/PLC1/NOPE", &value),
                      NCL_ERR_NOT_FOUND);
     written = ncl_json_new_int(42);
-    NCL_CHECK_EQ_INT(ncl_driver_manager_write(manager, "/PLC1/SETPOINT", written),
+    NCL_CHECK_EQ_INT(test_point_map_write(manager, "/PLC1/SETPOINT", written),
                      NCL_OK); /* the write borrows the value */
     ncl_json_free(written);
     written = ncl_json_new_int(1);
-    NCL_CHECK_EQ_INT(ncl_driver_manager_write(manager, "/PLC1/NOPE", written),
+    NCL_CHECK_EQ_INT(test_point_map_write(manager, "/PLC1/NOPE", written),
                      NCL_ERR_NOT_FOUND); /* no such point */
     ncl_json_free(written);
 
@@ -131,7 +136,7 @@ static void test_counters(void)
         ncl_json_free(stats);
     }
 
-    ncl_driver_manager_free(manager);
+    test_point_map_free(manager);
 }
 
 /* --------------------------------------------------------------- frames -- */
@@ -230,7 +235,7 @@ static char *read_text_file(const char *path)
 static void test_raw_frames(void)
 {
     ncl_audit_options options;
-    ncl_driver_manager *manager;
+    test_point_map *manager;
     ncl_json *config;
     ncl_json *value = NULL;
     ncl_strbuf err;
@@ -248,7 +253,7 @@ static void test_raw_frames(void)
     ncl_audit_init(&options);
     NCL_CHECK(ncl_audit_wants_raw());
 
-    manager = ncl_driver_manager_create();
+    manager = test_point_map_create(NULL);
     NCL_CHECK(manager != NULL);
     if (manager != NULL) {
         config = ncl_json_parse_cstr(
@@ -257,14 +262,14 @@ static void test_raw_frames(void)
             NULL);
         NCL_CHECK(config != NULL);
         ncl_strbuf_init(&err);
-        NCL_CHECK_EQ_INT(ncl_driver_manager_add_json(manager, config, &err),
+        NCL_CHECK_EQ_INT(test_point_map_add_json(manager, config, &err),
                          NCL_OK);
         ncl_strbuf_free(&err);
         ncl_json_free(config);
-        NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/RAW1/X", &value),
+        NCL_CHECK_EQ_INT(test_point_map_read(manager, "/RAW1/X", &value),
                          NCL_OK);
         ncl_json_free(value);
-        ncl_driver_manager_free(manager);
+        test_point_map_free(manager);
     }
 
     ncl_log_shutdown();
@@ -282,7 +287,7 @@ static void test_raw_frames(void)
 
 static void test_tiers(void)
 {
-    ncl_driver_manager *manager;
+    test_point_map *manager;
     ncl_json *params;
     ncl_driver *driver;
     ncl_json *value = NULL;
@@ -291,7 +296,7 @@ static void test_tiers(void)
     NCL_TEST_CASE("a failing driver lands in its own tier and code bucket");
     ncl_audit_init(NULL);
     ncl_audit_reset_stats();
-    manager = ncl_driver_manager_create();
+    manager = test_point_map_create(NULL);
     NCL_CHECK(manager != NULL);
     if (manager == NULL) {
         return;
@@ -302,16 +307,16 @@ static void test_tiers(void)
         "\"parameters\":{\"fail\":{\"code\":536870932,\"count\":2}},"
         "\"points\":[{\"path\":\"/BAD/D1\",\"addr\":\"D1\"}]}",
         NULL);
-    NCL_CHECK_EQ_INT(ncl_driver_manager_add_json(manager, params, NULL), NCL_OK);
+    NCL_CHECK_EQ_INT(test_point_map_add_json(manager, params, NULL), NCL_OK);
     ncl_json_free(params);
 
-    driver = ncl_driver_manager_driver_at(manager, 0);
+    driver = test_point_map_driver(manager);
     NCL_CHECK(driver != NULL);
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/BAD/D1", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/BAD/D1", &value),
                      NCL_DRV_ERR_PROTOCOL(20));
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/BAD/D1", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/BAD/D1", &value),
                      NCL_DRV_ERR_PROTOCOL(20));
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/BAD/D1", &value), NCL_OK);
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/BAD/D1", &value), NCL_OK);
     ncl_json_free(value);
     value = NULL;
 
@@ -336,34 +341,34 @@ static void test_tiers(void)
         }
         ncl_json_free(stats);
     }
-    ncl_driver_manager_free(manager);
+    test_point_map_free(manager);
 }
 
 static void test_sessions(void)
 {
-    ncl_driver_manager *manager;
+    test_point_map *manager;
     ncl_strbuf err;
     ncl_json *stats;
 
     NCL_TEST_CASE("opening and closing the links is part of the trail");
     ncl_audit_init(NULL);
     ncl_audit_reset_stats();
-    manager = make_manager();
+    manager = make_map();
     NCL_CHECK(manager != NULL);
     if (manager == NULL) {
         return;
     }
     ncl_strbuf_init(&err);
-    NCL_CHECK_EQ_INT(ncl_driver_manager_open_all(manager, &err), NCL_OK);
+    NCL_CHECK_EQ_INT(test_point_map_open(manager), NCL_OK);
     ncl_strbuf_free(&err);
-    ncl_driver_manager_close_all(manager);
+    test_point_map_close(manager);
     stats = ncl_audit_stats();
     NCL_CHECK(stats != NULL);
     if (stats != NULL) {
         NCL_CHECK_EQ_INT(ncl_json_obj_get_int(stats, "sessions", -1), 2);
         ncl_json_free(stats);
     }
-    ncl_driver_manager_free(manager);
+    test_point_map_free(manager);
 
     NCL_TEST_CASE("the trail can be switched off");
     ncl_audit_reset_stats();
@@ -375,13 +380,13 @@ static void test_sessions(void)
         ncl_audit_init(&options);
     }
     NCL_CHECK(!ncl_audit_enabled());
-    manager = make_manager();
+    manager = make_map();
     if (manager != NULL) {
         ncl_json *value = NULL;
 
-        (void)ncl_driver_manager_read(manager, "/PLC1/STATUS", &value);
+        (void)test_point_map_read(manager, "/PLC1/STATUS", &value);
         ncl_json_free(value);
-        ncl_driver_manager_free(manager);
+        test_point_map_free(manager);
     }
     NCL_CHECK_EQ_INT(ncl_audit_enabled(), 0);
     ncl_audit_init(NULL); /* back to the defaults for anything that follows */

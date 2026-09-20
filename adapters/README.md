@@ -14,7 +14,6 @@
 adapters/
 ├── include/nclink_adapter/   # 宿主侧接口（模块作者看的是 include/nclink/ 下的头）
 │   ├── ncl_driver.h          # ncl_driver_ops / ncl_address / ncl_driver_result
-│   ├── ncl_driver_manager.h  # 驱动配置、点位表、path→驱动 分派（老式路径）
 │   ├── ncl_audit.h           # 审计（§6）：请求/会话/写操作/错误直方图
 │   ├── ncl_adapter.h         # 宿主：配置 → 设备（含 MQTT 会话）
 │   └── ncl_module.h          # 模块 ABI 与装载器（两代，见下）
@@ -116,8 +115,9 @@ NCL_TOOL_MODULE("1.0.0", "某品牌机床适配器")
 
 ## 审计（§6）
 
-`00-通用-实现约定.md` §6 要四样东西，`src/core/audit.c` 一次给全，接在
-`ncl_driver_manager` 的读/写/调用/开会话处，驱动本身不用写审计代码：
+`00-通用-实现约定.md` §6 要四样东西，`src/core/audit.c` 一次给全。**记账点是
+`ncl_audit_request()` / `ncl_audit_write()` / `ncl_audit_session()`**：谁读写了
+协议，就在那里调用一次（适配器宿主不再有一层点表替你记——见下方"已知缺口"）：
 
 | §6 要求 | 实现 |
 |---|---|
@@ -142,9 +142,14 @@ ncl_json *stats = ncl_audit_stats();       /* 计数、直方图、最近 8 条�
 - `raw` 打开时，驱动通过可选的 `last_raw` 回调把最近一次交换的请求/应答字节
   交出来（Modbus/MC/FINS/S7/MELDAS/LSV2/SYNTEC 都实现；mock 与 MTConnect
   没有帧，日志里就没有字节）。只显示前 96 字节，超出打 `...`。
-- 「写能力必须显式开启」（§7）由守护进程把关：点位没写 `"writable": true`
-  就不注册 `set_value` 操作，`ncl_driver_manager_write()` 本身不拦，所以
-  直接调它写只读点位是允许的——那是给工具/测试用的底层入口。
+- 「写能力必须显式开启」（§7）由声明把关：点位不声明 `writable` 就不注册
+  `set_value` 操作（`ncl_tool_register()` 只注册声明过的操作）✓
+
+**已知缺口**：宿主在"配置点表"那条路（点位在 `conf/*.json` 里、由适配器宿主统一
+读写）里顺带记过审计；那条路删掉之后，声明式适配器的读写在 §6 里还没有落账
+（`--stats` 对声明式设备是空的）。补法两选一：在 `ncl_tool_register()` 的 shim 里
+统一记账（需要把审计入口接进 core），或者在适配器自己的 handler 里调用
+`ncl_audit_*`。动之前先定这个。
 
 ## 写一个新驱动
 

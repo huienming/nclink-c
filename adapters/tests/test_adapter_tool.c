@@ -21,6 +21,9 @@
 #ifndef NCL_TEST_PLUGIN_DIR
 #  error "NCL_TEST_PLUGIN_DIR must point at the directory holding the modules"
 #endif
+#ifndef NCL_TEST_MODULE_DIR
+#  error "NCL_TEST_MODULE_DIR must point at the directory of the refused fixtures"
+#endif
 
 static ncl_message *query(const char *path)
 {
@@ -106,14 +109,24 @@ NCL_TEST_MAIN_BEGIN()
     NCL_CHECK(decl->points[1].writable);
     NCL_CHECK_EQ_INT(ncl_tool_validate(decl, &err), NCL_OK);
 
-    NCL_TEST_CASE("a tool module has no protocol to register (and no error)");
-    NCL_CHECK_EQ_INT(ncl_modules_register(modules, &err), NCL_OK);
-    NCL_CHECK_EQ_INT((int)err.len, 0);
 
     NCL_TEST_CASE("loading it twice is not an error and does not load two");
     NCL_CHECK_EQ_INT(ncl_modules_add(modules, "test_tool_basic",
                                      NCL_TEST_PLUGIN_DIR, &err),
                      NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_module_count(modules), 1);
+
+    NCL_TEST_CASE("a module with a foreign ABI is refused, and says so");
+    ncl_strbuf_reset(&err);
+    NCL_CHECK(ncl_modules_add(modules, "test_bad_abi", NCL_TEST_MODULE_DIR,
+                              &err) != NCL_OK);
+    NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "ABI") != NULL);
+    NCL_CHECK_EQ_INT(ncl_module_count(modules), 1);
+
+    NCL_TEST_CASE("a file without the entry point is refused");
+    ncl_strbuf_reset(&err);
+    NCL_CHECK(ncl_modules_add(modules, "test_no_entry", NCL_TEST_MODULE_DIR,
+                              &err) != NCL_OK);
     NCL_CHECK_EQ_INT(ncl_module_count(modules), 1);
 
     NCL_TEST_CASE("the declaration builds the model the device publishes");
@@ -232,7 +245,6 @@ NCL_TEST_MAIN_BEGIN()
                 NCL_CHECK_EQ_INT(ncl_adapter_point_count(adapter), 2);
                 NCL_CHECK_EQ_STR(ncl_adapter_point_path(adapter, 0),
                                  "/TEST/RUN");
-                NCL_CHECK_EQ_INT(ncl_adapter_method_count(adapter), 0);
 
                 /* The host's own read path (what --once and the poll loop use)
                  * goes through the module's binding. */

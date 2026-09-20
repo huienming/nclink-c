@@ -72,3 +72,6 @@ tools/site-probe/*.log
 tools/site-probe/routes.txt
 tools/site-probe/reply.txt
 /*-capture.log
+
+# 审计测试写在自己目录下的日志（adapters/tests/test_audit.c）
+/ncl_audit_log_test/

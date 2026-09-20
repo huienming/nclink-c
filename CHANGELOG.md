@@ -5,6 +5,29 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 变更（破坏性）：配置点表与驱动管理器删除 —— 点位声明在适配器模块里
+
+FANUC 适配器已经改成"一个文件 + 点位声明"（`clients/focas/focas_tool.c`），配置点表
+那条路随之删除：
+
+- 删掉 `nclink_adapter/ncl_driver_manager.h` 与 `adapters/src/registry/driver_manager.c`：
+  适配器宿主不再从配置读点位，也不再维护 path→驱动 的分派。
+- `ncl_adapter` 只服务**声明式适配器**：模块声明点位（`nclink/ncl_tool.h`），宿主据此
+  生成模型、采样通道与绑定；配置只写 `tools[].parameters`、`device`、`sample`、`mqtt`。
+  配置里还留 `drivers[]` / `points[]` / `methods[]` 会明确报错并指出改法。
+- 模块 ABI 只认**第 2 代**（点位声明）。老式驱动模块（交给宿主一个驱动工厂）被拒绝，
+  错误信息里带"老式驱动模块请改写成声明式适配器"。
+- 驱动的**接口**（`ncl_driver_ops`、`ncl_driver_read_one()` 等）与协议客户端原样保留：
+  声明式适配器就在这一层实现，协议测试改用 `tests/test_point_map.h`（测试侧的小点表）。
+- 受影响的 API：删 `ncl_adapter_drivers()`、`ncl_adapter_method_count()`、
+  `ncl_modules_register()`、`ncl_module_registered()`；`ncl_adapter_create_with_modules()`
+  成为入口（`ncl_adapter_create()` 仍在，相当于"没有模块"，会以"没有声明式适配器模块"
+  失败）。
+
+**已知缺口**：§6 审计原先由驱动管理器在读写时记账；那条路删掉后，**声明式适配器的
+读写还没有落账**（`--stats` 对声明式设备是空的）。补法待定：宿主在注册的 shim 里统一
+记账，或适配器在自己的 handler 里调 `ncl_audit_*`。
+
 ### 新增：动态库装载接口（`nclink/ncl_library.h`）
 
 核心库原来没有"装载一个动态库"这件事（MQTT 的 TLS 走编译期），适配器要做插件就得

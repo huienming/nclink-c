@@ -5,12 +5,13 @@
  * NC-Link adapter - the daemon: a configuration file in, a live NC-Link device
  * out.
  *
- * The adapter reads a driver configuration, brings up one NC-Link server per
- * device and turns every configured point into an operation of that device:
+ * The points are not in the configuration: a loaded module declares them (see
+ * ncl_tool.h), and the adapter turns that declaration into the model, the
+ * sample channel and one operation per point on the device's server:
  *
  *   Query  get_value#<point path>  -> read the point from the device
  *   Set    set_value#<point path>  -> write it (only when the point is writable)
- *   Method call#<method path>      -> the driver's own operation
+ *   Method call#<method path>      -> the tool's own operation
  *
  * Sampling needs no extra machinery: the core's sample tasks send ordinary
  * queries, so a channel over a point goes through the same binding.
@@ -18,7 +19,6 @@
  * Configuration:
  *   {
  *     "sn": "V2A1B2C3D4E",
- *     "driverDir": "conf/driver",     // or "driverFile", or inline "drivers"
  *     "model": "conf/model.json",     // optional; generated from the points
  *     "device": { "type": "MACHINE", "id": "01", "name": "数控机床" },
  *     "sample": { "intervalMs": 1000, "uploadMs": 1000 },
@@ -47,7 +47,6 @@
 #define NCL_ADAPTER_H
 
 #include "nclink/ncl_server.h"
-#include "nclink_adapter/ncl_driver_manager.h"
 #include "nclink_adapter/ncl_module.h"
 
 #ifdef __cplusplus
@@ -62,12 +61,10 @@ ncl_adapter *ncl_adapter_create(const ncl_json *config, ncl_strbuf *err);
 /**
  * Build an adapter from a configuration and the modules the host loaded.
  *
- * A module that declares its own points (ABI generation 2, see ncl_tool.h)
- * becomes the device: the model and the bindings come from its declaration, the
- * configuration only carries its "parameters" (a "tools" entry, or a "drivers"
- * entry of the same name), the device block, the sampling and the broker. With
- * no such module the adapter behaves exactly as before - one driver per
- * "drivers" entry, points from the file.
+ * A module that declares its points (see ncl_tool.h) becomes the device: the
+ * model and the bindings come from its declaration, and the configuration only
+ * carries its "parameters" (a "tools" entry), the device block, the sampling
+ * and the broker. There is no point map in the configuration any more.
  *
  * One device serves one declared tool: two of them is a configuration error,
  * because they would fight over the same device node and sample channel.
@@ -95,11 +92,6 @@ ncl_err ncl_adapter_config_set_broker(ncl_json *config, const char *broker,
 
 /** Borrowed server, for the host to subscribe/serve REST/attach its own tools. */
 ncl_server *ncl_adapter_server(ncl_adapter *adapter);
-/**
- * The driver manager. It is empty - and unused - when a module declares the
- * device's points itself; see ncl_adapter_tool() for that case.
- */
-ncl_driver_manager *ncl_adapter_drivers(ncl_adapter *adapter);
 
 /**
  * The declaration the device is built from, or NULL when the adapter came from
@@ -121,7 +113,6 @@ const char *ncl_adapter_point_path(const ncl_adapter *adapter, size_t index);
  */
 const ncl_json *ncl_adapter_point_value(const ncl_adapter *adapter,
                                         size_t index);
-size_t ncl_adapter_method_count(const ncl_adapter *adapter);
 
 /* Broker ---------------------------------------------------------------- */
 

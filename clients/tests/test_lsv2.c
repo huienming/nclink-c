@@ -12,7 +12,7 @@
 
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_socket.h"
-#include "nclink_adapter/ncl_driver_manager.h"
+#include "test_point_map.h"
 #include "nclink/clients/lsv2.h"
 #include "lsv2/ncl_lsv2_driver.h"
 
@@ -487,7 +487,7 @@ static void test_login(void)
 static void test_through_the_manager(void)
 {
     lsv2_control *control = control_start();
-    ncl_driver_manager *manager = ncl_driver_manager_create();
+    test_point_map *manager = test_point_map_create(ncl_lsv2_create);
     ncl_strbuf json;
     ncl_strbuf err;
     ncl_json *config;
@@ -498,7 +498,7 @@ static void test_through_the_manager(void)
     NCL_CHECK(control != NULL && manager != NULL);
     if (control == NULL || manager == NULL) {
         control_stop(control);
-        ncl_driver_manager_free(manager);
+        test_point_map_free(manager);
         return;
     }
     ncl_strbuf_init(&json);
@@ -521,7 +521,7 @@ static void test_through_the_manager(void)
     NCL_CHECK(config != NULL);
     ncl_strbuf_init(&err);
     if (config != NULL) {
-        NCL_CHECK_EQ_INT(ncl_driver_manager_add_json(manager, config, &err),
+        NCL_CHECK_EQ_INT(test_point_map_add_json(manager, config, &err),
                          NCL_OK);
     }
     if (err.len > 0) {
@@ -530,19 +530,19 @@ static void test_through_the_manager(void)
     ncl_strbuf_free(&err);
     ncl_json_free(config);
 
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/TNC/VER", &value), NCL_OK);
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/TNC/VER", &value), NCL_OK);
     NCL_CHECK_EQ_STR(ncl_json_as_string(value), "iTNC530 60642x-01");
     ncl_json_free(value);
     value = NULL;
     control->memory[100] = 0x00;
     control->memory[101] = 0x2A;
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/TNC/M100", &value), NCL_OK);
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/TNC/M100", &value), NCL_OK);
     NCL_CHECK(ncl_json_as_int(value, &number));
     NCL_CHECK_EQ_INT(number, 42);
     ncl_json_free(value);
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/TNC/NOPE", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/TNC/NOPE", &value),
                      NCL_ERR_NOT_FOUND);
-    ncl_driver_manager_free(manager);
+    test_point_map_free(manager);
     control_stop(control);
 }
 

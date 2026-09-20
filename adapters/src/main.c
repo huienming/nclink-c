@@ -215,16 +215,7 @@ static void log_modules(const ncl_module_set *set)
                              : "声明式适配器");
             continue;
         }
-        ncl_log_info("适配器模块 %s：协议 \"%s\"%s%s%s（%s）",
-                     ncl_module_path(set, i), ncl_module_name(set, i),
-                     ncl_module_registered(set, i) ? "" : "（未注册）",
-                     ncl_module_version(set, i) != NULL ? " " : "",
-                     ncl_module_version(set, i) != NULL
-                         ? ncl_module_version(set, i)
-                         : "",
-                     ncl_module_description(set, i) != NULL
-                         ? ncl_module_description(set, i)
-                         : "");
+
     }
 }
 
@@ -257,46 +248,13 @@ static ncl_module_set *load_modules(const adapter_args *args,
         }
     }
     ncl_free_safe(dir);
-    if (ncl_modules_register(set, err) != NCL_OK) {
-        ncl_log_warn("部分模块未能注册: %s", ncl_strbuf_cstr(err));
-    }
     return set;
 }
 
 /**
- * Refuse to start when a configured link names a protocol nobody registered:
- * the useful sentence is "that module is not in the plugin directory", not
- * "unknown protocol" three layers down.
- */
-/**
- * A configuration that names a protocol nobody can build is the most common
- * bring-up mistake, so it is reported before the device starts. A protocol a
- * loaded module *declares* counts as buildable too: such a module serves its
- * points itself (the "drivers" entry it still matches only carries the
- * connection parameters).
- */
-static const char *tool_serving(const ncl_module_set *modules,
-                                const char *protocol)
-{
-    size_t i;
-
-    for (i = 0; modules != NULL && i < ncl_module_count(modules); i++) {
-        if (ncl_module_tool(modules, i) == NULL) {
-            continue;
-        }
-        if (ncl_module_name(modules, i) != NULL &&
-            strcmp(ncl_module_name(modules, i), protocol) == 0) {
-            return ncl_module_name(modules, i);
-        }
-    }
-    return NULL;
-}
-
-/**
- * The other half of the same check: a "tools" entry names a module that has to
- * be loaded, because that module is what declares the device's points. A tool
- * that is not there is reported by the file name the loader would have looked
- * for, which is what a site needs to see.
+ * Refuse to start when the configuration names a tool no loaded module
+ * declares: the useful sentence is "that module is not in the plugin
+ * directory", not "the configuration describes no driver" three layers down.
  */
 static ncl_err check_tools(const ncl_json *config, const char *plugin_dir,
                            const ncl_module_set *modules, ncl_strbuf *err)
@@ -339,39 +297,6 @@ static ncl_err check_tools(const ncl_json *config, const char *plugin_dir,
     }
     return NCL_OK;
 }
-
-static ncl_err check_protocols(const ncl_json *config, const char *plugin_dir,
-                               const ncl_module_set *modules, ncl_strbuf *err)
-{
-    const ncl_json *drivers = ncl_json_obj_get(config, "drivers");
-    size_t i;
-
-    if (ncl_json_type_of(drivers) != NCL_JSON_ARRAY) {
-        return NCL_OK;
-    }
-    for (i = 0; i < ncl_json_arr_len(drivers); i++) {
-        const char *protocol =
-            ncl_json_obj_get_string(ncl_json_arr_get(drivers, i), "type");
-
-        if (ncl_str_is_blank(protocol) || ncl_driver_protocol_known(protocol) ||
-            tool_serving(modules, protocol) != NULL) {
-            continue;
-        }
-        {
-            char *file = ncl_library_file_name(protocol);
-
-            (void)ncl_strbuf_printf(err,
-                                    "协议 \"%s\" 未注册：%s 里没有 %s"
-                                    "（--plugin-dir 换目录，--plugins 看已装载的模块）",
-                                    protocol, plugin_dir,
-                                    file != NULL ? file : "对应模块");
-            ncl_free_safe(file);
-        }
-        return NCL_ERR_NOT_FOUND;
-    }
-    return NCL_OK;
-}
-
 /**
  * Print the value of every point, for --once and for a first bring-up.
  *
@@ -529,8 +454,7 @@ int main(int argc, char **argv)
         return 0;
     }
     ncl_strbuf_reset(&err);
-    if (check_protocols(config, plugin_dir, modules, &err) != NCL_OK ||
-        check_tools(config, plugin_dir, modules, &err) != NCL_OK) {
+    if (check_tools(config, plugin_dir, modules, &err) != NCL_OK) {
         ncl_log_error("%s", ncl_strbuf_cstr(&err));
         ncl_modules_free(modules);
         ncl_json_free(config);
@@ -549,18 +473,9 @@ int main(int argc, char **argv)
         ncl_strbuf_free(&err);
         return 1;
     }
-    if (ncl_adapter_tool(adapter) != NULL) {
-        ncl_log_info("设备 %s：声明式适配器 \"%s\" 提供 %u 个点位（模型与绑定来自模块）",
-                     ncl_adapter_sn(adapter), ncl_adapter_tool(adapter)->name,
-                     (unsigned)ncl_adapter_point_count(adapter));
-    } else {
-        ncl_log_info("设备 %s：%u 个点位、%u 个方法（%u 条驱动链路）",
-                     ncl_adapter_sn(adapter),
-                     (unsigned)ncl_adapter_point_count(adapter),
-                     (unsigned)ncl_adapter_method_count(adapter),
-                     (unsigned)ncl_driver_manager_count(
-                         ncl_adapter_drivers(adapter)));
-    }
+    ncl_log_info("设备 %s：声明式适配器 \"%s\" 提供 %u 个点位（模型与绑定来自模块）",
+                 ncl_adapter_sn(adapter), ncl_adapter_tool(adapter)->name,
+                 (unsigned)ncl_adapter_point_count(adapter));
     if (ncl_adapter_broker_url(adapter) != NULL) {
         ncl_log_info("MQTT: %s（%s）", ncl_adapter_broker_url(adapter),
                      ncl_adapter_online(adapter) ? "已连接" : "待连接");
@@ -568,13 +483,7 @@ int main(int argc, char **argv)
         ncl_log_info("离线运行：不接 broker，REST 与轮询照常");
     }
 
-    /* Opening every session up front makes an offline device visible at
-     * start-up; a failure is not fatal, reads open on demand anyway. */
-    ncl_strbuf_reset(&err);
-    if (ncl_driver_manager_open_all(ncl_adapter_drivers(adapter), &err) !=
-        NCL_OK) {
-        ncl_log_warn("部分链路未连通: %s", ncl_strbuf_cstr(&err));
-    }
+
     if (args.probe != NULL) {
         exit_code = probe_point(adapter, args.probe);
     } else if (args.once) {

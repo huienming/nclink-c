@@ -13,7 +13,7 @@
 
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_socket.h"
-#include "nclink_adapter/ncl_driver_manager.h"
+#include "test_point_map.h"
 #include "nclink/clients/s7.h"
 #include "s7/ncl_s7_driver.h"
 
@@ -677,7 +677,7 @@ static void test_against_a_plc(void)
 static void test_through_the_manager(void)
 {
     s7_slave *s = s7_slave_start();
-    ncl_driver_manager *manager = ncl_driver_manager_create();
+    test_point_map *manager = test_point_map_create(ncl_s7_tcp_create);
     ncl_strbuf json;
     ncl_strbuf err;
     ncl_json *config;
@@ -688,7 +688,7 @@ static void test_through_the_manager(void)
     NCL_CHECK(s != NULL && manager != NULL);
     if (s == NULL || manager == NULL) {
         s7_slave_stop(s);
-        ncl_driver_manager_free(manager);
+        test_point_map_free(manager);
         return;
     }
     ncl_strbuf_init(&json);
@@ -708,7 +708,7 @@ static void test_through_the_manager(void)
     NCL_CHECK(config != NULL);
     ncl_strbuf_init(&err);
     if (config != NULL) {
-        NCL_CHECK_EQ_INT(ncl_driver_manager_add_json(manager, config, &err),
+        NCL_CHECK_EQ_INT(test_point_map_add_json(manager, config, &err),
                          NCL_OK);
     }
     if (err.len > 0) {
@@ -717,17 +717,17 @@ static void test_through_the_manager(void)
     ncl_strbuf_free(&err);
     ncl_json_free(config);
 
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/PLC/BYTE", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/PLC/BYTE", &value),
                      NCL_OK);
     NCL_CHECK(ncl_json_as_int(value, &number));
     NCL_CHECK_EQ_INT(number, 5);
     ncl_json_free(value);
     value = NULL;
 
-    NCL_CHECK_EQ_INT(ncl_driver_manager_write(manager, "/PLC/REAL",
+    NCL_CHECK_EQ_INT(test_point_map_write(manager, "/PLC/REAL",
                                               ncl_json_new_double(-2.5)),
                      NCL_OK);
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/PLC/REAL", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/PLC/REAL", &value),
                      NCL_OK);
     {
         double real = 0;
@@ -736,9 +736,9 @@ static void test_through_the_manager(void)
         NCL_CHECK(real == -2.5);
     }
     ncl_json_free(value);
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/PLC/NOPE", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/PLC/NOPE", &value),
                      NCL_ERR_NOT_FOUND);
-    ncl_driver_manager_free(manager);
+    test_point_map_free(manager);
     s7_slave_stop(s);
 }
 

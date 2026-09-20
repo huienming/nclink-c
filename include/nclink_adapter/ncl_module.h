@@ -7,32 +7,33 @@
  * A device program is one NC-Link server: `ncl_server` plus the transports and
  * the endpoints the host brings up around it. The vendor side - FANUC over
  * FOCAS, Modbus, MC, ... - is not compiled into that program: it arrives as a
- * module the host loads at start-up, and the point map lives in the
- * configuration file next to it. So "add a brand" is "drop a module into
- * plugins/ and name it in the configuration":
+ * module the host loads at start-up. The points it serves are *in* that module
+ * (nclink/ncl_tool.h), so "add a brand" is "drop a module into plugins/ and
+ * name it in the configuration":
  *
  *     ncl_adapter -c conf/fanuc.json            # plugins/ + "plugins": ["focas"]
  *     ncl_adapter -c conf/fanuc.json --plugin-dir plugins --plugins
  *
  * What a module exports (this is the whole ABI):
  *
- *     const ncl_adapter_module_desc *ncl_adapter_module(void);  // NCL_ADAPTER_MODULE_ENTRY
+ *     const ncl_tool_module_desc *ncl_adapter_module(void);  // NCL_TOOL_MODULE_ENTRY
  *
- * and the struct it returns carries the driver factory. The *host* registers
- * that factory into its own driver registry, which is why a module never
- * touches global state of its own: the registry, the logger and the point map
- * all stay on the host's side of the boundary.
+ * - a structure whose `decl` field is the declaration (points, periods,
+ *   open()/close()). The host builds the model, the sample channel and the
+ *   bindings from it, so a module never touches global state of its own: the
+ *   registry, the logger and the model all stay on the host's side.
  *
- * Two consequences of that split are worth knowing before writing one:
+ * Two consequences are worth knowing before writing one:
  *
  *   - a module is built against the static core, so it carries its own copy of
  *     the small helpers (ncl_mem_*, ncl_json_*, the logger). With the default
  *     heap build that is harmless - both sides allocate from the C runtime
  *     heap. With NCL_STATIC_MEM it is not: two pools cannot free each other's
  *     blocks, so plugin modules and the static-memory build do not mix.
- *   - the module must not call ncl_driver_register_protocol() itself (its copy
- *     of the registry is not the host's); it hands the factory over and the
- *     host registers it. ncl_module.h's loader does that.
+ *   - the old shape - a module handing the host a *driver factory* to register
+ *     (ABI generation 1) - is refused, with a message that says so: a driver
+ *     module is rewritten as a declaration (see clients/focas/focas_tool.c for
+ *     a worked example).
  */
 #ifndef NCL_MODULE_H
 #define NCL_MODULE_H
@@ -40,62 +41,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include "nclink/ncl_json.h"
 #include "nclink/ncl_tool.h"
-#include "nclink_adapter/ncl_driver.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/**
- * ABI generation 1: what this header describes - the module hands over a
- * driver factory and the host registers it.
- *
- * Generation 2 is the tool declaration (NCL_TOOL_MODULE_ABI in
- * nclink/ncl_tool.h): the module declares its points in code and the host
- * builds the model and the bindings from that, with no driver and no point map
- * in the configuration. Both generations start with the ABI word, so a host
- * reads that first and then knows which struct it has; anything else is
- * refused.
- */
-#define NCL_ADAPTER_MODULE_ABI 1u
-
-/* The entry point is a function named ncl_adapter_module(), so the struct it
- * returns cannot carry that name as well - in C a typedef and a function share
- * one namespace (MSVC: error C2365). The descriptor is therefore
- * ncl_adapter_module_desc; the *symbol* keeps the documented name. */
-
-/** Entry point every module exports (a function returning the struct below). */
-#define NCL_ADAPTER_MODULE_ENTRY "ncl_adapter_module"
-
-#if defined(_WIN32) || defined(_WIN64)
-#  define NCL_MODULE_EXPORT __declspec(dllexport)
-#else
-#  define NCL_MODULE_EXPORT __attribute__((visibility("default")))
-#endif
-
-/** What a module tells the host about itself. */
-typedef struct {
-    unsigned    abi;         /**< NCL_ADAPTER_MODULE_ABI                    */
-    const char *name;        /**< protocol name it answers to ("focas")     */
-    const char *version;     /**< module version, for `--plugins`           */
-    const char *description; /**< one line, for `--plugins`                 */
-    /** The driver factory the host registers under @p name. Required. */
-    ncl_driver *(*create)(void);
-    /** Optional extra protocol names, NULL terminated ("fanuc", ...). */
-    const char *const *aliases;
-} ncl_adapter_module_desc;
-
-/** What a module's entry point looks like: a static struct it hands over. */
-typedef const ncl_adapter_module_desc *(*ncl_adapter_module_fn)(void);
-
-/**
- * The entry point itself: a module defines exactly this function, and the host
- * finds it by that name (NCL_ADAPTER_MODULE_ENTRY). Declared - not defined -
- * here so a module's own definition has a prototype to match.
- */
-NCL_MODULE_EXPORT const ncl_adapter_module_desc *ncl_adapter_module(void);
 
 /* ------------------------------------------------------------------ host -- */
 
@@ -146,20 +96,15 @@ ncl_err ncl_modules_add_config(ncl_module_set *set, const ncl_json *config,
 char *ncl_modules_dir_from_config(const ncl_json *config,
                                   const char *default_dir);
 
-/**
- * Register every loaded module in this process's driver registry: its protocol
- * name (and aliases) become usable in a driver configuration from here on.
- */
-ncl_err ncl_modules_register(ncl_module_set *set, ncl_strbuf *err);
 
 size_t ncl_module_count(const ncl_module_set *set);
-/** Protocol name of module @p index, or NULL. */
+/** Tool name of module @p index, or NULL. */
 const char *ncl_module_name(const ncl_module_set *set, size_t index);
 /** ABI generation of module @p index (0 when the index is out of range). */
 unsigned ncl_module_abi(const ncl_module_set *set, size_t index);
 /**
- * Declaration of the tool module at @p index, or NULL when that module is a
- * driver module (generation 1). Borrowed; it lives in the module.
+ * Declaration of the module at @p index (never NULL for a loaded module).
+ * Borrowed; it lives in the module.
  */
 const ncl_tool_decl *ncl_module_tool(const ncl_module_set *set, size_t index);
 /** Version / description of module @p index, or NULL. */
@@ -167,10 +112,8 @@ const char *ncl_module_version(const ncl_module_set *set, size_t index);
 const char *ncl_module_description(const ncl_module_set *set, size_t index);
 /** File the module was loaded from, or NULL. */
 const char *ncl_module_path(const ncl_module_set *set, size_t index);
-/** True when module @p index has registered its protocol already. */
-bool ncl_module_registered(const ncl_module_set *set, size_t index);
 
-/** Unload every module (the factories are gone afterwards). */
+/** Unload every module (the declarations are gone afterwards). */
 void ncl_modules_free(ncl_module_set *set);
 
 #ifdef __cplusplus

@@ -12,7 +12,7 @@
 
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_socket.h"
-#include "nclink_adapter/ncl_driver_manager.h"
+#include "test_point_map.h"
 #include "nclink/clients/knd.h"
 #include "knd/ncl_knd_driver.h"
 
@@ -457,7 +457,7 @@ static void test_read(void)
 static void test_through_the_manager(void)
 {
     knd_mock *mock = mock_start();
-    ncl_driver_manager *manager = ncl_driver_manager_create();
+    test_point_map *manager = test_point_map_create(ncl_knd_create);
     ncl_strbuf json;
     ncl_strbuf err;
     ncl_json *config;
@@ -468,7 +468,7 @@ static void test_through_the_manager(void)
     NCL_CHECK(mock != NULL && manager != NULL);
     if (mock == NULL || manager == NULL) {
         mock_stop(mock);
-        ncl_driver_manager_free(manager);
+        test_point_map_free(manager);
         return;
     }
     ncl_strbuf_init(&json);
@@ -489,7 +489,7 @@ static void test_through_the_manager(void)
     NCL_CHECK(config != NULL);
     ncl_strbuf_init(&err);
     if (config != NULL) {
-        NCL_CHECK_EQ_INT(ncl_driver_manager_add_json(manager, config, &err),
+        NCL_CHECK_EQ_INT(test_point_map_add_json(manager, config, &err),
                          NCL_OK);
     }
     if (err.len > 0) {
@@ -498,14 +498,14 @@ static void test_through_the_manager(void)
     ncl_strbuf_free(&err);
     ncl_json_free(config);
 
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/CNC/COUNT", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/CNC/COUNT", &value),
                      NCL_OK);
     NCL_CHECK(ncl_json_as_int(value, &number));
     NCL_CHECK_EQ_INT(number, 77);
     ncl_json_free(value);
     value = NULL;
 
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/CNC/X", &value), NCL_OK);
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/CNC/X", &value), NCL_OK);
     {
         double real = 0;
 
@@ -515,7 +515,7 @@ static void test_through_the_manager(void)
     ncl_json_free(value);
     value = NULL;
 
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/CNC/FEED", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/CNC/FEED", &value),
                      NCL_OK);
     {
         double real = 0;
@@ -524,9 +524,9 @@ static void test_through_the_manager(void)
         NCL_CHECK(real == 150.0);
     }
     ncl_json_free(value);
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/CNC/NOPE", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/CNC/NOPE", &value),
                      NCL_ERR_NOT_FOUND);
-    ncl_driver_manager_free(manager);
+    test_point_map_free(manager);
     mock_stop(mock);
 }
 

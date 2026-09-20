@@ -13,7 +13,7 @@
 
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_socket.h"
-#include "nclink_adapter/ncl_driver_manager.h"
+#include "test_point_map.h"
 #include "nclink/clients/syntec.h"
 #include "syntec/ncl_syntec_driver.h"
 
@@ -389,7 +389,7 @@ static void test_read(void)
 static void test_through_the_manager(void)
 {
     syntec_mock *mock = mock_start();
-    ncl_driver_manager *manager = ncl_driver_manager_create();
+    test_point_map *manager = test_point_map_create(ncl_syntec_create);
     ncl_strbuf json;
     ncl_strbuf err;
     ncl_json *config;
@@ -400,7 +400,7 @@ static void test_through_the_manager(void)
     NCL_CHECK(mock != NULL && manager != NULL);
     if (mock == NULL || manager == NULL) {
         mock_stop(mock);
-        ncl_driver_manager_free(manager);
+        test_point_map_free(manager);
         return;
     }
     mock->answer[0] = 0x00;
@@ -427,7 +427,7 @@ static void test_through_the_manager(void)
     NCL_CHECK(config != NULL);
     ncl_strbuf_init(&err);
     if (config != NULL) {
-        NCL_CHECK_EQ_INT(ncl_driver_manager_add_json(manager, config, &err),
+        NCL_CHECK_EQ_INT(test_point_map_add_json(manager, config, &err),
                          NCL_OK);
     }
     if (err.len > 0) {
@@ -436,7 +436,7 @@ static void test_through_the_manager(void)
     ncl_strbuf_free(&err);
     ncl_json_free(config);
 
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/CNC/PART", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/CNC/PART", &value),
                      NCL_OK);
     NCL_CHECK(ncl_json_as_int(value, &number));
     NCL_CHECK_EQ_INT(number, 300);
@@ -448,7 +448,7 @@ static void test_through_the_manager(void)
     mock->answer[1] = 0x00;
     mock->answer[2] = 0x00;
     mock->answer[3] = 0xFA; /* 250 */
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/CNC/COUNT", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/CNC/COUNT", &value),
                      NCL_OK);
     NCL_CHECK(ncl_json_as_int(value, &number));
     NCL_CHECK_EQ_INT(number, 250);
@@ -456,9 +456,9 @@ static void test_through_the_manager(void)
     NCL_CHECK_EQ_INT(mock->last_cmd, NCL_SYNTEC_CMD_KRML_API);
     NCL_CHECK_EQ_INT(mock->last_code, 1000); /* the total part counter */
 
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/CNC/NOPE", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/CNC/NOPE", &value),
                      NCL_ERR_NOT_FOUND);
-    ncl_driver_manager_free(manager);
+    test_point_map_free(manager);
     mock_stop(mock);
 }
 

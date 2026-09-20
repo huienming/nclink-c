@@ -12,7 +12,7 @@
 
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_socket.h"
-#include "nclink_adapter/ncl_driver_manager.h"
+#include "test_point_map.h"
 #include "nclink/clients/mc.h"
 #include "mc/ncl_mc_driver.h"
 
@@ -685,7 +685,7 @@ static void test_four_e_and_silence(void)
 static void test_through_the_manager(void)
 {
     mc_slave *s = mc_slave_start(false);
-    ncl_driver_manager *manager = ncl_driver_manager_create();
+    test_point_map *manager = test_point_map_create(ncl_mc_tcp_create);
     ncl_strbuf json;
     ncl_strbuf err;
     ncl_json *config;
@@ -696,7 +696,7 @@ static void test_through_the_manager(void)
     NCL_CHECK(s != NULL && manager != NULL);
     if (s == NULL || manager == NULL) {
         mc_slave_stop(s);
-        ncl_driver_manager_free(manager);
+        test_point_map_free(manager);
         return;
     }
     ncl_strbuf_init(&json);
@@ -714,7 +714,7 @@ static void test_through_the_manager(void)
     NCL_CHECK(config != NULL);
     ncl_strbuf_init(&err);
     if (config != NULL) {
-        NCL_CHECK_EQ_INT(ncl_driver_manager_add_json(manager, config, &err),
+        NCL_CHECK_EQ_INT(test_point_map_add_json(manager, config, &err),
                          NCL_OK);
     }
     if (err.len > 0) {
@@ -723,7 +723,7 @@ static void test_through_the_manager(void)
     ncl_strbuf_free(&err);
     ncl_json_free(config);
 
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/PLC/TEMP", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/PLC/TEMP", &value),
                      NCL_OK);
     NCL_CHECK(ncl_json_as_int(value, &number));
     NCL_CHECK_EQ_INT(number, 532);
@@ -731,7 +731,7 @@ static void test_through_the_manager(void)
     value = NULL;
 
     s->bits[0] = 0x08; /* M3 on */
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/PLC/READY", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/PLC/READY", &value),
                      NCL_OK);
     {
         bool set = false;
@@ -739,9 +739,9 @@ static void test_through_the_manager(void)
         NCL_CHECK(ncl_json_as_bool(value, &set) && set);
     }
     ncl_json_free(value);
-    NCL_CHECK_EQ_INT(ncl_driver_manager_read(manager, "/PLC/NOPE", &value),
+    NCL_CHECK_EQ_INT(test_point_map_read(manager, "/PLC/NOPE", &value),
                      NCL_ERR_NOT_FOUND);
-    ncl_driver_manager_free(manager);
+    test_point_map_free(manager);
     mc_slave_stop(s);
 }
 
