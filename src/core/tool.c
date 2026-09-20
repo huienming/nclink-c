@@ -7,10 +7,14 @@
  * nclink/ncl_tool.h is what an author writes; this file is the other half: the
  * helpers a point function uses, plus the two steps the host runs on a
  * declaration - ncl_tool_model() (declaration -> model document) and
- * ncl_tool_register() (declaration -> open once + one binding per point).
+ * ncl_tool_register() (declaration -> open once + methods and bindings).
  *
- * Both steps take a declaration and a server and touch nothing else, so they
- * are unit tested without a device, a broker or a module in sight.
+ * The host's tool API hands every method one shared `instance` pointer and a
+ * callback of its own shape (ncl_tool_fn: no place to say *which* point is
+ * being served, no place for the point's own data). So the declaration layer
+ * puts a small shim in front of each point - {context, point} - and three
+ * trampolines that call the author's function with the operation that reached
+ * it. The shims live in the registration the caller holds.
  */
 
 #include "nclink/ncl_tool.h"
@@ -91,6 +95,17 @@ const char *ncl_tool_param_str(const ncl_json *params, const char *key,
     return value != NULL ? value : fallback;
 }
 
+const ncl_json *ncl_tool_param_value(const ncl_json *params)
+{
+    const ncl_json *value;
+
+    if (params == NULL) {
+        return NULL;
+    }
+    value = ncl_json_obj_get(params, "value");
+    return value != NULL ? value : params;
+}
+
 ncl_err ncl_tool_reply_int(ncl_json **result, long long value)
 {
     ncl_json *json;
@@ -167,48 +182,63 @@ ncl_err ncl_tool_fail(char **reason, ncl_err code, const char *fmt, ...)
 
 /* ------------------------------------------------------------- declaration -- */
 
-ncl_operation ncl_tool_kind_operation(ncl_tool_kind kind)
+/** The three operations a point may declare, in a fixed order. */
+static const ncl_operation k_operations[3] = {NCL_OP_GET_VALUE, NCL_OP_SET_VALUE,
+                                              NCL_OP_FUNC_CALL};
+
+const char *ncl_tool_point_name(const ncl_tool_point *point)
 {
-    switch (kind) {
-    case NCL_TOOL_SET:
-        return NCL_OP_SET_VALUE;
-    case NCL_TOOL_CALL:
-        return NCL_OP_FUNC_CALL;
-    case NCL_TOOL_GET:
-    default:
-        return NCL_OP_GET_VALUE;
+    const char *slash;
+
+    if (point == NULL || point->path == NULL) {
+        return "";
     }
+    slash = strrchr(point->path, '/');
+    return slash != NULL ? slash + 1 : point->path;
 }
 
-const char *ncl_tool_kind_method(ncl_tool_kind kind)
+/** True when @p point declares @p op. */
+static bool point_declares(const ncl_tool_point *point, ncl_operation op)
 {
-    switch (kind) {
-    case NCL_TOOL_SET:
-        return "write";
-    case NCL_TOOL_CALL:
-        return "call";
-    case NCL_TOOL_GET:
+    switch (op) {
+    case NCL_OP_GET_VALUE:
+        return point->readable;
+    case NCL_OP_SET_VALUE:
+        return point->writable;
+    case NCL_OP_FUNC_CALL:
+        return point->callable;
     default:
-        return "read";
+        return false;
     }
 }
 
 /**
- * The name a point answers to inside its tool: the tail of its path, so
- * "/CNC/RESET" is reached as a call to "<tool>/RESET" (and appears as
- * "<tool>/RESET" in the OpenAPI document).
+ * The name a point's operation answers to inside its tool. A call keeps the
+ * bare name - "<tool>/RESET" is what a client writes - while the value
+ * operations are suffixed, because they are addressed by model path rather
+ * than by name and the suffix keeps every name unique.
  */
-static const char *ncl_tool_point_name(const ncl_tool_point *point)
+static void point_method_name(const ncl_tool_point *point, ncl_operation op,
+                              char *buffer, size_t size)
 {
-    const char *slash = strrchr(point->path, '/');
+    const char *name = ncl_tool_point_name(point);
 
-    return slash != NULL ? slash + 1 : point->path;
+    switch (op) {
+    case NCL_OP_GET_VALUE:
+        (void)snprintf(buffer, size, "%s.read", name);
+        break;
+    case NCL_OP_SET_VALUE:
+        (void)snprintf(buffer, size, "%s.write", name);
+        break;
+    default:
+        (void)snprintf(buffer, size, "%s", name);
+        break;
+    }
 }
 
 ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
 {
     size_t i;
-    bool sampled = false;
 
     if (decl == NULL) {
         err_append(err, "the tool declaration is missing");
@@ -232,7 +262,10 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
     }
     for (i = 0; i < decl->point_count; i++) {
         const ncl_tool_point *point = &decl->points[i];
+        const char *name = ncl_tool_point_name(point);
         size_t j;
+        size_t op;
+        size_t declared = 0;
 
         if (ncl_str_is_blank(point->path)) {
             err_append1(err, "a point of the tool %s has no path", decl->name);
@@ -247,48 +280,61 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
             err_append1(err, "the point %s has no function", point->path);
             return NCL_ERR_INVALID_ARG;
         }
-        if (point->kind != NCL_TOOL_GET && point->kind != NCL_TOOL_SET &&
-            point->kind != NCL_TOOL_CALL) {
-            err_append1(err, "the point %s has an unknown kind", point->path);
+        if (name[0] == '\0') {
+            err_append1(err, "the point path %s ends with '/'", point->path);
             return NCL_ERR_INVALID_ARG;
         }
-        if (point->sampled && point->kind != NCL_TOOL_GET) {
+        if (point->sampled && !point->readable) {
             err_append1(err, "the point %s is sampled but not readable",
                         point->path);
             return NCL_ERR_INVALID_ARG;
         }
-        for (j = 0; j < i; j++) {
-            if (decl->points[j].kind == point->kind &&
-                strcmp(decl->points[j].path, point->path) == 0) {
-                err_append1(err, "the point %s is declared twice",
-                            point->path);
-                return NCL_ERR_INVALID_ARG;
+        for (op = 0; op < 3; op++) {
+            if (point_declares(point, k_operations[op])) {
+                declared++;
             }
         }
-        /* A method call is addressed as "<tool>/<name>", and the name is the
-         * tail of the point path, so the tails have to be unique. */
-        if (ncl_tool_point_name(point)[0] == '\0') {
-            err_append1(err, "the point path %s ends with '/'", point->path);
+        if (declared == 0) {
+            err_append1(err, "the point %s declares no operation", point->path);
+            return NCL_ERR_INVALID_ARG;
+        }
+        /* The value operations get their own suffix, so a name ending in one
+         * of them could collide with another point's name. */
+        if (strstr(name, ".read") != NULL || strstr(name, ".write") != NULL) {
+            err_append1(err, "the point name %s must not contain .read/.write",
+                        name);
             return NCL_ERR_INVALID_ARG;
         }
         for (j = 0; j < i; j++) {
-            if (strcmp(ncl_tool_point_name(&decl->points[j]),
-                       ncl_tool_point_name(point)) == 0) {
-                err_appendf(err,
-                            "the points %s and %s share the method name %s",
-                            decl->points[j].path, point->path,
-                            ncl_tool_point_name(point));
+            const ncl_tool_point *other = &decl->points[j];
+            size_t other_op;
+
+            if (ncl_str_is_blank(other->path) || other->path[0] != '/') {
+                continue;
+            }
+            if (strcmp(ncl_tool_point_name(other), name) != 0) {
+                continue;
+            }
+            /* Same name: each (path, operation) pair may be declared once. */
+            for (other_op = 0; other_op < 3; other_op++) {
+                ncl_operation candidate = k_operations[other_op];
+
+                if (point_declares(other, candidate) &&
+                    point_declares(point, candidate)) {
+                    err_appendf(err, "the points %s and %s both declare %s",
+                                other->path, point->path,
+                                ncl_operation_to_string(candidate));
+                    return NCL_ERR_INVALID_ARG;
+                }
+            }
+            if (strcmp(other->path, point->path) == 0) {
+                err_append1(err, "the point %s is declared twice", point->path);
                 return NCL_ERR_INVALID_ARG;
             }
+            err_appendf(err, "the points %s and %s share the name %s",
+                        other->path, point->path, name);
+            return NCL_ERR_INVALID_ARG;
         }
-        if (point->sampled) {
-            sampled = true;
-        }
-    }
-    if (sampled && decl->sample_ms <= 0) {
-        err_append1(err, "the tool %s samples but declares no period",
-                    decl->name);
-        return NCL_ERR_INVALID_ARG;
     }
     return NCL_OK;
 }
@@ -385,6 +431,9 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         if (point->summary != NULL) {
             (void)ncl_json_obj_set_string(item, "description", point->summary);
         }
+        if (point->writable) {
+            (void)ncl_json_obj_set_bool(item, "settable", true);
+        }
         /* "source" is what makes the model path equal to the point path. */
         if (slash != NULL && slash != point->path) {
             char *source = ncl_strndup(point->path + 1,
@@ -410,7 +459,10 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         }
     }
 
-    if (ncl_json_arr_len(ids) > 0) {
+    /* No period means "this declaration asks for no sample channel"; a site can
+     * still add one to the model file, which is where the running period is
+     * kept. */
+    if (decl->sample_ms > 0 && ncl_json_arr_len(ids) > 0) {
         long long upload = decl->upload_ms > 0 ? decl->upload_ms
                                               : decl->sample_ms;
 
@@ -450,25 +502,86 @@ fail:
 
 /* --------------------------------------------------------------- register -- */
 
+/** What the server hands back to the author's function. */
+typedef struct {
+    void                  *ctx;
+    const ncl_tool_point  *point;
+} ncl_tool_shim;
+
+struct ncl_tool_registration {
+    const ncl_tool_decl *decl;
+    void                *ctx;
+    ncl_tool_shim       *shims;
+    size_t               shim_count;
+};
+
+static ncl_err shim_read(void *instance, const ncl_json *params,
+                         ncl_json **result, char **reason)
+{
+    const ncl_tool_shim *shim = (const ncl_tool_shim *)instance;
+
+    return shim->point->fn(shim->ctx, shim->point, NCL_OP_GET_VALUE, params,
+                           result, reason);
+}
+
+static ncl_err shim_write(void *instance, const ncl_json *params,
+                          ncl_json **result, char **reason)
+{
+    const ncl_tool_shim *shim = (const ncl_tool_shim *)instance;
+
+    return shim->point->fn(shim->ctx, shim->point, NCL_OP_SET_VALUE, params,
+                           result, reason);
+}
+
+static ncl_err shim_call(void *instance, const ncl_json *params,
+                         ncl_json **result, char **reason)
+{
+    const ncl_tool_shim *shim = (const ncl_tool_shim *)instance;
+
+    return shim->point->fn(shim->ctx, shim->point, NCL_OP_FUNC_CALL, params,
+                           result, reason);
+}
+
+static ncl_tool_fn shim_for(ncl_operation op)
+{
+    switch (op) {
+    case NCL_OP_GET_VALUE:
+        return shim_read;
+    case NCL_OP_SET_VALUE:
+        return shim_write;
+    default:
+        return shim_call;
+    }
+}
+
+/** How many operations @p point declares. */
+static size_t point_operation_count(const ncl_tool_point *point)
+{
+    size_t i;
+    size_t count = 0;
+
+    for (i = 0; i < 3; i++) {
+        if (point_declares(point, k_operations[i])) {
+            count++;
+        }
+    }
+    return count;
+}
+
 ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
-                          const ncl_json *params, void **ctx_out,
+                          const ncl_json *params, ncl_tool_registration **out,
                           ncl_strbuf *err)
 {
-    void *ctx;
-    char *open_error = NULL;
-    ncl_tool_method *methods = NULL;
-    ncl_tool_binding *bindings = NULL;
-    char *names = NULL; /* one block, one method name per point */
-    size_t names_size = 0;
+    ncl_tool_registration *registration;
+    size_t operations = 0;
     size_t at = 0;
     size_t i;
-    ncl_err result;
 
-    if (ctx_out == NULL) {
-        err_append(err, "ncl_tool_register() needs somewhere to put the context");
+    if (out == NULL) {
+        err_append(err, "ncl_tool_register() needs somewhere to put the result");
         return NCL_ERR_INVALID_ARG;
     }
-    *ctx_out = NULL;
+    *out = NULL;
     if (server == NULL) {
         err_append(err, "ncl_tool_register() needs a server");
         return NCL_ERR_INVALID_ARG;
@@ -476,70 +589,85 @@ ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
     if (ncl_tool_validate(decl, err) != NCL_OK) {
         return NCL_ERR_INVALID_ARG;
     }
-
-    /* Once for the whole tool: every point shares this context. */
-    ctx = decl->open(params, &open_error);
-    if (ctx == NULL) {
-        err_append1(err, "the tool %s cannot open its connection", decl->name);
-        if (open_error != NULL) {
-            err_append1(err, ": %s", open_error);
-            ncl_free_safe(open_error);
-        }
-        return NCL_ERR_CONNECT;
-    }
-
-    /* One tool with one method per point: that is the shape a method call
-     * addresses ("<tool>/<name>") and what the schema is built from. The
-     * server copies every name it is given, so the tables are scratch. */
-    for (i = 0; i < decl->point_count; i++) {
-        names_size += strlen(ncl_tool_point_name(&decl->points[i])) + 1;
-    }
-    methods = (ncl_tool_method *)ncl_mem_calloc(decl->point_count,
-                                                sizeof(*methods));
-    bindings = (ncl_tool_binding *)ncl_mem_calloc(decl->point_count,
-                                                  sizeof(*bindings));
-    names = (char *)ncl_mem_alloc(names_size);
-    if (methods == NULL || bindings == NULL || names == NULL) {
-        err_append1(err, "cannot register the tool %s", decl->name);
-        ncl_mem_free(methods);
-        ncl_mem_free(bindings);
-        ncl_mem_free(names);
-        ncl_tool_close(decl, ctx);
+    registration = (ncl_tool_registration *)ncl_mem_calloc(
+        1, sizeof(*registration));
+    if (registration == NULL) {
         return NCL_ERR_NOMEM;
     }
     for (i = 0; i < decl->point_count; i++) {
-        const ncl_tool_point *point = &decl->points[i];
-        const char *name = ncl_tool_point_name(point);
-        size_t length = strlen(name) + 1;
+        operations += point_operation_count(&decl->points[i]);
+    }
+    registration->shims =
+        (ncl_tool_shim *)ncl_mem_calloc(operations, sizeof(ncl_tool_shim));
+    if (registration->shims == NULL) {
+        ncl_mem_free(registration);
+        return NCL_ERR_NOMEM;
+    }
+    registration->shim_count = operations;
+    registration->decl = decl;
 
-        memcpy(names + at, name, length);
-        methods[i].name = names + at;
-        methods[i].fn = point->fn;
-        methods[i].params_schema = NULL;
-        bindings[i].path = point->path;
-        bindings[i].operation = ncl_tool_kind_operation(point->kind);
-        bindings[i].method = names + at;
-        bindings[i].tool = decl->name;
-        at += length;
+    /* Once for the whole tool: every point shares this connection. */
+    registration->ctx = decl->open(params, NULL);
+    if (registration->ctx == NULL) {
+        err_append1(err, "the tool %s cannot open its connection", decl->name);
+        ncl_mem_free(registration->shims);
+        ncl_mem_free(registration);
+        return NCL_ERR_CONNECT;
     }
-    result = ncl_server_register_tool(server, decl->name, ctx, methods,
-                                      decl->point_count, bindings,
-                                      decl->point_count);
-    ncl_mem_free(methods);
-    ncl_mem_free(bindings);
-    ncl_mem_free(names);
-    if (result != NCL_OK) {
-        err_append1(err, "cannot register the tool %s", decl->name);
-        ncl_tool_close(decl, ctx);
-        return result;
+
+    /* One registration per point: the host's instance pointer is per tool, and
+     * a point's operations have to keep their own context and their own name.
+     * The tool name is the declaration's, so a call is addressed
+     * "<tool>/<point name>" whichever point it lands on. */
+    for (i = 0; i < decl->point_count; i++) {
+        const ncl_tool_point *point = &decl->points[i];
+        ncl_tool_method methods[3];
+        ncl_tool_binding bindings[3];
+        char names[3][256];
+        ncl_tool_shim *shim = &registration->shims[at];
+        size_t count = 0;
+        size_t op;
+
+        shim->ctx = registration->ctx;
+        shim->point = point;
+        for (op = 0; op < 3; op++) {
+            ncl_operation candidate = k_operations[op];
+
+            if (!point_declares(point, candidate)) {
+                continue;
+            }
+            point_method_name(point, candidate, names[count],
+                              sizeof(names[count]));
+            methods[count].name = names[count];
+            methods[count].fn = shim_for(candidate);
+            methods[count].params_schema = NULL;
+            bindings[count].path = point->path;
+            bindings[count].operation = candidate;
+            bindings[count].method = names[count];
+            bindings[count].tool = decl->name;
+            count++;
+        }
+        if (ncl_server_register_tool(server, decl->name, shim, methods, count,
+                                     bindings, count) != NCL_OK) {
+            err_append1(err, "cannot bind the point %s", point->path);
+            ncl_tool_unregister(decl, registration);
+            return NCL_ERR_INVALID_ARG;
+        }
+        at++;
     }
-    *ctx_out = ctx;
+    *out = registration;
     return NCL_OK;
 }
 
-void ncl_tool_close(const ncl_tool_decl *decl, void *ctx)
+void ncl_tool_unregister(const ncl_tool_decl *decl,
+                         ncl_tool_registration *registration)
 {
-    if (decl != NULL && decl->close != NULL) {
-        decl->close(ctx);
+    if (registration == NULL) {
+        return;
     }
+    if (decl != NULL && decl->close != NULL) {
+        decl->close(registration->ctx);
+    }
+    ncl_mem_free(registration->shims);
+    ncl_mem_free(registration);
 }

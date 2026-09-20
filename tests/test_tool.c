@@ -5,10 +5,13 @@
  * Unit tests for the declaration seam (nclink/ncl_tool.h).
  *
  * The fixture below is written the way an adapter author writes an adapter -
- * one file, a handful of functions, one NCL_TOOL block - and the test then
- * drives it through the host's public APIs only: validate, model, register,
- * and a real Query/Set/Method request through the server. If either half of
- * the seam moves without the other, this suite notices.
+ * one file, a dispatch function, one NCL_TOOL block - and the test drives it
+ * through the host's public APIs only: validate, model, register, and a real
+ * Query/Set/Method request through the server.
+ *
+ * The dispatch function is shared by every point on purpose: that is the shape
+ * a PLC adapter with a mapping table takes, and it only works if the point's
+ * own data (self->arg) and the operation (op) reach it.
  */
 #include "ncl_test.h"
 
@@ -18,6 +21,14 @@
 #include "nclink/ncl_tool.h"
 
 /* ---------------------------------------------------------------- fixture -- */
+
+/** What a point carries as its own data - here, the "register" it reads. */
+typedef struct {
+    const char *item;
+    long long   value;
+} fixture_item;
+
+static const fixture_item k_run_item = {"STATUS@RUN", 40};
 
 static int g_opens;
 static int g_closes;
@@ -44,75 +55,69 @@ static void fixture_close(void *ctx)
     }
 }
 
-static ncl_err read_run(void *ctx, const ncl_json *params, ncl_json **result,
-                        char **reason)
+static ncl_err fixture_dispatch(void *ctx, const ncl_tool_point *self,
+                                ncl_operation op, const ncl_json *params,
+                                ncl_json **result, char **reason)
 {
-    (void)params;
+    const fixture_item *item = (const fixture_item *)self->arg;
+
     if (ctx != (void *)&g_run) {
-        return ncl_tool_fail(reason, NCL_ERR_STATE, "read_run got a foreign context");
+        return ncl_tool_fail(reason, NCL_ERR_STATE,
+                             "the handler got a foreign context");
     }
-    return ncl_tool_reply_int(result, g_run);
-}
+    switch (op) {
+    case NCL_OP_GET_VALUE:
+        if (item != NULL) {
+            /* The point's own data is what makes this a "register" read. */
+            return ncl_tool_reply_int(result, item->value + 1);
+        }
+        if (strcmp(self->path, "/CNC/NAME") == 0) {
+            return ncl_tool_reply_text(result, g_name);
+        }
+        if (strcmp(self->path, "/CNC/MODE") == 0) {
+            return ncl_tool_reply_int(result, g_mode);
+        }
+        return ncl_tool_fail(reason, NCL_ERR_NOT_FOUND, "no such point %s",
+                             self->path);
+    case NCL_OP_SET_VALUE:
+    {
+        const ncl_json *value = ncl_tool_param_value(params);
+        long long mode = 0;
 
-static ncl_err read_name(void *ctx, const ncl_json *params, ncl_json **result,
-                         char **reason)
-{
-    (void)ctx;
-    (void)params;
-    (void)reason;
-    return ncl_tool_reply_text(result, g_name);
-}
-
-static ncl_err read_mode(void *ctx, const ncl_json *params, ncl_json **result,
-                         char **reason)
-{
-    (void)ctx;
-    (void)params;
-    (void)reason;
-    return ncl_tool_reply_int(result, g_mode);
-}
-
-static ncl_err write_mode(void *ctx, const ncl_json *params, ncl_json **result,
-                          char **reason)
-{
-    long long value = ncl_tool_param_int(params, "value", -1);
-
-    (void)ctx;
-    if (value < 0) {
-        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
-                             "the write needs a non negative value");
+        if (value == NULL || !ncl_json_as_int(value, &mode)) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                 "the write needs an integer value");
+        }
+        g_written = mode;
+        g_mode = mode;
+        return ncl_tool_reply_bool(result, true);
     }
-    g_written = value;
-    g_mode = value;
-    return ncl_tool_reply_bool(result, true);
-}
-
-static ncl_err call_reset(void *ctx, const ncl_json *params, ncl_json **result,
-                          char **reason)
-{
-    (void)ctx;
-    (void)params;
-    (void)reason;
-    g_resets++;
-    return ncl_tool_reply_bool(result, true);
+    case NCL_OP_FUNC_CALL:
+        g_resets++;
+        return ncl_tool_reply_bool(result, true);
+    default:
+        break;
+    }
+    return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
+                         "unsupported operation on %s", self->path);
 }
 
 NCL_TOOL_BEGIN("cnc", "FANUC 数控机床（夹具）", 1000, 2000,
                fixture_open, fixture_close)
-    NCL_POINT_SAMPLED("/CNC/STATUS@RUN", read_run)
-    NCL_POINT_SAMPLED("/CNC/NAME", read_name)
-    NCL_POINT("/CNC/MODE@CUR", read_mode)
-    NCL_POINT_WRITE("/CNC/MODE", write_mode)
-    NCL_METHOD("/CNC/RESET", call_reset)
+    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@RUN", fixture_dispatch, &k_run_item)
+    NCL_POINT("/CNC/NAME", fixture_dispatch)
+    NCL_POINT_RW("/CNC/MODE", fixture_dispatch)
+    NCL_METHOD("/CNC/RESET", fixture_dispatch)
 NCL_TOOL_END()
-
-/* ------------------------------------------------------------ declaration -- */
 
 /** The declaration the macros above built, by value. */
 static ncl_tool_decl fixture_decl(void)
 {
     return ncl_tool_declaration();
 }
+
+/* ------------------------------------------------------------ declaration -- */
+
 static void test_declaration(void)
 {
     ncl_tool_decl decl = fixture_decl();
@@ -124,27 +129,29 @@ static void test_declaration(void)
     NCL_CHECK_EQ_STR(decl.description, "FANUC 数控机床（夹具）");
     NCL_CHECK_EQ_INT(decl.sample_ms, 1000);
     NCL_CHECK_EQ_INT(decl.upload_ms, 2000);
-    NCL_CHECK_EQ_INT(decl.point_count, 5);
+    NCL_CHECK_EQ_INT(decl.point_count, 4);
     NCL_CHECK(decl.open == fixture_open);
     NCL_CHECK(decl.close == fixture_close);
-    NCL_CHECK_EQ_INT(decl.points[0].kind, NCL_TOOL_GET);
+
+    NCL_TEST_CASE("a readable point may also be writable and carry its own data");
+    NCL_CHECK(decl.points[0].readable);
     NCL_CHECK(decl.points[0].sampled);
-    NCL_CHECK_EQ_STR(decl.points[0].path, "/CNC/STATUS@RUN");
-    NCL_CHECK_EQ_INT(decl.points[3].kind, NCL_TOOL_SET);
-    NCL_CHECK_EQ_INT(decl.points[4].kind, NCL_TOOL_CALL);
-    NCL_CHECK(!decl.points[4].sampled);
+    NCL_CHECK(!decl.points[0].writable);
+    NCL_CHECK(decl.points[0].arg == (const void *)&k_run_item);
+    NCL_CHECK(decl.points[2].readable);
+    NCL_CHECK(decl.points[2].writable);
+    NCL_CHECK(!decl.points[3].readable);
+    NCL_CHECK(decl.points[3].callable);
+    NCL_CHECK(decl.points[3].arg == NULL);
 
     NCL_TEST_CASE("a well formed declaration validates");
     NCL_CHECK_EQ_INT(ncl_tool_validate(&decl, &err), NCL_OK);
     NCL_CHECK_EQ_INT((int)err.len, 0);
 
-    NCL_TEST_CASE("kind to operation/method mapping");
-    NCL_CHECK_EQ_INT(ncl_tool_kind_operation(NCL_TOOL_GET), NCL_OP_GET_VALUE);
-    NCL_CHECK_EQ_INT(ncl_tool_kind_operation(NCL_TOOL_SET), NCL_OP_SET_VALUE);
-    NCL_CHECK_EQ_INT(ncl_tool_kind_operation(NCL_TOOL_CALL), NCL_OP_FUNC_CALL);
-    NCL_CHECK_EQ_STR(ncl_tool_kind_method(NCL_TOOL_GET), "read");
-    NCL_CHECK_EQ_STR(ncl_tool_kind_method(NCL_TOOL_SET), "write");
-    NCL_CHECK_EQ_STR(ncl_tool_kind_method(NCL_TOOL_CALL), "call");
+    NCL_TEST_CASE("a point answers to the tail of its path");
+    NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[0]), "STATUS@RUN");
+    NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[3]), "RESET");
+    NCL_CHECK_EQ_STR(ncl_tool_point_name(NULL), "");
     ncl_strbuf_free(&err);
 }
 
@@ -161,11 +168,12 @@ static void expect_refused(const ncl_tool_decl *decl, const char *hint)
     ncl_strbuf_free(&err);
 }
 
-static void test_validate_refusals(void)
+static void test_validate(void)
 {
     ncl_tool_decl decl = fixture_decl();
     ncl_tool_decl broken;
     ncl_tool_point points[2];
+    ncl_strbuf err;
 
     NCL_TEST_CASE("a tool without a name, an open function or points is refused");
     broken = decl;
@@ -179,7 +187,7 @@ static void test_validate_refusals(void)
     broken.point_count = 0;
     expect_refused(&broken, "declares no point");
 
-    NCL_TEST_CASE("a path that is not absolute and a point without a function");
+    NCL_TEST_CASE("path, function and operation have to be there");
     points[0] = decl.points[0];
     points[0].path = "CNC/STATUS";
     points[1] = decl.points[1];
@@ -190,25 +198,41 @@ static void test_validate_refusals(void)
     points[0] = decl.points[0];
     points[0].fn = NULL;
     expect_refused(&broken, "has no function");
-
-    NCL_TEST_CASE("the same path may not be declared twice");
     points[0] = decl.points[0];
-    points[1] = decl.points[0];
-    expect_refused(&broken, "declared twice");
+    points[0].readable = false;
+    points[0].sampled = false;
+    points[0].fn = fixture_dispatch;
+    broken.points = points;
+    broken.point_count = 1;
+    expect_refused(&broken, "declares no operation");
 
-    NCL_TEST_CASE("only readable points may be sampled");
-    points[0] = decl.points[3]; /* the writable one */
-    points[0].sampled = true;
+    NCL_TEST_CASE("only a readable point may be sampled");
+    points[0] = decl.points[0];
+    points[0].readable = false;
+    points[0].writable = true;
     broken.points = points;
     broken.point_count = 1;
     expect_refused(&broken, "sampled but not readable");
 
-    NCL_TEST_CASE("sampled points need a period");
+    NCL_TEST_CASE("point names have to be unique and usable as method names");
     points[0] = decl.points[0];
+    points[1] = decl.points[0];
+    points[1].path = "/PLC/STATUS@RUN";
     broken.points = points;
-    broken.point_count = 1;
+    broken.point_count = 2;
+    /* 同一个名字、同一种操作：方法名会撞车，直接拒 */
+    expect_refused(&broken, "both declare");
+    points[1] = decl.points[0];
+    points[1].path = "/CNC/MODE.read";
+    expect_refused(&broken, ".read/.write");
+
+    NCL_TEST_CASE("a missing sample period is not an error, it means no channel");
+    broken = decl;
     broken.sample_ms = 0;
-    expect_refused(&broken, "declares no period");
+    ncl_strbuf_init(&err);
+    NCL_CHECK_EQ_INT(ncl_tool_validate(&broken, &err), NCL_OK);
+    NCL_CHECK_EQ_INT((int)err.len, 0);
+    ncl_strbuf_free(&err);
 }
 
 /* ------------------------------------------------------------------ model -- */
@@ -225,7 +249,6 @@ static void test_model(void)
     ncl_json *channel;
     ncl_json *item;
     ncl_tool_decl quiet;
-    ncl_tool_point points[3];
 
     ncl_strbuf_init(&err);
     device = ncl_json_new_object();
@@ -249,7 +272,7 @@ static void test_model(void)
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "id"), "V9");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "name"), "夹具机床");
     items = ncl_json_obj_get(node, "dataItems");
-    NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 5);
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 4);
     item = ncl_json_arr_get(items, 0);
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "id"), "p0");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "/CNC/STATUS@RUN");
@@ -257,10 +280,13 @@ static void test_model(void)
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "number"), "RUN");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "source"), "CNC");
     /* The tail without "@" keeps the path as its type, exactly like the
-     * configuration driven model does. */
-    item = ncl_json_arr_get(items, 3);
+     * configuration driven model does; a writable point is marked settable. */
+    item = ncl_json_arr_get(items, 2);
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "/CNC/MODE");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "type"), "MODE");
+    NCL_CHECK(ncl_json_obj_get_bool(item, "settable", false));
+    item = ncl_json_arr_get(items, 1);
+    NCL_CHECK(!ncl_json_obj_get_bool(item, "settable", false));
 
     NCL_TEST_CASE("the sample channel is named after the tool");
     configs = ncl_json_obj_get(node, "configs");
@@ -271,21 +297,19 @@ static void test_model(void)
                      NCL_NODE_TYPE_SAMPLE_CHANNEL);
     NCL_CHECK_EQ_INT(ncl_json_obj_get_int(channel, "sampleInterval", 0), 1000);
     NCL_CHECK_EQ_INT(ncl_json_obj_get_int(channel, "uploadInterval", 0), 2000);
-    NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(channel, "ids")), 2);
+    /* Only the point that asked for it is in the channel. */
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(channel, "ids")), 1);
     ncl_json_free(model);
 
-    NCL_TEST_CASE("a tool without sampled points gets no sample channel");
-    points[0] = decl.points[2];
-    points[1] = decl.points[3];
-    points[2] = decl.points[4];
+    NCL_TEST_CASE("without a period there is no sample channel");
     quiet = decl;
-    quiet.points = points;
-    quiet.point_count = 3;
+    quiet.sample_ms = 0;
     model = ncl_tool_model(&quiet, NULL, &err);
     NCL_CHECK(model != NULL);
     if (model != NULL) {
         node = ncl_json_arr_get(ncl_json_obj_get(model, "devices"), 0);
-        NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(node, "dataItems")), 3);
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(node, "dataItems")),
+                         4);
         NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(node, "configs")), 0);
         /* No "device" object: the defaults stand in. */
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "type"), "MACHINE");
@@ -299,6 +323,7 @@ static void test_model(void)
 static void test_helpers(void)
 {
     ncl_json *params = ncl_json_new_object();
+    ncl_json *scalar = ncl_json_new_int(9);
     ncl_json *value = NULL;
     char *reason = NULL;
 
@@ -313,10 +338,22 @@ static void test_helpers(void)
                      "fallback");
     NCL_CHECK(ncl_tool_param_bool(params, "fast", false));
     NCL_CHECK(ncl_tool_param_bool(params, "missing", true));
-    /* A NULL params object is the normal "no parameters in the configuration"
-     * case, not an error. */
     NCL_CHECK_EQ_INT(ncl_tool_param_int(NULL, "count", 3), 3);
-    NCL_CHECK_EQ_STR(ncl_tool_param_str(NULL, "host", "x"), "x");
+
+    NCL_TEST_CASE("the value of a write comes from \"value\" or the params");
+    (void)ncl_json_obj_set_int(params, "value", 42);
+    NCL_CHECK(ncl_tool_param_value(params) != NULL);
+    NCL_CHECK_EQ_INT(ncl_json_as_int(ncl_tool_param_value(params), NULL) ==
+                         false,
+                     1); /* NULL out pointer is refused, the value is there */
+    {
+        long long got = 0;
+
+        NCL_CHECK(ncl_json_as_int(ncl_tool_param_value(params), &got));
+        NCL_CHECK_EQ_INT(got, 42);
+    }
+    NCL_CHECK(ncl_tool_param_value(scalar) == scalar);
+    NCL_CHECK(ncl_tool_param_value(NULL) == NULL);
 
     NCL_TEST_CASE("reply helpers build the value the point returns");
     NCL_CHECK_EQ_INT(ncl_tool_reply_int(&value, 42), NCL_OK);
@@ -350,6 +387,7 @@ static void test_helpers(void)
     ncl_free_safe(reason);
     NCL_CHECK_EQ_INT(ncl_tool_fail(NULL, NCL_ERR_IO, "ignored"), NCL_ERR_IO);
     ncl_json_free(params);
+    ncl_json_free(scalar);
 }
 
 /* -------------------------------------------------------- register/invoke -- */
@@ -387,8 +425,7 @@ static void test_register_and_invoke(void)
     char *model_json;
     ncl_server_options options;
     ncl_server *server;
-    void *ctx = NULL;
-
+    ncl_tool_registration *registration = NULL;
 
     ncl_strbuf_init(&err);
     params = ncl_json_new_object();
@@ -417,18 +454,20 @@ static void test_register_and_invoke(void)
         return;
     }
 
-    NCL_TEST_CASE("registering a declaration opens once and binds every point");
-    NCL_CHECK_EQ_INT(ncl_tool_register(server, &decl, params, &ctx, &err),
+    NCL_TEST_CASE("registering a declaration opens once and binds every "
+                  "operation");
+    NCL_CHECK_EQ_INT(ncl_tool_register(server, &decl, params, &registration,
+                                       &err),
                      NCL_OK);
     NCL_CHECK_EQ_INT((int)err.len, 0);
-    NCL_CHECK(ctx == (void *)&g_run);
+    NCL_CHECK(registration != NULL);
     NCL_CHECK_EQ_INT(g_opens, 1);
-    /* Every method is a binding of its own, so the count is methods plus
-     * "<operation>#<path>" entries: 5 + 5. */
+    /* 5 declared operations (read, read, read + write, call): each method is a
+     * binding of its own, so methods + "<operation>#<path>" entries = 10. */
     NCL_CHECK_EQ_INT(ncl_server_binding_count(server), 10);
     NCL_CHECK_EQ_INT(ncl_server_operation_count(server), 5);
 
-    NCL_TEST_CASE("a Query request reaches the declared read function");
+    NCL_TEST_CASE("a Query reaches the point's function with its own data");
     {
         ncl_message *request = query("/CNC/STATUS@RUN");
         ncl_message *response = ncl_server_invoke_query(server, request);
@@ -444,14 +483,37 @@ static void test_register_and_invoke(void)
                 NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_OK);
                 NCL_CHECK(ncl_json_as_int(ncl_query_response_item_data(item),
                                           &value));
-                NCL_CHECK_EQ_INT(value, 7);
+                /* The point's arg carried 40, so the value is 41: the handler
+                 * read *its own* data, not something it had to guess. */
+                NCL_CHECK_EQ_INT(value, 41);
             }
             ncl_message_free(response);
         }
         ncl_message_free(request);
     }
 
-    NCL_TEST_CASE("a Set request reaches the declared write function");
+    NCL_TEST_CASE("a Query on a point without data still reaches it");
+    {
+        ncl_message *request = query("/CNC/NAME");
+        ncl_message *response = ncl_server_invoke_query(server, request);
+        ncl_query_response_item *item;
+
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            item = (ncl_query_response_item *)ncl_message_item_at(response, 0);
+            NCL_CHECK(item != NULL);
+            if (item != NULL) {
+                NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_OK);
+                NCL_CHECK_EQ_STR(ncl_json_as_string(
+                                     ncl_query_response_item_data(item)),
+                                 "MOCK-1");
+            }
+            ncl_message_free(response);
+        }
+        ncl_message_free(request);
+    }
+
+    NCL_TEST_CASE("a Set on a readable+writable point carries the value");
     {
         ncl_message *request = set_value("/CNC/MODE", 42);
         ncl_message *response = ncl_server_invoke_set(server, request);
@@ -472,7 +534,7 @@ static void test_register_and_invoke(void)
 
     NCL_TEST_CASE("the written value is what the next read reports");
     {
-        ncl_message *request = query("/CNC/MODE@CUR");
+        ncl_message *request = query("/CNC/MODE");
         ncl_message *response = ncl_server_invoke_query(server, request);
         ncl_query_response_item *item;
         long long value = 0;
@@ -492,7 +554,7 @@ static void test_register_and_invoke(void)
         ncl_message_free(request);
     }
 
-    NCL_TEST_CASE("a Method call reaches the declared method function");
+    NCL_TEST_CASE("a Method call is addressed as <tool>/<point name>");
     {
         ncl_message *request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
         ncl_message *response;
@@ -511,10 +573,26 @@ static void test_register_and_invoke(void)
         NCL_CHECK_EQ_INT(g_resets, 1);
     }
 
-    NCL_TEST_CASE("closing the tool runs close() exactly once");
-    ncl_tool_close(&decl, ctx);
+    NCL_TEST_CASE("an undeclared method is not found");
+    {
+        ncl_message *request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+        ncl_message *response;
+
+        (void)ncl_message_set_method(request, "cnc/NOPE");
+        response = ncl_server_invoke_method_call(server, request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            NCL_CHECK_EQ_STR(response->as.method_call_response.code,
+                             NCL_KW_CODE_NG);
+            ncl_message_free(response);
+        }
+        ncl_message_free(request);
+    }
+
+    NCL_TEST_CASE("unregistering closes the connection once");
+    ncl_tool_unregister(&decl, registration);
     NCL_CHECK_EQ_INT(g_closes, 1);
-    ncl_tool_close(NULL, ctx);
+    ncl_tool_unregister(&decl, NULL);
     NCL_CHECK_EQ_INT(g_closes, 1);
     ncl_server_free(server);
     ncl_json_free(params);
@@ -523,7 +601,7 @@ static void test_register_and_invoke(void)
 
 NCL_TEST_MAIN_BEGIN()
     test_declaration();
-    test_validate_refusals();
+    test_validate();
     test_model();
     test_helpers();
     test_register_and_invoke();
