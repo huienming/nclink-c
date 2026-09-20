@@ -87,10 +87,10 @@ static ncl_err fixture_dispatch(void *ctx, const ncl_tool_point *self,
             /* The point's own data is what makes this a "register" read. */
             return ncl_tool_reply_int(result, item->value + 1);
         }
-        if (strcmp(self->path, "/CNC/NAME") == 0) {
+        if (strcmp(self->path, "/MACHINE/NAME") == 0) {
             return ncl_tool_reply_text(result, g_name);
         }
-        if (strcmp(self->path, "/CNC/MODE") == 0) {
+        if (strcmp(self->path, "/MACHINE/MODE") == 0) {
             return ncl_tool_reply_int(result, g_mode);
         }
         return ncl_tool_fail(reason, NCL_ERR_NOT_FOUND, "no such point %s",
@@ -120,10 +120,10 @@ static ncl_err fixture_dispatch(void *ctx, const ncl_tool_point *self,
 
 NCL_TOOL_BEGIN("cnc", "FANUC 数控机床（夹具）", 1000, 2000,
                fixture_open, fixture_close)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@RUN", fixture_dispatch, &k_run_item)
-    NCL_POINT("/CNC/NAME", fixture_dispatch)
-    NCL_POINT_RW("/CNC/MODE", fixture_dispatch)
-    NCL_METHOD("/CNC/RESET", fixture_dispatch)
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@RUN", fixture_dispatch, &k_run_item)
+    NCL_POINT("/MACHINE/NAME", fixture_dispatch)
+    NCL_POINT_RW("/MACHINE/MODE", fixture_dispatch)
+    NCL_METHOD("/MACHINE/RESET", fixture_dispatch)
 NCL_TOOL_END_WITH_RAW(fixture_last_raw)
 
 /** The declaration the macros above built, by value. */
@@ -239,7 +239,7 @@ static void test_validate(void)
     /* 同一个名字、同一种操作：方法名会撞车，直接拒 */
     expect_refused(&broken, "both declare");
     points[1] = decl.points[0];
-    points[1].path = "/CNC/MODE.read";
+    points[1].path = "/MACHINE/MODE.read";
     expect_refused(&broken, ".read/.write");
 
     NCL_TEST_CASE("a missing sample period is not an error, it means no channel");
@@ -317,20 +317,20 @@ static void test_model(void)
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "type"), "CNC");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "id"), "V9");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "name"), "夹具机床");
-    /* 4 declared points, but /CNC/RESET only answers calls: a method is not a
+    /* 4 declared points, but /MACHINE/RESET only answers calls: a method is not a
      * data item, so the model carries three. */
     items = ncl_json_obj_get(node, "dataItems");
     NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 3);
     item = ncl_json_arr_get(items, 0);
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "id"), "p0");
-    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "/CNC/STATUS@RUN");
+    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "/MACHINE/STATUS@RUN");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "type"), "STATUS");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "number"), "RUN");
-    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "source"), "CNC");
+    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "source"), "MACHINE");
     /* The tail without "@" keeps the path as its type, exactly like the
      * configuration driven model does; a writable point is marked settable. */
     item = ncl_json_arr_get(items, 2);
-    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "/CNC/MODE");
+    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "/MACHINE/MODE");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "type"), "MODE");
     NCL_CHECK(ncl_json_obj_get_bool(item, "settable", false));
     item = ncl_json_arr_get(items, 1);
@@ -579,7 +579,7 @@ static void test_register_and_invoke(void)
 
     NCL_TEST_CASE("a Query reaches the point's function with its own data");
     {
-        ncl_message *request = query("/CNC/STATUS@RUN");
+        ncl_message *request = query("/MACHINE/STATUS@RUN");
         ncl_message *response = ncl_server_invoke_query(server, request);
         ncl_query_response_item *item;
 
@@ -604,7 +604,7 @@ static void test_register_and_invoke(void)
 
     NCL_TEST_CASE("a Query on a point without data still reaches it");
     {
-        ncl_message *request = query("/CNC/NAME");
+        ncl_message *request = query("/MACHINE/NAME");
         ncl_message *response = ncl_server_invoke_query(server, request);
         ncl_query_response_item *item;
 
@@ -625,7 +625,7 @@ static void test_register_and_invoke(void)
 
     NCL_TEST_CASE("a Set on a readable+writable point carries the value");
     {
-        ncl_message *request = set_value("/CNC/MODE", 42);
+        ncl_message *request = set_value("/MACHINE/MODE", 42);
         ncl_message *response = ncl_server_invoke_set(server, request);
         ncl_set_response_item *item;
 
@@ -644,7 +644,7 @@ static void test_register_and_invoke(void)
 
     NCL_TEST_CASE("the written value is what the next read reports");
     {
-        ncl_message *request = query("/CNC/MODE");
+        ncl_message *request = query("/MACHINE/MODE");
         ncl_message *response = ncl_server_invoke_query(server, request);
         ncl_query_response_item *item;
         long long value = 0;

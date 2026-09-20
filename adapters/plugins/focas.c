@@ -195,41 +195,41 @@ static ncl_err focas_dispatch(void *ctx, const ncl_tool_point *self,
 
 NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", 1000, 1000,
                focas_open, focas_close)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@MANUAL", focas_dispatch,
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@MANUAL", focas_dispatch,
                           &k_status_manual)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@RUN", focas_dispatch, &k_status_run)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@EDIT", focas_dispatch, &k_status_edit)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@MOTION", focas_dispatch,
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@RUN", focas_dispatch, &k_status_run)
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@EDIT", focas_dispatch, &k_status_edit)
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@MOTION", focas_dispatch,
                           &k_status_motion)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@MSTB", focas_dispatch, &k_status_mstb)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@EMERGENCY", focas_dispatch,
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@MSTB", focas_dispatch, &k_status_mstb)
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@EMERGENCY", focas_dispatch,
                           &k_status_emergency)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@ALARM", focas_dispatch, &k_status_alarm)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@SPINDLE", focas_dispatch,
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@ALARM", focas_dispatch, &k_status_alarm)
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@SPINDLE", focas_dispatch,
                           &k_status_spindle)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@OPERATOR", focas_dispatch,
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@OPERATOR", focas_dispatch,
                           &k_status_operator)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@DUMMY", focas_dispatch, &k_status_dummy)
-    NCL_POINT_SAMPLED_ARG("/CNC/STATUS@AUTO", focas_dispatch, &k_status_auto)
-    NCL_POINT_SAMPLED_ARG("/CNC/PART_COUNT", focas_dispatch, &k_part_count)
-    NCL_POINT_SAMPLED_ARG("/CNC/PROGRAM@NAME", focas_dispatch, &k_program_name)
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@DUMMY", focas_dispatch, &k_status_dummy)
+    NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@AUTO", focas_dispatch, &k_status_auto)
+    NCL_POINT_SAMPLED_ARG("/MACHINE/PART_COUNT", focas_dispatch, &k_part_count)
+    NCL_POINT_SAMPLED_ARG("/MACHINE/PROGRAM@NAME", focas_dispatch, &k_program_name)
     /* Three axes, two values each: the path tail would collide six ways, so
      * these carry their own name and answer as "focas/AXIS0.POSITION". */
-    NCL_POINT_SAMPLED_NAMED("/CNC/AXIS@0/POSITION", focas_dispatch,
+    NCL_POINT_SAMPLED_NAMED("/MACHINE/AXIS@0/POSITION", focas_dispatch,
                             &k_axis0_position, "AXIS0.POSITION")
-    NCL_POINT_SAMPLED_NAMED("/CNC/AXIS@1/POSITION", focas_dispatch,
+    NCL_POINT_SAMPLED_NAMED("/MACHINE/AXIS@1/POSITION", focas_dispatch,
                             &k_axis1_position, "AXIS1.POSITION")
-    NCL_POINT_SAMPLED_NAMED("/CNC/AXIS@2/POSITION", focas_dispatch,
+    NCL_POINT_SAMPLED_NAMED("/MACHINE/AXIS@2/POSITION", focas_dispatch,
                             &k_axis2_position, "AXIS2.POSITION")
-    NCL_POINT_SAMPLED_NAMED("/CNC/AXIS@0/SPEED", focas_dispatch,
+    NCL_POINT_SAMPLED_NAMED("/MACHINE/AXIS@0/SPEED", focas_dispatch,
                             &k_axis0_speed, "AXIS0.SPEED")
-    NCL_POINT_SAMPLED_NAMED("/CNC/AXIS@1/SPEED", focas_dispatch,
+    NCL_POINT_SAMPLED_NAMED("/MACHINE/AXIS@1/SPEED", focas_dispatch,
                             &k_axis1_speed, "AXIS1.SPEED")
-    NCL_POINT_SAMPLED_NAMED("/CNC/AXIS@2/SPEED", focas_dispatch,
+    NCL_POINT_SAMPLED_NAMED("/MACHINE/AXIS@2/SPEED", focas_dispatch,
                             &k_axis2_speed, "AXIS2.SPEED")
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
-    NCL_METHOD_NAMED("/CNC/SESSION", focas_dispatch, &k_session, "SESSION")
-    NCL_METHOD_NAMED("/CNC/ITEMS", focas_dispatch, &k_items, "ITEMS")
+    NCL_METHOD_NAMED("/MACHINE/SESSION", focas_dispatch, &k_session, "SESSION")
+    NCL_METHOD_NAMED("/MACHINE/ITEMS", focas_dispatch, &k_items, "ITEMS")
 NCL_TOOL_END_WITH_RAW(focas_last_raw)
 
 NCL_TOOL_MODULE("1.0.0", "FANUC FOCAS / Fwlib32 over TCP, read only (01 册 §2.1-§2.3)")

@@ -349,7 +349,7 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
 /* ----------------------------------------------------------------- model -- */
 
 /**
- * "/CNC/STATUS@RUN" -> type "STATUS", number "RUN". Same rule the adapter host
+ * "/MACHINE/STATUS@RUN" -> type "STATUS", number "RUN". Same rule the adapter host
  * applies to a configured point name, so both model writers agree.
  */
 static void split_type_number(const char *text, char **type_out,

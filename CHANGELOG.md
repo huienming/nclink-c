@@ -54,7 +54,7 @@ FANUC 适配器已经改成"一个文件 + 点位声明"（`adapters/plugins/foc
   交换的字节交给宿主（`ncl_tool_frames`），宿主决定是否落盘（`--raw` 才记）。
 - 会话生命周期（open/close）由适配器宿主直接记；`ncl_adapter` 的 `--stats` 现在对
   声明式设备有数（19 个点位自检后是 `"requests":19,"sessions":1`），`--raw` 会在
-  日志里打出每次请求/应答的 hex（`AUDIT raw focas /CNC/... request 96 bytes a0a0...`）。
+  日志里打出每次请求/应答的 hex（`AUDIT raw focas /MACHINE/... request 96 bytes a0a0...`）。
 - 顺带修：`--raw` 原来把帧记在 DEBUG 行而默认级别是 INFO，等于看不见；现在
   `--raw` 会同时把日志级别抬到 DEBUG，这个开关名副其实了。
 

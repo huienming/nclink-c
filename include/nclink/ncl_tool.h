@@ -17,9 +17,9 @@
  *                           ncl_json **result, char **reason) { ... }
  *
  *     NCL_TOOL_BEGIN("cnc", "FANUC 数控机床", 1000, 1000, open_box, close_box)
- *         NCL_POINT_SAMPLED("/CNC/STATUS@RUN", status)
- *         NCL_POINT_RW("/CNC/MODE", mode)
- *         NCL_METHOD("/CNC/RESET", reset)
+ *         NCL_POINT_SAMPLED("/MACHINE/STATUS@RUN", status)
+ *         NCL_POINT_RW("/MACHINE/MODE", mode)
+ *         NCL_METHOD("/MACHINE/RESET", reset)
  *     NCL_TOOL_END()
  *
  * The declaration is data - which model path exists, what may be done with it,
@@ -127,7 +127,7 @@ typedef void (*ncl_tool_last_raw_fn)(void *ctx, ncl_tool_frames *out);
 
 /** One declared point; the macros below fill it in. */
 struct ncl_tool_point {
-    /** Model path, e.g. "/CNC/STATUS@RUN". Also how the point is addressed. */
+    /** Model path, e.g. "/MACHINE/STATUS@RUN". Also how the point is addressed. */
     const char *path;
     bool        readable; /**< Query / get_value may read it  */
     bool        writable; /**< Set / set_value may write it   */
@@ -195,7 +195,7 @@ typedef struct {
  *
  * The *_ARG forms take one more argument, the point's own data:
  *
- *   NCL_POINT_RW_ARG("/CNC/MODE", mode, &kModeEntry)
+ *   NCL_POINT_RW_ARG("/MACHINE/MODE", mode, &kModeEntry)
  *
  * NCL_TOOL_END closes the table and defines ncl_tool_declaration(), which hands
  * the host a filled in ncl_tool_decl by value: a module stores that value in
@@ -238,7 +238,7 @@ typedef struct {
  * The same five shapes with an explicit name, for a point whose path tail is
  * not usable as a method name:
  *
- *   NCL_POINT_SAMPLED_NAMED("/CNC/AXIS@0/POSITION", read_axis, &k_axis0,
+ *   NCL_POINT_SAMPLED_NAMED("/MACHINE/AXIS@0/POSITION", read_axis, &k_axis0,
  *                           "AXIS0.POSITION")
  */
 #define NCL_POINT_NAMED(path_literal, fn, arg, name_literal)                   \
