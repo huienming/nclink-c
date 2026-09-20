@@ -102,12 +102,12 @@ cd D:\fanuc
 自检输出长这样（每个点位一行，同时写进 `log\out.txt`）：
 
 ```
-2026-09-20 12:57:57.517 INFO [46812] /MACHINE/STATUS@MANUAL = 0
-2026-09-20 12:57:57.518 INFO [46812] /MACHINE/STATUS@RUN = 1
-2026-09-20 12:57:57.532 INFO [46812] /MACHINE/PART_COUNT = 1234
-2026-09-20 12:57:57.532 INFO [46812] /MACHINE/PROGRAM@NAME = "O1234"
-2026-09-20 12:57:57.535 INFO [46812] /MACHINE/AXIS@0/POSITION = 12.345
-自检：19 个点位，0 个读取失败
+2026-09-20 14:04:22.719 INFO [50060] /MACHINE/STATUS = running
+2026-09-20 14:04:22.719 INFO [50060] /MACHINE/PART_COUNT = "1234"
+2026-09-20 14:04:22.719 INFO [50060] /MACHINE/CONTROLLER/PROGRAM = "O1234"
+2026-09-20 14:04:22.719 INFO [50060] /MACHINE/AXIS@X/POSITION@REAL = 12.345
+2026-09-20 14:04:22.723 WARNING [50060] /MACHINE/AXIS@X/POSITION@CMD = <读取失败>（…还没抓到这个调用的帧…）
+自检：30 个点位，6 个读取失败      # 5 条目标位置 + 报警待抓包，见第 7 节；退出码 1
 ```
 
 `--probe` 打的是单点结果（客户端视角，带 OK/NG 与原因）：
@@ -166,12 +166,18 @@ cd D:\fanuc
 文件里，现场改不用重编。
 
 ```c
-static const focas_point k_status_run = {"STATINFO@2", 0, NCL_DTYPE_INT16, 1};
-static const focas_point k_part_count = {"RDCOUNT", 0, NCL_DTYPE_INT32, 1};
+static const focas_point k_status     = {NULL, 0, NCL_DTYPE_STRING, 0, FOCAS_STATUS, false};
+static const focas_point k_part_count = {"RDCOUNT", 0, NCL_DTYPE_INT32, 1, FOCAS_DATA, true};
 
-NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS@RUN", focas_dispatch, &k_status_run)
+NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS", focas_dispatch, &k_status)
 NCL_POINT_SAMPLED_ARG("/MACHINE/PART_COUNT", focas_dispatch, &k_part_count)
+NCL_POINT_SAMPLED_ARG("/MACHINE/CONTROLLER/PROGRAM", focas_dispatch, &k_program)
 ```
+
+**点位名按标准第 4 部分（32 册）来的**，不是自己起的：`STATUS`、`PART_COUNT`、`PROGRAM`、
+`POSITION`、`SPEED` 都是那一册里的数据项名，路径里的 `CONTROLLER`、`AXIS@X` 是组件类型
+（表 2/表 3）。FANUC 自己的状态位标准里没有名字，所以带厂商前缀另起
+（`/MACHINE/FANUC_ODBST@…`），不占用 `STATUS`。
 
 `focas_point` 四个字段就是原来的 `addr`：`area`（FOCAS 数据项）、`offset`（应答块序号）、
 `dtype`、`length`（元素个数）。三种声明宏：
@@ -194,29 +200,31 @@ NCL_POINT_SAMPLED_ARG("/MACHINE/PART_COUNT", focas_dispatch, &k_part_count)
   只写 `{"area": "EXEPRGNAME2"}` 也能用（驱动会把被拆开的数字再拼回去），但显式写
   `offset` 最不容易误读。
 
-出厂 19 个点位（3 轴）：
+出厂点位（5 轴；共 30 个取值 + 2 个方法 —— 24 个可采样，6 个"待抓包"按需读）：
 
 | 模型路径 | FOCAS 数据项 | 含义 | 采样 |
 |---|---|---|---|
-| `/MACHINE/STATUS@MANUAL` `@EDIT` | `STATINFO@0` `@4` | 手动 / 编辑方式 | ✔ |
-| `/MACHINE/STATUS@RUN` `@MOTION` `@MSTB` | `STATINFO@2` `@6` `@8` | 运行 / 轴运动 / 移动中 | ✔ |
-| `/MACHINE/STATUS@EMERGENCY` | `STATINFO@10` | 急停 | ✔ |
-| `/MACHINE/STATUS@ALARM` | `STATINFO@12` | 报警中（0 = 无报警） | ✔ |
-| `/MACHINE/STATUS@SPINDLE` `@OPERATOR` | `STATINFO@14` `@16` | 主轴 / 操作相关状态 | ✔ |
-| `/MACHINE/STATUS@DUMMY` `@AUTO` | `STATINFO` + `offset` 1 / 2 | 保留字段 / 自动方式 | ✔ |
-| `/MACHINE/PART_COUNT` | `RDCOUNT` | 加工计数（int32） | ✔ |
-| `/MACHINE/PROGRAM@NAME` | `EXEPRGNAME2` | 当前加工程序名（36 字节字符串） | ✔ |
-| `/MACHINE/AXIS@k/POSITION` | `ACTF@<4k>` | 第 k 轴位置（k=0 即第一轴，一般是 X） | ✔ |
-| `/MACHINE/AXIS@k/SPEED` | `ACTS@<4k>` | 第 k 轴速度 | ✔ |
+| `/MACHINE/STATUS` | `STATINFO`（前 10 个 int16） | 运行状态：`running` / `free` / `holding`（标准三态） | ✔ |
+| `/MACHINE/PART_COUNT` | `RDCOUNT` | 加工件数（**字符串**，标准表 7 如此） | ✔ |
+| `/MACHINE/CONTROLLER/PROGRAM` | `EXEPRGNAME2` | 主程序名（36 字节字符串；挂在 CONTROLLER 组件下） | ✔ |
+| `/MACHINE/AXIS@X|Y|Z|A|C/POSITION@REAL` | `ACTF@0|4|8|12|16` | 5 轴实际位置 | ✔ |
+| `/MACHINE/AXIS@X|Y|Z|A|C/POSITION@CMD` | 待抓包 | 5 轴目标位置（**FOCAS 侧还没抓到帧**，读数报错，见第 7 节） | ✘ 按需读 |
+| `/MACHINE/AXIS@X|Y|Z|A|C/SPEED` | `ACTS@0|4|8|12|16` | 5 轴速度（**量纲待核**，见第 7 节） | ✔ |
+| `/MACHINE/FANUC_ODBST@MANUAL` `@RUN` `@EDIT` `@MOTION` `@MSTB` `@EMERGENCY` `@ALARM` `@SPINDLE` `@OPERATOR` `@DUMMY` `@AUTO` | `STATINFO@0…@16` 与块 1/2 | FANUC 私有状态位（标准里没有这些名字） | ✔ |
+| `/MACHINE/WARNING` | 待抓包 | 报警（标准 `WARNING`：JSON `number`/`text`；FOCAS 侧要 `cnc_rdalmmsg2`，**还没抓到帧**） | ✘ 按需读 |
 | `RDLIFE` `RDPARAM` `RDMACRO` `RDTOFS` `RDPROGDIR3` | 同名项 | 刀具寿命 / 参数 / 宏变量 / 刀补 / 程序目录（**字段布局待真机核对**） | ✘ |
 
 - 最后一行**默认不写进点表**：按需读一个没核对过的字段可以，每秒往总线上报一个没人
   核对过的名字不行。要试就照着加一条 `focas_point` + 一行 `NCL_POINT_ARG`（只按需读，
   别用 `NCL_POINT_SAMPLED_ARG`）。
-- 3 轴写 6 条轴点位（位置 + 速度各 3 条）；要加轴就照 `k_axisN_position` / `k_axisN_speed`
-  往下加。**轴点位的路径尾段会重名**（`POSITION`×3、`SPEED`×3），所以它们用
-  `NCL_POINT_SAMPLED_NAMED` 显式给名字（`"AXIS0.POSITION"`…），方法调用地址就是
-  `focas/AXIS0.POSITION`；名字在同一个 tool 里必须唯一，重复会被宿主在装载时拒绝。
+- 轴点位的**路径尾段会重名**（`POSITION@REAL`/`POSITION@CMD`/`SPEED` 各 5 条），所以它们用
+  `NCL_POINT_SAMPLED_NAMED` 显式给名字（`"AXIS_X.POSITION_REAL"`…），方法调用地址就是
+  `focas/AXIS_X.POSITION_REAL`；名字在同一个 tool 里必须唯一，重复会被宿主在装载时拒绝。
+- **机床没有的轴**：读那一条会报错（驱动在应答载荷不足时返回 `NCL_ERR_RANGE` 或
+  `NCL_FOCAS_ERR_LENGTH`），不会给出 0 之类的假值。5 轴是出厂配置，实际轴少的机床
+  会看到对应点位读失败，这是预期行为。
+- 模型树是标准的 **`MACHINE → CONTROLLER / AXIS@X → 数据项`**：声明里的中段路径就是组件，
+  宿主会把它建成组件节点（`/MACHINE/CONTROLLER/PROGRAM` 因此挂在 `CONTROLLER` 下）。
 - `/MACHINE/SESSION`、`/MACHINE/ITEMS` 两个方法由 `NCL_METHOD_NAMED` 声明（会话状态、数据项
   清单），它们只作为方法调用，不进取值模型、也不参与采样。
 
@@ -267,14 +275,19 @@ plugins\
   `set_value` 会明确返回"不支持"。要写就走机床自己的通道。
 - **五处字段布局待真机核对**：`RDLIFE` / `RDPARAM` / `RDMACRO` / `RDTOFS` /
   `RDPROGDIR3`（要用就自己加点位，别开采样）。
+- **两个"待抓包"点位**：`/MACHINE/AXIS@k/POSITION@CMD`（目标位置）与 `/MACHINE/WARNING`
+  （报警：报警号 + 文本）。FOCAS 侧对应的调用（`cnc_rdposition`、`cnc_rdalmmsg2`）在
+  01 册 §2.3 里**没有抓到帧**，所以现在**读它们一定报错**（原因写在返回里），不给假值、
+  也不进采样通道。真机抓一次就能补上，清单在 31 册 §1 #8。
 - **坐标缩放**：位置/速度按 01 册 §2.3 实测的 **float 数组**读。Fwlib32 手册里
   `cnc_actf` 的 `ODBACT` 还有 `data + dec`（小数点位数）形态，若真机上是这种形态，
   数值会明显偏大/偏小——用 `--once --raw` 抓一次原始报文再定（`log\out.txt` 里有
   hex）。这条列在 31 册 §1 #7 一起核对。
-- **不做**：PMC 梯形图、报警文本（`cnc_rdalmmsg2`）、程序上传/下载（`cnc_upload4`
+- **不做**：PMC 梯形图、程序上传/下载（`cnc_upload4`
   等）、伺服波形、Focas2 Logger。需要的话按 01 册继续扩驱动（改 `plugins` 里的模块）。
-- 采样与轮询**各读一遍机床**（模型值由轮询刷新，采样通道负责上报）：3 轴一轮约
-  19 次交换。嫌报文多就把 `--interval` 调大。
+- 采样与轮询**各读一遍机床**（模型值由轮询刷新，采样通道负责上报）：一轮约
+  24 次交换（24 个可采样点位）。嫌报文多就把 `--interval` 调大，或把某个点位从
+  `NCL_POINT_SAMPLED_ARG` 换成 `NCL_POINT_ARG`（只按需读）。
 
 ---
 

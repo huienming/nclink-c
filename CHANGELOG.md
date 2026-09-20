@@ -5,6 +5,32 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 变更：点位名对齐标准第 4 部分（数据项定义），模型树加组件层
+
+读了标准第 4 部分原文（送审讨论稿）并记成 [32 册](protocal/docs/32-标准第4部分-数据项定义.md)，
+适配器按它改了一轮：
+
+- **模型路径首段 `MACHINE`**（设备对象 `type` 的取值，表 1；`CNC` 不是标准里的名字）。
+- **数据项名用标准里的名字**：`/MACHINE/STATUS`（表 6 唯一的三态状态项，值
+  `running`/`free`/`holding`，由 FOCAS 的 RUN/EMERGENCY 位推导）、
+  `/MACHINE/PART_COUNT`（表 7，**string**）、`/MACHINE/CONTROLLER/PROGRAM`
+  （表 7 的 `PROGRAM` 属于 `CONTROLLER` 组件）、10 条轴位置（`AXIS@X|Y|Z|A|C`，
+  表 3 的轴名）与 5 条速度。
+- **每轴两个位置**：`POSITION@REAL`（实际，读 `ACTF@4k`）与 `POSITION@CMD`（目标）。
+- **模型树支持组件层**：`ncl_tool_model()` 现在把路径中段建成**组件节点**
+  （`device → component → dataItem`，册 32 表 2/表 3），设备节点自己答在 `/MACHINE` 上；
+  声明里的路径与模型树因此一致。
+- **厂商私有项带前缀并存**：FANUC 的 ODBST 十一个位标准里没有名字，改为
+  `/MACHINE/FANUC_ODBST@…`，不再占用 `STATUS`。
+- **三个"待抓包"点位**：目标位置 `/MACHINE/AXIS@k/POSITION@CMD`、报警
+  `/MACHINE/WARNING`（标准表 6 的 `WARNING`：JSON `number`/`text`）、以及 `ACTS`
+  的量纲归属。对应的 FOCAS 调用（`cnc_rdposition`、`cnc_rdalmmsg2`、`cnc_rdaxisdata`）
+  在 01 册 §2.3 里都没抓到帧 → 现在**读它们返回明确的"还没抓到帧"错误**，不给假值、
+  也不进采样通道；清单进了 [31 册](protocal/docs/31-待真机抓包清单.md) §1 #8。
+  机床没有的轴同理：驱动在载荷不足时报错（`NCL_ERR_RANGE` / `NCL_FOCAS_ERR_LENGTH`）。
+- 出厂点位：**30 个取值（24 个可采样 + 6 个待抓包按需读）+ 2 个方法**；`--once`
+  现在会报 6 个失败（原因都是"还没抓到帧"），这是预期状态，见 FANUC 分册第 7 节。
+
 ### 变更：适配器搬进 `adapters/plugins/`，`clients/` 只留协议
 
 分层原先反了：适配器（点位声明、跟 NC-Link 对接的那一层）放在 `clients/focas/` 里，

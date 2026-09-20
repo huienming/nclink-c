@@ -366,6 +366,28 @@ static void split_type_number(const char *text, char **type_out,
     *number_out = ncl_strdup(at + 1);
 }
 
+/**
+ * Build the model of a declaration.
+ *
+ * A declared path is <device>/[<component>/]<item>:
+ *
+ *   "/MACHINE/STATUS"                a data item of the device
+ *   "/MACHINE/CONTROLLER/PROGRAM"    a data item of the CONTROLLER component
+ *   "/MACHINE/AXIS@X/POSITION@REAL"  a data item of the AXIS component named X
+ *
+ * The middle segment becomes a component node of its own (册 32 表 2/表 3), so the
+ * tree is the standard's device -> component -> data object instead of a flat
+ * list, and the device node answers on the segment its points live under.
+ */
+/** One component of the model: the middle segment of a declared path. */
+typedef struct {
+    const char *segment; /**< borrowed from the path: "CONTROLLER", "AXIS@X" */
+    size_t      length;
+    char        id[32];
+    ncl_json   *node;    /**< owned by the device's components array */
+    ncl_json   *items;   /**< handed to the node once it is filled      */
+} tool_group;
+
 ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                          ncl_strbuf *err)
 {
@@ -379,23 +401,45 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
     ncl_json *devices = NULL;
     ncl_json *node = NULL;
     ncl_json *items = NULL;
+    ncl_json *components = NULL;
     ncl_json *configs = NULL;
     ncl_json *channel = NULL;
     ncl_json *ids = NULL;
+    tool_group *groups = NULL;
+    size_t group_count = 0;
+    const char *prefix = NULL; /**< the device segment, e.g. "MACHINE" */
+    size_t prefix_len = 0;
     size_t i;
 
     if (ncl_tool_validate(decl, err) != NCL_OK) {
         return NULL;
     }
+    for (i = 0; i < decl->point_count; i++) {
+        const ncl_tool_point *point = &decl->points[i];
+        const char *slash;
+
+        if (!point->readable && !point->writable) {
+            continue; /* a method only: it belongs in the schema, not here */
+        }
+        slash = strchr(point->path + 1, '/');
+        prefix = point->path + 1;
+        prefix_len = slash != NULL ? (size_t)(slash - (point->path + 1))
+                                   : strlen(point->path + 1);
+        break;
+    }
+
     root = ncl_json_new_object();
     devices = ncl_json_new_array();
     node = ncl_json_new_object();
     items = ncl_json_new_array();
+    components = ncl_json_new_array();
     configs = ncl_json_new_array();
     channel = ncl_json_new_object();
     ids = ncl_json_new_array();
+    groups = (tool_group *)ncl_mem_calloc(decl->point_count, sizeof(*groups));
     if (root == NULL || devices == NULL || node == NULL || items == NULL ||
-        configs == NULL || channel == NULL || ids == NULL) {
+        components == NULL || configs == NULL || channel == NULL ||
+        ids == NULL || groups == NULL) {
         goto fail;
     }
     (void)ncl_json_obj_set_string(root, "id", "01");
@@ -413,25 +457,55 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                                   ncl_str_is_blank(device_name) ? "适配器设备"
                                                                 : device_name);
     (void)ncl_json_obj_set_string(node, "version", "1.0");
+    if (prefix != NULL) {
+        char *device_source = ncl_strndup(prefix, prefix_len);
+
+        if (device_source != NULL) {
+            /* The device node's own path is the segment its points live under. */
+            (void)ncl_json_obj_set_string(node, "source", device_source);
+            ncl_free_safe(device_source);
+        }
+    }
 
     for (i = 0; i < decl->point_count; i++) {
         const ncl_tool_point *point = &decl->points[i];
-        const char *slash = strrchr(point->path, '/');
-        const char *tail = slash != NULL ? slash + 1 : point->path;
+        const char *last = strrchr(point->path, '/');
+        const char *tail = last != NULL ? last + 1 : point->path;
+        const char *component = NULL;
+        size_t component_len = 0;
+        char *source = NULL;
         char *type = NULL;
         char *number = NULL;
         char id[32];
         ncl_json *item;
+        ncl_json *target = items;
 
-        /* A point that only answers calls is a method, not a value: it belongs
-         * in the schema (through its binding) and not in the model, which is
-         * what a client reads values out of - the same split the configuration
-         * made between "points" and "methods". */
         if (!point->readable && !point->writable) {
             continue;
         }
         item = ncl_json_new_object();
         if (item == NULL) {
+            goto fail;
+        }
+        /* "/MACHINE/AXIS@X/POSITION@REAL": the slash after the device segment is
+         * not the last one, so what sits between them is a component. */
+        if (prefix != NULL && last != NULL) {
+            const char *after = point->path + 1 + prefix_len;
+
+            if (*after == '/' && after != last) {
+                component = after + 1;
+                component_len = (size_t)(last - component);
+            }
+        }
+        if (component != NULL &&
+            ncl_asprintf(&source, "%.*s/%.*s", (int)prefix_len, prefix,
+                         (int)component_len, component) != NCL_OK) {
+            ncl_json_free(item);
+            goto fail;
+        }
+        if (component == NULL && prefix != NULL &&
+            ncl_asprintf(&source, "%.*s", (int)prefix_len, prefix) != NCL_OK) {
+            ncl_json_free(item);
             goto fail;
         }
         split_type_number(tail, &type, &number);
@@ -449,19 +523,84 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         if (point->writable) {
             (void)ncl_json_obj_set_bool(item, "settable", true);
         }
-        /* "source" is what makes the model path equal to the point path. */
-        if (slash != NULL && slash != point->path) {
-            char *source = ncl_strndup(point->path + 1,
-                                       (size_t)(slash - point->path - 1));
-
-            if (source != NULL) {
-                (void)ncl_json_obj_set_string(item, "source", source);
-                ncl_free_safe(source);
-            }
+        if (source != NULL) {
+            /* "source" is what makes the model path equal to the point path. */
+            (void)ncl_json_obj_set_string(item, "source", source);
         }
+        ncl_free_safe(source);
         ncl_free_safe(type);
         ncl_free_safe(number);
-        (void)ncl_json_arr_push(items, item);
+
+        if (component != NULL) {
+            size_t g;
+
+            for (g = 0; g < group_count; g++) {
+                if (groups[g].length == component_len &&
+                    strncmp(groups[g].segment, component, component_len) == 0) {
+                    break;
+                }
+            }
+            if (g == group_count) {
+                char *name = ncl_strndup(component, component_len);
+                char *ctype = NULL;
+                char *cnumber = NULL;
+                const char *at = (const char *)memchr(component, '@',
+                                                      component_len);
+
+                if (name == NULL) {
+                    ncl_json_free(item);
+                    goto fail;
+                }
+                if (at != NULL) {
+                    ctype = ncl_strndup(component,
+                                        (size_t)(at - component));
+                    cnumber = ncl_strndup(at + 1,
+                                          component_len -
+                                              (size_t)(at - component) - 1);
+                } else {
+                    ctype = ncl_strndup(component, component_len);
+                }
+                groups[g].segment = component;
+                groups[g].length = component_len;
+                groups[g].node = ncl_json_new_object();
+                groups[g].items = ncl_json_new_array();
+                snprintf(groups[g].id, sizeof(groups[g].id), "c%u",
+                         (unsigned)g);
+                if (groups[g].node == NULL || groups[g].items == NULL ||
+                    name == NULL || ctype == NULL) {
+                    ncl_free_safe(name);
+                    ncl_free_safe(ctype);
+                    ncl_free_safe(cnumber);
+                    ncl_json_free(item);
+                    group_count++; /* so the fail path frees what exists */
+                    goto fail;
+                }
+                (void)ncl_json_obj_set_string(groups[g].node, "id",
+                                              groups[g].id);
+                (void)ncl_json_obj_set_string(groups[g].node, "name", name);
+                (void)ncl_json_obj_set_string(groups[g].node, "type", ctype);
+                if (cnumber != NULL) {
+                    (void)ncl_json_obj_set_string(groups[g].node, "number",
+                                                  cnumber);
+                }
+                {
+                    char *component_source = ncl_strndup(prefix, prefix_len);
+
+                    if (component_source != NULL) {
+                        (void)ncl_json_obj_set_string(groups[g].node, "source",
+                                                      component_source);
+                        ncl_free_safe(component_source);
+                    }
+                }
+                (void)ncl_json_arr_push(components, groups[g].node);
+                ncl_free_safe(name);
+                ncl_free_safe(ctype);
+                ncl_free_safe(cnumber);
+                group_count++;
+            }
+            target = groups[g].items;
+        }
+        (void)ncl_json_arr_push(target, item);
 
         if (point->sampled) {
             ncl_json *ref = ncl_json_new_object();
@@ -495,7 +634,17 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         ids = NULL;
         channel = NULL;
     }
+    for (i = 0; i < group_count; i++) {
+        if (groups[i].node != NULL && groups[i].items != NULL) {
+            (void)ncl_json_obj_set(groups[i].node, "dataItems",
+                                   groups[i].items);
+            groups[i].items = NULL; /* the node owns it now */
+        }
+        ncl_json_free(groups[i].items);
+    }
+    ncl_mem_free(groups);
     (void)ncl_json_obj_set(node, "dataItems", items);
+    (void)ncl_json_obj_set(node, "components", components);
     (void)ncl_json_obj_set(node, "configs", configs);
     (void)ncl_json_arr_push(devices, node);
     (void)ncl_json_obj_set(root, "devices", devices);
@@ -505,10 +654,17 @@ fail:
     if (err != NULL && err->len == 0) {
         err_append(err, "cannot build the model of the declared tool");
     }
+    if (groups != NULL) {
+        for (i = 0; i < group_count; i++) {
+            ncl_json_free(groups[i].items);
+        }
+        ncl_mem_free(groups);
+    }
     ncl_json_free(root);
     ncl_json_free(devices);
     ncl_json_free(node);
     ncl_json_free(items);
+    ncl_json_free(components);
     ncl_json_free(configs);
     ncl_json_free(channel);
     ncl_json_free(ids);

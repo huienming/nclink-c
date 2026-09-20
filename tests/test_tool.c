@@ -364,6 +364,69 @@ static void test_model(void)
         ncl_json_free(model);
     }
     ncl_strbuf_free(&err);
+
+    NCL_TEST_CASE("a middle segment becomes a component node (册 32 表 2/表 3)");
+    {
+        ncl_tool_point nested[2];
+        ncl_tool_decl nested_decl = decl;
+        ncl_json *model2;
+        ncl_json *device_node;
+        ncl_json *component;
+        ncl_json *component_item;
+        ncl_json *direct_item;
+
+        nested[0] = decl.points[0];
+        nested[0].path = "/MACHINE/CONTROLLER/PROGRAM";
+        nested[1] = decl.points[1];
+        nested[1].path = "/MACHINE/STATUS";
+        nested_decl.points = nested;
+        nested_decl.point_count = 2;
+        ncl_strbuf_reset(&err);
+        model2 = ncl_tool_model(&nested_decl, NULL, &err);
+        NCL_CHECK(model2 != NULL);
+        if (model2 != NULL) {
+            device_node = ncl_json_arr_get(ncl_json_obj_get(model2, "devices"),
+                                           0);
+            /* The device node answers on the segment its points use. */
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(device_node, "source"),
+                             "MACHINE");
+            /* One component, named CONTROLLER, with the PROGRAM under it. */
+            {
+                ncl_json *components =
+                    ncl_json_obj_get(device_node, "components");
+
+                NCL_CHECK_EQ_INT(ncl_json_arr_len(components), 1);
+                component = ncl_json_arr_get(components, 0);
+                NCL_CHECK_EQ_STR(ncl_json_obj_get_string(component, "name"),
+                                 "CONTROLLER");
+                NCL_CHECK_EQ_STR(ncl_json_obj_get_string(component, "type"),
+                                 "CONTROLLER");
+                component_item =
+                    ncl_json_arr_get(ncl_json_obj_get(component, "dataItems"), 0);
+                NCL_CHECK_EQ_STR(
+                    ncl_json_obj_get_string(component_item, "name"),
+                    "/MACHINE/CONTROLLER/PROGRAM");
+                NCL_CHECK_EQ_STR(
+                    ncl_json_obj_get_string(component_item, "type"), "PROGRAM");
+                NCL_CHECK_EQ_STR(
+                    ncl_json_obj_get_string(component_item, "source"),
+                    "MACHINE/CONTROLLER");
+            }
+            /* The point without a component still hangs on the device. */
+            {
+                ncl_json *direct =
+                    ncl_json_obj_get(device_node, "dataItems");
+
+                NCL_CHECK_EQ_INT(ncl_json_arr_len(direct), 1);
+                direct_item = ncl_json_arr_get(direct, 0);
+                NCL_CHECK_EQ_STR(ncl_json_obj_get_string(direct_item, "name"),
+                                 "/MACHINE/STATUS");
+                NCL_CHECK_EQ_STR(ncl_json_obj_get_string(direct_item, "source"),
+                                 "MACHINE");
+            }
+            ncl_json_free(model2);
+        }
+    }
 }
 
 /* ---------------------------------------------------------------- helpers -- */
