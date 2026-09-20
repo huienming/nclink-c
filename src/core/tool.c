@@ -188,6 +188,56 @@ ncl_err ncl_tool_fail(char **reason, ncl_err code, const char *fmt, ...)
 static const ncl_operation k_operations[3] = {NCL_OP_GET_VALUE, NCL_OP_SET_VALUE,
                                               NCL_OP_FUNC_CALL};
 
+/*
+ * 数据对象的第二种分法（第 3 部分 5.3/5.4/5.5）：同样是数据对象，
+ *
+ *   dataItems  —— "可以采集的数据"：物理量（表 4）与从设备感知的实时量，
+ *                 采样通道只能引用它们；
+ *   configs    —— "配置信息"：参数、坐标系、刀具表这类**不常变**的数据，
+ *                 应用系统可以查询或修改，但表 1 注 b 明说"配置中的数据对象
+ *                 不得作为采样数据源"。
+ *
+ * 名字来自数据字典，所以属于哪一类也由 type 决定 —— 声明里不用再写一个开关，
+ * 写错的组合（比如把这些点声明成 sampled）会被校验直接拒掉。
+ */
+static bool tool_is_config_type(const char *type)
+{
+    static const char *const k_config_types[] = {
+        /* 表 6：对象自己的元信息（型号、编号、版本、厂商、创建者…） */
+        "CREATE_TIME", "CREATOR", "MANUFACTURER", "MODEL", "NAME", "NUMBER",
+        "PARAMETER", "VERSION",
+        /* 表 7：成表、成结构、不常变的那几项 */
+        "COORDINATE", "FILE", "SHELF_UNIT", "TOOL", "TOOLPARAM", "TYPE",
+        "VARIABLE",
+    };
+    size_t i;
+
+    if (type == NULL) {
+        return false;
+    }
+    for (i = 0; i < sizeof(k_config_types) / sizeof(k_config_types[0]); i++) {
+        if (strcmp(k_config_types[i], type) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** "…/POSITION@REAL" -> "POSITION"（点位尾段的 type 部分）。 */
+static void point_tail_type(const char *path, char *out, size_t cap)
+{
+    const char *last = strrchr(path, '/');
+    const char *tail = last != NULL ? last + 1 : path;
+    const char *at = strchr(tail, '@');
+    size_t len = at != NULL ? (size_t)(at - tail) : strlen(tail);
+
+    if (len >= cap) {
+        len = cap - 1;
+    }
+    memcpy(out, tail, len);
+    out[len] = '\0';
+}
+
 const char *ncl_tool_point_name(const ncl_tool_point *point)
 {
     const char *slash;
@@ -304,6 +354,20 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
             err_append1(err, "the point %s is sampled but not readable",
                         point->path);
             return NCL_ERR_INVALID_ARG;
+        }
+        if (point->sampled) {
+            /* 配置型数据对象（参数、坐标系、刀具表…）进模型的 configs，
+             * 而采样通道只能引用 dataItems（册 3 表 1 注 b）。 */
+            char tail_type[64];
+
+            point_tail_type(point->path, tail_type, sizeof(tail_type));
+            if (tool_is_config_type(tail_type)) {
+                err_appendf(err,
+                            "点位 %s 是配置型数据（%s），不能进采样通道："
+                            "把它声明成按需读，或者换一个感知量的 type",
+                            point->path, tail_type);
+                return NCL_ERR_INVALID_ARG;
+            }
         }
         for (op = 0; op < 3; op++) {
             if (point_declares(point, k_operations[op])) {
@@ -537,7 +601,8 @@ typedef struct {
     size_t      length;
     char        id[32];
     ncl_json   *node;    /**< owned by the device's components array */
-    ncl_json   *items;   /**< handed to the node once it is filled      */
+    ncl_json   *items;   /**< dataItems: handed to the node when filled */
+    ncl_json   *configs; /**< configs: the same for the slow changing ones */
 } tool_group;
 
 ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
@@ -651,7 +716,8 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         char *number = NULL;
         char id[32];
         ncl_json *item;
-        ncl_json *target = items;
+        ncl_json *target = items; /* decided below: dataItems or configs */
+        bool config_kind;
 
         if (point->callable && !point->readable && !point->writable) {
             continue;
@@ -671,6 +737,11 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
             }
         }
         split_type_number(tail, &type, &number);
+        config_kind = tool_is_config_type(type);
+        if (component == NULL) {
+            /* 设备自己那两层：dataItems 放感知量，configs 放配置型数据。 */
+            target = config_kind ? configs : items;
+        }
         snprintf(id, sizeof(id), "p%u", (unsigned)i);
         (void)ncl_json_obj_set_string(item, "id", id);
         {
@@ -730,9 +801,11 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                 groups[g].length = component_len;
                 groups[g].node = ncl_json_new_object();
                 groups[g].items = ncl_json_new_array();
+                groups[g].configs = ncl_json_new_array();
                 snprintf(groups[g].id, sizeof(groups[g].id), "c%u",
                          (unsigned)g);
                 if (groups[g].node == NULL || groups[g].items == NULL ||
+                    groups[g].configs == NULL ||
                     name == NULL || ctype == NULL) {
                     ncl_free_safe(name);
                     ncl_free_safe(ctype);
@@ -763,7 +836,8 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                 ncl_free_safe(cnumber);
                 group_count++;
             }
-            target = groups[g].items;
+            /* 组件下的数据对象同样分两类（第 3 部分是"组件也各有 configs"）。 */
+            target = config_kind ? groups[g].configs : groups[g].items;
         }
         (void)ncl_json_arr_push(target, item);
 
@@ -800,15 +874,28 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         channel = NULL;
     }
     for (i = 0; i < group_count; i++) {
-        if (groups[i].node != NULL && groups[i].items != NULL) {
+        if (groups[i].node != NULL && groups[i].items != NULL &&
+            ncl_json_arr_len(groups[i].items) > 0) {
             (void)ncl_json_obj_set(groups[i].node, "dataItems",
                                    groups[i].items);
             groups[i].items = NULL; /* the node owns it now */
         }
+        if (groups[i].node != NULL && groups[i].configs != NULL &&
+            ncl_json_arr_len(groups[i].configs) > 0) {
+            (void)ncl_json_obj_set(groups[i].node, "configs",
+                                   groups[i].configs);
+            groups[i].configs = NULL; /* the node owns it now */
+        }
         ncl_json_free(groups[i].items);
+        ncl_json_free(groups[i].configs);
     }
     ncl_mem_free(groups);
-    (void)ncl_json_obj_set(node, "dataItems", items);
+    /* 两个数组都是可选的（册 3 表 2）：只有真有内容时才写出来，空的不占地方。 */
+    if (ncl_json_arr_len(items) > 0) {
+        (void)ncl_json_obj_set(node, "dataItems", items);
+        items = NULL;
+    }
+    ncl_json_free(items);
     (void)ncl_json_obj_set(node, "components", components);
     (void)ncl_json_obj_set(node, "configs", configs);
     (void)ncl_json_arr_push(devices, node);
@@ -822,6 +909,7 @@ fail:
     if (groups != NULL) {
         for (i = 0; i < group_count; i++) {
             ncl_json_free(groups[i].items);
+            ncl_json_free(groups[i].configs);
         }
         ncl_mem_free(groups);
     }

@@ -262,6 +262,12 @@ NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalm
   `/MACHINE/WARNING` 叫"报警信息"，`/MACHINE/AXIS@X/POSITION@REAL` 是 `AXIS@X` 组件（名字"X 轴"）
   下的"位置（实际）"、`@CMD` 是"位置（目标）"，速度是"速度"。**名字与路径无关**：路径由
   `type` 与 `number` 拼出来（`/MACHINE/AXIS@X/POSITION@REAL`），上位机按路径问、按名字显示。
+- **表里这 19 个点全是 `dataItems`**（感知量/实时量，可以进采样通道）。数据字典里还有
+  一类"不常变"的数据 —— 参数 `PARAMETER`、坐标系 `COORDINATE`、刀具表 `TOOL`/`TOOLPARAM`、
+  宏变量 `VARIABLE` —— 它们属于 `configs`，**按需读、不进采样通道**（册 3 表 1 注 b）。
+  现在没有声明这些点：FOCAS 侧的帧（`cnc_rdparam`/`cnc_rdtofs`/`cnc_rdmacro`…）还没核对
+  字段布局，见 31 册 §1 #7；加的时候照 `NCL_POINT_ARG` 写即可，宿主会自己把它们放进
+  `configs`。
 - `/MACHINE/SESSION`、`/MACHINE/ITEMS` 两个方法由 `NCL_METHOD_NAMED` 声明（会话状态、数据项
   清单），它们只作为方法调用，不进取值模型、也不参与采样。
 

@@ -108,7 +108,7 @@ NCL_TEST_MAIN_BEGIN()
     }
     NCL_CHECK_EQ_STR(decl->name, "test_tool_basic");
     NCL_CHECK_EQ_INT(decl->sample_ms, 500);
-    NCL_CHECK_EQ_INT(decl->point_count, 3);
+    NCL_CHECK_EQ_INT(decl->point_count, 4);
     NCL_CHECK_EQ_STR(decl->points[0].path, "/MACHINE/RUN");
     NCL_CHECK(decl->points[0].sampled);
     NCL_CHECK(decl->points[1].writable);
@@ -162,6 +162,24 @@ NCL_TEST_MAIN_BEGIN()
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 2), "name"),
                          "ALARM");
+        /* 配置型数据（PARAMETER）不在这里：它在 CONTROLLER 组件的 configs 里。 */
+        {
+            ncl_json *components = ncl_json_obj_get(node, "components");
+            ncl_json *controller = ncl_json_arr_get(components, 0);
+            ncl_json *cfgs;
+            ncl_json *param;
+
+            NCL_CHECK_EQ_INT(ncl_json_arr_len(components), 1);
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(controller, "name"),
+                             "控制器");
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(controller, "type"),
+                             "CONTROLLER");
+            cfgs = ncl_json_obj_get(controller, "configs");
+            NCL_CHECK_EQ_INT(ncl_json_arr_len(cfgs), 1);
+            param = ncl_json_arr_get(cfgs, 0);
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(param, "type"), "PARAMETER");
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(param, "name"), "参数");
+        }
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 2), "description"),
                          "报警：待抓包（帧还没抓到）");
@@ -260,9 +278,29 @@ NCL_TEST_MAIN_BEGIN()
             NCL_CHECK(adapter != NULL);
             if (adapter != NULL) {
                 NCL_CHECK(ncl_adapter_tool(adapter) == decl);
-                NCL_CHECK_EQ_INT(ncl_adapter_point_count(adapter), 3);
+                NCL_CHECK_EQ_INT(ncl_adapter_point_count(adapter), 4);
                 NCL_CHECK_EQ_STR(ncl_adapter_point_path(adapter, 0),
                                  "/MACHINE/RUN");
+                /* 配置型数据（PARAMETER）也在点位表里、也能按路径读，但它在模型的
+                 * configs 里（不是 dataItems），因此永远不进采样通道。 */
+                NCL_CHECK_EQ_STR(ncl_adapter_point_path(adapter, 3),
+                                 "/MACHINE/CONTROLLER/PARAMETER");
+                {
+                    ncl_strbuf note;
+                    long long got = 0;
+                    const ncl_json *value;
+
+                    ncl_strbuf_init(&note);
+                    NCL_CHECK_EQ_INT(
+                        ncl_adapter_poll_one(adapter,
+                                             "/MACHINE/CONTROLLER/PARAMETER",
+                                             &note),
+                        NCL_OK);
+                    ncl_strbuf_free(&note);
+                    value = ncl_adapter_point_value(adapter, 3);
+                    NCL_CHECK(value != NULL && ncl_json_as_int(value, &got));
+                    NCL_CHECK_EQ_INT(got, 1234);
+                }
                 /* 待抓包的点位在列表里（自检要点名它），但读取直接说清楚，
                  * 不走服务器、也不进轮询失败数。 */
                 NCL_CHECK(!ncl_adapter_point_available(adapter, 2));

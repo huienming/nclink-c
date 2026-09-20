@@ -24,6 +24,8 @@ typedef struct {
 
 static test_register k_run = {7, false};
 static test_register k_mode = {1, true};
+/* 参数表：不常变，所以它是"配置型数据对象"，进模型的 configs（不是 dataItems）。 */
+static test_register k_param = {1234, true};
 
 static void *test_open(const ncl_json *params, char **err)
 {
@@ -81,6 +83,8 @@ NCL_TOOL_BEGIN("test_tool_basic", "夹具：一个文件的小适配器", 500, 0
     NCL_POINT_RW_ARG("/MACHINE/MODE", test_dispatch, &k_mode)
     /* 声明了、但还没有帧可读的点位：模型里有它，问它答"待抓包"，自检不算失败。 */
     NCL_POINT_PENDING("/MACHINE/ALARM", "报警：待抓包（帧还没抓到）")
+    /* 配置型数据：PARAMETER 在数据字典里属"不常变"，因此进 CONTROLLER 组件的 configs。 */
+    NCL_POINT_ARG("/MACHINE/CONTROLLER/PARAMETER", test_dispatch, &k_param)
 NCL_TOOL_END()
 
 /* The last line of the file: who this module is. */

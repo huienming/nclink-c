@@ -867,11 +867,16 @@ ncl_message *msg = ncl_message_parse(topic, payload, payload_len);
 
 | 节点位置 | 路径 |
 |----------|------|
-| 根节点 | `/` + type，即 `/NC_LINK_ROOT` |
-| 设备节点 | 根路径 + `/` + type，即 `/NC_LINK_ROOT/PLC` |
-| 数据项/配置项，父是设备 | `/<type>[@<number>]`，即 `/MACHINE/STATUS` |
-| 数据项/配置项，父是组件 | 父路径 + `/<type>[@<number>]` |
-| 节点带 `source` 字段 | `/<source>/<type>`，**覆盖**父路径 |
+| 根节点 | `/`（只是分隔符，不是一段） |
+| 设备节点 | `/` + type，即 `/MACHINE` |
+| 组件/数据项/配置项 | 父路径 + `/<type>[@<number>]`，即 `/MACHINE/AXIS@X/POSITION@REAL` |
+| 节点带 `source` 字段 | `/<source>/<type>[@<number>]`：`source` 是**父路径的简写**，"写了就用它"，但必须与父节点拼接的结果一致，不一致时加载会告警 |
+
+数据对象按"变不变"分两种，放两个数组里：**`dataItems`** 是物理量与感知量
+（`STATUS`/`WARNING`/`PART_COUNT`/`PROGRAM`/`POSITION`/`SPEED`…，**采样通道只能引用它们**），
+**`configs`** 是参数、坐标系、刀具表这类不常变的配置型数据（`PARAMETER`/`COORDINATE`/
+`TOOL`/`TOOLPARAM`/`VARIABLE`/`MODEL`…，可查询可修改，但不得作为采样数据源）；
+采样通道对象本身也放在 `configs` 里。哪一类由 `type` 决定（见手册 4.3 与适配器文档）。
 
 客户端拿到模型后可以路径 ↔ id 互查：
 

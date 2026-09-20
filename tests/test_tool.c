@@ -251,6 +251,16 @@ static void test_validate(void)
     NCL_CHECK_EQ_INT((int)err.len, 0);
     ncl_strbuf_free(&err);
 
+    NCL_TEST_CASE("配置型数据（参数、坐标系、刀具表…）不能进采样通道");
+    points[0] = decl.points[1]; /* /MACHINE/NAME：表 6 的元信息，属 configs */
+    points[0].sampled = true;
+    points[0].readable = true;
+    points[0].fn = fixture_dispatch;
+    broken = decl;
+    broken.points = points;
+    broken.point_count = 1;
+    expect_refused(&broken, "不能进采样通道");
+
     NCL_TEST_CASE("a point may name itself when its path tail would collide");
     {
         ncl_tool_point named[2];
@@ -318,10 +328,11 @@ static void test_model(void)
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "type"), "MACHINE");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "id"), "V9");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "name"), "夹具机床");
-    /* 4 declared points, but /MACHINE/RESET only answers calls: a method is not a
-     * data item, so the model carries three. */
+    /* 4 declared points: /MACHINE/RESET only answers calls (a method is not a data
+     * item) and /MACHINE/NAME is a 表 6 metadata type, so it goes to configs
+     * (册 3 表 1 注 b：配置型数据对象不是采样源)。剩下的才是 dataItems。 */
     items = ncl_json_obj_get(node, "dataItems");
-    NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 3);
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 2);
     item = ncl_json_arr_get(items, 0);
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "id"), "p0");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "运行状态（RUN）");
@@ -332,17 +343,21 @@ static void test_model(void)
     NCL_CHECK(ncl_json_obj_get(item, "source") == NULL);
     /* The tail without "@" keeps the path as its type; a type the dictionary
      * does not know keeps itself as the name (no label to translate to). */
-    item = ncl_json_arr_get(items, 2);
+    item = ncl_json_arr_get(items, 1);
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "MODE");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "type"), "MODE");
     NCL_CHECK(ncl_json_obj_get_bool(item, "settable", false));
-    item = ncl_json_arr_get(items, 1);
-    NCL_CHECK(!ncl_json_obj_get_bool(item, "settable", false));
+    NCL_CHECK(!ncl_json_obj_get_bool(ncl_json_arr_get(items, 0), "settable",
+                                     false));
 
-    NCL_TEST_CASE("the sample channel is named after the tool");
+    NCL_TEST_CASE("配置型数据对象进 configs，采样通道也在 configs 里");
     configs = ncl_json_obj_get(node, "configs");
-    NCL_CHECK_EQ_INT(ncl_json_arr_len(configs), 1);
-    channel = ncl_json_arr_get(configs, 0);
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(configs), 2);
+    item = ncl_json_arr_get(configs, 0); /* 配置型数据排在采样通道前面 */
+    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "id"), "p1");
+    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "name"), "名称");
+    NCL_CHECK_EQ_STR(ncl_json_obj_get_string(item, "type"), "NAME");
+    channel = ncl_json_arr_get(configs, 1);
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(channel, "id"), "cnc");
     NCL_CHECK_EQ_STR(ncl_json_obj_get_string(channel, "type"),
                      NCL_NODE_TYPE_SAMPLE_CHANNEL);
@@ -360,8 +375,9 @@ static void test_model(void)
     if (model != NULL) {
         node = ncl_json_arr_get(ncl_json_obj_get(model, "devices"), 0);
         NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(node, "dataItems")),
-                         3);
-        NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(node, "configs")), 0);
+                         2);
+        /* 没有采样通道了，但 /MACHINE/NAME 这个配置型数据还在。 */
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(ncl_json_obj_get(node, "configs")), 1);
         /* No "device" object: the defaults stand in. */
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(node, "type"), "MACHINE");
         ncl_json_free(model);

@@ -615,6 +615,19 @@ broker 的部署不受影响。**broker 没起来不致命**：`ncl_adapter_brok
 `POSITION` → 位置、`SPEED` → 速度；组件 `AXIS@X` → X 轴、`CONTROLLER` → 控制器），带 `number`
 的缀在后面（位置（实际）/位置（目标）），本册查不到的 type 照原名。**名字与路径无关**，
 改名字不会动路径（路径只由 type 与 number 拼）。
+
+**数据对象分两种，由 `type` 决定放哪儿**（第 3 部分 5.3/5.4/5.5）：
+
+- `dataItems` —— **可以采集的数据**：物理量（`POSITION`/`SPEED`/`CURRENT`…）与从设备
+  感知的实时量（`STATUS`/`WARNING`/`PART_COUNT`/`PROGRAM`/`WORK_MODE`…）。采样通道
+  只能引用它们。
+- `configs` —— **配置信息**：参数、坐标系、刀具表这类不常变的数据（`PARAMETER`、
+  `COORDINATE`、`TOOL`、`TOOLPARAM`、`VARIABLE`、`FILE`、`MODEL`/`NUMBER`/`VERSION` 等
+  元信息）。它们照样有路径、照样能读（按需），但**表 1 注 b 说配置不得作为采样数据源**，
+  所以把这类点声明成 `NCL_POINT_SAMPLED_*` 会被校验直接拒掉。
+
+作者不用写开关：类型来自数据字典，归置跟着类型来；厂商自定的 `type` 默认按 `dataItems`。
+采样通道对象自己也是 `configs` 的一员。
 可运行的配置样例见 `tests/test_adapter.c` 里的 `kConfig`。
 
 ## FANUC 适配器模块（`ncl_driver_focas`）

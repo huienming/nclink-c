@@ -5,6 +5,36 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 变更：数据对象分两种 —— `dataItems`（感知量）与 `configs`（配置型数据）
+
+第 3 部分把数据对象放在两个数组里，第 4 部分的数据项按"变不变"归置：
+
+- **`dataItems`** = "可以采集的数据"：表 4 的物理量与从设备感知的实时量
+  （`STATUS`、`WARNING`、`PART_COUNT`、`PROGRAM`、`WORK_MODE`、`POSITION`、`SPEED`…）。
+  **采样通道只能引用它们。**
+- **`configs`** = "配置信息"：参数、坐标系、刀具表这类不常变的数据 —— `PARAMETER`、
+  `COORDINATE`、`TOOL`、`TOOLPARAM`、`VARIABLE`、`FILE`、`SHELF_UNIT`、`TYPE`，以及
+  `MODEL`/`NUMBER`/`VERSION`/`MANUFACTURER`/`CREATOR`/`CREATE_TIME`/`NAME` 这类元信息。
+  照样有路径、照样能按需读，但**表 1 注 b：配置中的数据对象不得作为采样数据源**。
+  采样通道对象本身也是 `configs` 的一员（第 3 部分就是这么放的）。
+
+实现：归置**由 `type` 决定**（名字来自数据字典，分类跟着名字走），作者不用写开关 ——
+
+- `ncl_tool_model()`：设备与组件各自把配置型的点放进自己的 `configs`（`dataItems`
+  照旧放感知量）；`source` 依然一个都不写。
+- 校验：配置型 type 被声明成 `NCL_POINT_SAMPLED_*` 时**直接拒**（"…是配置型数据…不能进
+  采样通道"），免得现场悄悄采到一个参数表。
+- 厂商自定的 `type`（字典里查不到）默认按 `dataItems`。
+
+测试：`tests/test_tool.c` 的夹具里 `/MACHINE/NAME`（表 6 元信息）现在落在 `configs`，
+新增"配置型数据不能进采样通道"的拒绝用例；适配器夹具加了一条
+`/MACHINE/CONTROLLER/PARAMETER`，断言它进 CONTROLLER 组件的 `configs`、能按路径读、
+但不在通道里。验证：`build.ps1` 41/41。
+
+文档：32 册新增 §5.1.1（两种归置与 type 清单）、`adapters/README.md`（模型一节）、
+`FANUC-ADAPTER.md` §5（现有 19 个点全是 `dataItems`；参数/坐标系/刀具表等帧核对后再加，
+宿主会自动放进 `configs`）、`MANUAL.md` 4.3（路径表与两种数据对象）。
+
 ### 变更：数据项与组件的 `name` 改成可读名（不再放路径）
 
 第 3 部分说 `name` 是"用易于理解的词语或者词语的组合表示"，不是路径；路径由树
