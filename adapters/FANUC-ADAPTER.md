@@ -111,7 +111,7 @@ cd D:\fanuc
 2026-09-20 14:04:22.719 WARNING [50060] /MACHINE/WARNING = <待抓包>（报警：帧待抓包（cnc_rdalmmsg2，01 册 §2.3 / 31 册））
 2026-09-20 14:04:22.719 INFO [50060] /MACHINE/AXIS@X/POSITION@REAL = 12.345
 2026-09-20 14:04:22.723 WARNING [50060] /MACHINE/AXIS@X/POSITION@CMD = <待抓包>（目标位置：帧待抓包（cnc_rdposition））
-自检：30 个点位（24 个可读，6 个待抓包），0 个读取失败      # 退出码 0
+自检：19 个点位（13 个可读，6 个待抓包），0 个读取失败      # 退出码 0
 ```
 
 `--probe` 打的是单点结果（客户端视角，带 OK/NG 与原因）：
@@ -192,10 +192,12 @@ NCL_POINT_SAMPLED_ARG("/MACHINE/CONTROLLER/PROGRAM", focas_dispatch, &k_program)
 NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalmmsg2）")
 ```
 
-**点位名按标准第 4 部分（32 册）来的**，不是自己起的：`STATUS`、`PART_COUNT`、`PROGRAM`、
-`POSITION`、`SPEED` 都是那一册里的数据项名，路径里的 `CONTROLLER`、`AXIS@X` 是组件类型
-（表 2/表 3）。FANUC 自己的状态位标准里没有名字，所以带厂商前缀另起
-（`/MACHINE/FANUC_ODBST@…`），不占用 `STATUS`。
+**点位名一律是标准第 4 部分（32 册）里的数据项名**，一个自己起的都没有：`STATUS`、`PART_COUNT`、
+`WARNING`、`PROGRAM`、`POSITION`、`SPEED` 都能在那一册的表 4/表 6/表 7 里查到，路径里的
+`CONTROLLER`、`AXIS@X` 是组件类型（表 2/表 3）。
+**FANUC 自己的 ODBST 位域不进模型**：标准里没有这些名字，硬塞进去就是自造名字 —— 派生的东西
+用标准名表达（`STATUS` 就是 ODBST 的 RUN 与 EMERGENCY 两位推出来的 `running`/`free`/`holding`，
+表 8 的取值）。要看那些原始位，用方法 `focas/ITEMS`（驱动自己的项表，不进模型）。
 
 `focas_point` 四个字段就是原来的 `addr`：`area`（FOCAS 数据项）、`offset`（应答块序号）、
 `dtype`、`length`（元素个数）。四种声明宏：
@@ -215,7 +217,7 @@ NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalm
 
 `area` 的写法是 FOCAS 特有的（照抄即可）：
 
-- `"STATINFO@12"`、`"ACTF@4"`：`@` 后面是**块内字节偏移**，用来取多值载荷里的某一个
+- `"STATINFO@2"`、`"ACTF@4"`：`@` 后面是**块内字节偏移**，用来取多值载荷里的某一个
   （`cnc_statinfo` 的 9 个状态量、`cnc_actf` 的每个轴一个 float）。
 - 不带 `@` 的整个数据项（`"RDCOUNT"`、`"EXEPRGNAME2"`）就是"取这个块的全部载荷"。
 - `offset` 是**应答块序号**（`STATINFO` 一次请求三块：块 1 保留、块 2 自动方式、
@@ -225,8 +227,8 @@ NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalm
   只写 `{"area": "EXEPRGNAME2"}` 也能用（驱动会把被拆开的数字再拼回去），但显式写
   `offset` 最不容易误读。
 
-出厂点位（5 轴；共 30 个取值 + 2 个方法）。**默认采样通道只放四样**（现场口径）：设备状态、
-加工计件、程序名称、报警；位置、速度、私有位一律按需读：
+出厂点位（5 轴；共 19 个取值 + 2 个方法，名字全部来自数据字典）。**默认采样通道只放四样**
+（现场口径）：设备状态、加工计件、程序名称、报警；位置、速度一律按需读：
 
 | 模型路径 | FOCAS 数据项 | 含义 | 采样 |
 |---|---|---|---|
@@ -237,11 +239,10 @@ NCL_POINT_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalm
 | `/MACHINE/AXIS@X|Y|Z|A|C/POSITION@REAL` | `ACTF@0|4|8|12|16` | 5 轴实际位置 | ✘ 按需读 |
 | `/MACHINE/AXIS@X|Y|Z|A|C/POSITION@CMD` | 待抓包（`cnc_rdposition`） | 5 轴目标位置（**FOCAS 侧还没抓到帧**，问它答"待抓包"，见第 7 节） | ✘ 按需读 |
 | `/MACHINE/AXIS@X|Y|Z|A|C/SPEED` | `ACTS@0|4|8|12|16` | 5 轴速度（**量纲待核**，见第 7 节） | ✘ 按需读 |
-| `/MACHINE/FANUC_ODBST@MANUAL` `@RUN` `@EDIT` `@MOTION` `@MSTB` `@EMERGENCY` `@ALARM` `@SPINDLE` `@OPERATOR` `@DUMMY` `@AUTO` | `STATINFO@0…@16` 与块 1/2 | FANUC 私有状态位（标准里没有这些名字） | ✘ 按需读 |
 | `RDLIFE` `RDPARAM` `RDMACRO` `RDTOFS` `RDPROGDIR3` | 同名项 | 刀具寿命 / 参数 / 宏变量 / 刀补 / 程序目录（**字段布局待真机核对**） | ✘ |
 
 - 进采样通道的就是表里 ✔ 的四个：**设备状态、加工计件、程序名称、报警**。要上报别的
-  （某个轴的位置、速度、某个私有位），把那一行的 `NCL_POINT_ARG(...)` 换成
+  （某个轴的位置、速度），把那一行的 `NCL_POINT_ARG(...)` 换成
   `NCL_POINT_SAMPLED_ARG(...)` 重编模块；反过来说不想上报就把 `*_SAMPLED_*` 换回普通宏。
   通道本身开在模型里（`configs[0].ids`），周期在配置/模型文件里调，现场不用重编。
 - 最后一行**默认不写进点表**：按需读一个没核对过的字段可以，每秒往总线上报一个没人
@@ -306,6 +307,11 @@ plugins\
   `set_value` 会明确返回"不支持"。要写就走机床自己的通道。
 - **五处字段布局待真机核对**：`RDLIFE` / `RDPARAM` / `RDMACRO` / `RDTOFS` /
   `RDPROGDIR3`（要用就自己加点位，别开采样）。
+- **私有位不进模型**：FANUC 的 ODBST 位域（手动、自动、编辑、移动、急停、主轴、操作者…）
+  在数据字典里**没有名字**，所以模型里一个都不出现 —— 模型里每个 `type` 都要能在 32 册
+  里查到。需要什么状态就用标准名表达：`STATUS` 就是 RUN/EMERGENCY 两位推出来的三态；
+  要看那些原始位，用方法 `focas/ITEMS`（驱动自己的项表，不进模型）。如果现场要"手动/自动"，
+  加一条表 7 的 `WORK_MODE`（取值 `manual`/`auto`，表 8），由 ODBST 的手动/自动方式位推出来。
 - **两组"待抓包"点位（共 6 个）**：`/MACHINE/AXIS@k/POSITION@CMD`（5 个目标位置）与
   `/MACHINE/WARNING`
   （报警：报警号 + 文本）。FOCAS 侧对应的调用（`cnc_rdposition`、`cnc_rdalmmsg2`）在
@@ -320,7 +326,7 @@ plugins\
   hex）。这条列在 31 册 §1 #7 一起核对。
 - **不做**：PMC 梯形图、程序上传/下载（`cnc_upload4`
   等）、伺服波形、Focas2 Logger。需要的话按 01 册继续扩驱动（改 `plugins` 里的模块）。
-- 采样与轮询**各读一遍机床**：轮询刷新模型里的值（读 24 个可读点位，6 个待抓包的跳过），
+- 采样与轮询**各读一遍机床**：轮询刷新模型里的值（读 13 个可读点位，6 个待抓包的跳过），
   采样通道按 `sample.intervalMs` 读通道里的 4 个点位（状态 / 计件 / 程序名 / 报警）并按
   `uploadMs` 上报。嫌报文多就把 `--interval` 调大，把某个点位从 `NCL_POINT_SAMPLED_ARG`
   换成 `NCL_POINT_ARG`（只按需读），或者把采样周期调大。

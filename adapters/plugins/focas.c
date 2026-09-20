@@ -5,15 +5,17 @@
  * NC-Link adapter - FANUC, as one file.
  *
  * This is the whole FANUC adapter: the connection, one dispatch function, and
- * the points the site's machine model is built from - the standard ones (册 32:
- * STATUS / PART_COUNT / PROGRAM / 五轴的 POSITION 与 SPEED) plus FANUC's own ODBST
- * bits, which the standard has no name for and which therefore carry a vendor
- * prefix. The point map
+ * the points the site's machine model is built from. **Every name here comes
+ * from the data dictionary** (册 32 第 4 部分): STATUS / PART_COUNT / WARNING /
+ * PROGRAM / POSITION / SPEED. FANUC's own ODBST bit field is not in the model -
+ * the dictionary has no name for those bits - so the model carries only what
+ * the dictionary names, and a derived item (STATUS) is spelled with a
+ * dictionary name rather than a vendor one. The point map
  * used to live in conf/fanuc.json; it is here now, next to the protocol call it
  * belongs to, so a compiler checks it and no one has to keep two files in step.
  *
  * 默认采样通道按现场口径只放四样：设备状态、加工计件、程序名称、报警。位置、速度
- * 和私有位一律按需读 —— 要上报就把那一行的 NCL_POINT_* 换成 NCL_POINT_SAMPLED_*。
+ * 一律按需读 —— 要上报就把那一行的 NCL_POINT_* 换成 NCL_POINT_SAMPLED_*。
  * 报警与五个目标位置现在还没有抓包（NCL_POINT_PENDING*）：模型里有、问起来有明确
  * 答复，但取不到值。
  *
@@ -21,13 +23,14 @@
  * - is the `addr` object the configuration used to carry, moved into the point
  * table below (see ncl_focas_driver.h for what `area`/`offset` mean):
  *
- *   "STATINFO@12"  item STATINFO, byte 12 of the block payload   (ODBST.alarm)
+ *   "ACTF@8"       item ACTF, byte 8 of the block payload        (轴 Z 的位置)
  *   offset         the reply block to take the value out of
  *
- * Only three items have a verified field layout (01 册 §2.3): STATINFO's ODBST
- * split, ACTF/ACTS' float arrays and RDCOUNT's counter, plus EXEPRGNAME2's
- * name. The rest of the two dozen items in the book stay out of the table until
- * someone can check them against a machine.
+ * Five items carry the whole table, and all five have a verified layout
+ * (01 册 §2.3): STATINFO (the ODBST bit field STATUS is derived from), ACTF and
+ * ACTS (per axis float), RDCOUNT (the counter) and EXEPRGNAME2 (the program
+ * name). The rest of the two dozen items in the book stay out of the table
+ * until someone can check them against a machine.
  *
  * Read only: the delivered box reads FOCAS through its own C++ SDK and no write
  * endpoint was ever captured, so a Set on any of these points is refused with
@@ -58,28 +61,14 @@ typedef struct {
 } focas_point;
 
 /*
- * 标准项与私有项并存（32 册 §4.3/§5）：
+ * 名字一律取标准第 4 部分（32 册）的数据项名 —— 模型里出现的每一个 type 都要能在
+ * 那一册里查到。FANUC 自己的 ODBST 位域（01 册 §2.3 实测的 30 字节）**不进模型**：
+ * 标准里没有这些名字，派生出来的东西只能用标准里的名字（下面的 STATUS 就是 RUN 与
+ * EMERGENCY 两位推出来的三态）。要看原始位就用方法 `focas/ITEMS`（驱动自己的项表）。
  *
- *   /MACHINE/STATUS           标准里**唯一**的运行状态项，三态 running/free/holding
- *                             （表 8）；由 ODBST 的 RUN 与 EMERGENCY 位推导。
- *   /MACHINE/FANUC_ODBST@xxx  FANUC 私有位（ODBST，01 册 §2.3 实测的 30 字节位域）。
- *                             标准第 4 部分没有这些名字，所以带厂商前缀另起，
- *                             不能占用 STATUS（32 册 §5.3 记了这条待第 3 部分确认）。
+ *   /MACHINE/STATUS  表 6 的 STATUS（表 8 的取值 running/free/holding）
  */
 static const focas_point k_status        = {NULL, 0, NCL_DTYPE_STRING, 0, FOCAS_STATUS, false};
-
-static const focas_point k_odbst_manual    = {"STATINFO@0",  0, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
-static const focas_point k_odbst_run       = {"STATINFO@2",  0, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
-static const focas_point k_odbst_edit      = {"STATINFO@4",  0, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
-static const focas_point k_odbst_motion    = {"STATINFO@6",  0, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
-static const focas_point k_odbst_mstb      = {"STATINFO@8",  0, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
-static const focas_point k_odbst_emergency = {"STATINFO@10", 0, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
-static const focas_point k_odbst_alarm     = {"STATINFO@12", 0, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
-static const focas_point k_odbst_spindle   = {"STATINFO@14", 0, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
-static const focas_point k_odbst_operator  = {"STATINFO@16", 0, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
-/* Two more of the same item, taken from later reply blocks. */
-static const focas_point k_odbst_dummy     = {"STATINFO",    1, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
-static const focas_point k_odbst_auto      = {"STATINFO",    2, NCL_DTYPE_INT16, 1, FOCAS_DATA, false};
 
 /* 表 7：PART_COUNT 是 **string**（加工件数），所以读回来要转成字符串；
  * PROGRAM 是主程序名（string），属于 CONTROLLER 组件，FOCAS 侧就是 EXEPRGNAME2。 */
@@ -286,7 +275,7 @@ static ncl_err focas_dispatch(void *ctx, const ncl_tool_point *self,
 NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", 1000, 1000,
                focas_open, focas_close)
     /* 默认采样通道只放四样（现场口径）：设备状态、加工计件、程序名称、报警。
-     * 其余（位置/速度/私有位）一律按需读 —— 要上报就把对应的 NCL_POINT_* 换成
+     * 其余（位置/速度）一律按需读 —— 要上报就把对应的 NCL_POINT_* 换成
      * NCL_POINT_SAMPLED_*。 */
     NCL_POINT_SAMPLED_ARG("/MACHINE/STATUS", focas_dispatch, &k_status)
     NCL_POINT_SAMPLED_ARG("/MACHINE/PART_COUNT", focas_dispatch, &k_part_count)
@@ -330,27 +319,9 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", 1000, 1000,
                     "AXIS_A.SPEED")
     NCL_POINT_NAMED("/MACHINE/AXIS@C/SPEED", focas_dispatch, &k_axis_c_speed,
                     "AXIS_C.SPEED")
-    /* 私有项：FANUC 的 ODBST 位域（现场调试用；标准第 4 部分没有这些名字，
-     * 所以带 FANUC_ 前缀，不占用 STATUS）。 */
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@MANUAL", focas_dispatch,
-                  &k_odbst_manual)
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@RUN", focas_dispatch, &k_odbst_run)
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@EDIT", focas_dispatch, &k_odbst_edit)
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@MOTION", focas_dispatch,
-                  &k_odbst_motion)
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@MSTB", focas_dispatch, &k_odbst_mstb)
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@EMERGENCY", focas_dispatch,
-                  &k_odbst_emergency)
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@ALARM", focas_dispatch, &k_odbst_alarm)
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@SPINDLE", focas_dispatch,
-                  &k_odbst_spindle)
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@OPERATOR", focas_dispatch,
-                  &k_odbst_operator)
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@DUMMY", focas_dispatch, &k_odbst_dummy)
-    NCL_POINT_ARG("/MACHINE/FANUC_ODBST@AUTO", focas_dispatch, &k_odbst_auto)
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
     NCL_METHOD_NAMED("/MACHINE/SESSION", focas_dispatch, &k_session, "SESSION")
     NCL_METHOD_NAMED("/MACHINE/ITEMS", focas_dispatch, &k_items, "ITEMS")
 NCL_TOOL_END_WITH_RAW(focas_last_raw)
 
-NCL_TOOL_MODULE("1.2.0", "FANUC FOCAS / Fwlib32 over TCP, read only (01 册 §2.1-§2.3，32 册数据项)")
+NCL_TOOL_MODULE("1.3.0", "FANUC FOCAS / Fwlib32 over TCP, read only (01 册 §2.1-§2.3，32 册数据项)")

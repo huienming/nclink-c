@@ -5,6 +5,25 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 变更：模型里每个名字都来自数据字典 —— FANUC 私有位退出模型
+
+模型里出现的每一个 `type` 都必须能在第 4 部分（[32 册](protocal/docs/32-标准第4部分-数据项定义.md)）
+里查到。据此把 FANUC 适配器收了一遍口：
+
+- 保留的名字全是字典名：`STATUS`（表 6 + 表 8）、`PART_COUNT`（表 7）、`WARNING`（表 6 +
+  表 9）、`PROGRAM`（表 7）、`POSITION`（表 4）、`SPEED`（表 4）。
+- **删掉 11 个自造名** `/MACHINE/FANUC_ODBST@MANUAL|RUN|EDIT|MOTION|MSTB|EMERGENCY|ALARM|
+  SPINDLE|OPERATOR|DUMMY|AUTO`：字典里没有这些名字，第 3 部分的模型对象也只认字典里的
+  `type`，所以 ODBST 位域**不进模型、不上报**。派生出来的量用字典名表达 —— `STATUS` 就是
+  ODBST 的 RUN 与 EMERGENCY 两位推出来的 `running`/`free`/`holding`；要看原始位，走适配器
+  自己的调试方法 `focas/ITEMS`（驱动项表，不是模型）。真机册 32 §5.3 记了这条口径。
+- 出厂点位 **30 → 19 个取值**（4 个采样 + 15 个按需读，其中 6 个"待抓包"）+ 2 个方法；
+  模块版本 1.2.0 → 1.3.0。采样口径不变（状态 / 计件 / 程序名 / 报警）。
+- 需要"手动/自动"时，正解是表 7 的 `WORK_MODE`（取值 `manual`/`auto`，表 8），由 ODBST 的
+  手动方式位（块 0 偏移 0）与自动方式位（块 2）推出；这次**没有声明**，现场要就加一条。
+- 文档同步：`adapters/FANUC-ADAPTER.md` §5/§7、`adapters/README.md` 的 FANUC 一节、
+  32 册 §5.1/§5.2/§5.3；`--model` 打出来的模型文件（`conf/fanuc-model.json`）已重新生成。
+
 ### 新增：`--model` 打印设备模型；JSON 有了给人看的写法
 
 模型原先只在启动时生成一次、交给服务器就没人再见过它。现在适配器宿主留着这份文档，
@@ -61,7 +80,9 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
   （`device → component → dataItem`，册 32 表 2/表 3），设备节点自己答在 `/MACHINE` 上；
   声明里的路径与模型树因此一致。
 - **厂商私有项带前缀并存**：FANUC 的 ODBST 十一个位标准里没有名字，改为
-  `/MACHINE/FANUC_ODBST@…`，不再占用 `STATUS`。
+  `/MACHINE/FANUC_ODBST@…`，不再占用 `STATUS`。（**这条后来被推翻**：这一版只解决了
+  "不占用 `STATUS`"，没有解决"名字不是字典里的名字" —— 见上面那条变更，
+  私有位现在整个退出模型。）
 - **三个"待抓包"点位**：目标位置 `/MACHINE/AXIS@k/POSITION@CMD`、报警
   `/MACHINE/WARNING`（标准表 6 的 `WARNING`：JSON `number`/`text`）、以及 `ACTS`
   的量纲归属。对应的 FOCAS 调用（`cnc_rdposition`、`cnc_rdalmmsg2`、`cnc_rdaxisdata`）

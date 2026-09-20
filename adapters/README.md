@@ -88,7 +88,7 @@ NCL_TOOL_MODULE("1.0.0", "某品牌机床适配器")
 `--probe <路径>`（单点试读）、`--once`（跑一遍自检）；`--model` 把这份声明生成的
 **设备模型 JSON** 打出来（设备对外发布的就是它，要现场调采样周期就存成文件、在配置里
 用 `"model"` 指过去）。可抄的样板：
-`adapters/plugins/focas.c`（FANUC，30 个点位 + 2 个方法，其中 6 个"待抓包"）、
+`adapters/plugins/focas.c`（FANUC，19 个点位 + 2 个方法，其中 6 个"待抓包"）、
 `adapters/tests/module_tool_basic.c`（最小夹具）。
 
 ## 驱动接口（内部一层：协议客户端，以及老式驱动模块）
@@ -626,7 +626,8 @@ ncl_adapter -c conf/fanuc.json -b tcp://10.0.0.9:1883
 `tools[0].parameters`（机床地址与超时）。点表不在这里 —— 它随模块走，一行一个点位。
 现场手册是 [`FANUC-ADAPTER.md`](FANUC-ADAPTER.md)（打包时进包内 `README.md`）。
 
-出厂点表（模块里 30 个取值 + 2 个方法，模型路径都挂在 `/MACHINE` 下）：
+出厂点表（模块里 19 个取值 + 2 个方法，模型路径都挂在 `/MACHINE` 下；**每个名字都是标准第 4
+部分的数据项名**，模型里没有一个自造名）：
 
 | 模型路径 | FOCAS 项 | 块 | 读法 | 默认采样 |
 |---|---|---|---|---|
@@ -637,16 +638,20 @@ ncl_adapter -c conf/fanuc.json -b tcp://10.0.0.9:1883
 | `/MACHINE/AXIS@k/POSITION@REAL` | `ACTF@4k` | 0 | float32，轴 k 的字节偏移 `4k` | ❌ 按需读 |
 | `/MACHINE/AXIS@k/POSITION@CMD` | 待抓包（`cnc_rdposition`） | — | 目标位置（待抓包：问它答"还没抓到帧"） | ❌ 按需读 |
 | `/MACHINE/AXIS@k/SPEED` | `ACTS@4k` | 0 | float32，同上 | ❌ 按需读 |
-| `/MACHINE/FANUC_ODBST@MANUAL` … `@AUTO`（11 个） | `STATINFO@0/2/4/6/8/10/12/14/16` 与块 1/2 | 0/1/2 | FANUC 私有状态位（标准里没这些名字，带厂商前缀另起） | ❌ 按需读 |
 | `RDLIFE` `RDPARAM` `RDMACRO` `RDTOFS` `RDPROGDIR3` | 同名项 | 0 | 首个 int32，**字段布局待真机核对**（需自己加点位） | ❌ |
 
 带 ✅ 的就是 01 册 §2.3 实证过的布局；最后一行**默认不写进点表**——按需读一个没
 核对过的字段可以，每秒往总线上报一个没人核对过的名字不行，要用就自己加一条，
 先别开采样（用 `NCL_POINT_ARG` 而不是 `NCL_POINT_SAMPLED_*`）。
 
-**默认采样通道只有四样**（现场口径）：设备状态、加工计件、程序名称、报警。位置、速度、
-私有位一律按需读（`NCL_POINT_ARG`）；要上报就把那一行换成 `NCL_POINT_SAMPLED_ARG`，
+**默认采样通道只有四样**（现场口径）：设备状态、加工计件、程序名称、报警。位置、速度
+一律按需读（`NCL_POINT_ARG`）；要上报就把那一行换成 `NCL_POINT_SAMPLED_ARG`，
 反过来不想上报就把 `*_SAMPLED_*` 换回普通宏。
+
+**FANUC 自己的 ODBST 位域不进模型**（`STATINFO` 里那种"手动/自动/编辑/移动/急停"位）：
+数据字典里没有这些名字，所以不进模型、也不上报 —— 派生的量用字典里的名字表达
+（`STATUS` 就是 RUN/EMERGENCY 两位推出来的三态）。真要"手动/自动"就用表 7 的 `WORK_MODE`
+（取值 `manual`/`auto`）加一条；原始位可以在调试时走方法 `focas/ITEMS` 看。
 
 四条现场经验写在这里：
 
@@ -664,7 +669,7 @@ ncl_adapter -c conf/fanuc.json -b tcp://10.0.0.9:1883
 - **轮询与采样会各读一遍机床**：采样通道发的是普通 Query（走 `get_value#…` 绑定，
   这条链路上是"读一次机床并上报"），而模型里的值只由 `ncl_adapter_poll_round()`
   刷新（REST 和读模型的客户端看的是它）。现场嫌报文多就把 `--interval` 调大，
-  或者把不必要上报的点位改回按需读。这张表一轮是 24 次读（30 个点位里 6 个待抓包的
+  或者把不必要上报的点位改回按需读。这张表一轮是 13 次读（19 个点位里 6 个待抓包的
   跳过），采样通道另读它的 4 个。
 
 现场部署：把 `bin/ncl_adapter.exe`、`plugins/ncl_driver_focas.dll`、`conf/fanuc.json`
