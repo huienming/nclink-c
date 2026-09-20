@@ -83,6 +83,35 @@ if(NCLINK_BUILD_PLUGINS)
             NCL_TEST_PLUGIN_DIR="$<TARGET_FILE_DIR:ncl_driver_test_tool_basic>")
     add_dependencies(ncl_test_adapter_tool ncl_driver_test_tool_basic)
     add_test(NAME adapter_tool COMMAND ncl_test_adapter_tool)
+
+    # A driver module (generation 1) for the tests that exercise the legacy
+    # path: the FANUC adapter itself is a declaration now, so the fixtures keep
+    # a driver module around to prove that path still works.
+    add_library(ncl_driver_focas_fixture MODULE module_driver_focas.c
+            "${CMAKE_SOURCE_DIR}/clients/focas/focas_driver.c"
+            "${CMAKE_SOURCE_DIR}/clients/focas/focas_codec.c")
+    target_link_libraries(ncl_driver_focas_fixture PRIVATE nclink_drivers)
+    target_include_directories(ncl_driver_focas_fixture PRIVATE
+            "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/clients")
+    set_target_properties(ncl_driver_focas_fixture PROPERTIES
+            OUTPUT_NAME "ncl_driver_focas_fixture"
+            LIBRARY_OUTPUT_DIRECTORY
+            "${CMAKE_BINARY_DIR}/plugins-driver-fixture"
+            RUNTIME_OUTPUT_DIRECTORY
+            "${CMAKE_BINARY_DIR}/plugins-driver-fixture")
+    if(MSVC)
+        set_target_properties(ncl_driver_focas_fixture PROPERTIES PREFIX "")
+        target_compile_options(ncl_driver_focas_fixture PRIVATE /W4 /wd4996
+                /utf-8)
+        target_compile_definitions(ncl_driver_focas_fixture PRIVATE
+                _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+    else()
+        target_compile_options(ncl_driver_focas_fixture PRIVATE -Wall -Wextra
+                -Wshadow -Wstrict-prototypes -Wmissing-prototypes)
+    endif()
+    target_compile_definitions(ncl_test_adapter_plugin PRIVATE
+            NCL_TEST_DRIVER_FIXTURE_DIR="$<TARGET_FILE_DIR:ncl_driver_focas_fixture>")
+    add_dependencies(ncl_test_adapter_plugin ncl_driver_focas_fixture)
 endif()
 add_executable(ncl_test_audit test_audit.c)
 target_link_libraries(ncl_test_audit PRIVATE nclink_drivers)

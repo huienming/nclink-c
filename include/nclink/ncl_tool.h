@@ -113,20 +113,27 @@ struct ncl_tool_point {
     bool        callable; /**< a Method call may reach it     */
     /** Ask the host to sample this path (the point has to be readable). */
     bool        sampled;
+    /**
+     * Optional name this point answers to inside its tool, for the case where
+     * the tail of its path is not usable: three axes declared under one tree
+     * all end in "/POSITION", and a method name has to be unique. NULL means
+     * "the tail of the path", which is what most points want.
+     */
+    const char *name;
     /** The function serving this point. Required. */
     ncl_point_fn fn;
     /**
      * The author's own data for this point - a register address, a mapping
      * table entry, a protocol item name. Borrowed: the host never reads or
-     * writes it, it only hands it back through @p self, so an adapter may also
-     * put a table it mutates (a cache, a last value) here. NULL is fine.
+     * writes it, it only hands it back through @p self. NULL is fine. It is
+     * const so a read only table needs no cast at the declaration; an adapter
+     * that parks something it mutates here (a cache, a last value) casts it
+     * back in its own handler.
      */
-    void *arg;
+    const void *arg;
     /** Optional one line description, for the schema. */
     const char *summary;
 };
-
-
 
 /**
  * One tool: what the host needs to build a model, a sample channel and the
@@ -175,34 +182,56 @@ typedef struct {
  * one (MSVC: "error C2099: 初始值设定项不是常量").
  */
 #define NCL_POINT(path_literal, fn)                                            \
-    { path_literal, true, false, false, false, fn, NULL, NULL },
+    { path_literal, true, false, false, false, NULL, fn, NULL, NULL },
 
 #define NCL_POINT_ARG(path_literal, fn, arg)                                   \
-    { path_literal, true, false, false, false, fn, arg, NULL },
+    { path_literal, true, false, false, false, NULL, fn, arg, NULL },
 
 #define NCL_POINT_SAMPLED(path_literal, fn)                                    \
-    { path_literal, true, false, false, true, fn, NULL, NULL },
+    { path_literal, true, false, false, true, NULL, fn, NULL, NULL },
 
 #define NCL_POINT_SAMPLED_ARG(path_literal, fn, arg)                           \
-    { path_literal, true, false, false, true, fn, arg, NULL },
+    { path_literal, true, false, false, true, NULL, fn, arg, NULL },
 
 #define NCL_POINT_WRITE(path_literal, fn)                                      \
-    { path_literal, false, true, false, false, fn, NULL, NULL },
+    { path_literal, false, true, false, false, NULL, fn, NULL, NULL },
 
 #define NCL_POINT_WRITE_ARG(path_literal, fn, arg)                             \
-    { path_literal, false, true, false, false, fn, arg, NULL },
+    { path_literal, false, true, false, false, NULL, fn, arg, NULL },
 
 #define NCL_POINT_RW(path_literal, fn)                                         \
-    { path_literal, true, true, false, false, fn, NULL, NULL },
+    { path_literal, true, true, false, false, NULL, fn, NULL, NULL },
 
 #define NCL_POINT_RW_ARG(path_literal, fn, arg)                                \
-    { path_literal, true, true, false, false, fn, arg, NULL },
+    { path_literal, true, true, false, false, NULL, fn, arg, NULL },
 
 #define NCL_METHOD(path_literal, fn)                                           \
-    { path_literal, false, false, true, false, fn, NULL, NULL },
+    { path_literal, false, false, true, false, NULL, fn, NULL, NULL },
 
 #define NCL_METHOD_ARG(path_literal, fn, arg)                                  \
-    { path_literal, false, false, true, false, fn, arg, NULL },
+    { path_literal, false, false, true, false, NULL, fn, arg, NULL },
+
+/*
+ * The same five shapes with an explicit name, for a point whose path tail is
+ * not usable as a method name:
+ *
+ *   NCL_POINT_SAMPLED_NAMED("/CNC/AXIS@0/POSITION", read_axis, &k_axis0,
+ *                           "AXIS0.POSITION")
+ */
+#define NCL_POINT_NAMED(path_literal, fn, arg, name_literal)                   \
+    { path_literal, true, false, false, false, name_literal, fn, arg, NULL },
+
+#define NCL_POINT_SAMPLED_NAMED(path_literal, fn, arg, name_literal)           \
+    { path_literal, true, false, false, true, name_literal, fn, arg, NULL },
+
+#define NCL_POINT_WRITE_NAMED(path_literal, fn, arg, name_literal)             \
+    { path_literal, false, true, false, false, name_literal, fn, arg, NULL },
+
+#define NCL_POINT_RW_NAMED(path_literal, fn, arg, name_literal)                \
+    { path_literal, true, true, false, false, name_literal, fn, arg, NULL },
+
+#define NCL_METHOD_NAMED(path_literal, fn, arg, name_literal)                  \
+    { path_literal, false, false, true, false, name_literal, fn, arg, NULL },
 
 #define NCL_TOOL_BEGIN(name_literal, description_literal, sample_ms_value,     \
                        upload_ms_value, open_fn, close_fn)                     \

@@ -252,11 +252,13 @@ static void test_module_loading(void)
 
     ncl_strbuf_init(&err);
 
-    NCL_TEST_CASE("the FOCAS module in the plugin directory loads");
+    /* The fixture is a driver module (generation 1): the FANUC adapter itself
+     * is a declaration now, and this test is about the legacy path. */
+    NCL_TEST_CASE("the FOCAS driver module in the fixture directory loads");
     g_modules = ncl_modules_create();
     NCL_CHECK(g_modules != NULL);
-    NCL_CHECK_EQ_INT(ncl_modules_add(g_modules, "focas", NCL_TEST_PLUGIN_DIR,
-                                     &err),
+    NCL_CHECK_EQ_INT(ncl_modules_add(g_modules, "focas_fixture",
+                                     NCL_TEST_DRIVER_FIXTURE_DIR, &err),
                      NCL_OK);
     if (ncl_module_count(g_modules) == 0) {
         printf("      loader said: %s\n", ncl_strbuf_cstr(&err));
@@ -269,8 +271,8 @@ static void test_module_loading(void)
     NCL_CHECK(!ncl_module_registered(g_modules, 0));
 
     NCL_TEST_CASE("loading the same protocol twice is not a duplicate");
-    NCL_CHECK_EQ_INT(ncl_modules_add(g_modules, "focas", NCL_TEST_PLUGIN_DIR,
-                                     &err),
+    NCL_CHECK_EQ_INT(ncl_modules_add(g_modules, "focas_fixture",
+                                     NCL_TEST_DRIVER_FIXTURE_DIR, &err),
                      NCL_OK);
     NCL_CHECK_EQ_INT(ncl_module_count(g_modules), 1u);
 
@@ -372,8 +374,14 @@ static void test_config_section(void)
             NCL_CHECK_EQ_INT(ncl_modules_add_config(g_modules, config,
                                                     NCL_TEST_PLUGIN_DIR, &err),
                              NCL_OK);
-            /* focas is already loaded, so "auto" finds nothing new. */
-            NCL_CHECK_EQ_INT(ncl_module_count(g_modules), before);
+            /* The driver module is already loaded, so the scan adds at most the
+             * declared FANUC adapter (a tool module) that also lives in the
+             * plugin directory - and nothing else. */
+            NCL_CHECK(ncl_module_count(g_modules) == before ||
+                      ncl_module_count(g_modules) == before + 1);
+            if (ncl_module_count(g_modules) == before + 1) {
+                NCL_CHECK(ncl_module_tool(g_modules, before) != NULL);
+            }
             ncl_json_free(config);
         }
     }

@@ -234,6 +234,36 @@ static void test_validate(void)
     NCL_CHECK_EQ_INT(ncl_tool_validate(&broken, &err), NCL_OK);
     NCL_CHECK_EQ_INT((int)err.len, 0);
     ncl_strbuf_free(&err);
+
+    NCL_TEST_CASE("a point may name itself when its path tail would collide");
+    {
+        ncl_tool_point named[2];
+        ncl_tool_decl with_names = decl;
+
+        named[0] = decl.points[0];
+        named[0].path = "/TEST/AXIS@0/POSITION";
+        named[0].name = "AXIS0.POSITION";
+        named[1] = decl.points[1];
+        named[1].path = "/TEST/AXIS@1/POSITION";
+        named[1].name = "AXIS1.POSITION";
+        with_names.points = named;
+        with_names.point_count = 2;
+        ncl_strbuf_init(&err);
+        NCL_CHECK_EQ_INT(ncl_tool_validate(&with_names, &err), NCL_OK);
+        NCL_CHECK_EQ_STR(ncl_tool_point_name(&named[0]), "AXIS0.POSITION");
+        NCL_CHECK_EQ_STR(ncl_tool_point_name(&named[1]), "AXIS1.POSITION");
+        /* Without the names both tails are "POSITION", and a method name has
+         * to be unique: that is the case the field exists for. */
+        named[0].name = NULL;
+        named[1].name = NULL;
+        ncl_strbuf_reset(&err);
+        NCL_CHECK_EQ_INT(ncl_tool_validate(&with_names, &err),
+                         NCL_ERR_INVALID_ARG);
+        /* Both are readable, so the collision is reported as the operation they
+         * share rather than as the bare name. */
+        NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "both declare") != NULL);
+        ncl_strbuf_free(&err);
+    }
 }
 
 /* ------------------------------------------------------------------ model -- */

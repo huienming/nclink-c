@@ -193,6 +193,11 @@ const char *ncl_tool_point_name(const ncl_tool_point *point)
     if (point == NULL || point->path == NULL) {
         return "";
     }
+    /* A point may name itself when the tail of its path is ambiguous - three
+     * axes declared under one tree all end in "/POSITION". */
+    if (point->name != NULL && point->name[0] != '\0') {
+        return point->name;
+    }
     slash = strrchr(point->path, '/');
     return slash != NULL ? slash + 1 : point->path;
 }

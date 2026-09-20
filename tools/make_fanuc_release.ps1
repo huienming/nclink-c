@@ -6,7 +6,7 @@
 # the two run scripts, checksums and a zip.
 #
 # The program is one NC-Link server; what makes it speak FANUC is the module in
-# plugins/ and the point map in conf/fanuc.json, so the package is "a program
+# plugins/ and the parameters in conf/fanuc.json (the point map is in the
 # that loads a module", not "a program with FANUC compiled in".
 #
 #   .\tools\make_fanuc_release.ps1                 # dist\nclink-fanuc-adapter-3.4.0-win-x64

@@ -51,10 +51,14 @@ endif()
 # ncl_driver_result_*, the error tiers) lives in the adapter layer until the
 # clients get their own idiomatic API.
 if(NCLINK_BUILD_PLUGINS)
+    # The FANUC adapter is a declaration now (focas_tool.c): the point map lives
+    # in the module and the host builds the model and the bindings from it. The
+    # driver sources are still what does the talking - the tool drives them
+    # through ncl_driver_read_one().
     add_library(ncl_driver_focas MODULE
             focas/focas_driver.c
             focas/focas_codec.c
-            focas/focas_plugin.c)
+            focas/focas_tool.c)
     set_target_properties(ncl_driver_focas PROPERTIES
             OUTPUT_NAME "ncl_driver_focas"
             LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
