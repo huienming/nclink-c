@@ -59,6 +59,7 @@ static char *g_root = NULL;
 static char *g_conf = NULL;
 static char *g_run = NULL;
 static char *g_driver = NULL;
+static char *g_plugin = NULL;
 static char *g_log = NULL;
 static char *g_log_file = NULL;
 static char *g_mqtt_cfg = NULL;
@@ -141,6 +142,12 @@ const char *ncl_env_run_path(void)
 const char *ncl_env_driver_path(void)
 {
     return ncl_env_join(&g_driver, ncl_env_root(), "drivers");
+}
+
+/** Where the adapter host picks up its modules ("plugins"). */
+const char *ncl_env_plugin_path(void)
+{
+    return ncl_env_join(&g_plugin, ncl_env_root(), "plugins");
 }
 
 const char *ncl_env_log_path(void)

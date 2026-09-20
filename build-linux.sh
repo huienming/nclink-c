@@ -51,6 +51,15 @@ case "$("$CC" -dumpmachine 2>/dev/null)" in
     *mingw*|*w64*) LDLIBS="$LDLIBS -lws2_32 -liphlpapi -lwinmm" ;;
 esac
 
+# 动态模块的命名要与 ncl_library_file_name() 的约定一致：Windows 无前缀 + .dll，
+# 其它平台 lib 前缀 + .so。插件与测试夹具都用这两个变量。
+case "$("$CC" -dumpmachine 2>/dev/null)" in
+    *mingw*|*w64*|*windows*)
+        MODPREFIX=""; MODSUF=".dll" ;;
+    *)
+        MODPREFIX="lib"; MODSUF=".so" ;;
+esac
+
 # TLS 是可选的：默认零依赖，打开后链接系统 OpenSSL，用于 MQTT over ssl://。
 if [ "${NCL_WITH_TLS:-0}" = "1" ]; then
     CFLAGS="$CFLAGS -DNCL_WITH_TLS=1"
@@ -80,15 +89,17 @@ done
 $AR rcs "$OUT/libnclink_core.a" "$OUT"/obj/*.o
 echo "   -> $OUT/libnclink_core.a"
 
-# 适配器：厂商协议驱动（libnclink_drivers.a）。与核心库分开，设备端不带驱动
-# 时可以不编译这一段。测试也跟着驱动库一起编。
-DRV_CFLAGS="-Iadapters/include -Iadapters/drivers -Iadapters/src"
+# 协议客户端库（clients/，原 adapters/drivers）：厂商协议的报文与会话。
+# 适配器层（adapters/）：宿主与装载器，两者一起进 libnclink_drivers.a。
+DRV_CFLAGS="-Iadapters/src -Iclients -Iclients/include"
 DRV_OBJDIR="$OUT/obj-adapters"
 rm -rf "$DRV_OBJDIR"
 mkdir -p "$DRV_OBJDIR"
-echo "== 编译适配器驱动 =="
-for src in $(find adapters/src/core adapters/src/registry adapters/src/app \
-                  adapters/drivers -name '*.c' | sort); do
+echo "== 编译协议客户端库与适配器层 =="
+for src in $(find clients -maxdepth 2 -name '*.c' \
+                      ! -path 'clients/tests/*' ! -name '*_plugin.c' \
+                      adapters/src/core adapters/src/registry adapters/src/app \
+                  -name '*.c' | sort); do
     obj="$DRV_OBJDIR/$(echo "$src" | tr '/' '_').o"
     $CC $CFLAGS $DRV_CFLAGS -c "$src" -o "$obj"
 done
@@ -97,6 +108,22 @@ echo "   -> $OUT/libnclink_drivers.a"
 $CC $CFLAGS $DRV_CFLAGS adapters/src/main.c -o "$OUT/bin/ncl_adapter" \
     "$OUT/libnclink_drivers.a" "$OUT/libnclink_core.a" $LDLIBS
 echo "   -> $OUT/bin/ncl_adapter"
+
+# 适配器插件：厂商协议做成可动态加载的模块，宿主启动时从 <root>/plugins 装载。
+mkdir -p "$OUT/plugins"
+$CC $CFLAGS $DRV_CFLAGS -shared -o "$OUT/plugins/${MODPREFIX}ncl_driver_focas$MODSUF" \
+    clients/focas/focas_driver.c clients/focas/focas_codec.c \
+    clients/focas/focas_plugin.c \
+    "$OUT/libnclink_drivers.a" "$OUT/libnclink_core.a" $LDLIBS
+echo "   -> $OUT/plugins/${MODPREFIX}ncl_driver_focas$MODSUF"
+# 测试用的夹具模块：一个 ABI 代次不符、一个根本没导出入点，加载器都得拒掉。
+# 它们跟真的插件一样叫 ncl_driver_<协议>，测试就按协议名去要。
+$CC $CFLAGS -Iinclude -shared \
+    -o "$OUT/plugins/${MODPREFIX}ncl_driver_test_bad_abi$MODSUF" \
+    adapters/tests/module_bad_abi.c
+$CC $CFLAGS -Iinclude -shared \
+    -o "$OUT/plugins/${MODPREFIX}ncl_driver_test_no_entry$MODSUF" \
+    adapters/tests/module_no_entry.c
 
 echo "== 编译示例 =="
 for ex in examples/*.c; do
@@ -117,8 +144,16 @@ done
 echo "== 编译并运行测试 =="
 pass=0
 fail=0
+
+# 动态加载的夹具模块（tests/test_library.c 要装载它；文件名与测试里的拼法一致）
+$CC $CFLAGS -shared -o "$OUT/bin/ncl_test_module$MODSUF" tests/test_module.c
+
 for t in tests/test_*.c; do
     name=$(basename "$t" .c)
+    # 夹具模块不是测试：它没有 main，只给 test_library 当被装载的对象
+    if [ "$name" = "test_module" ]; then
+        continue
+    fi
     extra=""
     case "$name" in
         test_client|test_server) extra="tests/fake_nclink_server.c" ;;
@@ -135,6 +170,11 @@ for t in tests/test_*.c; do
         test_license)
             extra="$extra -DNCL_TEST_SOURCE_ROOT=\"$ROOT\"" ;;
     esac
+    case "$name" in
+        # 绝对路径：测试是在 $OUT/bin 里跑的，相对路径会变成 bin/bin
+        test_library)
+            extra="$extra -DNCL_TEST_MODULE_DIR=\"$ROOT/$OUT/bin\"" ;;
+    esac
     # shellcheck disable=SC2086
     if ! $CC $CFLAGS "$t" $extra -o "$OUT/bin/$name" \
             "$OUT/libnclink_core.a" $LDLIBS 2>"$OUT/bin/$name.build.log"; then
@@ -148,12 +188,37 @@ for t in tests/test_*.c; do
     fi
 done
 
-# 适配器测试：链接驱动库 + 核心库。
-for t in adapters/tests/test_*.c; do
+# 协议客户端库测试（clients/tests）：黄金帧与靶机，链接同一个静态库。
+for t in clients/tests/test_*.c; do
     [ -e "$t" ] || continue
     name=$(basename "$t" .c)
     # shellcheck disable=SC2086
     if ! $CC $CFLAGS $DRV_CFLAGS -Itests "$t" -o "$OUT/bin/$name" \
+            "$OUT/libnclink_drivers.a" "$OUT/libnclink_core.a" $LDLIBS \
+            2>"$OUT/bin/$name.build.log"; then
+        echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"; fail=$((fail+1)); continue
+    fi
+    if (cd "$OUT/bin" && ./"$name" >"$name.log" 2>&1); then
+        echo "   [通过] $name"
+        pass=$((pass+1))
+    else
+        echo "   [失败] $name"; tail -8 "$OUT/bin/$name.log"; fail=$((fail+1))
+    fi
+done
+
+# 适配器层测试：链接同一个静态库。
+# test_adapter_plugin 还要装载插件（$OUT/plugins）与两个夹具模块。
+for t in adapters/tests/test_*.c; do
+    [ -e "$t" ] || continue
+    name=$(basename "$t" .c)
+    extra=""
+    case "$name" in
+        # 绝对路径：测试是在 $OUT/bin 里跑的，相对路径会变成 bin/plugins
+        test_adapter_plugin)
+            extra="-DNCL_TEST_PLUGIN_DIR=\"$ROOT/$OUT/plugins\" -DNCL_TEST_MODULE_DIR=\"$ROOT/$OUT/plugins\"" ;;
+    esac
+    # shellcheck disable=SC2086
+    if ! $CC $CFLAGS $DRV_CFLAGS -Itests "$t" $extra -o "$OUT/bin/$name" \
             "$OUT/libnclink_drivers.a" "$OUT/libnclink_core.a" $LDLIBS \
             2>"$OUT/bin/$name.build.log"; then
         echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"; fail=$((fail+1)); continue

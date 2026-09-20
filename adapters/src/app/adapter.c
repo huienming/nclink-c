@@ -4,13 +4,20 @@
 /*
  * NC-Link adapter - configuration to live device.
  *
- * Bring up order: drivers from the configuration, then the NC-Link model
- * (loaded from a file or generated from the point map), then one operation per
- * point, then the sample channel that publishes them.
+ * Bring up order: the MQTT session (when the configuration asks for one), the
+ * drivers, then the NC-Link model (loaded from a file or generated from the
+ * point map), then one operation per point, then the sample channel that
+ * publishes them.
  *
  * One tool per point is what makes the framework's single-instance-per-tool
  * rule work for a generic driver: the instance carries the point's path, so a
  * method stays a plain function and no C code is generated per point.
+ *
+ * The broker session lives here rather than in the host so that "a point map
+ * in, a device on the bus out" holds for every host: ncl_adapter and the
+ * vendor collectors both hand the configuration over and get a device that
+ * answers on its MQTT topics. A broker that is not up yet is not fatal - the
+ * host's loop calls ncl_adapter_broker_poll(), which retries with a backoff.
  */
 
 #include "nclink_adapter/ncl_adapter.h"
@@ -19,6 +26,9 @@
 #include <string.h>
 
 #include "nclink/ncl_env.h"
+#include "nclink/ncl_config.h"
+#include "nclink/ncl_logger.h"
+#include "nclink/ncl_mqtt.h"
 #include "nclink/ncl_platform.h"
 
 #include "core/adapter_text.h"
@@ -45,6 +55,14 @@ struct ncl_adapter {
     size_t              point_count;
     adapter_method     *methods;
     size_t              method_count;
+    /* MQTT session, owned: NULL when the configuration says offline. */
+    ncl_mqtt_client    *mqtt;
+    char               *broker_url;
+    bool                broker_ever_connected;
+    bool                subscribed;
+    int64_t             broker_retry_at;  /**< monotonic ms, 0 = now */
+    unsigned            broker_delay_ms;  /**< current backoff */
+    unsigned            broker_delay_max_ms;
 };
 
 /* --------------------------------------------------------------- helpers -- */
@@ -69,6 +87,208 @@ static void err_append1(ncl_strbuf *err, const char *fmt, const char *arg)
         (void)ncl_strbuf_puts(err, "; ");
     }
     (void)ncl_strbuf_printf(err, fmt, arg);
+}
+
+/* --------------------------------------------------------------- broker -- */
+
+/** Every inbound request: parse it, then hand it to the server (which runs the
+ *  tool on the shared pool, so the reader thread does not block). */
+static void broker_on_message(void *user, const ncl_mqtt_publish *publish)
+{
+    ncl_adapter *adapter = (ncl_adapter *)user;
+    ncl_message *request;
+
+    if (publish->topic == NULL || adapter->server == NULL) {
+        return;
+    }
+    request = ncl_message_parse(publish->topic,
+                                (const char *)publish->payload,
+                                publish->payload_len);
+    if (request == NULL) {
+        ncl_log_warn("无法解析来自 %s 的报文", publish->topic);
+        return;
+    }
+    ncl_server_on_message(adapter->server, publish->topic, request);
+}
+
+static void broker_on_connect(void *user, bool reconnect,
+                              const ncl_mqtt_connack *connack)
+{
+    ncl_adapter *adapter = (ncl_adapter *)user;
+
+    (void)connack;
+    if (reconnect) {
+        ncl_log_info("MQTT 已重连: %s", ncl_adapter_broker_url(adapter));
+    }
+}
+
+static void broker_on_disconnect(void *user, uint8_t reason_code,
+                                 bool will_reconnect)
+{
+    ncl_adapter *adapter = (ncl_adapter *)user;
+
+    ncl_log_warn("MQTT 断开（%s，原因码 %u%s）",
+                 ncl_adapter_broker_url(adapter) != NULL
+                     ? ncl_adapter_broker_url(adapter)
+                     : "?",
+                 (unsigned)reason_code,
+                 will_reconnect ? "，库会在后台重连" : "");
+}
+
+/**
+ * Bring the session up: create the client, connect, subscribe. A client that
+ * cannot reach the broker yet is kept (with a backoff) so the poll can retry -
+ * a collector must come up on a machine whose broker is still booting.
+ */
+static ncl_err broker_open(ncl_adapter *adapter, const ncl_json *config,
+                           ncl_strbuf *err)
+{
+    ncl_mqtt_client_options options;
+    const char *url;
+    const char *text;
+    ncl_err result;
+
+    if (config == NULL || ncl_json_type_of(config) != NCL_JSON_OBJECT) {
+        return NCL_OK; /* no "mqtt" object: offline */
+    }
+    if (ncl_json_obj_get_bool(config, "offline", false)) {
+        ncl_log_info("适配器离线运行（配置里 mqtt.offline = true）");
+        return NCL_OK;
+    }
+    url = ncl_json_obj_get_string(config, "url");
+    if (ncl_str_is_blank(url)) {
+        /* Say it out loud: an empty url is a configuration mistake, not a wish
+         * to stay offline (that is what "offline": true is for). */
+        err_append(err, "mqtt.url is empty (\"offline\": true means offline)");
+        return NCL_ERR_INVALID_ARG;
+    }
+    adapter->broker_url = ncl_strdup(url);
+    if (adapter->broker_url == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    adapter->broker_delay_ms =
+        (unsigned)ncl_json_obj_get_int(config, "reconnectDelayMs", 1000);
+    if (adapter->broker_delay_ms < 200u) {
+        adapter->broker_delay_ms = 200u;
+    }
+    adapter->broker_delay_max_ms =
+        (unsigned)ncl_json_obj_get_int(config, "reconnectMaxDelayMs", 30000);
+    if (adapter->broker_delay_max_ms < adapter->broker_delay_ms) {
+        adapter->broker_delay_max_ms = adapter->broker_delay_ms;
+    }
+
+    ncl_mqtt_client_options_default(&options);
+    options.url = adapter->broker_url;
+    text = ncl_json_obj_get_string(config, "clientId");
+    options.client_id = !ncl_str_is_blank(text) ? text : adapter->sn;
+    text = ncl_json_obj_get_string(config, "username");
+    options.username = !ncl_str_is_blank(text) ? text : NULL;
+    text = ncl_json_obj_get_string(config, "password");
+    options.password = !ncl_str_is_blank(text) ? text : NULL;
+    options.keep_alive_seconds =
+        (unsigned)ncl_json_obj_get_int(config, "keepAliveSeconds", 60);
+    options.connect_timeout_ms =
+        (unsigned)ncl_json_obj_get_int(config, "connectTimeoutMs", 10000);
+    options.automatic_reconnect =
+        ncl_json_obj_get_bool(config, "automaticReconnect", true);
+    options.reconnect_delay_ms = adapter->broker_delay_ms;
+    options.reconnect_max_delay_ms = adapter->broker_delay_max_ms;
+    options.on_connect = broker_on_connect;
+    options.on_disconnect = broker_on_disconnect;
+    options.on_message = broker_on_message;
+    options.user = adapter;
+
+    adapter->mqtt = ncl_mqtt_client_create(&options);
+    if (adapter->mqtt == NULL) {
+        err_append(err, "MQTT 客户端创建失败");
+        return NCL_ERR_NOMEM;
+    }
+    result = ncl_mqtt_client_connect(adapter->mqtt);
+    if (result != NCL_OK) {
+        /* Not fatal: the host loop retries (see ncl_adapter_broker_poll). */
+        ncl_log_warn("MQTT 暂未连上 %s：%s（稍后自动重试）", adapter->broker_url,
+                     ncl_mqtt_client_last_error(adapter->mqtt));
+        adapter->broker_retry_at =
+            ncl_time_monotonic_millis() + adapter->broker_delay_ms;
+    } else {
+        adapter->broker_ever_connected = true;
+        ncl_log_info("MQTT 已连接: %s（clientId %s）", adapter->broker_url,
+                     options.client_id != NULL ? options.client_id : "");
+    }
+    return NCL_OK;
+}
+
+/** Subscribe the request topics once the session is up. */
+static void broker_subscribe(ncl_adapter *adapter)
+{
+    if (adapter->subscribed || adapter->server == NULL) {
+        return;
+    }
+    if (ncl_server_subscribe(adapter->server) == NCL_OK) {
+        adapter->subscribed = true;
+        ncl_log_info("已订阅 %s 的请求主题", adapter->sn);
+    } else {
+        ncl_log_warn("MQTT 订阅失败，稍后重试");
+    }
+}
+
+ncl_err ncl_adapter_config_set_broker(ncl_json *config, const char *broker,
+                                      bool offline, ncl_strbuf *err)
+{
+    ncl_json *mqtt;
+    ncl_err result = NCL_OK;
+
+    if (config == NULL || ncl_json_type_of(config) != NCL_JSON_OBJECT) {
+        err_append(err, "the adapter configuration must be an object");
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (broker == NULL && !offline &&
+        ncl_json_type_of(ncl_json_obj_get(config, "mqtt")) == NCL_JSON_OBJECT) {
+        /* The configuration names its own broker: neither the command line nor
+         * <conf>/mqtt.cfg may override it. */
+        return NCL_OK;
+    }
+    mqtt = ncl_json_new_object();
+    if (mqtt == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    if (offline || (broker != NULL && strcmp(broker, "-") == 0)) {
+        (void)ncl_json_obj_set_bool(mqtt, "offline", true);
+    } else if (broker != NULL && broker[0] != '\0') {
+        (void)ncl_json_obj_set_string(mqtt, "url", broker);
+    } else {
+        ncl_json *file = ncl_config_get_mqtt();
+        const char *value;
+
+        if (file == NULL) {
+            err_append1(err, "cannot read the broker configuration %s",
+                        ncl_env_mqtt_cfg_file());
+            ncl_json_free(mqtt);
+            return NCL_ERR_IO;
+        }
+        value = ncl_json_obj_get_string(file, "url");
+        if (ncl_str_is_blank(value)) {
+            /* No broker on this box: run offline rather than refuse to start. */
+            (void)ncl_json_obj_set_bool(mqtt, "offline", true);
+        } else {
+            (void)ncl_json_obj_set_string(mqtt, "url", value);
+            value = ncl_json_obj_get_string(file, "username");
+            if (!ncl_str_is_blank(value)) {
+                (void)ncl_json_obj_set_string(mqtt, "username", value);
+            }
+            value = ncl_json_obj_get_string(file, "password");
+            if (!ncl_str_is_blank(value)) {
+                (void)ncl_json_obj_set_string(mqtt, "password", value);
+            }
+        }
+        ncl_json_free(file);
+    }
+    if (ncl_json_obj_set(config, "mqtt", mqtt) != NCL_OK) {
+        result = NCL_ERR_NOMEM;
+        ncl_json_free(mqtt);
+        return result;
+    }
+    return NCL_OK; /* the configuration owns the object now */
 }
 
 /* ----------------------------------------------------------- tool methods -- */
@@ -542,8 +762,16 @@ ncl_adapter *ncl_adapter_create(const ncl_json *config, ncl_strbuf *err)
         }
     }
 
+    /* The broker first: the server takes the client at creation and needs the
+     * session up before it can subscribe. */
+    if (broker_open(adapter, ncl_json_obj_get(config, "mqtt"), err) != NCL_OK) {
+        ncl_adapter_free(adapter);
+        return NULL;
+    }
+
     memset(&options, 0, sizeof(options));
     options.sn = adapter->sn;
+    options.mqtt = adapter->mqtt;
     options.model_json = ncl_json_write_string(model);
     ncl_json_free(model);
     if (options.model_json == NULL) {
@@ -556,6 +784,11 @@ ncl_adapter *ncl_adapter_create(const ncl_json *config, ncl_strbuf *err)
         err_append(err, "cannot bring up the NC-Link server");
         ncl_adapter_free(adapter);
         return NULL;
+    }
+    /* The callback is unregistered until the server exists; from here on the
+     * request topics can be answered. */
+    if (adapter->mqtt != NULL && ncl_mqtt_client_is_connected(adapter->mqtt)) {
+        broker_subscribe(adapter);
     }
     resolve_nodes(adapter);
     if (register_points(adapter, err) != NCL_OK) {
@@ -586,7 +819,14 @@ void ncl_adapter_free(ncl_adapter *adapter)
     if (adapter == NULL) {
         return;
     }
+    /* The server first: it stops the sample threads that publish through the
+     * MQTT client this adapter owns. */
     ncl_server_free(adapter->server);
+    if (adapter->mqtt != NULL) {
+        ncl_mqtt_client_disconnect(adapter->mqtt);
+        ncl_mqtt_client_destroy(adapter->mqtt);
+    }
+    ncl_free_safe(adapter->broker_url);
     for (i = 0; i < adapter->point_count; i++) {
         ncl_free_safe(adapter->points[i].path);
     }
@@ -636,7 +876,116 @@ size_t ncl_adapter_method_count(const ncl_adapter *adapter)
     return adapter != NULL ? adapter->method_count : 0;
 }
 
+const char *ncl_adapter_broker_url(const ncl_adapter *adapter)
+{
+    return adapter != NULL ? adapter->broker_url : NULL;
+}
+
+bool ncl_adapter_online(const ncl_adapter *adapter)
+{
+    return adapter != NULL && adapter->mqtt != NULL &&
+           ncl_mqtt_client_is_connected((ncl_mqtt_client *)adapter->mqtt);
+}
+
+ncl_err ncl_adapter_broker_poll(ncl_adapter *adapter, ncl_strbuf *err)
+{
+    ncl_err result;
+
+    if (adapter == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (adapter->mqtt == NULL) {
+        return NCL_OK; /* offline by configuration */
+    }
+    if (ncl_mqtt_client_is_connected(adapter->mqtt)) {
+        if (!adapter->subscribed) {
+            broker_subscribe(adapter);
+        }
+        return NCL_OK;
+    }
+    if (adapter->broker_ever_connected) {
+        /* The library owns this one: automatic reconnect restores the session
+         * and the subscriptions, so a second connect here would only race. */
+        if (adapter->subscribed) {
+            adapter->subscribed = false; /* a later poll re-subscribes */
+        }
+        if (err != NULL) {
+            (void)ncl_strbuf_printf(err, "MQTT 会话断开中（%s）",
+                                    adapter->broker_url);
+        }
+        return NCL_ERR_CLOSED;
+    }
+    if (ncl_time_monotonic_millis() < adapter->broker_retry_at) {
+        if (err != NULL) {
+            (void)ncl_strbuf_printf(err, "MQTT 未连上（%s）", adapter->broker_url);
+        }
+        return NCL_ERR_CLOSED;
+    }
+    result = ncl_mqtt_client_connect(adapter->mqtt);
+    if (result != NCL_OK) {
+        adapter->broker_delay_ms = adapter->broker_delay_ms <
+                                           adapter->broker_delay_max_ms / 2u
+                                       ? adapter->broker_delay_ms * 2u
+                                       : adapter->broker_delay_max_ms;
+        adapter->broker_retry_at =
+            ncl_time_monotonic_millis() + adapter->broker_delay_ms;
+        if (err != NULL) {
+            (void)ncl_strbuf_printf(err, "MQTT 重连失败（%s）：%s",
+                                    adapter->broker_url,
+                                    ncl_mqtt_client_last_error(adapter->mqtt));
+        }
+        return result;
+    }
+    adapter->broker_ever_connected = true;
+    ncl_log_info("MQTT 已连接: %s", adapter->broker_url);
+    broker_subscribe(adapter);
+    return NCL_OK;
+}
+
 /* ------------------------------------------------------------------ poll -- */
+
+/** The point with this model path, or NULL. */
+static adapter_point *find_point(ncl_adapter *adapter, const char *path)
+{
+    size_t i;
+
+    for (i = 0; i < adapter->point_count; i++) {
+        if (strcmp(adapter->points[i].path, path) == 0) {
+            return &adapter->points[i];
+        }
+    }
+    return NULL;
+}
+
+ncl_err ncl_adapter_poll_one(ncl_adapter *adapter, const char *path,
+                             ncl_strbuf *err)
+{
+    adapter_point *point;
+    ncl_json *value = NULL;
+    ncl_err result;
+
+    if (adapter == NULL || path == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    point = find_point(adapter, path);
+    if (point == NULL) {
+        err_append1(err, "no such point", path);
+        return NCL_ERR_NOT_FOUND;
+    }
+    result = ncl_driver_manager_read(adapter->manager, point->path, &value);
+    if (result != NCL_OK) {
+        err_append1(err, "cannot read %s", point->path);
+        ncl_json_free(value);
+        return result;
+    }
+    if (point->node != NULL) {
+        ncl_json_free(point->node->value);
+        point->node->value = value; /* the model takes it over */
+    } else {
+        ncl_json_free(value);
+    }
+    return NCL_OK;
+}
 
 ncl_err ncl_adapter_poll(ncl_adapter *adapter, ncl_strbuf *err)
 {
@@ -647,24 +996,46 @@ ncl_err ncl_adapter_poll(ncl_adapter *adapter, ncl_strbuf *err)
         return NCL_ERR_INVALID_ARG;
     }
     for (i = 0; i < adapter->point_count; i++) {
-        adapter_point *point = &adapter->points[i];
-        ncl_json *value = NULL;
-        ncl_err result = ncl_driver_manager_read(adapter->manager, point->path,
-                                                 &value);
+        ncl_err result = ncl_adapter_poll_one(adapter, adapter->points[i].path,
+                                              err);
 
-        if (result != NCL_OK) {
-            err_append1(err, "cannot read %s", point->path);
-            if (first == NCL_OK) {
-                first = result;
-            }
+        if (result != NCL_OK && first == NCL_OK) {
+            first = result;
+        }
+    }
+    return first;
+}
+
+ncl_err ncl_adapter_poll_round(ncl_adapter *adapter, size_t *failed,
+                               ncl_strbuf *err)
+{
+    ncl_err first = NCL_OK;
+    size_t failures = 0;
+    size_t i;
+
+    if (adapter == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    for (i = 0; i < adapter->point_count; i++) {
+        ncl_err result = ncl_adapter_poll_one(adapter, adapter->points[i].path,
+                                              err);
+
+        if (result == NCL_OK) {
             continue;
         }
-        if (point->node != NULL) {
-            ncl_json_free(point->node->value);
-            point->node->value = value; /* the model takes it over */
-        } else {
-            ncl_json_free(value);
+        failures++;
+        if (first == NCL_OK) {
+            first = result;
         }
+        if (ncl_driver_error_tier(result) == 1) {
+            /* The link is down: every remaining point would only pay the same
+             * connect timeout again, so the round ends here. */
+            failures += adapter->point_count - i - 1u;
+            break;
+        }
+    }
+    if (failed != NULL) {
+        *failed = failures;
     }
     return first;
 }

@@ -16,18 +16,21 @@ adapters/
 │   ├── ncl_driver.h          # ncl_driver_ops / ncl_address / ncl_driver_result
 │   ├── ncl_driver_manager.h  # 驱动配置、点位表、path→驱动 分派
 │   ├── ncl_audit.h           # 审计（§6）：请求/会话/写操作/错误直方图
-│   └── ncl_adapter.h         # 守护进程：配置 → 设备
-├── src/core/                 # 与协议无关的骨架（类型、错误分级、地址解析、注册表、审计）
+│   ├── ncl_adapter.h         # 宿主：配置 → 设备（含 MQTT 会话）
+│   └── ncl_module.h          # 适配器模块 ABI 与装载器（ncl_driver_<协议>.*）
+├── src/core/                 # 与协议无关的骨架（类型、错误分级、地址解析、注册表、审计、模块装载）
 ├── src/registry/             # 配置加载 + 点位表 + 最长前缀分派
-├── src/app/                  # 守护进程主体（模型生成、操作注册、轮询）
-├── src/main.c                # ncl_adapter 可执行文件
+├── src/app/                  # 宿主主体（模型生成、操作注册、轮询、MQTT、采样）
+├── src/main.c                # ncl_adapter 可执行文件（一台 NC-Link 设备程序）
 ├── drivers/<协议>/           # 每个协议一个目录：帧构造/解析 + 会话状态
 └── tests/                    # 黄金报文 + mock 靶机的集成测试
 ```
 
-构建产物是 `libnclink_drivers.a`（CMake 目标 `nclink::drivers`）与可执行文件
-`ncl_adapter`，与 `nclink::core` 分开：设备端不带任何厂商驱动时可以直接不编译
-这一层（`-DNCLINK_BUILD_ADAPTERS=OFF`）。
+构建产物是 `libnclink_drivers.a`（CMake 目标 `nclink::drivers`）、宿主可执行文件
+`ncl_adapter`，以及插件目录里的适配器模块（`plugins/ncl_driver_<协议>.dll|.so`）：
+厂商协议默认编成**可动态装载的模块**（`-DNCLINK_BUILD_PLUGINS=OFF` 可以关掉，
+把它们放回内置注册表，做成一个自包含的可执行文件）。驱动层与 `nclink::core` 分开：
+设备端不带任何厂商驱动时可以直接不编译这一层（`-DNCLINK_BUILD_ADAPTERS=OFF`）。
 
 ## 驱动接口
 
@@ -124,7 +127,7 @@ ncl_json *stats = ncl_audit_stats();       /* 计数、直方图、最近 8 条�
 | 海德汉 LSV2 | `lsv2` | TCP 19000 | **区名是要读的东西**，偏移是地址 | ✅ 版本/状态/PLC 内存 |
 | 新代 SYNTEC RemoteCNC | `syntec` | TCP 8000 | **命令号就是区名**（名字或裸号）+ 偏移是 `dwCode`；也认 §10.12 的具名读数 | ✅ 只读（服务端无写端点） |
 | 凯恩帝 KND | `knd` | HTTP 80 | **模型项名就是区名**：`STATUS`、`/PART_COUNT`、`/AXIS@0/SCREW/POSITION` | ✅ 只读（现场只映射了 get_value） |
-| FANUC FOCAS | `focas` | TCP 8193 | **数据项名就是区名**（`ACTF`/`RDCOUNT`/`STATINFO`…或裸码 `0x24`），偏移是**应答块号**，`bit` 是块内字节偏移 | ✅ 只读 |
+| FANUC FOCAS | `focas` | TCP 8193 | **数据项名就是区名**（`ACTF`/`RDCOUNT`/`STATINFO`…或裸码 `0x24`），`offset` 是**应答块号**，名字里可带 `@<字节>` 取块内偏移 | ✅ 只读 + 模块（别名 `fanuc`） |
 
 其余协议按 `protocal/docs/README.md` 的优先级推进
 （第一批 MC/SLMP → FINS → S7 → MTConnect 已完成；第二批 MELDAS → 新代 → LSV2 → FOCAS
@@ -493,9 +496,26 @@ HTTP 客户端（`drivers/http/ncl_http_client.c`）与 MTConnect 驱动共用�
   "model": "conf/model.json",        // 可选；不给就按点位表生成
   "device": { "type": "MACHINE", "id": "01", "name": "数控机床" },
   "methods": [ { "path": "/PLC1/START", "operation": "startProgram" } ],
-  "sample": { "intervalMs": 1000, "uploadMs": 1000 }
+  "sample": { "intervalMs": 1000, "uploadMs": 1000 },
+  "mqtt": {
+    "url": "tcp://127.0.0.1:1883",
+    "username": "", "password": "",  // 留空 = 匿名
+    "clientId": "V2AABBCCDD1",       // 默认取设备 SN
+    "keepAliveSeconds": 60,
+    "automaticReconnect": true,
+    "reconnectDelayMs": 1000, "reconnectMaxDelayMs": 30000,
+    "offline": false                 // true = 不碰 broker
+  }
 }
 ```
+
+`mqtt` 一段给了，适配器就自己管这条会话：建客户端 → 连 broker → 订阅本 SN 的
+八个请求主题 → 采样上报与应答都走它。没给（或 `"offline": true`）＝ 离线：
+驱动照读、REST 照开，只是不上总线——**库层面的默认是离线**，所以测试和不带
+broker 的部署不受影响。**broker 没起来不致命**：`ncl_adapter_broker_poll()`
+由主机在它自己的循环里调用，1 s 起、上限 30 s 退避重试，连上后补订阅；断线
+交给库的自动重连（`automaticReconnect`），两处不会同时抢连。设备比 broker
+先上电是常态，现场靠的就是这条。
 
 守护进程为每个点位注册一条操作：`get_value#<路径>` 读、`set_value#<路径>` 写
 （只有 `writable` 的点位才注册），`call#<路径>` 走驱动自己的方法。核心的采样
@@ -504,26 +524,133 @@ HTTP 客户端（`drivers/http/ncl_http_client.c`）与 MTConnect 驱动共用�
 ```sh
 ./ncl_adapter -c conf/adapter.json            # MQTT + REST + 轮询
 ./ncl_adapter -c conf/adapter.json --once     # 读一遍全部点位就退出（自检）
+./ncl_adapter -c conf/adapter.json -b tcp://10.0.0.9:1883   # broker 从命令行给
+./ncl_adapter -c conf/adapter.json --offline  # 或 -b -：不接 broker
 ```
+
+`-b` 省略时读 `<root>/conf/mqtt.cfg`（设备端示例用的也是那一份）；`-b -` 与
+`--offline` 都是离线。`--once` / `--stats` 这类一次性自检固定走离线。优先顺序是
+**命令行 → 配置里的 `mqtt` → `<conf>/mqtt.cfg`**：配置文件自己写全了 broker，
+就不再去别的文件里找。
 
 自动生成的模型里，每个数据项的 `source` 就是点位路径的父级，因此
 **模型路径与配置里的点位路径严格一致**，配置和模型不会漂移。
 可运行的配置样例见 `tests/test_adapter.c` 里的 `kConfig`。
 
+## FANUC 适配器模块（`ncl_driver_focas`）
+
+FANUC 现场要的是"一条链路、一个进程、一个设备"：一边是机床（FOCAS/TCP 8193），
+一边是 NC-Link（MQTT + REST + 采样 + 审计）。程序就是宿主 `ncl_adapter`，FANUC 的
+适配器是它启动时装载的一个模块，点表写在配置里：
+
+```sh
+ncl_adapter -c conf/fanuc.json            # 一直跑，Ctrl+C 退出
+ncl_adapter -c conf/fanuc.json --once     # 轮询一遍全部点位就退出（自检）
+ncl_adapter -c conf/fanuc.json --plugins  # 看装载到了哪些模块，然后退出
+ncl_adapter -c conf/fanuc.json -b tcp://10.0.0.9:1883
+```
+
+`conf/fanuc.json` 里与 FANUC 有关的就三处：`plugins.load`（要装载哪些模块）、
+`drivers[0].parameters`（机床地址与超时）、`drivers[0].points`（点表）。
+现场手册是 [`FANUC-ADAPTER.md`](FANUC-ADAPTER.md)（打包时进包内 `README.md`）。
+
+出厂点表（`conf/fanuc.json` 里 19 条，模型路径都挂在 `/CNC` 下）：
+
+| 模型路径 | FOCAS 项 | 块 | 读法 | 采样 |
+|---|---|---|---|---|
+| `/CNC/STATUS@MANUAL` … `@OPERATOR` | `STATINFO@0/2/4/6/8/10/12/14/16` | 0 | 块 0 负载的九个 int16（`manual, run, edit, motion, mstb, emergency, alarm, spindle, oper`） | ✅ |
+| `/CNC/STATUS@DUMMY` | `STATINFO` | 1 | 标量（ODBST.dummy） | ✅ |
+| `/CNC/STATUS@AUTO` | `STATINFO` | 2 | 标量（ODBST.aut） | ✅ |
+| `/CNC/PART_COUNT` | `RDCOUNT` | 0 | int32 | ✅ |
+| `/CNC/PROGRAM@NAME` | `EXEPRGNAME2` | 0 | 字符串（`char name[36]` + 两个 long） | ✅ |
+| `/CNC/AXIS@k/POSITION` | `ACTF@4k` | 0 | float32，轴 k 的字节偏移 `4k` | ✅ |
+| `/CNC/AXIS@k/SPEED` | `ACTS@4k` | 0 | float32，同上 | ✅ |
+| `RDLIFE` `RDPARAM` `RDMACRO` `RDTOFS` `RDPROGDIR3` | 同名项 | 0 | 首个 int32，**字段布局待真机核对**（需自己加点位） | ❌ |
+
+前六类就是 01 册 §2.3 实证过的布局；最后一行**默认不写进点表**——按需读一个没
+核对过的字段可以，每秒往总线上报一个没人核对过的名字不行，要用就自己加一条，
+先别开采样（`"sample": false`）。
+
+四条现场经验写在这里：
+
+- **块内字节偏移写在 `area` 里**（`"STATINFO@12"`、`"ACTF@4"`）：通用地址模型的
+  `bit` 是**位**索引（`ncl_address_from_json()` 见到 `bit` 就把 dtype 变成 BIT），
+  所以 FOCAS 的"负载第几字节"只能由驱动从名字里取。名字里没有 `@`、或 `@` 后面
+  不是十进制数的（别的协议那种 `AXIS@0/SCREW`）按原样处理。
+- **项名以数字结尾要小心**：地址解析把尾部的数字串当**偏移**（`"D100"` 是区 `D`
+  偏移 100），所以 `{"area":"EXEPRGNAME2"}` 到手是区 `EXEPRGNAME` + 偏移 2。
+  驱动在项表里查不到时会把这个数字再拼回去，所以两种写法都能用；显式写
+  `"offset": 0` 或 `"EXEPRGNAME2@0"` 最不容易误读。
+- **机床掉线时一轮只等一次超时**：`ncl_adapter_poll_round()` 逐点读、遇到传输层错误
+  就结束这一轮（否则 N 个点位要各等一次连接超时）；`ncl_adapter_poll()` 相反，它把
+  每个点位都试一遍，是给自检和测试用的。
+- **轮询与采样会各读一遍机床**：采样通道发的是普通 Query（走 `get_value#…` 绑定，
+  这条链路上是"读一次机床并上报"），而模型里的值只由 `ncl_adapter_poll_round()`
+  刷新（REST 和读模型的客户端看的是它）。现场嫌报文多就把 `--interval` 调大。
+  /CNC 这张表 3 轴一轮约 19 次交换。
+
+现场部署：把 `bin/ncl_adapter.exe`、`plugins/ncl_driver_focas.dll`、`conf/fanuc.json`
+与 `conf/mqtt.cfg` 放一份（`plugins/` 必须跟 `bin/` 同级），`bin/sn.txt` 会自动生成
+或由 `-s` 指定，日志在 `<root>/log/out.txt`。
+
+**打包给现场**：`.\tools\make_fanuc_release.ps1` 出一个
+`dist\nclink-fanuc-adapter-<版本>-win-x64\`（+ zip + `.sha256`）：程序、模块、配置、
+站端手册（`adapters/FANUC-ADAPTER.md` → 包内 `README.md`）、`run-once.ps1` /
+`run.ps1` / `list-plugins.ps1`、`SHA256SUMS.txt`。加 `-WithProtocolDocs` 会把 01 册
+与本文档一起塞进 `docs/`（内部资料版）；默认不带，因为那两份是逆向证据与工程笔记，
+给机床厂看的包里不该有。
+
+## 适配器模块（plugins）
+
+厂商适配器默认不编进程序里，而是做成可动态装载的模块：**"这台机器会说哪种机床"
+是部署决定，不是编译决定**。
+
+```
+plugins/
+├── ncl_driver_focas.dll      ← 协议名 "focas"，别名 "fanuc"
+└── ncl_driver_modbus.dll     ← 协议名 "modbus_tcp"
+```
+
+- **命名约定**：`ncl_driver_<协议名>.dll`（POSIX 是 `libncl_driver_<协议名>.so`）。
+  配置里写协议名即可，装载器自己补文件名；直接写 `xxx.dll`、带路径的名字也认。
+- **配置**：`"plugins": {"load": ["focas"]}`（也接受数组形式 `"plugins": ["focas"]`，
+  或对象 `{"dir": "plugins", "load": [...], "auto": true}`：`auto` 表示先扫描
+  整个目录）。不写这一段＝只扫目录。
+- `-P/--plugin-dir <目录>`、`--plugin <名字|文件>`（可重复，最多 8 个）、
+  `--plugins`（列出已装载的模块与协议）；`-r/--root` 决定 `conf/ bin/ plugins/ log/`
+  的位置。
+- **ABI**（`include/nclink_adapter/ncl_module.h`）：模块只导出一个入口
+  `const ncl_adapter_module_desc *ncl_adapter_module(void)`，结构里带 ABI 代次、
+  协议名、版本、说明、驱动工厂 `create()` 与可选别名。**宿主负责登记**：模块不碰
+  自己的注册表副本（模块链的是静态核心，它有自己的一份）。加载失败会用平台自己
+  的原因报出来（`LoadLibrary` / `dlerror` 的原文），不会变成没头没脑的
+  "协议未注册"。
+- **两条纪律**：模块必须与程序用同一套头文件编译（装载时核对 ABI 代次，不一致会
+  拒绝并说原因）；`NCL_STATIC_MEM` 构建不要混用模块（两边各有一块内存池，谁也释放
+  不了对方的内存块）。
+- **关掉插件**：`-DNCLINK_BUILD_PLUGINS=OFF` 把驱动放回内置注册表，得到一个自包含
+  的可执行文件（没有 `plugins/` 也照样跑）。
+
 ## 测试
 
 ```sh
-.\build.ps1                      # Windows：配置 + 编译 + 39 个测试套件
+.\build.ps1                      # Windows：配置 + 编译 + 42 个测试套件
 sh build-linux.sh build-linux    # Linux：同样全跑一遍
 ```
 
-其中 25 套是核心库的（`tests/`），14 套是适配器层的（`adapters/tests/`）。
+其中 26 套是核心库的（`tests/`），16 套是适配器层的（`adapters/tests/`）。
 适配器层的测试三件套：`tests/test_driver.c`（驱动接口：注册表、地址解析、
 错误分级、mock 的读写/位寻址/批量/事件/原始报文）、
 `tests/test_driver_manager.c`（配置加载、点位表、前缀分派）、
 `tests/test_adapter.c`（配置 → 设备：生成模型、操作、读写、方法、轮询）。
 协议驱动的测试以两段为主：报文级的黄金样本（字节级 diff），以及对着 mock
 靶机的连接—读写—重连流程。
+`tests/test_adapter_plugin.c` 把 "宿主 + 模块 + 配置点表" 这条链整根跑一遍：
+装载 `plugins/ncl_driver_focas.dll` → 登记协议与别名 → 用配置里的 8 个点位生成
+设备 → 读假 FANUC 机床的应答块（含 `@<字节>` 取偏移、块索引、字符串按长度截断、
+项名尾巴数字拼回）→ 模型里的值；同时覆盖加载器的失败路径（外部 ABI 代次、
+没有入口的文件、文件不存在、协议重名）。核心库那边多了 `tests/test_library.c`
+（`ncl_library_*`：名字 → 文件名、装载夹具模块、取符号、错误文案）。
 
 小池回归（适配器层最容易踩的是"按协议上限要临时表"这类固定大块，见上一条）：
 

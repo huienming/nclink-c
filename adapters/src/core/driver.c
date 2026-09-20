@@ -643,7 +643,13 @@ void ncl_driver_register_builtin(void)
     (void)ncl_driver_register_protocol("lsv2", ncl_lsv2_create);
     (void)ncl_driver_register_protocol("syntec", ncl_syntec_create);
     (void)ncl_driver_register_protocol("knd", ncl_knd_create);
+#ifdef NCL_DRIVER_FOCAS_IS_PLUGIN
+    /* focas ships as a module (plugins/ncl_driver_focas.dll): the host loads it
+     * and registers the factory it hands over. Leaving it out here is what
+     * keeps "one protocol, one factory" true in that build. */
+#else
     (void)ncl_driver_register_protocol("focas", ncl_focas_create);
+#endif
 }
 
 ncl_driver *ncl_driver_create(const char *protocol)
@@ -676,4 +682,20 @@ size_t ncl_driver_protocol_count(void)
     count = g_protocol_count;
     ncl_mutex_unlock(lock);
     return count;
+}
+
+bool ncl_driver_protocol_known(const char *protocol)
+{
+    bool known;
+    ncl_mutex *lock;
+
+    if (ncl_str_is_blank(protocol)) {
+        return false;
+    }
+    ncl_driver_register_builtin();
+    lock = registry_lock();
+    ncl_mutex_lock(lock);
+    known = registry_find(protocol) != NCL_DRIVER_MAX_PROTOCOLS;
+    ncl_mutex_unlock(lock);
+    return known;
 }

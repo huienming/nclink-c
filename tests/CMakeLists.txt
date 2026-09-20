@@ -50,6 +50,19 @@ add_executable(ncl_test_topic test_topic.c)
 target_link_libraries(ncl_test_topic PRIVATE nclink_core)
 add_test(NAME topic COMMAND ncl_test_topic)
 
+# Dynamic library loading: the fixture module next to the test binary stands in
+# for a vendor adapter, so the loader is exercised against a real .dll/.so.
+add_library(ncl_test_module MODULE test_module.c)
+set_target_properties(ncl_test_module PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "ncl_test_module")
+add_executable(ncl_test_library test_library.c)
+target_link_libraries(ncl_test_library PRIVATE nclink_core)
+target_compile_definitions(ncl_test_library PRIVATE
+        NCL_TEST_MODULE_DIR="$<TARGET_FILE_DIR:ncl_test_module>")
+add_dependencies(ncl_test_library ncl_test_module)
+add_test(NAME library COMMAND ncl_test_library)
+
 add_executable(ncl_test_model test_model.c)
 target_link_libraries(ncl_test_model PRIVATE nclink_core)
 target_compile_definitions(ncl_test_model PRIVATE

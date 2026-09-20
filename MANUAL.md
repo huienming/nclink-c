@@ -57,12 +57,13 @@
 include/nclink/     公共头文件（-I 只需要指向 include）
 lib/<平台>/         预编译静态库（发布包：windows-x64-msvc / linux-x86_64-gcc，另有 -staticmem 静态内存版）
 examples/           两个可运行示例：设备端 / 客户端
+adapters/           厂商协议驱动 + 设备程序 ncl_adapter（宿主：一台 NC-Link 设备）+ 可装载的适配器模块（plugins/ncl_driver_<协议>.*）
 MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 
 src/<模块>/         实现，共 13 个模块目录        ← 以下仅源码仓库有
-tests/              25 个核心测试套件（含 mem 分配器不变量、mem_mc 蒙特卡洛、mem_mt 并发压测，
+tests/              26 个核心测试套件（含 mem 分配器不变量、mem_mc 蒙特卡洛、mem_mt 并发压测，
                     以及可选的 broker 互操作与 TLS 套件）+ 协议黄金样本；
-adapters/tests/     14 个适配器测试套件（驱动接口、配置分派、守护进程、各协议黄金报文与靶机）
+adapters/tests/     16 个适配器测试套件（驱动接口、配置分派、宿主/模块装载、各协议黄金报文与靶机）
 tools/              许可头检查、broker 互操作、文档生成与发布打包脚本
 build.ps1           Windows 一键：配置 + 编译 + ctest
 build-linux.sh      Linux 免 cmake 构建
@@ -94,13 +95,19 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### 2.3 Linux（已验证：gcc 13.4，39/39 测试通过）
+### 2.3 Linux（已验证：gcc 13.4）
 
-补充验证（gcc 13，容器内）：`./build-linux.sh` 全量 **39/39 通过**（25 个核心套件 +
-14 个适配器套件），`mem_mc` 的统计与 Windows/MSVC 逐位一致（确定性序列）。静态池
-版的尺寸边界见 4.9：64 KiB 池 **38/39**（只剩 `file` 一套，它读回比较时要 1 MiB
-连续块），1.5 MiB 池 **39/39**。真 broker 互操作（`tests/test_broker`）对
-**Mosquitto 2.1.2** 与 **EMQX 5.8.9** 各 **44 项检查全过**。
+补充验证（gcc 13，容器内）：3.4.0 时 `./build-linux.sh` 全量 **39/39 通过**（25 个核心
+套件 + 14 个适配器套件），`mem_mc` 的统计与 Windows/MSVC 逐位一致（确定性序列）。
+适配器进来后全量是 **42 个套件**（26 核心 + 16 适配器，多的是 `library`：
+`ncl_library_*` 的装载接口），3.4.0 的 `ncl_fanuc_collector` 已改为
+`ncl_adapter`（宿主）+ `plugins/ncl_driver_focas.dll`（模块）+ `conf/fanuc.json`
+（点表）这一组合方式：
+**默认堆版**已在 Windows/MSVC 与 MinGW/gcc 16.2 上复测 **42/42**，Linux 容器里跑同一条
+命令即可；静态池版的尺寸边界见 4.9（那组数字是 39 套口径，未随这套重跑）：64 KiB 池
+**38/39**（只剩 `file` 一套，它读回比较时要 1 MiB 连续块），1.5 MiB 池 **39/39**。
+真 broker 互操作（`tests/test_broker`）对 **Mosquitto 2.1.2** 与 **EMQX 5.8.9** 各
+**44 项检查全过**。
 
 内存门禁：`./tools/asan-linux.sh`（`--docker` 可在 Windows/macOS 上一键跑）用
 AddressSanitizer + LeakSanitizer 覆盖分配器、协议层与传输层；MSVC 的 ASan 不带泄漏
@@ -1275,8 +1282,9 @@ NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 NCL_MEM_REPORT=1 ./build-linux.sh buil
 `mem` / `mem_mc` / `mem_mt` 三套是分配器自己的压测，故意把池吃满（峰值 12~16 MiB、
 拒绝数千次），它们的数字不代表业务流量，故不入表。
 
-- 实测边界（Linux / gcc 13，全套 39 个套件）：**32 KiB → 37/39**（`file`、`ftp` 被拒）、
-  **64 KiB → 38/39**（只剩 `file`）、**1.5 MiB → 39/39**。设备端常见组合
+- 实测边界（Linux / gcc 13，**39 套口径**——适配器插件化之前的测量，本轮未重跑）：
+  **32 KiB → 37/39**（`file`、`ftp` 被拒）、**64 KiB → 38/39**（只剩 `file`）、
+  **1.5 MiB → 39/39**。设备端常见组合
   （model + message + client/server + mqtt + 各协议驱动）在 **32~64 KiB** 就够——
   上表里除 `file` 外最大的 `ftp` 也只到 38 KiB。
 - `file` 这一套为什么是大户：它用 `ncl_file_read_all()` 把 1 MiB 的文件**整块读进池里**
@@ -1415,8 +1423,8 @@ NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 NCL_MEM_REPORT=1 ./build-linux.sh buil
 
 设备端那几条主力路径都在 **29%～38%**，与设计预期一致；`ftp` 收益小是因为它几乎全是
 16 KiB 的大块（本来就不进尺寸类）。**池大小的边界也跟着变了**：不开尺寸类时 32 KiB
-池会多丢一套 `message`（开尺寸类后它能过），64 KiB 起 38/39（只剩 `file`，见 4.9——
-它在 64 KiB 池里连跑都跑不完，所以不进这张表）。
+池会多丢一套 `message`（开尺寸类后它能过），64 KiB 起 38/39（39 套口径，含 `file`
+之前的所有套件；`file` 在 64 KiB 池里连跑都跑不完，所以不进这张表——见 4.9）。
 
 度量口径提醒：`in_use_bytes` 只算载荷，**不含块头**，因此它天然偏向通用区；要比较
 "池到底省没省"，看 `footprint_bytes` / `peak_footprint_bytes`（载荷 + 每块 32 字节

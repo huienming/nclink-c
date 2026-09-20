@@ -53,12 +53,13 @@ nclink-c/
 ├── src/file/              # 文件属性/SHA-256/FTP 文件工具/临时目录交换
 ├── src/schema/            # JSON Schema 校验器 + 正则引擎
 ├── tests/                 # 单元测试 + 协议黄金样本
-└── adapters/              # 厂商协议适配器（驱动 + 采集守护进程）
-    ├── include/nclink_adapter/  # 驱动接口、地址模型、响应信封
-    ├── src/core/                # 与协议无关的驱动骨架
+└── adapters/              # 厂商协议适配器（宿主程序 + 可装载的适配器模块）
+    ├── include/nclink_adapter/  # 驱动接口、地址模型、响应信封、模块 ABI
+    ├── src/core/                # 与协议无关的驱动骨架 + 模块装载器
     ├── src/registry/            # 驱动配置加载 + 点位表 + 路径分派
-    ├── src/app/                 # ncl_adapter 守护进程（配置 → 设备）
-    ├── drivers/<协议>/          # 每协议一个目录：帧构造/解析 + 会话
+    ├── src/app/                 # 宿主主体（模型、操作注册、轮询、MQTT、采样）
+    ├── src/main.c               # ncl_adapter 可执行文件（配置 → 一台 NC-Link 设备）
+    ├── drivers/<协议>/          # 每协议一个目录：帧构造/解析 + 会话（默认编成模块）
     └── tests/                   # 报文字节级黄金样本 + mock 靶机
 ```
 
@@ -89,13 +90,15 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### Linux（已验证：gcc 13.4，39/39 测试通过）
+### Linux（已验证：gcc 13.4）
 
-容器内 gcc 13 复验：全量 **39/39**（25 个核心套件 + 14 个适配器套件），
-且蒙特卡洛统计与 MSVC 逐位一致；静态池的尺寸边界（32 KiB / 64 KiB / 1.5 MiB，
-以及尺寸类区的影响）见下面"构建选项"一节。对 Mosquitto 2.1.2 与 EMQX 5.8.9 的
-真 broker 互操作各 44 项检查全过。内存门禁：`./tools/asan-linux.sh --docker`
-（ASan + LeakSanitizer）。
+容器内 gcc 13 复验：3.4.0 时全量 **39/39**（25 个核心套件 + 14 个适配器套件），
+且蒙特卡洛统计与 MSVC 逐位一致。适配器进来后全量是 **42 个套件**（26 核心 + 16 适配器，
+核心那边多的是 `ncl_library_*` 的装载接口）：默认堆版已在 Windows/MSVC 与 MinGW/gcc 16.2
+上复测 **42/42**，容器里跑同一条命令即可；静态池的尺寸边界（32 KiB / 64 KiB / 1.5 MiB，
+以及尺寸类区的影响）见下面"构建选项"一节，那组数字是 39 套口径、未随这一套重跑。
+对 Mosquitto 2.1.2 与 EMQX 5.8.9 的真 broker 互操作各 44 项检查全过。内存门禁：
+`./tools/asan-linux.sh --docker`（ASan + LeakSanitizer）。
 
 没有 CMake 也能编（只需要 gcc/binutils 与 sh）：
 
@@ -199,8 +202,9 @@ docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh
 回退到堆；池用**最佳适配 + 释放时双向合并**，所以同一套流量反复跑不会留下永久空洞
 （`tests/test_mem.c` 有逐轮断言的用例，`tests/test_mem_mc.c` 是蒙特卡洛压测）。
 
-实测（Linux / gcc 13，改造后的 39 个测试套件）：**32 KiB 池 37/39**（`file`、`ftp`
-被拒）、**64 KiB 池 38/39**（只剩 `file`）、**1.5 MiB 池 39/39**。唯一的"大户"是
+实测（Linux / gcc 13，**39 套口径**——适配器插件化之前的测量，本轮未重跑）：
+**32 KiB 池 37/39**（`file`、`ftp` 被拒）、**64 KiB 池 38/39**（只剩 `file`）、
+**1.5 MiB 池 39/39**。唯一的"大户"是
 `file` 那一套自己——它用 `ncl_file_read_all()` 把 1 MiB 文件整块读进池里比对，而
 默认尺寸类区占池的 1/4，大块只能从通用区拿；关掉尺寸类区（`-MemClassBytes 0`）后
 1.125 MiB 就能全绿。设备端常见的 model + message + client/server + mqtt + 文件流式

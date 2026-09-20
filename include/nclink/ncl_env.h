@@ -29,6 +29,8 @@ const char *ncl_env_root(void);
 const char *ncl_env_conf_path(void);
 const char *ncl_env_run_path(void);
 const char *ncl_env_driver_path(void);
+/** <root>/plugins: where a device program picks its adapter modules up. */
+const char *ncl_env_plugin_path(void);
 const char *ncl_env_log_path(void);
 const char *ncl_env_log_file(void);
 const char *ncl_env_mqtt_cfg_file(void);

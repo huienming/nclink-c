@@ -36,6 +36,8 @@ option(NCLINK_WITH_TLS "Enable TLS (OpenSSL) for MQTT over ssl://" OFF)
 option(NCLINK_BUILD_CPP "Build the C++ wrapper sample/test (C++17)" ON)
 option(NCLINK_BUILD_ADAPTERS
         "Build the vendor protocol drivers and the adapter daemon" ON)
+option(NCLINK_BUILD_PLUGINS
+        "Build the protocol clients as loadable modules" ON)
 
 # Static memory: every allocation the library makes is served from one pool
 # inside a static array, so a build with this ON never calls malloc() and can
@@ -106,6 +108,10 @@ endif()
 find_package(Threads REQUIRED)
 target_link_libraries(nclink_core PUBLIC Threads::Threads)
 
+# ncl_library_* (the dynamic loader a device program picks its adapter modules
+# up with) uses dlopen on Linux/macOS. Windows needs nothing (kernel32).
+target_link_libraries(nclink_core PUBLIC ${CMAKE_DL_LIBS})
+
 if(NCLINK_WITH_ZLIB)
     find_package(ZLIB REQUIRED)
     target_compile_definitions(nclink_core PUBLIC NCL_HAVE_ZLIB=1)
@@ -151,6 +157,13 @@ endif()
 # --------------------------------------------------------------- examples ----
 if(NCLINK_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+# ---------------------------------------------------------------- clients ----
+# 协议客户端库（Modbus / MC / FINS / S7 / FOCAS ...）完全独立于适配器层：
+# 适配器引用它们去跟机床说话，它们自己不认识“适配器”。
+if(NCLINK_BUILD_ADAPTERS)
+    add_subdirectory(clients)
 endif()
 
 # --------------------------------------------------------------- adapters ----

@@ -175,6 +175,13 @@ cnc_freelibhndl(h);
 | `cnc_rdmacro` | 载荷长度 0 时驱动段错误（真机有真实长度，不会） |
 | `cnc_machine` | 探针的调用签名不对（少一个 axis 参数），rc=4，与协议无关 |
 
+> ⚠️ **"rc=0" 只说明形状能给 SDK 用，不等于字段布局已核**：本节坐实的只有四项——
+> `STATINFO` 的 ODBST 拆分、`ACTF`/`ACTS` 的 float 数组、`RDCOUNT` 计数器、
+> `EXEPRGNAME2` 的名字。`RDLIFE` / `RDPARAM` / `RDMACRO` / `RDTOFS` / `RDPROGDIR3`
+> 在假机床里回的是全零载荷，**哪几个字节是哪个字段还没核**（31 册 §1 #7）；
+> 我们的适配器（`adapters/README.md` 的 FANUC 一节）因此**默认不把它们写进点表**，
+> 要用就自己在 `conf/fanuc.json` 里加一条、并且先别开采样（`"sample": false`）。
+
 **数据是怎么切的（以 `cnc_statinfo` 为例，反汇编 `0x27a38`，110 行读完）**：
 
 ```

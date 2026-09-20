@@ -38,6 +38,23 @@ import sys
 import threading
 
 
+class LoggedConn:
+    """A connection that says how much it sent.
+
+    A reply of the wrong *length* is invisible in the request log and is the
+    usual reason a driver stalls or desyncs on the next frame, so every reply
+    prints its size and first bytes.
+    """
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def sendall(self, payload):
+        print("--- sent %d bytes: %s" % (len(payload), payload[:32].hex()),
+              flush=True)
+        self.conn.sendall(payload)
+
+
 def hexdump(data):
     out = []
     for i in range(0, len(data), 16):
@@ -246,16 +263,16 @@ def handle(conn, spec):
                     loop += 1
                 else:
                     chosen = filler
-                respond(conn, data, chosen)
+                respond(LoggedConn(conn), data, chosen)
                 print("--- replied", flush=True)
                 continue
             if reply.startswith("SEQ:"):
                 parts = reply[4:].split("|")
                 chosen = parts[step] if step < len(parts) else parts[-1]
                 step += 1
-                respond(conn, data, chosen)
+                respond(LoggedConn(conn), data, chosen)
             else:
-                respond(conn, data, reply)
+                respond(LoggedConn(conn), data, reply)
             print("--- replied", flush=True)
     except socket.timeout:
         print("--- idle, closing", flush=True)

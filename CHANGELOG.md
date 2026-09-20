@@ -5,6 +5,24 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 新增：动态库装载接口（`nclink/ncl_library.h`）
+
+核心库原来没有"装载一个动态库"这件事（MQTT 的 TLS 走编译期），适配器要做插件就得
+自己写 `LoadLibrary`/`dlopen`。现在这层收在核心里：
+
+- `ncl_library_open(path, &error)` / `ncl_library_symbol()` / `ncl_library_close()` /
+  `ncl_library_path()`；失败时给的是**平台自己的原因**（Windows 走
+  `FormatMessageA`，POSIX 走 `dlerror`），不是一句笼统的"打不开"。
+- `ncl_library_file_name(name)`：协议名 → 平台的文件名（`ncl_driver_focas.dll` /
+  `libncl_driver_focas.so`），已经是文件名或带路径的原样返回；
+  `ncl_library_name_is_file(name)` 判断这一点，三种后缀（`.dll`/`.so`/`.dylib`）
+  在任何平台上都算"这是个文件"——配置里写 `focas.dll` 就是那个文件，不会被改写成
+  `libfocas.dll.so`。
+- 链接需要 `CMAKE_DL_LIBS`（CMake 工程已带上；`build-linux.sh` 本来就带 `-lpthread`，
+  glibc 2.34 起 `dlopen` 也在 libc 里）。
+- 测试 `tests/test_library.c` + 夹具模块 `tests/test_module.c`（真实动态库，覆盖
+  装载、取符号、符号不存在、路径为空、库不存在、重复关闭）。
+
 ### 新增：适配器（`adapters/`）
 
 厂商协议接入层：核心库只认 NC-Link 主题与消息，适配器负责另一侧——按机床/
@@ -77,7 +95,8 @@ ncl_mem: refused 81920 bytes with 59248 free bytes (largest contiguous 44000)
 
 ### 文档：测试套件计数与静态池边界更正
 
-`adapters/` 进来以后全量是 **39 个测试套件**（25 个核心 + 14 个适配器），
+`adapters/` 进来以后全量是 **39 个测试套件**（25 个核心 + 14 个适配器；
+后来换成宿主+模块的写法 → 42 套，见上面"文档：测试套件计数更正"），
 README / MANUAL / RELEASE / `adapters/README` 里"25/25"与"38 个套件"的旧计数
 一并更正；手册 4.9 的峰值表按重测数据重写（含 14 个适配器套件）。静态池边界
 重测（Linux / gcc 13，39 套）：**32 KiB → 37/39**（`file`、`ftp` 被拒）、
@@ -86,6 +105,117 @@ README / MANUAL / RELEASE / `adapters/README` 里"25/25"与"38 个套件"的旧�
 尺寸类区占池的 1/4，大块只能从通用区拿，所以池要 ≥ 4/3 × 1.06 MiB。把尺寸类区
 关掉（`-MemClassBytes 0`）后实测 **1.125 MiB 池 39/39**；设备端照常用流式读写
 （16 KiB 一块）就不必为这一套开大池。
+
+### 新增：FANUC 适配器做成可装载的模块（插件化）
+
+FANUC 现场要的是"一个进程、一条链路、一个设备"，但 3.4.0 那版是把它做成了
+一个**单独的采集器**（`ncl_fanuc_collector`），点表**编译在程序里**，于是"换品牌"
+就得换程序。现在反过来：**程序就是宿主 `ncl_adapter`**（它本来就是一台完整的
+NC-Link 设备：MQTT + REST + 采样 + 审计），厂商适配器是启动时从目录里装载的模块，
+**点表写在配置文件里**：
+
+```sh
+ncl_adapter -c conf/fanuc.json            # 一直跑，Ctrl+C 退出
+ncl_adapter -c conf/fanuc.json --once     # 轮询一遍全部点位就退出（自检）
+ncl_adapter -c conf/fanuc.json --plugins  # 列出装载到的模块与协议，然后退出
+```
+
+- **模块 ABI**（`nclink_adapter/ncl_module.h`）：模块只导出一个入口
+  `const ncl_adapter_module_desc *ncl_adapter_module(void)`，结构里带 ABI 代次、
+  协议名、版本、说明、驱动工厂与可选别名。命名约定
+  `ncl_driver_<协议名>.dll`（POSIX：`libncl_driver_<协议名>.so`），配置里写
+  协议名即可，装载器自己补文件名；写文件名/带路径的名字也认。
+- **装载器**：扫描目录、按名字装载、去重、校验 ABI 代次与必需字段、把驱动工厂
+  登记到宿主自己的注册表（模块不碰自己的注册表副本——它链的是静态核心，有
+  自己的一份）、登记别名；失败时把平台自己的原因（`LoadLibrary`/`dlerror` 原文）
+  一起报出来，而不是变成没头没脑的"协议未注册"。
+- **宿主侧**：`-P/--plugin-dir <目录>`（默认 `<root>/plugins`）、
+  `--plugin <名字|文件>`（可重复，最多 8 个）、`--plugins`（列表）；配置里
+  `"plugins": {"load": ["focas"]}`（也接受数组或
+  `{"dir":…, "load":[…], "auto":true}`）。装载完成后再核对配置里用到的协议，
+  缺了就直接说"协议 "focas" 未注册：<目录> 里没有 ncl_driver_focas.dll"。
+- **点表进配置文件**（`conf/fanuc.json`）：19 条点位照 01 册 §2.3 实证的布局写全
+  （`STATINFO` 的 ODBST 拆分、`ACTF`/`ACTS` 每轴一个 float、`RDCOUNT`、
+  `EXEPRGNAME2`），改点表就是改 JSON。删掉了编译在程序里的点表
+  （`ncl_fanuc.h` + `src/app/fanuc.c`）与 `src/main_fanuc.c`：
+  `--axes`/`--all-items`/`--no-poll`/`--host` 一并变成"配置里改"。
+  `RDLIFE`/`RDPARAM`/`RDMACRO`/`RDTOFS`/`RDPROGDIR3` 的布局仍未核对，默认不写进
+  点表；要试就在 `points` 里加一条并先别开采样（`"sample": false`）。
+- **两个真机上会咬人的细节修掉了**：
+  - 地址解析把尾部的数字串当**偏移**（`"D100"` 是区 `D` 偏移 100），于是
+    `{"area":"EXEPRGNAME2"}` 到手是区 `EXEPRGNAME` + 偏移 2，`RDPROGDIR3`
+    同理。驱动在项表里查不到这个名字时会把那个数字再拼回去（项表说了算），
+    两种写法都能用。
+  - 字符串点位按**点声明长度**取值（`cnc_exeprgname2` 的应答是 `name[36]` 加两个
+    long，原来会把尾巴上的 8 字节也拼成字符串），并在第一个 `NUL` 处截断、
+    去掉尾部空格（FOCAS 的字符数组就是这个形状）。
+- **发布包**：`tools/make_fanuc_release.ps1` 改成打"组装好的程序"：
+  `dist\nclink-fanuc-adapter-<版本>-win-x64\`（+ zip + `.sha256`）——
+  `bin/ncl_adapter.exe`、`plugins/ncl_driver_focas.dll`、`conf/fanuc.json` 与
+  `conf/mqtt.cfg` 样例、站端手册（`adapters/FANUC-ADAPTER.md` → 包内
+  `README.md`）、`run-once.ps1` / `run.ps1` / `list-plugins.ps1`、`SHA256SUMS.txt`；
+  组装后跑一道"不许带本机构建路径"的检查。加 `-WithProtocolDocs` 才把 01 册与
+  `adapters/README.md` 放进 `docs/`（内部资料版）。
+- **静态内存构建不要混用模块**：模块自带一份核心库拷贝，两边各有一块内存池，
+  谁也释放不了对方的内存块；要用模块就用默认堆构建
+  （`-DNCLINK_BUILD_PLUGINS=OFF` 把驱动放回内置注册表也是选择）。
+
+### 文档：测试套件计数更正
+
+适配器层把 `fanuc_collector` 一套换成 `adapter_plugin` 一套（装载模块 → 登记协议
+与别名 → 用配置里的 8 个点位组装设备 → 读假 FANUC 机床的应答块 → 模型里的值，
+含加载器的失败路径），核心库那边多了 `library` 一套（`ncl_library_*`：名字 →
+文件名、装载夹具模块、取符号、错误文案），全量 **42 个测试套件**
+（26 个核心 + 16 个适配器）。README / MANUAL / RELEASE / `adapters/README` 里旧计数
+一并更正；**静态池的那几组边界仍是这一套之前的 39 套口径**（本轮只重跑了默认堆：
+Windows/MSVC **42/42**、MinGW/gcc 16.2 **42/42**），手册 4.9 已注明。
+
+`build-linux.sh` 也跟着改：目标从 `$OUT/bin/ncl_fanuc_collector` 换成插件
+`$OUT/plugins/libncl_driver_focas.so`（MinGW：`ncl_driver_focas.dll`），并把测试要的
+夹具模块（`ncl_test_module.*` 与两个被拒绝的模块）一起编出来。
+
+### 变更：适配器自己管 MQTT 会话（配置里的 `"mqtt"`）
+
+`ncl_adapter` 原来是"半个网关"：驱动、模型、采样、REST 都在，但 `ncl_server`
+建起来时没有 MQTT 客户端，`ncl_server_subscribe()` 必然返回
+`NCL_ERR_INVALID_ARG`，采样上报和应答都没地方发。现在适配器配置多了 `mqtt`
+一段，适配器**自己建客户端、连 broker、订阅本 SN 的请求主题**、并把采样与应答
+都走同一个会话：
+
+```json
+"mqtt": {
+  "url": "tcp://127.0.0.1:1883",
+  "username": "", "password": "",
+  "clientId": "V2AABBCCDD1",        // 默认取设备 SN
+  "keepAliveSeconds": 60,
+  "automaticReconnect": true,
+  "reconnectDelayMs": 1000, "reconnectMaxDelayMs": 30000,
+  "offline": false
+}
+```
+
+- 配置里没有 `mqtt`（或 `"offline": true`）＝ 离线：驱动照读、REST 照开，
+  只是不上总线。库层面保持离线默认，测试与不带 broker 的部署不受影响。
+- 两个主机程序都加了 broker 参数：`ncl_adapter -b <URL>` / `-b -`（`-` ＝ 离线，
+  省略 ＝ 读 `<conf>/mqtt.cfg`，也就是设备端示例用的那一份）。
+- **broker 没起来不是致命错误**：`ncl_adapter_broker_poll()` 在主机自己的循环里
+  以 1 s 起、上限 30 s 的退避重试，连上后自动补订阅；断线交给库的自动重连
+  （避免两处同时连）。移植时这条很重要——盒子比 broker 先上电是常态。
+
+### 修复：FOCAS 点位可以取块内字节偏移（`area` 的 `"@<字节>"`）
+
+`focas` 驱动一直把 `address->bit` 当"块内负载字节偏移"，但通用地址模型里有
+`if (bit >= 0) dtype = BIT` 这条硬规则（`test_driver.c` 明确断言"位索引胜出"），
+所以**从配置根本给不出字节偏移**：`STATINFO` 只能读负载第 0 字节，`ACTF` 只能读
+第一个轴。现在点位把偏移写进 `area`：
+
+```json
+{"path": "/CNC/STATUS@ALARM", "addr": {"area": "STATINFO@12", "dtype": "int16"}}
+{"path": "/CNC/AXIS@1/POSITION", "addr": {"area": "ACTF@4", "dtype": "float32"}}
+```
+
+名字里没有 `@`、或 `@` 后面不是十进制数的（别的协议那种 `AXIS@0/SCREW`）按原样
+处理，地址模型与 `bit` 的语义都没动。
 
 ## 3.4.0
 

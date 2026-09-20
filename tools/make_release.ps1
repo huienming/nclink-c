@@ -146,6 +146,7 @@ if ($WithSource) {
     Copy-Tree "src" "src" @("*.c", "*.h")
     Copy-Tree "tests" "tests" @("*.c", "*.h", "*.json", "*.txt")
     Copy-Tree "tools" "tools" @("*.py", "*.mjs", "*.ps1")
+    Copy-Tree "clients" "clients" @("*.c", "*.h", "*.md", "*.txt")
     Copy-Tree "adapters" "adapters" @("*.c", "*.h", "*.md", "*.txt")
 }
 
