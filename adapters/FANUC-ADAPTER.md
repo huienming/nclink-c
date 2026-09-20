@@ -185,9 +185,9 @@ cd D:\fanuc
 static const focas_point k_status     = {NULL, 0, NCL_DTYPE_STRING, 0, FOCAS_STATUS, false};
 static const focas_point k_part_count = {"RDCOUNT", 0, NCL_DTYPE_INT32, 1, FOCAS_DATA, true};
 
-NCL_DATAITEM_SAMPLED_ARG("/MACHINE/STATUS", focas_dispatch, &k_status)
-NCL_DATAITEM_SAMPLED_ARG("/MACHINE/PART_COUNT", focas_dispatch, &k_part_count)
-NCL_DATAITEM_SAMPLED_ARG("/MACHINE/CONTROLLER/PROGRAM", focas_dispatch, &k_program)
+NCL_DATAITEM_SAMPLED("/MACHINE/STATUS", focas_dispatch, &k_status)
+NCL_DATAITEM_SAMPLED("/MACHINE/PART_COUNT", focas_dispatch, &k_part_count)
+NCL_DATAITEM_SAMPLED("/MACHINE/CONTROLLER/PROGRAM", focas_dispatch, &k_program)
 /* 报警进采样通道，但帧还没抓到：先占着位置，值先给 null（自检算"待抓包"，不算失败） */
 NCL_DATAITEM_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalmmsg2）")
 ```
@@ -204,18 +204,26 @@ NCL_DATAITEM_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rd
 
 | 宏 | 归置 | 含义 |
 |---|---|---|
-| `NCL_DATAITEM_SAMPLED_ARG(路径, 函数, 地址)` | `dataItems` | 可读，**并进采样通道** |
-| `NCL_DATAITEM_ARG(路径, 函数, 地址)` | `dataItems` | 只按需读（Query），不参与周期采样 |
+| `NCL_DATAITEM(路径, 函数, 地址)` | `dataItems` | 可读（Query），只按需读 |
+| `NCL_DATAITEM_SAMPLED(路径, 函数, 地址)` | `dataItems` | 同上，**并进采样通道** |
+| `NCL_DATAITEM_RW(路径, 函数, 地址)` | `dataItems` | 可读可写 |
 | `NCL_DATAITEM_PENDING[_SAMPLED](路径, 理由)` | `dataItems` | **待抓包**：声明了、模型里有、问它有明确答复，但没有函数可调（见下） |
-| `NCL_CONFIG[_RW|_WRITE][_ARG|_NAMED](路径, 函数, …)` | `configs` | 配置型（参数、坐标系、刀具表…）：可查询/可修改，**没有 SAMPLED 形式**（册 3 表 1 注 b） |
-| `NCL_CONFIG_PENDING[_NAMED](路径[, 名字], 理由)` | `configs` | 同上，"待抓包"的配置型 |
-| `NCL_METHOD_NAMED(路径, 函数, 参数, 名字)` | 进不了模型 | 方法调用（不是数据对象） |
+| `NCL_CONFIG[_RW](路径, 函数, 地址)` | `configs` | 配置型（参数、坐标系、刀具表…）：可查询/可修改，**没有 SAMPLED 形式**（册 3 表 1 注 b） |
+| `NCL_CONFIG_PENDING(路径, 理由)` | `configs` | 同上，"待抓包"的配置型 |
+| `NCL_METHOD(路径, 函数, 数据)` | 进不了模型 | 方法调用（不是数据对象） |
+
+两族就这 9 个宏，没有 `_ARG` / `_NAMED` 后缀：**数据总是第三个参数**（没有就写 `NULL`），
+**点位名字从路径自动推**（去掉设备段、`@`→`_`、`/`→`.`）—— `/MACHINE/AXIS@X/POSITION@REAL`
+就是 `AXIS_X.POSITION_REAL`，所以路径尾段重名也不用管。方法调用地址是 `<工具>/<名字>`。
+
+**可写必然可读**：没有只写的数据对象 —— 审计要记写之前的旧值，读不回来的写也没法确认；
+声明成"只写"会被校验拒掉。设备真只收命令的（口令、复位脉冲、清零）写成 `NCL_METHOD`，
+值走方法调用的参数。
 
 `*_PENDING` 是给"架构上已经定下来、协议调用还没抓到帧"的点位用的：它在模型里看得见，
 客户端 `Query` 它会拿到一句明确的"还没抓包"（而不是"没有这个点位"），自检把它报成
-`<待抓包>` 而不是失败。抓包补上之后，把那一行换成普通的 `NCL_DATAITEM_*`（要进采样通道就用
-`*_SAMPLED_*`）即可，别的地方一行都不用改。路径尾段会重名的用它自己的
-`NCL_DATAITEM_PENDING_NAMED(路径, 名字, 理由)`。
+`<待抓包>` 而不是失败。抓包补上之后，把那一行换成普通的 `NCL_DATAITEM*`（要进采样通道就用
+`_SAMPLED`）即可，别的地方一行都不用改。
 
 `area` 的写法是 FOCAS 特有的（照抄即可）：
 
@@ -244,14 +252,14 @@ NCL_DATAITEM_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rd
 | `RDLIFE` `RDPARAM` `RDMACRO` `RDTOFS` `RDPROGDIR3` | 同名项 | 刀具寿命 / 参数 / 宏变量 / 刀补 / 程序目录（**字段布局待真机核对**） | ✘ |
 
 - 进采样通道的就是表里 ✔ 的四个：**设备状态、加工计件、程序名称、报警**。要上报别的
-  （某个轴的位置、速度），把那一行的 `NCL_DATAITEM_ARG(...)` 换成
-  `NCL_DATAITEM_SAMPLED_ARG(...)` 重编模块；反过来说不想上报就把 `*_SAMPLED_*` 换回普通宏。
+  （某个轴的位置、速度），把那一行的 `NCL_DATAITEM(...)` 换成
+  `NCL_DATAITEM_SAMPLED(...)` 重编模块；反过来说不想上报就把 `_SAMPLED` 去掉。
   通道本身开在模型里（`configs[0].ids`），周期在配置/模型文件里调，现场不用重编。
 - 最后一行**默认不写进点表**：按需读一个没核对过的字段可以，每秒往总线上报一个没人
-  核对过的名字不行。要试就照着加一条 `focas_point` + 一行 `NCL_DATAITEM_ARG`（只按需读，
-  别用 `NCL_DATAITEM_SAMPLED_ARG`）。
+  核对过的名字不行。要试就照着加一条 `focas_point` + 一行 `NCL_DATAITEM`（只按需读，
+  别用 `NCL_DATAITEM_SAMPLED`）。
 - 轴点位的**路径尾段会重名**（`POSITION@REAL`/`POSITION@CMD`/`SPEED` 各 5 条），所以它们用
-  `NCL_DATAITEM_NAMED`（待抓包的用 `NCL_DATAITEM_PENDING_NAMED`）显式给名字
+  `NCL_DATAITEM`（待抓包的用 `NCL_DATAITEM_PENDING`）显式给名字
   （`"AXIS_X.POSITION_REAL"`…），方法调用地址就是
   `focas/AXIS_X.POSITION_REAL`；名字在同一个 tool 里必须唯一，重复会被宿主在装载时拒绝。
 - **机床没有的轴**：读那一条会报错（驱动在应答载荷不足时返回 `NCL_ERR_RANGE` 或
@@ -268,9 +276,9 @@ NCL_DATAITEM_PENDING_SAMPLED("/MACHINE/WARNING", "报警：帧待抓包（cnc_rd
   一类"不常变"的数据 —— 参数 `PARAMETER`、坐标系 `COORDINATE`、刀具表 `TOOL`/`TOOLPARAM`、
   宏变量 `VARIABLE` —— 它们属于 `configs`，**按需读、不进采样通道**（册 3 表 1 注 b）。
   现在没有声明这些点：FOCAS 侧的帧（`cnc_rdparam`/`cnc_rdtofs`/`cnc_rdmacro`…）还没核对
-  字段布局，见 31 册 §1 #7；加的时候照 `NCL_DATAITEM_ARG` 写即可，宿主会自己把它们放进
+  字段布局，见 31 册 §1 #7；加的时候照 `NCL_DATAITEM` 写即可，宿主会自己把它们放进
   `configs`。
-- `/MACHINE/SESSION`、`/MACHINE/ITEMS` 两个方法由 `NCL_METHOD_NAMED` 声明（会话状态、数据项
+- `/MACHINE/SESSION`、`/MACHINE/ITEMS` 两个方法由 `NCL_METHOD` 声明（会话状态、数据项
   清单），它们只作为方法调用，不进取值模型、也不参与采样。
 
 ---
@@ -341,8 +349,8 @@ plugins\
   等）、伺服波形、Focas2 Logger。需要的话按 01 册继续扩驱动（改 `plugins` 里的模块）。
 - 采样与轮询**各读一遍机床**：轮询刷新模型里的值（读 13 个可读点位，6 个待抓包的跳过），
   采样通道按 `sample.intervalMs` 读通道里的 4 个点位（状态 / 计件 / 程序名 / 报警）并按
-  `uploadMs` 上报。嫌报文多就把 `--interval` 调大，把某个点位从 `NCL_DATAITEM_SAMPLED_ARG`
-  换成 `NCL_DATAITEM_ARG`（只按需读），或者把采样周期调大。
+  `uploadMs` 上报。嫌报文多就把 `--interval` 调大，把某个点位从 `NCL_DATAITEM_SAMPLED`
+  换成 `NCL_DATAITEM`（只按需读），或者把采样周期调大。
 
 ---
 

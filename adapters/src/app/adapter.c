@@ -142,23 +142,30 @@ static void audit_request(void *user, const char *tool,
     (void)user;
     (void)op; /* the path is what the request named */
     memset(&raw, 0, sizeof(raw));
-    if (has_frames) {
-        raw.request = (const uint8_t *)frames->request;
-        raw.request_len = frames->request_len;
-        raw.reply = (const uint8_t *)frames->reply;
-        raw.reply_len = frames->reply_len;
+    {
+        char name[256];
+
+        (void)ncl_tool_point_name(point, name, sizeof(name));
+        if (has_frames) {
+            raw.request = (const uint8_t *)frames->request;
+            raw.request_len = frames->request_len;
+            raw.reply = (const uint8_t *)frames->reply;
+            raw.reply_len = frames->reply_len;
+        }
+        ncl_audit_request(tool, point->path, name, code, micros,
+                          has_frames ? &raw : NULL);
     }
-    ncl_audit_request(tool, point->path, ncl_tool_point_name(point), code, micros,
-                      has_frames ? &raw : NULL);
 }
 
 static void audit_write(void *user, const char *tool,
                         const ncl_tool_point *point, const ncl_json *old_value,
                         const ncl_json *new_value, int code)
 {
+    char name[256];
+
     (void)user;
-    ncl_audit_write(tool, point->path, ncl_tool_point_name(point), old_value,
-                    new_value, code);
+    (void)ncl_tool_point_name(point, name, sizeof(name));
+    ncl_audit_write(tool, point->path, name, old_value, new_value, code);
 }
 
 static const ncl_tool_audit k_tool_audit = {
@@ -251,7 +258,7 @@ static ncl_err load_declared_points(ncl_adapter *adapter)
     for (i = 0; i < declared_count; i++) {
         const ncl_tool_point *declared = &adapter->decl->points[i];
 
-        if (declared->readable || declared->writable) {
+        if (declared->readable) { /* writable implies readable */
             adapter->point_count++;
         }
     }
@@ -267,7 +274,7 @@ static ncl_err load_declared_points(ncl_adapter *adapter)
         const ncl_tool_point *declared = &adapter->decl->points[i];
         adapter_point *point;
 
-        if (!declared->readable && !declared->writable) {
+        if (!declared->readable) {
             continue;
         }
         point = &adapter->points[at++];

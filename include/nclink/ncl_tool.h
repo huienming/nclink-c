@@ -17,10 +17,10 @@
  *                           ncl_json **result, char **reason) { ... }
  *
  *     NCL_TOOL_BEGIN("cnc", "FANUC 数控机床", 1000, 1000, open_box, close_box)
- *         NCL_DATAITEM_SAMPLED("/MACHINE/STATUS@RUN", status)
- *         NCL_DATAITEM_RW("/MACHINE/MODE", mode)
- *         NCL_CONFIG("/MACHINE/CONTROLLER/PARAMETER", parameter)
- *         NCL_METHOD("/MACHINE/RESET", reset)
+ *         NCL_DATAITEM_SAMPLED("/MACHINE/STATUS@RUN", status, NULL)
+ *         NCL_DATAITEM_RW("/MACHINE/MODE", mode, NULL)
+ *         NCL_CONFIG("/MACHINE/CONTROLLER/PARAMETER", parameter, NULL)
+ *         NCL_METHOD("/MACHINE/RESET", reset, NULL)
  *     NCL_TOOL_END()
  *
  * The declaration is data - which model path exists, what may be done with it,
@@ -41,7 +41,7 @@
  *   - the *request*'s parameters (a Query's params, a Set's "value", a method
  *     call's arguments) arrive as the handler's @p params, untouched;
  *   - the point's own data - the register address, the FOCAS item name, the
- *     entry of a mapping table - is written next to the path (NCL_DATAITEM_ARG and
+ *     entry of a mapping table - is written next to the path (NCL_DATAITEM and
  *     friends) and comes back as @p self->arg, so one dispatch function can
  *     serve a whole table of points and still know which entry it is on.
  *
@@ -50,6 +50,13 @@
  * be several of those at once - "read the mode, and write it" is one point
  * with both flags - and `sampled` asks the host to put the path in the sample
  * channel (which means the point has to be readable).
+ *
+ * A point that can be written is always readable as well: the validator
+ * refuses a write only point. The trail wants the old value of a write and
+ * a write nobody can read back is a write nobody can confirm. What a device
+ * only takes as a command - a password, a reset pulse, a clear - is not a
+ * data object at all: declare it with NCL_METHOD and let the call's params
+ * carry the value.
  *
  * Two deliberate omissions:
  *
@@ -132,16 +139,12 @@ struct ncl_tool_point {
     const char *path;
     bool        readable; /**< Query / get_value may read it  */
     bool        writable; /**< Set / set_value may write it   */
+    /* Writable implies readable: the validator refuses a write only point -
+     * the trail wants the old value, and what cannot be read back cannot be
+     * confirmed. A device that only takes a command gets a method instead. */
     bool        callable; /**< a Method call may reach it     */
     /** Ask the host to sample this path (the point has to be readable). */
     bool        sampled;
-    /**
-     * Optional name this point answers to inside its tool, for the case where
-     * the tail of its path is not usable: three axes declared under one tree
-     * all end in "/POSITION", and a method name has to be unique. NULL means
-     * "the tail of the path", which is what most points want.
-     */
-    const char *name;
     /** The function serving this point. Required. */
     ncl_point_fn fn;
     /**
@@ -211,164 +214,67 @@ typedef struct {
 /*
  * The declaration macros. One tool per file - that is the whole point - so the
  * generated names can be file scope and the author never sees them.
+/*
+ * 声明宏：一个点位一行，先说清是**哪一类数据对象**（册 3 §5.4/§5.5），再说它能怎么被访问：
  *
- *   NCL_DATAITEM(path, fn)        a data item, readable
- *   NCL_CONFIG(path, fn)          a config, readable
- *   NCL_DATAITEM_SAMPLED(...)     ... and in the sample channel
- *   NCL_DATAITEM_WRITE(...)       writable
- *   NCL_CONFIG_RW(...)            readable and writable
- *   NCL_METHOD(path, fn)          callable
+ *   NCL_DATAITEM(路径, 函数, 数据)   dataItem：物理量、感知量 —— 能进采样通道
+ *   NCL_CONFIG(路径, 函数, 数据)     config：参数、坐标系、刀具表、元信息 —— 不进采样通道
+ *   NCL_METHOD(路径, 函数, 数据)     方法：不是数据对象，只响应调用
  *
- * The *_ARG forms take one more argument, the point's own data:
+ * 三个基本形之外只剩四个变体：
  *
- *   NCL_DATAITEM_RW_ARG("/MACHINE/MODE", mode, &kModeEntry)
- *   NCL_CONFIG_ARG("/MACHINE/CONTROLLER/PARAMETER", read_param, &kParam)
+ *   _RW             可读可写（**可写必然可读**：只写的数据对象不许进模型 —— 审计
+ *                   要记下写之前的旧值，读不回来的写也没法确认；真只写的东西
+ *                   （口令、复位脉冲、清零）不是数据对象，写成 NCL_METHOD，
+ *                   值走方法调用的参数）
+ *   _SAMPLED        并进默认采样通道（**只有 dataItem 有** —— 册 3 表 1 注 b：
+ *                   配置中的数据对象不得作为采样数据源）
+ *   _PENDING        协议调用还没抓到帧：把"函数, 数据"换成"理由"，理由必填
+ *   _PENDING_SAMPLED  同上，并且占着采样通道（只有 dataItem 有）
  *
- * And the two PENDING forms declare a point whose protocol call is not
- * captured yet - readable in the model, but no function behind it (see below):
+ * 点位自己的数据（寄存器地址、协议项名、映射表条目）写在第三个参数上；点位没有自己的
+ * 数据就写 NULL。一个 dispatch 服务整张表时，靠 self->arg 分辨自己落在哪一行。
  *
+ *   NCL_DATAITEM_SAMPLED("/MACHINE/STATUS", dispatch, &k_status)
+ *   NCL_DATAITEM_RW("/MACHINE/MODE", dispatch, &k_mode)
+ *   NCL_CONFIG_RW("/MACHINE/CONTROLLER/PARAMETER", dispatch, &k_param)
  *   NCL_DATAITEM_PENDING("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalmmsg2）")
- *   NCL_DATAITEM_PENDING_SAMPLED("/MACHINE/WARNING", "...")
- *   NCL_DATAITEM_PENDING_NAMED(path, "AXIS_X.POSITION_CMD", "...")
- *   NCL_CONFIG_PENDING("/MACHINE/CONTROLLER/PARAMETER", "参数：帧待抓包")
+ *   NCL_METHOD("/MACHINE/RESET", dispatch, NULL)
  *
- * NCL_TOOL_END closes the table and defines ncl_tool_declaration(), which hands
- * the host a filled in ncl_tool_decl by value: a module stores that value in
- * its descriptor, a test passes &decl around. It is a value rather than a file
- * static object on purpose - in C a static initialiser needs constant
- * expressions, and a const qualified variable holding a function pointer is not
- * one (MSVC: "error C2099: 初始值设定项不是常量").
+ * **点位名字从路径自动推**：去掉设备段、'@' 换 '_'、'/' 换 '.' ——
+ * /MACHINE/AXIS@X/POSITION@REAL -> AXIS_X.POSITION_REAL；方法调用地址是
+ * "<工具名>/<点位名>"（focas/AXIS_X.POSITION_REAL），绑定键是 "<操作>#<路径>"。
+ * 路径唯一，推出来的名字就唯一，所以不用手写名字。
  */
-/*
- * 先说清是**哪一类数据对象**（册 3 §5.4/§5.5），再说它能怎么被访问：
- *
- *   NCL_DATAITEM*(路径, 函数)   dataItem：物理量、从设备感知的实时量，**能进采样通道**
- *   NCL_CONFIG*(路径, 函数)     config：参数、坐标系、刀具表、元信息这类不常变的数据
- *   NCL_METHOD*(路径, 函数)     方法：不是数据对象，只响应调用
- *
- * 两族的形状一一对应，只差一件事：**config 没有 *_SAMPLED** —— 册 3 表 1 注 b
- * 说"配置中的数据对象不得作为采样数据源"，少一个宏比运行期再报一句错更早拦住它。
- *
- *   NCL_DATAITEM(path, fn)              readable
- *   NCL_CONFIG_ARG(path, fn, arg)       readable, 带点位自己的数据
- *   NCL_DATAITEM_SAMPLED_ARG(...)       readable + 进默认采样通道
- *   NCL_DATAITEM_WRITE_ARG(...)         writable
- *   NCL_CONFIG_RW_NAMED(路径, 函数, 参数, 名字)   readable + writable，显式名字
- *
- * 路径尾段不能当方法名时（同名点位多）用 *_NAMED 显式给名字；协议调用还没抓到帧时用
- * *_PENDING[(_SAMPLED)](路径[, 名字], 理由) —— 理由必填，见下面那段注释。
- */
-#define NCL_DATAITEM(path_literal, fn)                                         \
-    { path_literal, true, false, false, false, NULL, fn, true, false, NULL, NULL },
+#define NCL_DATAITEM(path_literal, fn, arg)                                    \
+    { path_literal, true, false, false, false, fn, true, false, arg, NULL },
 
-#define NCL_DATAITEM_ARG(path_literal, fn, arg)                                \
-    { path_literal, true, false, false, false, NULL, fn, true, false, arg, NULL },
+#define NCL_DATAITEM_SAMPLED(path_literal, fn, arg)                            \
+    { path_literal, true, false, false, true, fn, true, false, arg, NULL },
 
-#define NCL_DATAITEM_SAMPLED(path_literal, fn)                                 \
-    { path_literal, true, false, false, true, NULL, fn, true, false, NULL, NULL },
+#define NCL_DATAITEM_RW(path_literal, fn, arg)                                 \
+    { path_literal, true, true, false, false, fn, true, false, arg, NULL },
 
-#define NCL_DATAITEM_SAMPLED_ARG(path_literal, fn, arg)                        \
-    { path_literal, true, false, false, true, NULL, fn, true, false, arg, NULL },
-
-#define NCL_DATAITEM_WRITE(path_literal, fn)                                   \
-    { path_literal, false, true, false, false, NULL, fn, true, false, NULL, NULL },
-
-#define NCL_DATAITEM_WRITE_ARG(path_literal, fn, arg)                          \
-    { path_literal, false, true, false, false, NULL, fn, true, false, arg, NULL },
-
-#define NCL_DATAITEM_RW(path_literal, fn)                                      \
-    { path_literal, true, true, false, false, NULL, fn, true, false, NULL, NULL },
-
-#define NCL_DATAITEM_RW_ARG(path_literal, fn, arg)                             \
-    { path_literal, true, true, false, false, NULL, fn, true, false, arg, NULL },
-
-#define NCL_DATAITEM_NAMED(path_literal, fn, arg, name_literal)                \
-    { path_literal, true, false, false, false, name_literal, fn, true, false, arg, NULL },
-
-#define NCL_DATAITEM_SAMPLED_NAMED(path_literal, fn, arg, name_literal)        \
-    { path_literal, true, false, false, true, name_literal, fn, true, false, arg, NULL },
-
-#define NCL_DATAITEM_WRITE_NAMED(path_literal, fn, arg, name_literal)          \
-    { path_literal, false, true, false, false, name_literal, fn, true, false, arg, NULL },
-
-#define NCL_DATAITEM_RW_NAMED(path_literal, fn, arg, name_literal)             \
-    { path_literal, true, true, false, false, name_literal, fn, true, false, arg, NULL },
-
-#define NCL_CONFIG(path_literal, fn)                                           \
-    { path_literal, true, false, false, false, NULL, fn, true, true, NULL, NULL },
-
-#define NCL_CONFIG_ARG(path_literal, fn, arg)                                  \
-    { path_literal, true, false, false, false, NULL, fn, true, true, arg, NULL },
-
-#define NCL_CONFIG_WRITE(path_literal, fn)                                     \
-    { path_literal, false, true, false, false, NULL, fn, true, true, NULL, NULL },
-
-#define NCL_CONFIG_WRITE_ARG(path_literal, fn, arg)                            \
-    { path_literal, false, true, false, false, NULL, fn, true, true, arg, NULL },
-
-#define NCL_CONFIG_RW(path_literal, fn)                                        \
-    { path_literal, true, true, false, false, NULL, fn, true, true, NULL, NULL },
-
-#define NCL_CONFIG_RW_ARG(path_literal, fn, arg)                               \
-    { path_literal, true, true, false, false, NULL, fn, true, true, arg, NULL },
-
-#define NCL_CONFIG_NAMED(path_literal, fn, arg, name_literal)                  \
-    { path_literal, true, false, false, false, name_literal, fn, true, true, arg, NULL },
-
-#define NCL_CONFIG_WRITE_NAMED(path_literal, fn, arg, name_literal)            \
-    { path_literal, false, true, false, false, name_literal, fn, true, true, arg, NULL },
-
-#define NCL_CONFIG_RW_NAMED(path_literal, fn, arg, name_literal)               \
-    { path_literal, true, true, false, false, name_literal, fn, true, true, arg, NULL },
-
-#define NCL_METHOD(path_literal, fn)                                           \
-    { path_literal, false, false, true, false, NULL, fn, true, false, NULL, NULL },
-
-#define NCL_METHOD_ARG(path_literal, fn, arg)                                  \
-    { path_literal, false, false, true, false, NULL, fn, true, false, arg, NULL },
-
-#define NCL_METHOD_NAMED(path_literal, fn, arg, name_literal)                  \
-    { path_literal, false, false, true, false, name_literal, fn, true, false, arg, NULL },
-
-
-/*
- * 声明一个"已经定好、但现在还读不了"的点位：协议调用还没抓到帧，或者这台机床还没见到。
- *
- * 它仍然是个正常点位 —— 模型里有它（现场看得见后面有什么），客户端问它会拿到一句明确
- * 的"还读不了"（而不是"没有这个点位"），只是从没有人调用它的函数（本来是 NULL）。
- * dataItem 的 *_PENDING_SAMPLED 会占住默认采样通道：通道里现在就有这一列，抓包补上之前
- * 取值是 null，自检把它算成"待抓包"而不是"失败"，所以现场不会误以为机床坏了；
- * config 的待抓包用 *_CONFIG_PENDING（它本来就不进通道）。
- *
- * 抓包补上之后，把这一行换成同一族的普通宏（要进通道就用 *_SAMPLED_*）即可，别的什么都
- * 不用改。summary 是必填的 —— 它写着"为什么现在读不了"。
- */
 #define NCL_DATAITEM_PENDING(path_literal, summary_literal)                    \
-    { path_literal, true, false, false, false, NULL, NULL, false, false, NULL, \
+    { path_literal, true, false, false, false, NULL, false, false, NULL,       \
       summary_literal },
 
-/** 同上，但已经占住默认采样通道（现在取值是 null，抓包后换宏即可）。 */
 #define NCL_DATAITEM_PENDING_SAMPLED(path_literal, summary_literal)            \
-    { path_literal, true, false, false, true, NULL, NULL, false, false, NULL,  \
+    { path_literal, true, false, false, true, NULL, false, false, NULL,        \
       summary_literal },
 
-/** 同上，但路径尾段不能当方法名用（同名点位多，例如五个轴的目标位置）。 */
-#define NCL_DATAITEM_PENDING_NAMED(path_literal, name_literal, summary_literal) \
-    { path_literal, true, false, false, false, name_literal, NULL, false, false, \
-      NULL, summary_literal },
+#define NCL_CONFIG(path_literal, fn, arg)                                      \
+    { path_literal, true, false, false, false, fn, true, true, arg, NULL },
 
-#define NCL_DATAITEM_PENDING_SAMPLED_NAMED(path_literal, name_literal,         \
-                                           summary_literal)                    \
-    { path_literal, true, false, false, true, name_literal, NULL, false, false, \
-      NULL, summary_literal },
+#define NCL_CONFIG_RW(path_literal, fn, arg)                                   \
+    { path_literal, true, true, false, false, fn, true, true, arg, NULL },
 
 #define NCL_CONFIG_PENDING(path_literal, summary_literal)                      \
-    { path_literal, true, false, false, false, NULL, NULL, false, true, NULL,  \
+    { path_literal, true, false, false, false, NULL, false, true, NULL,        \
       summary_literal },
 
-#define NCL_CONFIG_PENDING_NAMED(path_literal, name_literal, summary_literal)  \
-    { path_literal, true, false, false, false, name_literal, NULL, false, true, \
-      NULL, summary_literal },
+#define NCL_METHOD(path_literal, fn, arg)                                      \
+    { path_literal, false, false, true, false, fn, true, false, arg, NULL },
 
 #define NCL_TOOL_BEGIN(name_literal, description_literal, sample_ms_value,     \
                        upload_ms_value, open_fn, close_fn)                     \
@@ -471,8 +377,19 @@ typedef struct {
                   int code);
 } ncl_tool_audit;
 
-/** The name a point answers to inside its tool: the tail of its path. */
-const char *ncl_tool_point_name(const ncl_tool_point *point);
+/**
+ * The name a point answers to inside its tool, written into @p buf: the path
+ * with its device segment dropped and '@' / '/' turned into '_' / '.'
+ *
+ *   "/MACHINE/STATUS@RUN"            -> "STATUS_RUN"
+ *   "/MACHINE/AXIS@X/POSITION@REAL"  -> "AXIS_X.POSITION_REAL"
+ *
+ * A method call is addressed "<tool>/<name>"; the value operations add
+ * ".read"/".write" to it. Paths are unique, so the names are too.
+ *
+ * @return @p buf ("" when there is nothing to name).
+ */
+char *ncl_tool_point_name(const ncl_tool_point *point, char *buf, size_t cap);
 
 /**
  * Check a declaration before anything is built from it: a name, at least one

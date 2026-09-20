@@ -5,6 +5,33 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 变更：禁"只写" —— `writable` 蕴含 `readable`，宏 11 → 9
+
+数据对象只有两种访问能力（可读、可写），而且**可写必然可读**：
+
+- 审计（§6）要记下写之前的旧值，宿主靠点位自己的 GET_VALUE 去取 —— 只写点位拿不到，
+  日志只能空着；
+- 读完写不回来就没法确认（客户端写完不知道生效没有），自检（`--once`）更没法碰它；
+- 模型文档里"在 `dataItems`/`configs` 里"本身就是在说"能查询"（每个数据项只标一个
+  `settable`），只写点位会让模型和实际能力对不上；而且它今天会把
+  `ncl_adapter_poll_round()` 的整轮打断（读失败一律算 tier 1 → 剩余点位全记失败后
+  break）。
+
+所以校验直接拒掉 `writable && !readable`（`the point %s can be written but not read`）。
+设备真只收命令的东西 —— 口令、复位脉冲、清零 —— 不是数据对象，用 `NCL_METHOD` 声明，
+值走方法调用的参数。
+
+- `include/nclink/ncl_tool.h`：删 `NCL_DATAITEM_WRITE` / `NCL_CONFIG_WRITE`（9 个宏），
+  字段注释与宏表写明这条规则；顶部示例补上第三个参数（原来还是两参数写法）；
+- `src/core/tool.c`：`ncl_tool_validate()` 加这条校验（排在"sampled 必须可读"之后）；
+  `shim_read_old_value()` 不再判 `readable` —— 可写必然可读，旧值总在；
+- `adapters/src/app/adapter.c`、`adapters/src/main.c`：点位表与方法计数只看 `readable`
+  （可写必然可读，原来那句 `readable || writable` 说的是同一件事）；
+- 文档：`adapters/README.md`、`FANUC-ADAPTER.md` §5 宏表、32 册 §5、`MANUAL.md`。
+
+改动面：上面这些文件 + `tests/test_tool.c`（新增"可写必然可读"的校验用例）。
+验证：`build.ps1` 41/41。
+
 ### 变更：声明宏分成两族 —— `NCL_DATAITEM_*` 与 `NCL_CONFIG_*`
 
 数据对象有两种，声明里就得写清是哪一种，宏名替你说这句话（`NCL_POINT_*` 一族随之退场）：
@@ -27,6 +54,28 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 （`/MACHINE/NAME` 现在是 `NCL_CONFIG`，`/MACHINE/CONTROLLER/PARAMETER` 也是）、
 文档（`adapters/README.md`、`FANUC-ADAPTER.md` §5 宏表、32 册 §5.1.1、`MANUAL.md` 4.3）。
 验证：`build.ps1` 41/41；`--model` 输出里 dataItems / configs 各自的成员与预期一致。
+
+### 变更：宏精简到 11 个 —— 名字从路径推，数据总是第三个参数
+
+上一条那套宏有 30 个（kind × 读写 × `_ARG` × `_NAMED` × `_PENDING` 的组合爆炸）。
+砍掉两根轴之后只剩 11 个：
+
+- **`_NAMED` 整族退场**：点位名字**从路径自动推**（去掉设备段、`@`→`_`、`/`→`.`）——
+  `/MACHINE/AXIS@X/POSITION@REAL` → `AXIS_X.POSITION_REAL`，正是原来手写的那一串；
+  路径唯一名字就唯一，所以 `ncl_tool_point` 的 `name` 字段整个删掉，
+  `ncl_tool_point_name()` 改成写进调用方的缓冲区。方法调用地址不变
+  （`focas/AXIS_X.POSITION_REAL`、`focas/SESSION`）。
+- **`_ARG` 整族退场**：数据就是第三个参数，点位没有自己的数据就写 `NULL`
+  （`NCL_DATAITEM(path, fn, arg)` / `NCL_CONFIG(path, fn, arg)` / `NCL_METHOD(path, fn, arg)`）。
+- 剩下只有 `_WRITE` / `_RW` / `_SAMPLED`（仅 dataItem）/ `_PENDING[_SAMPLED]` 这几个变体。
+
+这一步之后剩 11 个宏：`NCL_DATAITEM[_SAMPLED|_WRITE|_RW]`、`NCL_DATAITEM_PENDING[_SAMPLED]`、
+`NCL_CONFIG[_WRITE|_RW]`、`NCL_CONFIG_PENDING`、`NCL_METHOD`。
+
+改动面：`include/nclink/ncl_tool.h`、`src/core/tool.c`（名字推导 + 校验）、
+`adapters/plugins/focas.c`（表短了一大截）、适配器夹具与测试、`adapters/README.md`、
+`FANUC-ADAPTER.md` §5。验证：`build.ps1` 41/41；FANUC `--once` = 19 个点位
+（13 可读 + 6 待抓包）、0 失败。
 
 ### 变更：数据对象分两种 —— `dataItems`（感知量）与 `configs`（配置型数据）
 

@@ -44,36 +44,39 @@ static ncl_err dispatch(void *ctx, const ncl_tool_point *self, ncl_operation op,
                         const ncl_json *params, ncl_json **result, char **reason) { }
 
 NCL_TOOL_BEGIN("mybox", "某品牌机床（只读）", 1000, 1000, open_box, close_box)
-    NCL_DATAITEM_SAMPLED_ARG("/BOX/RUN", dispatch, &k_run)    /* 感知量：可读 + 进采样通道 */
-    NCL_DATAITEM_ARG("/BOX/TEMPERATURE", dispatch, &k_temp)   /* 感知量：只按需读 */
-    NCL_DATAITEM_RW_ARG("/BOX/MODE", dispatch, &k_mode)       /* 感知量：可读可写 */
-    NCL_CONFIG_ARG("/BOX/CONTROLLER/PARAMETER", dispatch, &k_param)  /* 配置型：只按需读 */
-    NCL_METHOD_NAMED("/BOX/RESET", dispatch, &k_reset, "RESET")
+    NCL_DATAITEM_SAMPLED("/BOX/RUN", dispatch, &k_run)    /* 感知量：可读 + 进采样通道 */
+    NCL_DATAITEM("/BOX/TEMPERATURE", dispatch, &k_temp)   /* 感知量：只按需读 */
+    NCL_DATAITEM_RW("/BOX/MODE", dispatch, &k_mode)       /* 感知量：可读可写 */
+    NCL_CONFIG("/BOX/CONTROLLER/PARAMETER", dispatch, &k_param)  /* 配置型：只按需读 */
+    NCL_METHOD("/BOX/RESET", dispatch, &k_reset)
 NCL_TOOL_END()
 
 NCL_TOOL_MODULE("1.0.0", "某品牌机床适配器")
 ```
 
-**一个点位先说清是哪一类数据对象**（册 3 §5.4/§5.5）：`NCL_DATAITEM_*` 是物理量/感知量
+**一个点位先说清是哪一类数据对象**（册 3 §5.4/§5.5）：`NCL_DATAITEM*` 是物理量/感知量
 （进模型的 `dataItems`，**能进采样通道**），`NCL_CONFIG_*` 是参数、坐标系、刀具表这类
 不常变的数据（进模型的 `configs`，可查询可修改，但**没有 SAMPLED 形式** —— 册 3 表 1
-注 b：配置中的数据对象不得作为采样数据源）；`NCL_METHOD_*` 不是数据对象，只响应调用。
-两族的形状一一对应（`_ARG` / `_WRITE` / `_RW` / `_NAMED` / `_PENDING`），名字里的
-`DATAITEM`/`CONFIG` 就是模型里的两个数组。
+注 b：配置中的数据对象不得作为采样数据源）；`NCL_METHOD` 不是数据对象，只响应调用。
+就这 9 个宏，两族形状一一对应（`_RW` / `_SAMPLED` / `_PENDING`），名字里的
+`DATAITEM`/`CONFIG` 就是模型里的两个数组。**数据总是第三个参数**（没有就写 `NULL`），
+不需要 `_ARG` 后缀；点位名字**从路径自动推**（去设备段、`@`→`_`、`/`→`.`），
+不需要 `_NAMED`。**可写必然可读**：没有"只写"的数据对象（审计要记写之前的旧值，
+读不回来的写也没法确认），只写的东西写成 `NCL_METHOD`，值走方法调用的参数。
 
 宿主拿这份声明生成模型、OpenAPI schema 与绑定：`path` 就是模型路径，采样通道取
-`NCL_TOOL_BEGIN` 的周期，方法调用地址是 `<tool 名>/<点位名>`（点位名默认取路径尾段；
-同一条路径下重名时用 `*_NAMED` 宏显式给名字）。`sampled` 只要求点位可读，周期给 0
+`NCL_TOOL_BEGIN` 的周期，方法调用地址是 `<tool 名>/<点位名>`（点位名从路径推，见上）。
+`sampled` 只要求点位可读，周期给 0
 就表示"这个声明不生成采样通道"（现场仍可在模型文件里加、调）。
 
-**哪些点位进默认采样通道，是声明说了算**：`NCL_DATAITEM_SAMPLED_*` 的点位进通道，
-`NCL_DATAITEM_*`（不带 SAMPLED）只按需读。现场口径常常是"只报状态、计件、程序名、报警"
-这类少量点位，那就只把那几行写成 `*_SAMPLED_*`，别的保持按需读 —— 改一行、重编模块即可。
+**哪些点位进默认采样通道，是声明说了算**：`NCL_DATAITEM_SAMPLED` 的点位进通道，
+`NCL_DATAITEM`（不带 SAMPLED）只按需读。现场口径常常是"只报状态、计件、程序名、报警"
+这类少量点位，那就只把那几行写成 `_SAMPLED`，别的保持按需读 —— 改一行、重编模块即可。
 
 **已经定下来、但协议调用还没抓到帧的点位**用 `NCL_DATAITEM_PENDING[_SAMPLED](路径, 理由)`
-声明（重名的用 `NCL_DATAITEM_PENDING_NAMED(路径, 名字, 理由)`）：它在模型里看得见，
+声明（配置型的就是 `NCL_CONFIG_PENDING`）：它在模型里看得见，
 客户端 `Query` 它会拿到"还读不了 + 理由"（不是"没有这个点位"），宿主在自检里把它报成
-`<待抓包>` 而不是失败、在轮询里直接跳过。`*_PENDING_SAMPLED` 会占住采样通道的位置
+`<待抓包>` 而不是失败、在轮询里直接跳过。`NCL_DATAITEM_PENDING_SAMPLED` 会占住采样通道的位置
 （抓包补上之前那一列是 `null`），所以现场一开始就看得见"报警这一列将来会有"。
 抓包补上以后，把那一行换成普通宏、别的什么都不用改。
 
@@ -168,7 +171,8 @@ ncl_json *stats = ncl_audit_stats();       /* 计数、直方图、最近 8 条�
   交出来（Modbus/MC/FINS/S7/MELDAS/LSV2/SYNTEC 都实现；mock 与 MTConnect
   没有帧，日志里就没有字节）。只显示前 96 字节，超出打 `...`。
 - 「写能力必须显式开启」（§7）由声明把关：点位不声明 `writable` 就不注册
-  `set_value` 操作（`ncl_tool_register()` 只注册声明过的操作）✓
+  `set_value` 操作（`ncl_tool_register()` 只注册声明过的操作）；反过来，声明了
+  `writable` 就一定可读（校验拒掉只写点位）✓
 - **声明式适配器的账由宿主记**：`ncl_tool_register()` 收一个 `ncl_tool_audit *`，
   core 里的 shim 在每次点位调用前后把「路径、操作、结果、耗时」交给它，写操作还会先
   经点位读一次旧值。模块唯一要做的是**可选**地交出原始帧：`NCL_TOOL_END_WITH_RAW(fn)`
@@ -563,8 +567,8 @@ HTTP 客户端（`drivers/http/ncl_http_client.c`）与 MTConnect 驱动共用�
 - 点位路径可写绝对路径（`/PLC1/STATUS`）或相对路径（`STATUS`），内部统一
   按「链路前缀之后的相对路径」存表；查找时先取最长前缀，再回退到 `"/"`
   那条兜底链路（`/PLC10` 不会被 `/PLC1` 抢走）。
-- `writable` 默认 **false**（§7：默认只读，写能力要显式开）；`sample`
-  默认 true，设 false 可把高频/大流量点位排除在采样通道之外。
+- `writable` 默认 **false**（§7：默认只读，写能力要显式开）；点位总可读，所以可写必然
+  可读。`sample` 默认 true，设 false 可把高频/大流量点位排除在采样通道之外。
 
 适配器的配置：
 
@@ -673,11 +677,11 @@ ncl_adapter -c conf/fanuc.json -b tcp://10.0.0.9:1883
 
 带 ✅ 的就是 01 册 §2.3 实证过的布局；最后一行**默认不写进点表**——按需读一个没
 核对过的字段可以，每秒往总线上报一个没人核对过的名字不行，要用就自己加一条，
-先别开采样（用 `NCL_DATAITEM_ARG` 而不是 `NCL_DATAITEM_SAMPLED_*`）。
+先别开采样（用 `NCL_DATAITEM` 而不是 `NCL_DATAITEM_SAMPLED`）。
 
 **默认采样通道只有四样**（现场口径）：设备状态、加工计件、程序名称、报警。位置、速度
-一律按需读（`NCL_DATAITEM_ARG`）；要上报就把那一行换成 `NCL_DATAITEM_SAMPLED_ARG`，
-反过来不想上报就把 `*_SAMPLED_*` 换回普通宏。
+一律按需读（`NCL_DATAITEM`）；要上报就把那一行换成 `NCL_DATAITEM_SAMPLED`，
+反过来不想上报就把 `_SAMPLED` 去掉。
 
 **FANUC 自己的 ODBST 位域不进模型**（`STATINFO` 里那种"手动/自动/编辑/移动/急停"位）：
 数据字典里没有这些名字，所以不进模型、也不上报 —— 派生的量用字典里的名字表达

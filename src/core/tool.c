@@ -223,20 +223,33 @@ static bool tool_is_config_type(const char *type)
     return false;
 }
 
-const char *ncl_tool_point_name(const ncl_tool_point *point)
+char *ncl_tool_point_name(const ncl_tool_point *point, char *buf, size_t cap)
 {
-    const char *slash;
+    const char *p;
+    size_t used = 0;
 
+    if (buf == NULL || cap == 0) {
+        return buf;
+    }
+    buf[0] = '\0';
     if (point == NULL || point->path == NULL) {
-        return "";
+        return buf;
     }
-    /* A point may name itself when the tail of its path is ambiguous - three
-     * axes declared under one tree all end in "/POSITION". */
-    if (point->name != NULL && point->name[0] != '\0') {
-        return point->name;
+    /* 名字 = 路径去掉设备段，'@' 换 '_'、'/' 换 '.'：
+     *   /MACHINE/STATUS             -> STATUS
+     *   /MACHINE/AXIS@X/POSITION@REAL -> AXIS_X.POSITION_REAL
+     * 路径唯一，名字就唯一，所以不用手写名字。 */
+    p = point->path;
+    if (p[0] == '/') {
+        const char *slash = strchr(p + 1, '/');
+
+        p = slash != NULL ? slash + 1 : p + 1;
     }
-    slash = strrchr(point->path, '/');
-    return slash != NULL ? slash + 1 : point->path;
+    for (; *p != '\0' && used + 1 < cap; p++) {
+        buf[used++] = *p == '@' ? '_' : (*p == '/' ? '.' : *p);
+    }
+    buf[used] = '\0';
+    return buf;
 }
 
 /** True when @p point declares @p op. */
@@ -263,7 +276,9 @@ static bool point_declares(const ncl_tool_point *point, ncl_operation op)
 static void point_method_name(const ncl_tool_point *point, ncl_operation op,
                               char *buffer, size_t size)
 {
-    const char *name = ncl_tool_point_name(point);
+    char name[256];
+
+    (void)ncl_tool_point_name(point, name, sizeof(name));
 
     switch (op) {
     case NCL_OP_GET_VALUE:
@@ -304,10 +319,12 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
     }
     for (i = 0; i < decl->point_count; i++) {
         const ncl_tool_point *point = &decl->points[i];
-        const char *name = ncl_tool_point_name(point);
+        char name[256];
         size_t j;
         size_t op;
         size_t declared = 0;
+
+        (void)ncl_tool_point_name(point, name, sizeof(name));
 
         if (ncl_str_is_blank(point->path)) {
             err_append1(err, "a point of the tool %s has no path", decl->name);
@@ -331,12 +348,25 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
             err_append1(err, "the point %s has no function", point->path);
             return NCL_ERR_INVALID_ARG;
         }
-        if (name[0] == '\0') {
+        if (ncl_str_is_blank(point->path) == false &&
+            point->path[strlen(point->path) - 1] == '/') {
             err_append1(err, "the point path %s ends with '/'", point->path);
             return NCL_ERR_INVALID_ARG;
         }
         if (point->sampled && !point->readable) {
             err_append1(err, "the point %s is sampled but not readable",
+                        point->path);
+            return NCL_ERR_INVALID_ARG;
+        }
+        if (point->writable && !point->readable) {
+            /* A write only point is not a thing here: the trail records the
+             * value a write replaces, and what cannot be read back cannot
+             * be confirmed. A device that only takes commands - a password,
+             * a reset pulse - gets a method instead. */
+            err_append1(err,
+                        "the point %s can be written but not read"
+                        "（只写点位不许进模型：真只写的东西写成 NCL_METHOD，"
+                        "值走方法调用的参数）",
                         point->path);
             return NCL_ERR_INVALID_ARG;
         }
@@ -368,12 +398,14 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
         }
         for (j = 0; j < i; j++) {
             const ncl_tool_point *other = &decl->points[j];
+            char other_name[256];
             size_t other_op;
 
             if (ncl_str_is_blank(other->path) || other->path[0] != '/') {
                 continue;
             }
-            if (strcmp(ncl_tool_point_name(other), name) != 0) {
+            (void)ncl_tool_point_name(other, other_name, sizeof(other_name));
+            if (strcmp(other_name, name) != 0) {
                 continue;
             }
             /* Same name: each (path, operation) pair may be declared once. */
@@ -960,12 +992,12 @@ static void shim_report(const ncl_tool_shim *shim, ncl_operation op, ncl_err cod
 
 /**
  * The value a write is about to replace, for the trail (§6 asks for it). A
- * point that cannot be read just leaves it NULL, which the trail shows as "-".
+ * writable point is always readable - the validator refuses a write only
+ * point - so a write always has an old value to show.
  */
 static void shim_read_old_value(const ncl_tool_shim *shim, ncl_json **old_value)
 {
-    if (shim->audit == NULL || shim->audit->write == NULL ||
-        !shim->point->readable) {
+    if (shim->audit == NULL || shim->audit->write == NULL) {
         return;
     }
     (void)shim->point->fn(shim->ctx, shim->point, NCL_OP_GET_VALUE, NULL,

@@ -121,11 +121,11 @@ static ncl_err fixture_dispatch(void *ctx, const ncl_tool_point *self,
 
 NCL_TOOL_BEGIN("cnc", "FANUC 数控机床（夹具）", 1000, 2000,
                fixture_open, fixture_close)
-    NCL_DATAITEM_SAMPLED_ARG("/MACHINE/STATUS@RUN", fixture_dispatch, &k_run_item)
+    NCL_DATAITEM_SAMPLED("/MACHINE/STATUS@RUN", fixture_dispatch, &k_run_item)
     /* 表 6 的 NAME 属"不常变"的元信息：进模型的 configs，不进采样通道。 */
-    NCL_CONFIG("/MACHINE/NAME", fixture_dispatch)
-    NCL_DATAITEM_RW("/MACHINE/MODE", fixture_dispatch)
-    NCL_METHOD("/MACHINE/RESET", fixture_dispatch)
+    NCL_CONFIG("/MACHINE/NAME", fixture_dispatch, NULL)
+    NCL_DATAITEM_RW("/MACHINE/MODE", fixture_dispatch, NULL)
+    NCL_METHOD("/MACHINE/RESET", fixture_dispatch, NULL)
 NCL_TOOL_END_WITH_RAW(fixture_last_raw)
 
 /** The declaration the macros above built, by value. */
@@ -166,10 +166,16 @@ static void test_declaration(void)
     NCL_CHECK_EQ_INT(ncl_tool_validate(&decl, &err), NCL_OK);
     NCL_CHECK_EQ_INT((int)err.len, 0);
 
-    NCL_TEST_CASE("a point answers to the tail of its path");
-    NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[0]), "STATUS@RUN");
-    NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[3]), "RESET");
-    NCL_CHECK_EQ_STR(ncl_tool_point_name(NULL), "");
+    NCL_TEST_CASE("a point name comes from its path（去掉设备段，'@'→'_'，'/'→'.'）");
+    {
+        char name[256];
+
+        NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[0], name, sizeof(name)),
+                         "STATUS_RUN");
+        NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[3], name, sizeof(name)),
+                         "RESET");
+        NCL_CHECK_EQ_STR(ncl_tool_point_name(NULL, name, sizeof(name)), "");
+    }
     ncl_strbuf_free(&err);
 }
 
@@ -232,6 +238,16 @@ static void test_validate(void)
     broken.point_count = 1;
     expect_refused(&broken, "sampled but not readable");
 
+    NCL_TEST_CASE("a point that can be written can always be read too");
+    points[0] = decl.points[0];
+    points[0].readable = false;
+    points[0].sampled = false;
+    points[0].writable = true;
+    points[0].fn = fixture_dispatch;
+    broken.points = points;
+    broken.point_count = 1;
+    expect_refused(&broken, "can be written but not read");
+
     NCL_TEST_CASE("point names have to be unique and usable as method names");
     points[0] = decl.points[0];
     points[1] = decl.points[0];
@@ -262,32 +278,29 @@ static void test_validate(void)
     broken.point_count = 1;
     expect_refused(&broken, "配置型数据不得作为采样数据源");
 
-    NCL_TEST_CASE("a point may name itself when its path tail would collide");
+    NCL_TEST_CASE("同名尾段不会撞名：名字从整条路径推");
     {
         ncl_tool_point named[2];
-        ncl_tool_decl with_names = decl;
+        ncl_tool_decl nested = decl;
+        char name[256];
 
         named[0] = decl.points[0];
         named[0].path = "/TEST/AXIS@0/POSITION";
-        named[0].name = "AXIS0.POSITION";
         named[1] = decl.points[1];
         named[1].path = "/TEST/AXIS@1/POSITION";
-        named[1].name = "AXIS1.POSITION";
-        with_names.points = named;
-        with_names.point_count = 2;
+        nested.points = named;
+        nested.point_count = 2;
         ncl_strbuf_init(&err);
-        NCL_CHECK_EQ_INT(ncl_tool_validate(&with_names, &err), NCL_OK);
-        NCL_CHECK_EQ_STR(ncl_tool_point_name(&named[0]), "AXIS0.POSITION");
-        NCL_CHECK_EQ_STR(ncl_tool_point_name(&named[1]), "AXIS1.POSITION");
-        /* Without the names both tails are "POSITION", and a method name has
-         * to be unique: that is the case the field exists for. */
-        named[0].name = NULL;
-        named[1].name = NULL;
+        NCL_CHECK_EQ_INT(ncl_tool_validate(&nested, &err), NCL_OK);
+        NCL_CHECK_EQ_STR(ncl_tool_point_name(&named[0], name, sizeof(name)),
+                         "AXIS_0.POSITION");
+        NCL_CHECK_EQ_STR(ncl_tool_point_name(&named[1], name, sizeof(name)),
+                         "AXIS_1.POSITION");
+        /* 两条路径推不出同一个名字，所以尾段重名不再是问题；真撞了（比如分段里
+         * 有点号）还是会被拒。 */
+        named[1].path = "/TEST/AXIS@0/POSITION"; /* 同一条路径，声明两次 */
         ncl_strbuf_reset(&err);
-        NCL_CHECK_EQ_INT(ncl_tool_validate(&with_names, &err),
-                         NCL_ERR_INVALID_ARG);
-        /* Both are readable, so the collision is reported as the operation they
-         * share rather than as the bare name. */
+        NCL_CHECK_EQ_INT(ncl_tool_validate(&nested, &err), NCL_ERR_INVALID_ARG);
         NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "both declare") != NULL);
         ncl_strbuf_free(&err);
     }
@@ -682,14 +695,12 @@ static ncl_message *set_value(const char *path, long long value)
  * 自己的声明表，夹具那张表不动，别的用例不受影响。
  */
 static const ncl_tool_point k_pending_points[] = {
-    NCL_DATAITEM_SAMPLED_ARG("/MACHINE/STATUS", fixture_dispatch, &k_run_item)
+    NCL_DATAITEM_SAMPLED("/MACHINE/STATUS", fixture_dispatch, &k_run_item)
     NCL_DATAITEM_PENDING_SAMPLED("/MACHINE/WARNING", "报警：待抓包（cnc_rdalmmsg2）")
-    NCL_DATAITEM_PENDING_NAMED("/MACHINE/AXIS@X/POSITION@CMD",
-                               "AXIS_X.POSITION_CMD",
-                               "目标位置：待抓包（cnc_rdposition）")
-    NCL_DATAITEM_PENDING_NAMED("/MACHINE/AXIS@Y/POSITION@CMD",
-                               "AXIS_Y.POSITION_CMD",
-                               "目标位置：待抓包（cnc_rdposition）")
+    NCL_DATAITEM_PENDING("/MACHINE/AXIS@X/POSITION@CMD",
+                         "目标位置：待抓包（cnc_rdposition）")
+    NCL_DATAITEM_PENDING("/MACHINE/AXIS@Y/POSITION@CMD",
+                         "目标位置：待抓包（cnc_rdposition）")
 };
 
 static ncl_tool_decl pending_decl(void)
@@ -720,10 +731,15 @@ static void test_pending(void)
     NCL_CHECK(decl.points[1].sampled);
     NCL_CHECK(!decl.points[1].available);
     NCL_CHECK(decl.points[1].fn == NULL);
-    NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[1]), "WARNING");
-    /* 路径尾段重名的两个目标位置靠显式名字分开，校验也就不会把它们当成撞名。*/
-    NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[2]),
-                     "AXIS_X.POSITION_CMD");
+    {
+        char name[256];
+
+        NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[1], name, sizeof(name)),
+                         "WARNING");
+        /* 路径尾段重名的两个目标位置靠整条路径分开，校验不会把它们当成撞名。*/
+        NCL_CHECK_EQ_STR(ncl_tool_point_name(&decl.points[2], name, sizeof(name)),
+                         "AXIS_X.POSITION_CMD");
+    }
 
     NCL_TEST_CASE("a pending point has to say why it cannot be read yet");
     {

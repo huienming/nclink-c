@@ -281,6 +281,18 @@ NCL_TEST_MAIN_BEGIN()
                 NCL_CHECK_EQ_INT(ncl_adapter_point_count(adapter), 4);
                 NCL_CHECK_EQ_STR(ncl_adapter_point_path(adapter, 0),
                                  "/MACHINE/RUN");
+                /* 点位名字从路径推：方法调用地址就是 <工具>/<名字>。 */
+                {
+                    char name[256];
+                    const ncl_tool_decl *d = ncl_adapter_tool(adapter);
+
+                    NCL_CHECK_EQ_STR(ncl_tool_point_name(&d->points[0], name,
+                                                         sizeof(name)),
+                                     "RUN");
+                    NCL_CHECK_EQ_STR(ncl_tool_point_name(&d->points[3], name,
+                                                         sizeof(name)),
+                                     "CONTROLLER.PARAMETER");
+                }
                 /* 配置型数据（PARAMETER）也在点位表里、也能按路径读，但它在模型的
                  * configs 里（不是 dataItems），因此永远不进采样通道。 */
                 NCL_CHECK_EQ_STR(ncl_adapter_point_path(adapter, 3),
