@@ -106,6 +106,12 @@ target_include_directories(ncl_test_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
 add_test(NAME server COMMAND ncl_test_server)
 set_tests_properties(server PROPERTIES TIMEOUT 90)
 
+# The adapter author contract: one file, one declaration block, and the host
+# turns it into the model, the bindings and (here) real request handling.
+add_executable(ncl_test_tool test_tool.c)
+target_link_libraries(ncl_test_tool PRIVATE nclink_core)
+add_test(NAME tool COMMAND ncl_test_tool)
+
 add_executable(ncl_test_http test_http.c)
 target_link_libraries(ncl_test_http PRIVATE nclink_core)
 add_test(NAME http COMMAND ncl_test_http)
