@@ -176,11 +176,19 @@ def shaped(base, axis_count):
             # `max_axis` @2 + 末尾的 ASCII 轴数），跟 focas_machine.py 铺的一致。
             # 有些调用（cnc_rdsvmeter 就是）按这个数决定回几条记录：这里回填充字节
             # 的话，出参 `data_num` 会一直是 0。
+            # 18 字节 = addinfo(2) + max_axis(2) + cnc_type(2) + mt_type(2) +
+            # series(4) + version(4) + axes(2)，与真机 ODBSYS 一字不差（01 册 §2.8）。
             out = bytearray(struct.pack(">HH", 0x4206, 32))
-            out += b" 0 " + b"MD4G249.0" + ("%02d" % axis_count).encode() + b"\x00"
+            out += b" 0" + b" M" + b"D4G3" + b"28.0"
+            out += ("%02d" % axis_count).encode()
             return bytes(out)
         if index < len(codes) and codes[index] == 0x89:
             return axis_table(axis_count)
+        if index < len(codes) and codes[index] == 0xa4:
+            # 能力/轴数块：**应答载荷的第一个字就是轴数**（真机实测：请求 `0xa4 d=2`
+            # 回 `00 03`；官方库 `fwlibe64.dll 180031783` 也是取这个字当"控制轴数"
+            # —— 见 01 册 §2.7）。不把它答对，官方库一律按 0 轴解，出参全是 0。
+            return struct.pack(">H", axis_count) + b"\x00" * 14
         return base(index)
     return adapt
 

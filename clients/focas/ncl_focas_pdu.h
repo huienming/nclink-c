@@ -41,6 +41,21 @@ extern "C" {
 #define NCL_FOCAS_FUNC_CMD 0x21u   /**< "here is a command list"         */
 #define NCL_FOCAS_FUNC_BYE 0x02u   /**< session end (the SDK sends two)  */
 
+/**
+ * 会话里两条 TCP 的 `hello` 计数器（§2.1）：**第一条**是控制通道，**第二条**是
+ * 数据通道，命令一律走数据通道。2026-09 官方 SDK 对着一台真机（0i-MD）抄下来的：
+ * 控制通道只发 hello，数据通道 hello 完接一条 `code 24` 的探针，然后才是业务调用。
+ * 往控制通道上发命令，机床直接把连接 RST 掉（同轮实测）。
+ */
+#define NCL_FOCAS_HELLO_CONTROL 1u
+#define NCL_FOCAS_HELLO_DATA 2u
+
+/**
+ * 会话探针的块码：`func 0x21` 一个 `code 24` 的块，应答载荷就是 `cnc_sysinfo` 的
+ * **ODBSYS**（真机实测 18 字节，§2.3）。官方库的 `cnc_sysinfo` 就是这么读的。
+ */
+#define NCL_FOCAS_CODE_SYSINFO 24u
+
 /*
  * 程序上下行的功能码（§2.4，官方 SDK 实测）：下行 start/data/end = 0x11/0x12/0x13，
  * 上行 start/data = 0x15/0x18。两个 start 的体都是**定长 516 字节**
@@ -81,6 +96,12 @@ typedef struct {
 #define NCL_FOCAS_ERR_RB_CODE NCL_DRV_ERR_PROTOCOL(0xB4)
 /** A reply carried no command blocks where at least one is required. */
 #define NCL_FOCAS_ERR_RB_COUNT NCL_DRV_ERR_PROTOCOL(0xB5)
+/**
+ * 机床用**方向 3** 的帧回"没有这个数"（真机实测：宏变量 100 / 刀补 2 / 参数 2 都是
+ * 这样回的 —— 头里 `dir = 3`、体 8 字节 `00 00 ff ef 00 01 00 00`）。那不是协议错，
+ * 是机床的一句"没有"，语义层把它翻成 `NCL_ERR_NOT_FOUND`。
+ */
+#define NCL_FOCAS_ERR_NO_DATA NCL_DRV_ERR_PROTOCOL(0xB6)
 
 /**
  * Build one frame: magic, type 0001, @p func, @p dir, big endian body length.
@@ -98,10 +119,14 @@ ncl_err ncl_focas_split(const uint8_t *frame, size_t len, ncl_focas_pdu *out,
                         size_t *frame_len);
 
 /**
- * The reply to `func 1` (§2.2 rule 5): 16 bytes of header, then n eight byte
- * records, body length exactly `16 + 8n`.
- * @p records receives n on success. NCL_FOCAS_ERR_LENGTH when it does not fit
- * that shape.
+ * The reply to `func 1`: 16 bytes of header, then a record table.
+ * @p records receives the count the body declares at its `[8..10)`.
+ *
+ * 这一条**只看"是不是一条握手应答"**：体长 ≥ 16 就收下。原来还要求
+ * `body_len == 16 + 8*records`（那条是从 FS0i 那版 `libfwlib32.so` 反汇编里读出来
+ * 的），真机（0i-MD）回的是 **360 字节**、而 `[8..10)` 写的是 **8** —— 官方 SDK
+ * 自己收下了它（`cnc_allclibhndl3` rc=0），所以那条等式是对反汇编的误读。见 01 册
+ * §2.3。
  */
 ncl_err ncl_focas_hello_reply(const uint8_t *body, size_t body_len,
                               size_t *records);
@@ -190,6 +215,13 @@ typedef struct {
     uint8_t     cb_count;/**< how many of them the request carries          */
     bool        scalar;  /**< true: block k holds a scalar at payload 0;
                               false: block 0's payload is the whole array  */
+    /**
+     * 少数调用还要 Cb 的 `arg2`/`arg3` 两格（`cnc_rdalmmsg2` 就是：`arg2 = 2`
+     * 才填消息文本、`arg3 = 64` 是要多少字节的文本 —— 真机实测，见 01 册 §2.8.2）。
+     * 表里没写的行默认 0，与之前的形状一致。
+     */
+    uint32_t    arg2[NCL_FOCAS_ITEM_CBS];
+    uint32_t    arg3[NCL_FOCAS_ITEM_CBS];
 } ncl_focas_item;
 
 /**

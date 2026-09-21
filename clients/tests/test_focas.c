@@ -194,18 +194,27 @@ static void test_hello_reply(void)
     size_t records = 0;
     ncl_err err;
 
-    NCL_TEST_CASE("the func 1 reply is 16 + 8n bytes");
+    NCL_TEST_CASE("the func 1 reply carries the count the machine declares");
     memset(body, 0, sizeof(body));
     put_u16be(body + 8, 2);
     err = ncl_focas_hello_reply(body, sizeof(body), &records);
     NCL_CHECK_EQ_INT(err, NCL_OK);
     NCL_CHECK_EQ_INT(records, 2);
 
-    NCL_TEST_CASE("16 + 8n is not optional (§2.2 rule 5)");
+    /*
+     * 体长不要求 16 + 8n：真机（0i-MD）回的是 **360 字节**、`[8..10)` 写 8，官方 SDK
+     * 收下它并 rc=0（01 册 §2.3）。只有"短于 16 字节的块头"才不算握手应答。
+     */
+    NCL_TEST_CASE("a reply longer than 16 + 8n is still a hello reply (§2.3, 真机)");
     err = ncl_focas_hello_reply(body, sizeof(body) - 1u, &records);
-    NCL_CHECK_EQ_INT(err, NCL_FOCAS_ERR_LENGTH);
+    NCL_CHECK_EQ_INT(err, NCL_OK);
+    NCL_CHECK_EQ_INT(records, 2);
+
+    NCL_TEST_CASE("a body shorter than the 16 byte record header is refused");
     err = ncl_focas_hello_reply(body, 12, &records);
     NCL_CHECK_EQ_INT(err, NCL_FOCAS_ERR_LENGTH);
+    err = ncl_focas_hello_reply(body, 16, &records);
+    NCL_CHECK_EQ_INT(err, NCL_OK);
 
     NCL_TEST_CASE("hello fields are big endian");
     put_u16be(body + 2, 0x0002);
@@ -317,8 +326,10 @@ static void test_items(void)
     NCL_CHECK(item != NULL);
     if (item != NULL) {
         NCL_CHECK_EQ_INT(item->cbs[0], 0x06);
-        NCL_CHECK_EQ_INT(item->arg0[0], 0x13);
-        NCL_CHECK_EQ_INT(item->arg1[0], 1);
+        /* 真机（官方 SDK 也是）发的是 d=0、e=8（一次要几条）、arg2=1 */
+        NCL_CHECK_EQ_INT(item->arg0[0], 0);
+        NCL_CHECK_EQ_INT(item->arg1[0], 8);
+        NCL_CHECK_EQ_INT(item->arg2[0], 1);
     }
     item = ncl_focas_item_lookup("RDCOUNT");
     NCL_CHECK(item != NULL);
@@ -421,13 +432,19 @@ typedef struct {
     ncl_socket *listener;
     unsigned    port;
     ncl_thread *thread;
+    ncl_thread *conns[8]; /**< 一条连接一个线程（会话是两条 TCP，§2.1） */
+    size_t      conn_count;
     bool        stop;
     int         requests;
     uint8_t     last_func;
     size_t      last_blocks;
+    uint16_t    last_code; /**< 最后一次请求里第 1 个块的码 */
     uint8_t     hello[16u + 8u * 2u];
     size_t      hello_len;
-    uint8_t     payload[NCL_FOCAS_ITEM_CBS][80];
+    /* 一块最多铺多少字节：参数那条真机回 264、程序目录 72×N，所以留 512。
+     * （**别按"测试用不到"缩小**：读取端是按 payload_len 从这儿拷的，写超了就是
+     * 越界读，症状是"第二条记录的内容不对"这种莫名其妙的失败。） */
+    uint8_t     payload[NCL_FOCAS_ITEM_CBS][512];
     size_t      payload_len[NCL_FOCAS_ITEM_CBS];
     size_t      payload_count;
     int         short_by; /**< reply with fewer blocks than asked */
@@ -466,103 +483,156 @@ static size_t mock_block_body(uint8_t *out, size_t cap, size_t count,
     return used;
 }
 
+/** 一条连接（会话是两条：控制通道 hello 1、数据通道 hello 2，§2.1）。 */
+typedef struct {
+    focas_mock *mock;
+    ncl_socket *peer;
+    uint8_t     buf[4096]; /**< 没读齐的字节留在这儿，等一下再来 */
+    size_t      used;
+} mock_conn;
+
+/** 一帧的体处理：回 true 表示"回了，连接继续"。 */
+static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pdu *pdu)
+{
+    focas_mock *mock = conn->mock;
+    uint8_t body[1024];
+    uint8_t reply[2048];
+    size_t body_len;
+    size_t frame_len;
+    size_t blocks;
+
+    mock->requests++;
+    mock->last_func = pdu->func;
+    if (mock->seen_count < sizeof(mock->seen)) {
+        mock->seen[mock->seen_count++] = pdu->func;
+    }
+    if (pdu->func == NCL_FOCAS_FUNC_DWN_DATA) {
+        /* 数据帧：收下程序文本，**不回**（官方 SDK 就是这么发的）。 */
+        size_t keep = pdu->length;
+
+        if (keep > sizeof(mock->transfer) - mock->transfer_bytes) {
+            keep = sizeof(mock->transfer) - mock->transfer_bytes;
+        }
+        memcpy(mock->transfer + mock->transfer_bytes, frame + NCL_FOCAS_HEADER,
+               keep);
+        mock->transfer_bytes += keep;
+        mock->transfer_dir = pdu->dir;
+        return true;
+    }
+    if (pdu->func == NCL_FOCAS_FUNC_HELLO) {
+        body_len = mock->hello_len;
+        memcpy(body, mock->hello, body_len);
+    } else if (pdu->func == NCL_FOCAS_FUNC_CMD ||
+               pdu->func == NCL_FOCAS_FUNC_DWN_START ||
+               pdu->func == NCL_FOCAS_FUNC_DWN_END) {
+        blocks = 0;
+        if (pdu->length >= 2u) {
+            blocks = get_u16be(frame + NCL_FOCAS_HEADER);
+        }
+        mock->last_blocks = blocks;
+        /* 第 1 个块的码（块内 [6..8)）—— 会话探针必须是 code 24 那一条（§2.8） */
+        mock->last_code = pdu->length >= 2u + 8u
+                              ? get_u16be(frame + NCL_FOCAS_HEADER + 8u)
+                              : 0;
+        if (blocks == 0) {
+            blocks = 1; /* §2.2 rule 6: a 0x21 reply needs a block */
+        }
+        if (mock->short_by > 0 && blocks > (size_t)mock->short_by) {
+            blocks -= (size_t)mock->short_by;
+        }
+        body_len = mock_block_body(body, sizeof(body), blocks, mock);
+    } else if (pdu->func == NCL_FOCAS_FUNC_BYE) {
+        body_len = 0; /* 机床对 bye 回一条空的（§2.1 实测） */
+    } else {
+        return false;
+    }
+    frame_len = ncl_focas_build(reply, sizeof(reply), pdu->func,
+                                NCL_FOCAS_DIR_RESP, body, body_len);
+    if (frame_len == 0 || ncl_socket_send(conn->peer, reply, frame_len) != NCL_OK) {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * 一条连接一个线程：客户端先开控制通道（hello 计数器 1）、再开数据通道
+ * （计数器 2），两条都要在开着的时候被回应 —— 单线程的 accept 循环会把第二条
+ * 挡在门外（真机也确实收两条，§2.1）。
+ *
+ * 读用 100 ms 的短超时循环，攒够一帧再处理：这样 mock_stop() 能很快 join 上，
+ * 不用等一条空闲连接的自然超时。
+ */
+static void mock_conn_main(void *arg)
+{
+    mock_conn *conn = (mock_conn *)arg;
+    focas_mock *mock = conn->mock;
+
+    while (!mock->stop) {
+        ncl_focas_pdu pdu;
+        size_t total = 0;
+        ncl_err split;
+        int got;
+
+        if (conn->used >= NCL_FOCAS_HEADER) {
+            memset(&pdu, 0, sizeof(pdu));
+            split = ncl_focas_split(conn->buf, conn->used, &pdu, &total);
+            /* 体长为 0 的帧（bye、传输的 end）split 直接回 OK——原来这里只认
+             * NCL_ERR_RANGE，把 end 帧当成 bye 断掉了。 */
+            if (split == NCL_OK) {
+                if (!mock_serve(conn, conn->buf, &pdu)) {
+                    break;
+                }
+                memmove(conn->buf, conn->buf + total, conn->used - total);
+                conn->used -= total;
+                continue;
+            }
+            if (split != NCL_ERR_RANGE || total > sizeof(conn->buf)) {
+                break;
+            }
+            if (conn->used >= total) {
+                continue; /* 走不到：split 回 OK 时就处理过了 */
+            }
+        }
+        got = ncl_socket_recv(conn->peer, conn->buf + conn->used,
+                              sizeof(conn->buf) - conn->used, 100);
+        if (got == 0 || got == -1) {
+            break; /* 对端关了，或者出错了 */
+        }
+        if (got != NCL_SOCKET_TIMEOUT) {
+            conn->used += (size_t)got;
+        }
+    }
+    ncl_socket_close(conn->peer);
+    ncl_free_safe(conn);
+}
+
 static void mock_main(void *arg)
 {
     focas_mock *mock = (focas_mock *)arg;
 
     while (!mock->stop) {
         ncl_socket *peer = ncl_socket_accept(mock->listener, 200);
+        mock_conn *conn;
+        ncl_thread *thread;
 
         if (peer == NULL) {
             continue;
         }
-        for (;;) {
-            uint8_t header[NCL_FOCAS_HEADER];
-            uint8_t frame[2048];
-            uint8_t body[1024];
-            uint8_t reply[2048];
-            ncl_focas_pdu pdu;
-            size_t total = 0;
-            size_t body_len;
-            size_t frame_len;
-            size_t blocks;
-
-            if (ncl_socket_recv_exact(peer, header, sizeof(header), 2000) != NCL_OK) {
-                break;
-            }
-            memcpy(frame, header, sizeof(header));
-            memset(&pdu, 0, sizeof(pdu));
-            {
-                ncl_err split = ncl_focas_split(frame, sizeof(header), &pdu,
-                                                &total);
-
-                if (split == NCL_ERR_RANGE) {
-                    if (total > sizeof(frame)) {
-                        break;
-                    }
-                    if (pdu.length > 0 &&
-                        ncl_socket_recv_exact(peer, frame + sizeof(header),
-                                              pdu.length, 2000) != NCL_OK) {
-                        break;
-                    }
-                    split = ncl_focas_split(frame, total, &pdu, NULL);
-                }
-                /* 体长为 0 的帧（bye、传输的 end）split 直接回 OK——原来这里只认
-                 * NCL_ERR_RANGE，把 end 帧当成 bye 断掉了。 */
-                if (split != NCL_OK) {
-                    break;
-                }
-            }
-            mock->requests++;
-            mock->last_func = pdu.func;
-            if (mock->seen_count < sizeof(mock->seen)) {
-                mock->seen[mock->seen_count++] = pdu.func;
-            }
-            if (pdu.func == NCL_FOCAS_FUNC_DWN_DATA) {
-                /* 数据帧：收下程序文本，**不回**（官方 SDK 就是这么发的）。 */
-                size_t keep = pdu.length;
-
-                if (keep > sizeof(mock->transfer) - mock->transfer_bytes) {
-                    keep = sizeof(mock->transfer) - mock->transfer_bytes;
-                }
-                memcpy(mock->transfer + mock->transfer_bytes,
-                       frame + sizeof(header), keep);
-                mock->transfer_bytes += keep;
-                mock->transfer_dir = pdu.dir;
-                continue;
-            }
-            if (pdu.func == NCL_FOCAS_FUNC_HELLO) {
-                body_len = mock->hello_len;
-                memcpy(body, mock->hello, body_len);
-            } else if (pdu.func == NCL_FOCAS_FUNC_CMD ||
-                       pdu.func == NCL_FOCAS_FUNC_DWN_START ||
-                       pdu.func == NCL_FOCAS_FUNC_DWN_END) {
-                blocks = 0;
-                if (pdu.length >= 2u) {
-                    blocks = get_u16be(frame + sizeof(header));
-                }
-                mock->last_blocks = blocks;
-                if (blocks == 0) {
-                    blocks = 1; /* §2.2 rule 6: a 0x21 reply needs a block */
-                }
-                if (mock->short_by > 0 && blocks > (size_t)mock->short_by) {
-                    blocks -= (size_t)mock->short_by;
-                }
-                body_len = mock_block_body(body, sizeof(body), blocks, mock);
-            } else {
-                break; /* the bye: the SDK closes here, so does the mock */
-            }
-            if (body_len == 0) {
-                break;
-            }
-            frame_len = ncl_focas_build(reply, sizeof(reply), pdu.func,
-                                        NCL_FOCAS_DIR_RESP, body, body_len);
-            if (frame_len == 0 ||
-                ncl_socket_send(peer, reply, frame_len) != NCL_OK) {
-                break;
-            }
+        conn = (mock_conn *)ncl_mem_calloc(1, sizeof(*conn));
+        if (conn == NULL || mock->conn_count >= 8) {
+            ncl_mem_free(conn);
+            ncl_socket_close(peer);
+            continue;
         }
-        ncl_socket_close(peer);
+        conn->mock = mock;
+        conn->peer = peer;
+        thread = ncl_thread_start(mock_conn_main, conn);
+        if (thread == NULL) {
+            ncl_socket_close(peer);
+            ncl_mem_free(conn);
+            continue;
+        }
+        mock->conns[mock->conn_count++] = thread;
     }
 }
 
@@ -598,12 +668,17 @@ static focas_mock *mock_start(void)
 
 static void mock_stop(focas_mock *mock)
 {
+    size_t i;
+
     if (mock == NULL) {
         return;
     }
     mock->stop = true;
     ncl_thread_join(mock->thread);
     ncl_socket_close(mock->listener);
+    for (i = 0; i < mock->conn_count; i++) {
+        ncl_thread_join(mock->conns[i]);
+    }
     ncl_free_safe(mock);
 }
 
@@ -681,13 +756,16 @@ static void test_driver(void)
         return;
     }
 
-    NCL_TEST_CASE("open negotiates the §2.3 handshake");
+    NCL_TEST_CASE("open builds the session: two connections, hello each, then the probe");
     NCL_CHECK_EQ_INT(driver->ops->open(driver), NCL_OK);
     NCL_CHECK(driver->ops->is_connected(driver));
-    /* hello + the 0 block probe + the code 14 probe */
+    /* 控制通道 hello(1) + 数据通道 hello(2) + 那个 code 24 的会话探针（§2.1） */
     NCL_CHECK_EQ_INT(mock->requests, 3);
     NCL_CHECK_EQ_INT(mock->last_func, NCL_FOCAS_FUNC_CMD);
     NCL_CHECK_EQ_INT(mock->last_blocks, 1);
+    /* 探针是**一个** code 24 的块（真机上 SDK 就是这么发的，§2.8）——
+     * 不是"按握手应答的记录数发一串 code 24"。 */
+    NCL_CHECK_EQ_INT(mock->last_code, NCL_FOCAS_CODE_SYSINFO);
 
     NCL_TEST_CASE("a read gets the block the point asked for");
     NCL_CHECK_EQ_INT(read_point(driver, "RDCOUNT", 0, 1, "int32", &value), NCL_OK);
@@ -918,9 +996,10 @@ static void test_driver_no_negotiate(void)
         mock_stop(mock);
         return;
     }
-    NCL_TEST_CASE("\"negotiate\":false stops after the hello");
+    NCL_TEST_CASE("\"negotiate\":false stops after the two hellos");
     NCL_CHECK_EQ_INT(driver->ops->open(driver), NCL_OK);
-    NCL_CHECK_EQ_INT(mock->requests, 1);
+    /* 两条连接各一条 hello；不发会话探针 */
+    NCL_CHECK_EQ_INT(mock->requests, 2);
     NCL_CHECK_EQ_INT(mock->last_func, NCL_FOCAS_FUNC_HELLO);
 
     driver->ops->destroy(driver);
@@ -934,8 +1013,8 @@ static void test_driver_no_negotiate(void)
  */
 /*
  * 语义层对着一台假机床跑一遍：真读的那几条（程序号/行号/报警状态/刀具组数/时钟/
- * 进给速度/模式）各自把值放对地方，就应当读得回来；还没核准的那几条（位置/负载/
- * 刀补/参数/宏变量/工件坐标/模态/系统）回 NCL_ERR_UNAVAILABLE，理由里写清要抓
+ * 进给速度/模式/系统信息）各自把值放对地方，就应当读得回来；还没核准的那几条
+ * （负载/刀补/参数/宏变量/工件坐标/模态）回 NCL_ERR_UNAVAILABLE，理由里写清要抓
  * 哪一帧。
  */
 static void test_semantics(void)
@@ -1057,37 +1136,59 @@ static void test_semantics(void)
     NCL_CHECK_EQ_STR(text, "0M D4G2");
     NCL_CHECK_EQ_INT(ncl_focas_version(focas, text, sizeof(text)), NCL_OK);
     NCL_CHECK_EQ_STR(text, "49.0");
+    /* 系统信息（cnc_sysinfo）就是这一条载荷拆开的（真机也走这一条 code 24） */
+    {
+        ncl_json *info = NULL;
 
-    NCL_TEST_CASE("进给速度：ACTF 每轴一个 float（第 2 根轴在载荷 @4）");
-    mock->payload_len[0] = 8;
-    put_float_be(mock->payload[0], 1000.0f);
-    put_float_be(mock->payload[0] + 4, 2500.5f);
+        NCL_CHECK_EQ_INT(ncl_focas_system(focas, &info), NCL_OK);
+        NCL_CHECK(info != NULL);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(info, "addinfo", -1), 0x4206);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(info, "maxAxis", -1), 0x20);
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(info, "cncType"), "0");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(info, "machineType"), "M");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(info, "series"), "D4G2");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(info, "version"), "49.0");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(info, "axes"), "03");
+        ncl_json_free(info);
+    }
+
+    /*
+     * 进给速度（ACTF）/主轴转速（ACTS）也是"每轴一条 8 字节记录"（§2.8 真机实测）：
+     * data@0、dec@6。原来假机床铺的是 float32 @index*4 —— 真机上第 2 根轴起全错。
+     */
+    NCL_TEST_CASE("进给速度：ACTF 每轴一条 8 字节记录（第 2 根轴在载荷 @8）");
+    mock->payload_count = 9;
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 16;
+    put_u32be(mock->payload[0], 1000000);      /* X：1000.000 */
+    put_u16be(mock->payload[0] + 6, 3);
+    put_u32be(mock->payload[0] + 8, 2500500);  /* Y：2500.500 */
+    put_u16be(mock->payload[0] + 14, 3);
     NCL_CHECK_EQ_INT(
         ncl_focas_axis_feedrate(focas, NCL_FOCAS_AXIS_Y, &real), NCL_OK);
     NCL_CHECK(real > 2500.4 && real < 2500.6);
 
-    NCL_TEST_CASE("坐标：cnc_rdposition 的 POSELM（NCGuide 实测的形状）");
-    mock->payload_count = 9; /* 这条请求带 9 个块（§2.5） */
+    NCL_TEST_CASE("坐标：cnc_rdposition 的 8 字节记录（8 块帧，§2.8 真机实测）");
+    mock->payload_count = 9; /* 请求带 8 个块，块 i 取载荷 i */
     {
         int i;
 
         for (i = 0; i < 9; i++) {
             memset(mock->payload[i], 0, sizeof(mock->payload[i]));
-            mock->payload_len[i] = 60; /* 5 根轴 × POSELM 12 字节 */
+            mock->payload_len[i] = 40; /* 5 根轴 × 8 字节 */
         }
     }
-    /* 块 1 = 绝对位置：轴 X 的 POSELM（data=12345、dec=3 → 12.345） */
+    /* 块 1 = 绝对位置：轴 X（data=12345、dec=3 → 12.345） */
     put_u32be(mock->payload[1], 12345);
-    put_u16be(mock->payload[1] + 4, 3);
-    put_u16be(mock->payload[1] + 6, 0);  /* unit = mm  */
-    put_u16be(mock->payload[1] + 8, 1);  /* disp = 显示 */
-    mock->payload[1][10] = 'X';
-    /* 第二根轴在同一个载荷的 12 字节处（data=67890、dec=3 → 67.89） */
-    put_u32be(mock->payload[1] + 12, 67890);
-    put_u16be(mock->payload[1] + 16, 3);
+    put_u16be(mock->payload[1] + 4, 0x000a); /* 真机上这 2 字节恒为 0x000a */
+    put_u16be(mock->payload[1] + 6, 3);
+    /* 第二根轴在同一个载荷的 8 字节处（data=67890、dec=3 → 67.89） */
+    put_u32be(mock->payload[1] + 8, 67890);
+    put_u16be(mock->payload[1] + 12, 0x000a);
+    put_u16be(mock->payload[1] + 14, 3);
     /* 块 2 = 机械坐标（data=100000、dec=3 → 100.000） */
     put_u32be(mock->payload[2], 100000);
-    put_u16be(mock->payload[2] + 4, 3);
+    put_u16be(mock->payload[2] + 6, 3);
 
     NCL_CHECK_EQ_INT(ncl_focas_axis_position(focas, NCL_FOCAS_AXIS_X, &real),
                      NCL_OK);
@@ -1099,24 +1200,25 @@ static void test_semantics(void)
         ncl_focas_axis_position_machine(focas, NCL_FOCAS_AXIS_X, &real), NCL_OK);
     NCL_CHECK(real > 99.99 && real < 100.01);
 
-    NCL_TEST_CASE("跟踪误差与指令位置：指令 = 实际（POSELM）− 延迟量（SV_DELAY）");
+    NCL_TEST_CASE("跟踪误差与指令位置：指令 = 实际（位置那一族）− 延迟量（SV_DELAY）");
     /*
      * SV_DELAY 一条请求只带一个 Cb，所以应答就是块 1（假机床按"载荷序号 = 块号"
      * 铺，块 1 取载荷 0）。记录 8 字节、值在第 0 个 int32（大端）—— 依据是 x64 以太网库
      * fwlibe64.dll 里 `shr ax,3`（长度/8 = 轴数）与 `[载荷 + i*8 + 0x10]`（每轴 8 字节）
-     * 那几行，见 01 册 §2.5.2。**后 4 字节官方库一个都不读**，所以这里故意填成 0x9999：
-     * 小数位得跟位置一族走（cnc_getfigure 口径），填了也不能被当 dec 用。
+     * 那几行，见 01 册 §2.5.2 —— 与位置那一族是**同一个 8 字节记录形状**（§2.8 真机
+     * 实测），所以这里后 4 字节也照真机铺 `00 0a 00 00`（延迟量的小数位跟位置走，
+     * 不在这一条里，见 cnc_getfigure 口径）。
      * 这里再留一根**负延迟**（Y = −2.500）：指令位置要往实际位置外面走。
      */
-    mock->payload_count = 9; /* RDPOSITION 那条仍要 9 个块 */
+    mock->payload_count = 9;
     memset(mock->payload[0], 0, sizeof(mock->payload[0]));
     mock->payload_len[0] = 40; /* 5 根轴 × 8 字节 */
     put_u32be(mock->payload[0], 1234);                  /* X：+1.234 */
-    put_u16be(mock->payload[0] + 4, 0x9999);            /* 官方库不读这 2 字节 */
+    put_u16be(mock->payload[0] + 4, 0x000a);
     put_u32be(mock->payload[0] + 8, 0xFFFFF63Cu);       /* Y：−2.500 */
-    put_u16be(mock->payload[0] + 12, 0x9999);
+    put_u16be(mock->payload[0] + 12, 0x000a);
     put_u32be(mock->payload[0] + 16, 0);                /* Z：静止 */
-    put_u16be(mock->payload[0] + 20, 0x9999);
+    put_u16be(mock->payload[0] + 20, 0x000a);
 
     NCL_CHECK_EQ_INT(ncl_focas_axis_srv_delay(focas, NCL_FOCAS_AXIS_X, &real),
                      NCL_OK);
@@ -1137,12 +1239,40 @@ static void test_semantics(void)
     NCL_CHECK_EQ_INT(ncl_focas_axis_srv_delay(focas, (ncl_focas_axis)77, &real),
                      NCL_ERR_RANGE);
 
+    /*
+     * 轴类型（`cnc_rdaxisname`，0x89）：每轴 4 字节 = 名字 2 字节 + 2 字节代码。
+     * 这台机器只给名字，类型按 FANUC 命名约定推（X/Y/Z/U/V/W 直线、A/B/C 回转）。
+     */
+    NCL_TEST_CASE("轴类型：名字从 0x89 来，linear/rotary 按命名约定");
+    mock->payload_count = 1;
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 20; /* 5 轴 × 4 字节：X Y Z A C */
+    mock->payload[0][0] = 'X';
+    put_u16be(mock->payload[0] + 2, 0x0694);
+    mock->payload[0][4] = 'Y';
+    put_u16be(mock->payload[0] + 6, 0x0694);
+    mock->payload[0][8] = 'Z';
+    put_u16be(mock->payload[0] + 10, 0x0694);
+    mock->payload[0][12] = 'A';
+    put_u16be(mock->payload[0] + 14, 0x0694);
+    mock->payload[0][16] = 'C';
+    put_u16be(mock->payload[0] + 18, 0x0694);
+    NCL_CHECK_EQ_INT(ncl_focas_axis_type(focas, NCL_FOCAS_AXIS_X, text,
+                                         sizeof(text)),
+                     NCL_OK);
+    NCL_CHECK_EQ_STR(text, "linear");
+    NCL_CHECK_EQ_INT(ncl_focas_axis_type(focas, NCL_FOCAS_AXIS_A, text,
+                                         sizeof(text)),
+                     NCL_OK);
+    NCL_CHECK_EQ_STR(text, "rotary");
+
     NCL_TEST_CASE("模式与急停：aut 在块 2，manual/run/急停在块 0 的载荷里");
     /*
      * 布局是"斜坡载荷 + 官方 SDK 填它自己的 ODBST"钉出来的（01 册 §2.3）：
      * 块 0 载荷 = manual, run, edit, motion, mstb, emergency, …；块 1 = dummy；
      * 块 2 = aut。三态 = 急停优先 → running（run）→ free。
      */
+    mock->payload_count = 9; /* 假机床按"块 i 取载荷 i"铺，别让前面的用例改小它 */
     memset(mock->payload[0], 0, sizeof(mock->payload[0]));
     mock->payload_len[0] = 18;
     put_u16be(mock->payload[0], 0);      /* manual    = 0 */
@@ -1178,24 +1308,205 @@ static void test_semantics(void)
     NCL_CHECK_EQ_INT(ncl_focas_status(focas, text, sizeof(text)), NCL_OK);
     NCL_CHECK_EQ_STR(text, "free");
 
-    NCL_TEST_CASE("还没核准的那几条回 NCL_ERR_UNAVAILABLE，并说清要抓哪一帧");
-    /* 坐标（POSELM）和指令位置（实际 − 跟踪误差）都已经能读了，这里留的还是
-     * "还没核准"的几条。 */
-    NCL_CHECK_EQ_INT(ncl_focas_axis_load(focas, NCL_FOCAS_AXIS_X, &real),
-                     NCL_ERR_UNAVAILABLE);
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdsvmeter") != NULL);
-    NCL_CHECK_EQ_INT(ncl_focas_spindle_load(focas, 0, &real),
-                     NCL_ERR_UNAVAILABLE);
+    NCL_TEST_CASE("伺服/主轴负载：也是每轴一条 8 字节记录（§2.8 真机实测）");
+    mock->payload_count = 9;
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 40;
+    put_u32be(mock->payload[0], 0);
+    put_u32be(mock->payload[0] + 8, 45500); /* Y = 45.5 % */
+    put_u16be(mock->payload[0] + 14, 3);
+    NCL_CHECK_EQ_INT(ncl_focas_axis_load(focas, NCL_FOCAS_AXIS_Y, &real),
+                     NCL_OK);
+    NCL_CHECK(real > 45.4 && real < 45.6);
+    /* 主轴负载：`cnc_rdspmeter` 一条 0x40，8 根主轴 × 8 字节 */
+    put_u32be(mock->payload[0], 12300); /* S1 = 12.3 % */
+    put_u16be(mock->payload[0] + 6, 3);
+    NCL_CHECK_EQ_INT(ncl_focas_spindle_load(focas, 0, &real), NCL_OK);
+    NCL_CHECK(real > 12.29 && real < 12.31);
+
+    NCL_TEST_CASE("报警：没有报警时载荷 0 字节 → 空数组（真机实测）");
+    mock->payload_count = 1;
+    mock->payload_len[0] = 0; /* 机床没报警就是 0 字节 */
     {
         ncl_json *json = NULL;
 
-        NCL_CHECK_EQ_INT(ncl_focas_macro_variable(focas, 1, &json),
+        NCL_CHECK_EQ_INT(ncl_focas_alarm(focas, &json), NCL_OK);
+        NCL_CHECK(json != NULL);
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(json), 0);
+        ncl_json_free(json);
+    }
+
+    /*
+     * 一条报警：真机上就是 80 字节（16 字节抬头 + arg3=64 字节文本区），
+     * 抬头 = 报警号(BE32)@0、类型(BE32)@4、轴号@8、文本长度@12，文本在 @16。
+     * 这里照真机那条 SV 报警铺：号 75、类型 3、文本 4 字节（GB2312 的"保护"）。
+     */
+    NCL_TEST_CASE("报警：一条记录（号 75 / 类型 3 / 文本 4 字节）");
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 80;
+    put_u32be(mock->payload[0], 75);
+    put_u32be(mock->payload[0] + 4, 3);
+    put_u32be(mock->payload[0] + 12, 4);
+    mock->payload[0][16] = 0xB1;
+    mock->payload[0][17] = 0xA3;
+    mock->payload[0][18] = 0xBB;
+    mock->payload[0][19] = 0xA4;
+    {
+        ncl_json *json = NULL;
+        const ncl_json *first;
+
+        NCL_CHECK_EQ_INT(ncl_focas_alarm(focas, &json), NCL_OK);
+        NCL_CHECK(json != NULL);
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(json), 1);
+        first = ncl_json_arr_get(json, 0);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(first, "number", -1), 75);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(first, "type", -1), 3);
+        /* 机床给的是 GB2312（4 字节），出门是 UTF-8 的"保护"（6 字节）。 */
+        NCL_CHECK_EQ_INT(
+            (int)strlen(ncl_json_obj_get_string(first, "text")), 6);
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(first, "text"),
+                         "\xE4\xBF\x9D\xE6\x8A\xA4");
+        ncl_json_free(json);
+    }
+
+    /*
+     * 刀补 / 宏变量 / 参数这三条：都是"一个块、d = 号"那一族，应答就是那条 8 字节
+     * 记录（值@0 + 小数位@6）。假机床这里按真机的形状铺：刀补 1 = 12.345、
+     * 宏变量 100 = −7.5、参数 1 = 1（真机参数 1 就是 1）。
+     */
+    NCL_TEST_CASE("刀补/宏变量/参数：一个块 + d = 号，值是那条 8 字节记录");
+    mock->payload_count = 1;
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 8;
+    put_u32be(mock->payload[0], 12345);
+    put_u16be(mock->payload[0] + 4, 0x000a);
+    put_u16be(mock->payload[0] + 6, 3);
+    {
+        ncl_json *json = NULL;
+
+        NCL_CHECK_EQ_INT(ncl_focas_tool_offset(focas, 1, &json), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(json, "number", -1), 1);
+        NCL_CHECK(ncl_json_obj_get_double(json, "value", -1.0) > 12.34 &&
+                  ncl_json_obj_get_double(json, "value", -1.0) < 12.35);
+        ncl_json_free(json);
+        json = NULL;
+
+        NCL_CHECK_EQ_INT(ncl_focas_macro_variable(focas, 100, &json), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(json, "number", -1), 100);
+        ncl_json_free(json);
+        json = NULL;
+
+        NCL_CHECK_EQ_INT(ncl_focas_parameter(focas, 1, &json), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(json, "number", -1), 1);
+        ncl_json_free(json);
+    }
+
+    NCL_TEST_CASE("机床回空载荷 = 没有这个号（NCL_ERR_NOT_FOUND，不是解析错）");
+    mock->payload_len[0] = 0; /* 真机对"不存在的号"就是 0 字节 */
+    {
+        ncl_json *json = NULL;
+
+        NCL_CHECK_EQ_INT(ncl_focas_macro_variable(focas, 100, &json),
+                         NCL_ERR_NOT_FOUND);
+        NCL_CHECK(json == NULL);
+        NCL_CHECK_EQ_INT(ncl_focas_tool_offset(focas, 9, &json),
+                         NCL_ERR_NOT_FOUND);
+    }
+
+    /*
+     * 程序目录：72 字节一条（号在 @2 的 BE16、注释在 @8），真机两条的样子 ==
+     * O2001 "(DEMOMAINGEAR)" / O3000 "(SUBGEAR)"。
+     */
+    NCL_TEST_CASE("程序目录：72 字节一条，号 @2、注释 @8");
+    mock->payload_count = 1;
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 144; /* 2 条 × 72 */
+    put_u16be(mock->payload[0] + 2, 2001);
+    memcpy(mock->payload[0] + 4, "M 0 ", 4);
+    memcpy(mock->payload[0] + 8, "(DEMOMAINGEAR)", 14);
+    put_u16be(mock->payload[0] + 72 + 2, 3000);
+    memcpy(mock->payload[0] + 72 + 8, "(SUBGEAR)", 9);
+    {
+        ncl_json *json = NULL;
+        const ncl_json *first;
+
+        NCL_CHECK_EQ_INT(ncl_focas_program_directory(focas, &json), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(json), 2);
+        first = ncl_json_arr_get(json, 0);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(first, "number", -1), 2001);
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(first, "comment"),
+                         "(DEMOMAINGEAR)");
+        first = ncl_json_arr_get(json, 1);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(first, "number", -1), 3000);
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(first, "comment"),
+                         "(SUBGEAR)");
+        ncl_json_free(json);
+    }
+
+    /*
+     * 执行中的程序段（`cnc_rdexecprog`，0x20）：体 = 4 字节 + ASCII 文本（0 补齐）。
+     * 这台机器回的是**从执行位置起的整段程序文本**（真机 515 字节），所以这里也照
+     * 多行铺，验证"整段都拿回来、尾部的 0 与空白去掉"。
+     */
+    NCL_TEST_CASE("执行中的程序段：4 字节头 + ASCII 文本（0 补齐），整段都要");
+    mock->payload_count = 1;
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    memcpy(mock->payload[0] + 4, "M98P3001\n\nG49\n\nT01\nD1\nG0G43H1Z100.", 34);
+    mock->payload_len[0] = 4 + 34 + 8; /* 尾部补 0 */
+    NCL_CHECK_EQ_INT(ncl_focas_executed_block(focas, text, sizeof(text)), NCL_OK);
+    NCL_CHECK(strstr(text, "T01") != NULL);
+    NCL_CHECK(strstr(text, "M98P3001") != NULL);
+    NCL_CHECK_EQ_INT((int)strlen(text), 34); /* 尾部那 8 个 0 不算 */
+
+    /*
+     * 模态：每一组一个 12 字节，代码在 @6（BE16，码 ×10）。真机第 8 组是 0x0050
+     * （flag=0 → "G80"）、第 20 组 0x0083 + flag=1（"G13.1"）。
+     */
+    NCL_TEST_CASE("模态：码 @6、小数标志 @10（1 → 带一位小数）");
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 12;
+    put_u16be(mock->payload[0] + 6, 80); /* G80 */
+    {
+        ncl_json *json = NULL;
+
+        NCL_CHECK_EQ_INT(ncl_focas_modal(focas, &json), NCL_OK);
+        NCL_CHECK(json != NULL);
+        NCL_CHECK(ncl_json_arr_len(json) > 0);
+        ncl_json_free(json);
+    }
+    /* 带小数的那个：131 + flag=1 → G13.1 */
+    put_u16be(mock->payload[0] + 6, 131);
+    put_u16be(mock->payload[0] + 10, 1);
+    {
+        ncl_json *json = NULL;
+
+        NCL_CHECK_EQ_INT(ncl_focas_modal(focas, &json), NCL_OK);
+        NCL_CHECK_EQ_STR(ncl_json_as_string(ncl_json_arr_get(json, 0)), "G13.1");
+        ncl_json_free(json);
+    }
+
+    NCL_TEST_CASE("合成进给速度：三根直线轴里最大的那个（ACTF）");
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 24; /* 3 根轴 × 8 字节 */
+    put_u32be(mock->payload[0], 1000000);      /* X：1000.000 */
+    put_u16be(mock->payload[0] + 6, 3);
+    put_u32be(mock->payload[0] + 8, 1234000);  /* Y：1234.000 ← 最大的 */
+    put_u16be(mock->payload[0] + 14, 3);
+    put_u32be(mock->payload[0] + 16, 0);       /* Z：0 */
+    put_u16be(mock->payload[0] + 22, 3);
+    NCL_CHECK_EQ_INT(ncl_focas_feed_speed(focas, &real), NCL_OK);
+    NCL_CHECK(real > 1233.9 && real < 1234.1);
+
+    NCL_TEST_CASE("还没核准的那几条回 NCL_ERR_UNAVAILABLE，并说清要抓哪一帧");
+    {
+        ncl_json *json = NULL;
+
+        /* 模态已经实现了（见上），这里换成子程序号 —— 要 `cnc_rdexecprog3`。 */
+        NCL_CHECK_EQ_INT(ncl_focas_subprogram_number(focas, &number),
                          NCL_ERR_UNAVAILABLE);
-        NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdmacro") != NULL);
-        NCL_CHECK_EQ_INT(ncl_focas_parameter(focas, 1, &json),
+        NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdexecprog3") != NULL);
+        NCL_CHECK_EQ_INT(ncl_focas_tool_life(focas, 1, &number),
                          NCL_ERR_UNAVAILABLE);
-        NCL_CHECK_EQ_INT(ncl_focas_modal(focas, &json), NCL_ERR_UNAVAILABLE);
-        NCL_CHECK_EQ_INT(ncl_focas_system(focas, &json), NCL_ERR_UNAVAILABLE);
     }
 
     ncl_focas_close(focas);
@@ -1273,16 +1584,19 @@ static void test_not_yet(void)
         return;
     }
 
-    NCL_TEST_CASE("还没抓到帧的三条调用回 NCL_ERR_UNAVAILABLE，并说清要抓哪一帧");
-    NCL_CHECK_EQ_INT(ncl_focas_alarm(focas, &value), NCL_ERR_UNAVAILABLE);
-    NCL_CHECK(value == NULL); /* 宁可没有值，也不编一个 */
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdalmmsg2") != NULL);
-
-    /* 指令位置已经实现了（实际位置 − 跟踪误差，见 test_semantics），这里换一条
-     * 还没核准的：合成进给速度要 `cnc_rddynamic2` 的 OBDDY2。 */
-    NCL_CHECK_EQ_INT(ncl_focas_feed_speed(focas, &position),
+    NCL_TEST_CASE("还没抓到帧的几条调用回 NCL_ERR_UNAVAILABLE，并说清要抓哪一帧");
+    /* 报警与程序目录都实现了（见 test_semantics），这里换成工件坐标 ——
+     * 这台机床对 `cnc_rdwkcdshft` 回 rc=1，帧还没别处核过。 */
+    NCL_CHECK_EQ_INT(ncl_focas_work_offsets(focas, &value),
                      NCL_ERR_UNAVAILABLE);
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rddynamic2") != NULL);
+    NCL_CHECK(value == NULL); /* 宁可没有值，也不编一个 */
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdwkcdshft") != NULL);
+
+    /* 合成进给速度与模态都已经实现了（见 test_semantics），这里换一条还没核准的：
+     * 主轴倍率要 `IODBSGNL.spdl_ovrd`（现代系列没有那一格）。 */
+    NCL_CHECK_EQ_INT(ncl_focas_spindle_override(focas, &position),
+                     NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "spdl_ovrd") != NULL);
     /* 轴号越界仍旧是参数错，不是"还没有" */
     NCL_CHECK_EQ_INT(ncl_focas_axis_srv_delay(focas, (ncl_focas_axis)77,
                                               &position),

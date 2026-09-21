@@ -31,7 +31,8 @@
 typedef struct {
     char      *host;
     unsigned   port;
-    ncl_socket *socket;
+    ncl_socket *socket;  /**< 数据通道（hello 计数器 2）：命令都走这条      */
+    ncl_socket *control; /**< 控制通道（hello 计数器 1）：只发 hello        */
     unsigned   connect_timeout_ms;
     unsigned   timeout_ms;
     unsigned   retries;
@@ -57,15 +58,44 @@ static unsigned json_uint(const ncl_json *object, const char *key,
     return value < 0 ? 0u : (unsigned)value;
 }
 
+/** 写上一个大端 u32（`call("payload")` 覆盖 Cb 的 d/e/arg2/arg3 时用）。 */
+static void driver_put_u32be(uint8_t *out, uint32_t value)
+{
+    out[0] = (uint8_t)(value >> 24);
+    out[1] = (uint8_t)(value >> 16);
+    out[2] = (uint8_t)(value >> 8);
+    out[3] = (uint8_t)value;
+}
+
 /* --------------------------------------------------------------- session -- */
 
-static void focas_close_session(focas_ctx *ctx)
+/**
+ * 一条 `func 0x02`（会话结束）：官方 SDK 在 `cnc_freelibhndl` 时对**两条**连接各发
+ * 一条，机床回一条空的（§2.1 实测）。这里只当礼节，失败不报。
+ */
+static ncl_err focas_bye(focas_ctx *ctx, ncl_socket *socket);
+
+/** 丢掉两条连接，不发 bye（错误路径上用：那一刻连接多半已经不通了）。 */
+static void focas_drop_session(focas_ctx *ctx)
 {
     if (ctx->socket != NULL) {
         ncl_socket_close(ctx->socket);
         ctx->socket = NULL;
     }
+    if (ctx->control != NULL) {
+        ncl_socket_close(ctx->control);
+        ctx->control = NULL;
+    }
     ctx->session = false;
+}
+
+static void focas_close_session(focas_ctx *ctx)
+{
+    if (ctx->session) {
+        (void)focas_bye(ctx, ctx->socket);
+        (void)focas_bye(ctx, ctx->control);
+    }
+    focas_drop_session(ctx);
 }
 
 /* -------------------------------------------------------------- exchange -- */
@@ -77,15 +107,19 @@ static void focas_close_session(focas_ctx *ctx)
  * @p body_out borrows into the context's receive buffer and stays valid until
  * the next exchange.
  */
-static ncl_err focas_exchange(focas_ctx *ctx, uint8_t func, const uint8_t *body,
-                              size_t body_len, ncl_focas_pdu *pdu,
-                              const uint8_t **body_out, size_t *body_out_len)
+static ncl_err focas_exchange_on(focas_ctx *ctx, ncl_socket *socket, uint8_t func,
+                                 const uint8_t *body, size_t body_len,
+                                 ncl_focas_pdu *pdu, const uint8_t **body_out,
+                                 size_t *body_out_len)
 {
     size_t frame_len;
     size_t total = 0;
     unsigned attempt = 0;
     ncl_err err = NCL_OK;
 
+    if (socket == NULL) {
+        return NCL_DRV_ERR_TRANSPORT(0x90);
+    }
     frame_len = ncl_focas_build(ctx->tx, sizeof(ctx->tx), func,
                                 NCL_FOCAS_DIR_REQ, body, body_len);
     if (frame_len == 0) {
@@ -94,9 +128,9 @@ static ncl_err focas_exchange(focas_ctx *ctx, uint8_t func, const uint8_t *body,
     ctx->last_tx_len = frame_len;
     ctx->last_rx_len = 0;
     for (attempt = 0;; attempt++) {
-        if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
+        if (ncl_socket_send(socket, ctx->tx, frame_len) != NCL_OK) {
             err = NCL_DRV_ERR_TRANSPORT(0x90);
-        } else if (ncl_socket_recv_exact(ctx->socket, ctx->rx, NCL_FOCAS_HEADER,
+        } else if (ncl_socket_recv_exact(socket, ctx->rx, NCL_FOCAS_HEADER,
                                         ctx->timeout_ms) != NCL_OK) {
             err = NCL_DRV_ERR_TRANSPORT(0x91);
         } else {
@@ -105,7 +139,7 @@ static ncl_err focas_exchange(focas_ctx *ctx, uint8_t func, const uint8_t *body,
                 /* the header was fine and pinned the frame's total length */
                 if (total > sizeof(ctx->rx)) {
                     err = NCL_FOCAS_ERR_LENGTH;
-                } else if (ncl_socket_recv_exact(ctx->socket,
+                } else if (ncl_socket_recv_exact(socket,
                                                  ctx->rx + NCL_FOCAS_HEADER,
                                                  total - NCL_FOCAS_HEADER,
                                                  ctx->timeout_ms) != NCL_OK) {
@@ -128,7 +162,14 @@ static ncl_err focas_exchange(focas_ctx *ctx, uint8_t func, const uint8_t *body,
     }
     if (err != NCL_OK) {
         if (ncl_driver_error_tier(err) == 1) {
-            ncl_socket_shutdown(ctx->socket); /* a dead link must be re-opened */
+            /* 一条断了就两条一起丢：会话在数据通道上，控制通道跟着重开 */
+            ncl_socket_shutdown(socket);
+            if (ctx->socket != NULL && ctx->socket != socket) {
+                ncl_socket_shutdown(ctx->socket);
+            }
+            if (ctx->control != NULL && ctx->control != socket) {
+                ncl_socket_shutdown(ctx->control);
+            }
             ctx->session = false;
         }
         return err;
@@ -138,7 +179,14 @@ static ncl_err focas_exchange(focas_ctx *ctx, uint8_t func, const uint8_t *body,
     if (pdu->func != func) {
         return NCL_FOCAS_ERR_HEADER;
     }
-    /* §2.2 rule 3: a reply's direction is 1..4, and the SDK's requests get 2. */
+    /*
+     * §2.2 rule 3：应答的方向是 1..4，SDK 的请求拿到的常态是 2。**方向 3 是机床在说
+     * "没有这个数"**（真机实测：宏变量/刀补/参数里不存在的号就是这条），把它翻成一个
+     * 明确的码，别当成协议错。
+     */
+    if (pdu->dir == 3u) {
+        return NCL_FOCAS_ERR_NO_DATA;
+    }
     if (pdu->dir != NCL_FOCAS_DIR_RESP) {
         return NCL_FOCAS_ERR_HEADER;
     }
@@ -149,6 +197,15 @@ static ncl_err focas_exchange(focas_ctx *ctx, uint8_t func, const uint8_t *body,
         *body_out_len = pdu->length;
     }
     return NCL_OK;
+}
+
+/** The same exchange on the data channel - what every command uses. */
+static ncl_err focas_exchange(focas_ctx *ctx, uint8_t func, const uint8_t *body,
+                              size_t body_len, ncl_focas_pdu *pdu,
+                              const uint8_t **body_out, size_t *body_out_len)
+{
+    return focas_exchange_on(ctx, ctx->socket, func, body, body_len, pdu,
+                             body_out, body_out_len);
 }
 
 /** One `func 0x21` exchange whose reply must be a usable command list. */
@@ -279,156 +336,155 @@ static ncl_err focas_program_download(focas_ctx *ctx, const ncl_json *params,
 
 /* ------------------------------------------------------------- handshake -- */
 
-/**
- * §2.3: the SDK's session setup, copied step for step.
- *
- *   1. `func 1` with a 2 byte counter. The reply is the *other* layout:
- *      16 bytes of header plus n eight byte records, body length 16+8n.
- *   2. `func 0x21` with one block per record whose first short is not zero,
- *      plus (when the hello's field 2 says 2) a block of code 140.
- *   3. unless field 2 says 3, one more `func 0x21` with either code 141
- *      (field 2 == 2) or code 14 with the 0x26f0 arguments.
- */
-static ncl_err focas_handshake(focas_ctx *ctx)
+/** 一条 TCP 连上去（会话是两条，见下面的 focas_handshake）。 */
+static ncl_err focas_connect(focas_ctx *ctx, ncl_socket **out)
 {
-    uint8_t body[2u + FOCAS_MAX_CB * NCL_FOCAS_CB_SIZE];
+    char err[256];
+
+    err[0] = '\0';
+    *out = ncl_socket_connect(ctx->host, ctx->port, ctx->connect_timeout_ms, err,
+                              sizeof(err));
+    return *out != NULL ? NCL_OK : NCL_DRV_ERR_TRANSPORT(0x93);
+}
+
+/**
+ * 一条连接上的 `hello`（`func 1` + 2 字节计数器），把应答的形状记下来。
+ * `records`/`field2` 只是"机床自己怎么数"，会话怎么建不看它们（§2.3）。
+ */
+static ncl_err focas_hello(focas_ctx *ctx, ncl_socket *socket, unsigned counter,
+                           size_t *records, uint16_t *field2)
+{
     uint8_t hello[2];
     const uint8_t *reply = NULL;
     size_t reply_len = 0;
-    size_t used;
-    size_t records = 0;
+    ncl_focas_pdu pdu;
     ncl_err err;
-    size_t i;
+    size_t n = 0;
 
     hello[0] = 0;
-    hello[1] = (uint8_t)(ctx->hello_counter & 0xFFu);
-    {
-        ncl_focas_pdu pdu;
+    hello[1] = (uint8_t)(counter & 0xFFu);
+    memset(&pdu, 0, sizeof(pdu));
+    err = focas_exchange_on(ctx, socket, NCL_FOCAS_FUNC_HELLO, hello,
+                            sizeof(hello), &pdu, &reply, &reply_len);
+    if (err != NCL_OK) {
+        return err;
+    }
+    err = ncl_focas_hello_reply(reply, reply_len, &n);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (records != NULL) {
+        *records = n;
+    }
+    if (field2 != NULL) {
+        *field2 = ncl_focas_hello_field(reply, reply_len, 2);
+    }
+    return NCL_OK;
+}
 
-        memset(&pdu, 0, sizeof(pdu));
-        err = focas_exchange(ctx, NCL_FOCAS_FUNC_HELLO, hello, sizeof(hello), &pdu,
-                             &reply, &reply_len);
-    }
-    if (err != NCL_OK) {
-        return err;
-    }
-    err = ncl_focas_hello_reply(reply, reply_len, &records);
-    if (err != NCL_OK) {
-        return err;
-    }
-    ctx->hello_records = records;
-    ctx->hello_field2 = ncl_focas_hello_field(reply, reply_len, 2);
-    if (!ctx->negotiate) {
-        ctx->session = true;
+static ncl_err focas_bye(focas_ctx *ctx, ncl_socket *socket)
+{
+    ncl_focas_pdu pdu;
+
+    if (socket == NULL) {
         return NCL_OK;
     }
+    memset(&pdu, 0, sizeof(pdu));
+    return focas_exchange_on(ctx, socket, NCL_FOCAS_FUNC_BYE, NULL, 0, &pdu, NULL,
+                             NULL);
+}
 
-    /* step 2: one block per record whose first short is not zero */
+/**
+ * 会话探针：`func 0x21` **一个** `code 24` 的块，应答载荷就是 `cnc_sysinfo` 的
+ * ODBSYS（真机实测 18 字节）。官方 SDK 在数据通道 hello 之后紧接着就发这一条。
+ *
+ * 它**不是**会话的必要条件（真机上不发它照样能读数据，同轮实测），所以失败只记在
+ * `probe_blocks` 里，不算会话没建起来 —— 但发出去，形状与官方库一致。
+ */
+static ncl_err focas_probe_system(focas_ctx *ctx)
+{
+    uint8_t body[NCL_FOCAS_CB_SIZE + 2u];
+    ncl_focas_cb cb;
+    size_t used;
+    const uint8_t *reply = NULL;
+    size_t reply_len = 0;
+    ncl_err err;
+
     used = ncl_focas_body_begin(body, sizeof(body));
     if (used == 0) {
         return NCL_ERR_RANGE;
     }
-    for (i = 0; i < records; i++) {
-        ncl_focas_cb cb;
-
-        if (ncl_focas_hello_field(reply, reply_len, 16u + i * 8u) == 0) {
-            continue; /* the SDK skips the zero records (it would not getRb) */
-        }
-        ncl_focas_cb_init(&cb, 24);
-        cb.index = (uint16_t)(i + 1u);
-        used = ncl_focas_body_add(body, sizeof(body), used, &cb);
-        if (used == 0) {
-            return NCL_ERR_RANGE;
-        }
-    }
-    if (ctx->hello_field2 == 2u) {
-        ncl_focas_cb cb;
-
-        ncl_focas_cb_init(&cb, 140);
-        used = ncl_focas_body_add(body, sizeof(body), used, &cb);
-        if (used == 0) {
-            return NCL_ERR_RANGE;
-        }
+    ncl_focas_cb_init(&cb, NCL_FOCAS_CODE_SYSINFO);
+    used = ncl_focas_body_add(body, sizeof(body), used, &cb);
+    if (used == 0) {
+        return NCL_ERR_RANGE;
     }
     err = focas_command(ctx, body, used, &reply, &reply_len);
-    if (err != NCL_OK) {
-        return err;
-    }
-    err = ncl_focas_check_blocks(reply, reply_len, NULL);
     if (err != NCL_OK) {
         return err;
     }
     ctx->probe_blocks = ncl_focas_block_count(reply, reply_len);
-    if (ctx->hello_field2 == 3u) {
-        ctx->session = true;
-        return NCL_OK;
-    }
+    return ncl_focas_check_blocks(reply, reply_len, NULL);
+}
 
-    /* step 3: the second probe, whose block code says what the box is */
-    used = ncl_focas_body_begin(body, sizeof(body));
-    if (used == 0) {
-        return NCL_ERR_RANGE;
-    }
-    {
-        ncl_focas_cb cb;
+/**
+ * 一条会话 = **两条 TCP**（§2.1，2026-09 真机实测；官方 SDK 就是这么开的）：
+ *
+ *   ```
+ *   控制通道：  hello(计数器 1) → 应答（真机 360 字节）
+ *   数据通道：  hello(计数器 2) → 应答 → func 0x21 一个 code 24 的块（ODBSYS）
+ *   ```
+ *
+ * 之后业务调用**只走数据通道**：往控制通道上发 `func 0x21`，机床直接 RST（同轮
+ * 实测）。原来把第二条连接当成"没应答时 SDK 的重试"，于是单连接、还按握手应答里的
+ * 记录发一串 `code 24` 的探针 —— 真机上第一帧就被拒，会话建不起来。
+ */
+static ncl_err focas_handshake(focas_ctx *ctx)
+{
+    ncl_err err;
 
-        if (ctx->hello_field2 == 2u) {
-            ncl_focas_cb_init(&cb, 141);
-            cb.arg0 = 0x23c1;
-            cb.arg1 = 0x23c1;
-        } else {
-            ncl_focas_cb_init(&cb, 14);
-            cb.arg0 = 0x26f0;
-            cb.arg1 = 0x26f0;
-        }
-        used = ncl_focas_body_add(body, sizeof(body), used, &cb);
-    }
-    if (used == 0) {
-        return NCL_ERR_RANGE;
-    }
-    err = focas_command(ctx, body, used, &reply, &reply_len);
+    ctx->hello_records = 0;
+    ctx->hello_field2 = 0;
+    ctx->probe_blocks = 0;
+
+    err = focas_connect(ctx, &ctx->control);
     if (err != NCL_OK) {
         return err;
     }
-    err = ncl_focas_check_blocks(reply, reply_len, NULL);
+    err = focas_hello(ctx, ctx->control, ctx->hello_counter, NULL, NULL);
     if (err != NCL_OK) {
         return err;
+    }
+
+    err = focas_connect(ctx, &ctx->socket);
+    if (err != NCL_OK) {
+        return err;
+    }
+    err = focas_hello(ctx, ctx->socket, ctx->hello_counter + 1u,
+                      &ctx->hello_records, &ctx->hello_field2);
+    if (err != NCL_OK) {
+        return err;
+    }
+
+    if (ctx->negotiate) {
+        (void)focas_probe_system(ctx); /* 形状与官方库一致；失败不算事 */
     }
     ctx->session = true;
     return NCL_OK;
 }
 
-static ncl_err focas_open_session(focas_ctx *ctx)
-{
-    char err[256];
-
-    if (ctx->socket != NULL) {
-        return NCL_OK;
-    }
-    err[0] = '\0';
-    ctx->socket = ncl_socket_connect(ctx->host, ctx->port, ctx->connect_timeout_ms,
-                                     err, sizeof(err));
-    if (ctx->socket == NULL) {
-        return NCL_DRV_ERR_TRANSPORT(0x93);
-    }
-    return NCL_OK;
-}
-
-/** Open on demand: connect, then negotiate once (§2.3). */
+/** Open on demand: the two connections and the hello, then the probe (§2.1). */
 static ncl_err focas_ensure_session(focas_ctx *ctx)
 {
     ncl_err err;
 
-    err = focas_open_session(ctx);
-    if (err != NCL_OK) {
-        return err;
-    }
     if (ctx->session) {
         return NCL_OK;
     }
+    focas_drop_session(ctx); /* 半开的那一对先丢掉，重新来一遍 */
     err = focas_handshake(ctx);
     if (err != NCL_OK) {
-        ctx->session = false;
+        focas_drop_session(ctx);
     }
     return err;
 }
@@ -541,6 +597,8 @@ static ncl_err focas_build_item(const char *area, uint8_t *body, size_t cap,
         ncl_focas_cb_init(&cb, item->cbs[i]);
         cb.arg0 = item->arg0[i];
         cb.arg1 = item->arg1[i];
+        cb.arg2 = item->arg2[i];
+        cb.arg3 = item->arg3[i];
         offset = ncl_focas_body_add(body, cap, offset, &cb);
         if (offset == 0) {
             return NCL_ERR_RANGE;
@@ -794,11 +852,143 @@ static ncl_err focas_call(ncl_driver *self, const char *operation,
         (void)ncl_json_obj_set_string(object, "host", ctx->host != NULL ? ctx->host : "");
         (void)ncl_json_obj_set_int(object, "port", ctx->port);
         (void)ncl_json_obj_set_bool(object, "negotiated", ctx->session);
+        /* §2.1：会话是两条 TCP，控制通道 hello 1、数据通道 hello 2 */
+        (void)ncl_json_obj_set_int(object, "channels", 2);
+        (void)ncl_json_obj_set_int(object, "helloControl",
+                                   (long long)ctx->hello_counter);
+        (void)ncl_json_obj_set_int(object, "helloData",
+                                   (long long)ctx->hello_counter + 1);
+        (void)ncl_json_obj_set_bool(object, "controlOpen", ctx->control != NULL);
+        (void)ncl_json_obj_set_bool(object, "dataOpen", ctx->socket != NULL);
         (void)ncl_json_obj_set_int(object, "helloRecords",
                                    (long long)ctx->hello_records);
         (void)ncl_json_obj_set_int(object, "helloField2", ctx->hello_field2);
         (void)ncl_json_obj_set_int(object, "probeBlocks",
                                    (long long)ctx->probe_blocks);
+        if (result != NULL) {
+            *result = object;
+        } else {
+            ncl_json_free(object);
+        }
+        return NCL_OK;
+    }
+    /*
+     * "payload"：把一个 item 的某一块载荷**原样**取回来（不管它多长）。
+     * params: {"item":"ALMMSG","block":0}，结果: {"block":0,"length":n,"bytes":[...]}。
+     * 可选的 "d"/"e"/"arg2"/"arg3" 会**覆盖**那个 item 表里第 1 个块的对应格子 ——
+     * "同一个 item、每次问不同的号"那一族（刀补 / 宏变量 / 参数 / 位置）靠它。
+     *
+     * 为什么需要它：普通的读取要报"读几个元素"，而有些应答的长度是**机床决定的**
+     * —— 例如 `cnc_rdalmmsg2` 在没报警时载荷就是 **0 字节**，报长度会撞上
+     * "载荷不够"（NCL_FOCAS_ERR_LENGTH），分不清"没有报警"和"读错了"。语义层靠它
+     * 先看长度、再按记录切。
+     */
+    if (ncl_streq_ignore_case(operation, "payload")) {
+        const char *item = ncl_json_obj_get_string(params, "item");
+        long long block_index = ncl_json_obj_get_int(params, "block", 0);
+        bool override_d = ncl_json_obj_has(params, "d");
+        bool override_e = ncl_json_obj_has(params, "e");
+        bool override_2 = ncl_json_obj_has(params, "arg2");
+        bool override_3 = ncl_json_obj_has(params, "arg3");
+        long long value_d = ncl_json_obj_get_int(params, "d", 0);
+        long long value_e = ncl_json_obj_get_int(params, "e", 0);
+        long long value_2 = ncl_json_obj_get_int(params, "arg2", 0);
+        long long value_3 = ncl_json_obj_get_int(params, "arg3", 0);
+        uint8_t body[FOCAS_MAX_CB * NCL_FOCAS_CB_SIZE + 2u];
+        const uint8_t *reply = NULL;
+        const uint8_t *block = NULL;
+        const uint8_t *payload = NULL;
+        size_t reply_len = 0;
+        size_t block_len = 0;
+        size_t payload_len = 0;
+        size_t used = 0;
+        ncl_json *object = NULL;
+        ncl_json *bytes = NULL;
+        ncl_err err;
+
+        if (ncl_str_is_blank(item)) {
+            return NCL_ERR_INVALID_ARG;
+        }
+        err = focas_build_item(item, body, sizeof(body), &used);
+        if (err != NCL_OK) {
+            return err;
+        }
+        if (used >= 2u + NCL_FOCAS_CB_SIZE && (override_d || override_e ||
+                                               override_2 || override_3)) {
+            /* 第 1 个块在体里从偏移 2 开始：code@[6..8)、d@[8..12)、e@[12..16)、
+             * arg2@[16..20)、arg3@[20..24)。 */
+            uint8_t *cb = body + 2u;
+
+            if (override_d) {
+                driver_put_u32be(cb + 8u, (uint32_t)value_d);
+            }
+            if (override_e) {
+                driver_put_u32be(cb + 12u, (uint32_t)value_e);
+            }
+            if (override_2) {
+                driver_put_u32be(cb + 16u, (uint32_t)value_2);
+            }
+            if (override_3) {
+                driver_put_u32be(cb + 20u, (uint32_t)value_3);
+            }
+        }
+        ncl_mutex_lock(ctx->mutex);
+        err = focas_ensure_session(ctx);
+        if (err == NCL_OK) {
+            err = focas_command(ctx, body, used, &reply, &reply_len);
+        }
+        if (err == NCL_OK) {
+            err = ncl_focas_check_blocks(reply, reply_len, NULL);
+        }
+        if (err == NCL_OK && (block_index < 0 ||
+                              (size_t)block_index >=
+                                  ncl_focas_block_count(reply, reply_len))) {
+            err = NCL_FOCAS_ERR_RB_MISSING;
+        }
+        if (err == NCL_OK) {
+            err = ncl_focas_block_at(reply, reply_len, (size_t)block_index,
+                                     &block, &block_len);
+        }
+        if (err == NCL_OK) {
+            payload = ncl_focas_block_payload(block, block_len, &payload_len);
+            if (payload == NULL) {
+                err = NCL_FOCAS_ERR_LENGTH;
+            } else {
+                uint16_t declared = ncl_focas_block_payload_len(block, block_len);
+
+                if (declared > 0 && (size_t)declared < payload_len) {
+                    payload_len = declared; /* 信机床自己报的数 */
+                }
+            }
+        }
+        ncl_mutex_unlock(ctx->mutex);
+        if (err != NCL_OK) {
+            return err;
+        }
+        bytes = ncl_json_new_array();
+        object = ncl_json_new_object();
+        if (bytes == NULL || object == NULL) {
+            ncl_json_free(bytes);
+            ncl_json_free(object);
+            return NCL_ERR_NOMEM;
+        }
+        {
+            size_t i;
+
+            for (i = 0; i < payload_len; i++) {
+                ncl_json *byte = ncl_json_new_int(payload[i]);
+
+                if (byte == NULL || ncl_json_arr_push(bytes, byte) != NCL_OK) {
+                    ncl_json_free(byte);
+                    ncl_json_free(bytes);
+                    ncl_json_free(object);
+                    return NCL_ERR_NOMEM;
+                }
+            }
+        }
+        (void)ncl_json_obj_set_int(object, "block", block_index);
+        (void)ncl_json_obj_set_int(object, "length", (long long)payload_len);
+        (void)ncl_json_obj_set(object, "bytes", bytes);
         if (result != NULL) {
             *result = object;
         } else {

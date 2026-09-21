@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "nclink/ncl_common.h"
+#include "nclink/ncl_charset.h"
 #include "nclink/ncl_json.h"
 
 #include "focas/ncl_focas_pdu.h"
@@ -35,6 +36,107 @@ static ncl_err note(ncl_focas *focas, const char *what, ncl_err code)
                  ncl_err_name(code));
     }
     return code;
+}
+
+/*
+ * 线上"每轴/每主轴一条记录"的形状（2026-09 真机实测，01 册 §2.8）：
+ *
+ *     [0..4)  data  (BE32)
+ *     [4..6)  预留（这台机器恒 0x000a，官方库一个字段都不取）
+ *     [6..8)  dec   (BE16，该轴的小数位)
+ *
+ * 值 = `data / 10^dec`。位置/伺服负载/主轴负载/主轴转速/进给速度**都是这一个形状**：
+ * 载荷长度 256 字节 = 32 根轴 × 8（`0x26`/`0x56`）、64 字节 = 8 根主轴 × 8（`0x40`）。
+ * dec 的位置是拿官方 SDK 的 `cnc_rdaxisdata`（cls=1）对同一台机器核的：它报 X 的
+ * dec=3，而载荷里那一格正好在记录 **+6**（+4 处是恒定的 `00 0a`）。
+ *
+ * **原来按 12 字节 POSELM 切**（data@0 + dec@4 + 轴名@10，照假机床定的）：真机上
+ * 会把 dec 读成 10，于是任何值都被除成 0（X 的 116583 成了 0 而不是 116.583），
+ * 从第 2 根轴起偏移也全错。
+ */
+#define FOCAS_AXIS_RECORD 8u
+#define FOCAS_AXIS_DEC_AT 6u
+
+/** 从"整块载荷的字节数组"里取一个字节（大端，与线上一致）。 */
+static uint8_t bytes_at(const ncl_json *bytes, size_t index)
+{
+    long long value = 0;
+
+    (void)ncl_json_as_int(ncl_json_arr_get((ncl_json *)bytes, index), &value);
+    return (uint8_t)(value & 0xFF);
+}
+
+/** 取第 @p index 条记录（data + dec），载荷不够就是"读不到"。 */
+static bool record_read(const ncl_json *payload, size_t index, int32_t *data,
+                        int *dec)
+{
+    size_t at = index * FOCAS_AXIS_RECORD;
+
+    if (payload == NULL || ncl_json_type_of((ncl_json *)payload) != NCL_JSON_ARRAY ||
+        ncl_json_arr_len((ncl_json *)payload) < at + FOCAS_AXIS_RECORD) {
+        return false;
+    }
+    *data = (int32_t)(((uint32_t)bytes_at(payload, at) << 24) |
+                      ((uint32_t)bytes_at(payload, at + 1) << 16) |
+                      ((uint32_t)bytes_at(payload, at + 2) << 8) |
+                      (uint32_t)bytes_at(payload, at + 3));
+    *dec = (int)(((uint16_t)bytes_at(payload, at + FOCAS_AXIS_DEC_AT) << 8) |
+                 (uint16_t)bytes_at(payload, at + FOCAS_AXIS_DEC_AT + 1u));
+    if (*dec < 0 || *dec > 9) {
+        *dec = 0; /* 机床没报小数位（或报了怪值）：按整数算，别把值除成 0 */
+    }
+    return true;
+}
+
+/** 缩放到实际值：`data / 10^dec`（dec 是小数点位数）。 */
+static double record_scale(int32_t data, int dec)
+{
+    double scale = 1.0;
+    int i;
+
+    for (i = 0; i < dec; i++) {
+        scale *= 10.0;
+    }
+    return (double)data / scale;
+}
+
+/**
+ * 读"每轴一条 8 字节记录"那一族里的第 @p index 条：item 名 + 块号 + 记录号。
+ * 载荷里从哪开始写在 item 名字里（`"ACTF@8"`），块号是另一个参数 —— 与 §2.3 的读取
+ * 约定一致（`"@offset"` 是载荷内的字节偏移）。
+ *
+ * 一次**只读这一条**（8 字节）而不是整块：有的调用只回它有的那几条 —— `cnc_acts`
+ * 在只有一根主轴的机床上就回 8 字节，按"主轴数 × 8"去要会撞载荷不够。
+ */
+static ncl_err record_at(ncl_focas *focas, const char *item_name, long long block,
+                         int index, double *value, int *dec_out)
+{
+    char item[48];
+    ncl_json *payload = NULL;
+    int32_t data = 0;
+    int dec = 0;
+    ncl_err rc;
+
+    if (index < 0 || index > 63) {
+        return note(focas, item_name, NCL_ERR_RANGE);
+    }
+    snprintf(item, sizeof(item), "%s@%d", item_name,
+             index * (int)FOCAS_AXIS_RECORD);
+    rc = ncl_focas_read_item(focas, item, block, (int)FOCAS_AXIS_RECORD,
+                             NCL_DTYPE_BYTE, &payload);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    if (!record_read(payload, 0, &data, &dec)) {
+        ncl_json_free(payload);
+        return note(focas, item_name, NCL_ERR_PARSE);
+    }
+    ncl_json_free(payload);
+    *value = record_scale(data, dec);
+    if (dec_out != NULL) {
+        *dec_out = dec;
+    }
+    return NCL_OK;
 }
 
 /**
@@ -297,49 +399,37 @@ ncl_err ncl_focas_program_name(ncl_focas *focas, char *out, size_t cap)
 }
 
 /**
- * 每轴/每主轴一个 float 的那两条（`cnc_actf` / `cnc_acts`）：item 名 + 第几个。
- * 载荷里从 `index * 4` 字节开始就是这一个的值（大端 float32）。
+ * 每轴/每主轴一条记录的那两条（`cnc_actf` 进给速度 / `cnc_acts` 主轴转速）：
+ * item 名 + 第几个。载荷就是上面那种 **8 字节记录**（data@0 + dec@6，§2.8）——
+ * 原来按"每轴一个 float32"读（@index*4），真机上是把记录的第 4 个字节当 float 开头，
+ * 从"第 2 根轴"起就全错。真机实测：`0x25` 回 `00 00 08 97 00 0a 00 00` → 2199 rpm。
  */
-static ncl_err per_unit_float(ncl_focas *focas, const char *item_name,
-                              int index, int count, double *value)
+static ncl_err per_unit_record(ncl_focas *focas, const char *item_name,
+                               int index, int count, double *value)
 {
-    char item[32];
-    ncl_json *json = NULL;
-    ncl_err rc;
-
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     if (index < 0 || index >= count) {
         return note(focas, item_name, NCL_ERR_RANGE);
     }
-    snprintf(item, sizeof(item), "%s@%d", item_name, index * 4);
-    rc = ncl_focas_read_item(focas, item, 0, 1, NCL_DTYPE_FLOAT32, &json);
-    if (rc != NCL_OK) {
-        return rc;
-    }
-    if (!ncl_json_as_double(json, value)) {
-        ncl_json_free(json);
-        return note(focas, item, NCL_ERR_PARSE);
-    }
-    ncl_json_free(json);
-    return NCL_OK;
+    return record_at(focas, item_name, 0, index, value, NULL);
 }
 
-/* 轴的实际进给速度 F（cnc_actf，0x24）：每轴一个 float。 */
+/* 轴的实际进给速度 F（cnc_actf，0x24）：每轴一条记录。 */
 ncl_err ncl_focas_axis_feedrate(ncl_focas *focas, ncl_focas_axis axis,
                                 double *value)
 {
-    return per_unit_float(focas, "ACTF", (int)axis, (int)NCL_FOCAS_AXIS_COUNT,
-                          value);
+    return per_unit_record(focas, "ACTF", (int)axis, (int)NCL_FOCAS_AXIS_COUNT,
+                           value);
 }
 
-/* 主轴的实际转速 S（cnc_acts，0x25）：每个主轴一个 float。 */
+/* 主轴的实际转速 S（cnc_acts，0x25）：每个主轴一条记录。 */
 ncl_err ncl_focas_spindle_speed(ncl_focas *focas, unsigned spindle,
                                 double *value)
 {
-    return per_unit_float(focas, "ACTS", (int)spindle, (int)NCL_FOCAS_SPINDLE_MAX,
-                          value);
+    return per_unit_record(focas, "ACTS", (int)spindle,
+                           (int)NCL_FOCAS_SPINDLE_MAX, value);
 }
 
 /*
@@ -477,7 +567,20 @@ ncl_err ncl_focas_tool_number(ncl_focas *focas, long long *value)
     if (value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    return not_yet(focas, "当前刀具号", "cnc_rdgcode（模态 T 码）");
+    /*
+     * **还没找到可靠的来源**，先如实回"读不到"：
+     *
+     *   - 模态那条 `cnc_rdgcode`（0x96）只报 G 组（24 组全试过，没有 T 那一格）；
+     *   - `cnc_rdexecprog` 在这台机器上回的**不是"当前那一段"，而是整段程序文本**
+     *     （真机实测 515 字节：M98P3001 … 一直到程序末尾），从里面"找最后一个 T"
+     *     取到的会是程序里最后一个换刀，不是当前刀具 —— 那还不如不报。
+     *
+     * 等找到"当前 T 码"的正式出处（`cnc_rdgcode` 的别的 type，或 ODBDY2 里那一格）
+     * 再接。模型里的 `/MACHINE/TOOL` 这一格先保持"读不到"，别编一个数。
+     */
+    (void)value;
+    return not_yet(focas, "当前刀具号",
+                   "cnc_rdgcode 的 T 组 / ODBDY2（0x96 只报 G 组，0x2e 那条回整段程序）");
 }
 
 /* 程序行号（cnc_rdseqnum，0x1d）：载荷 @0 的 BE32；表 7 的 LINE_NUMBER 是文本。 */
@@ -570,66 +673,125 @@ ncl_err ncl_focas_timer(ncl_focas *focas, ncl_focas_timer_kind kind,
  * 时得改两处（点位表 + client）；现在只改下面的函数体，点位表一行都不用动。
  */
 
+/*
+ * 报警消息（`cnc_rdalmmsg2`，item `ALMMSG` = 一个 `0x23`：d = 报警类型（-1 = 全部）、
+ * e = 最多几条、`arg2 = 2`（要文本）、`arg3 = 64`（文本要多少字节））。
+ *
+ * **没有报警时载荷 0 字节**（真机实测）→ 回空数组："没有报警"，不是"读不到"。
+ * 有报警时载荷是**一条接一条的定长记录**（真机实测，§2.8.2）：
+ *
+ *     [0..4)   报警号    (BE32)   真机示例 75
+ *     [4..8)   报警类型  (BE32)   3
+ *     [8..12)  轴号/保留 (BE32)   0
+ *     [12..16) 文本长度  (BE32)   4        ← GB2312 的"保护"正好 4 字节
+ *     [16..)   文本（GB2312，文本长度那么多字节），后面补 0 到整条
+ *
+ * 整条长度 = `16 + arg3`（要 64 字节文本就是 80 字节一条）；`arg3` 给 0 时机床只回
+ * 16 字节的抬头、**不填文本**，`arg2` 给 0 时同样不填 —— 这两格必须照上面给。
+ */
+#define FOCAS_ALM_HEADER 16u
+#define FOCAS_ALM_TEXT_AT 16u
+#define FOCAS_ALM_TEXT_MAX 64u
+#define FOCAS_ALM_RECORD (FOCAS_ALM_HEADER + FOCAS_ALM_TEXT_MAX)
+
 ncl_err ncl_focas_alarm(ncl_focas *focas, ncl_json **value)
 {
+    ncl_json *params = NULL;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    ncl_json *array = NULL;
+    size_t length = 0;
+    size_t records;
+    size_t i;
+    ncl_err rc;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     *value = NULL;
-    /* 帧补上之后：cnc_rdalmmsg2（item 0x23，d = 报警类型，e = 条数）按 ODBALMMSG2
-     * 数组切，一条报警一个 {"number","text"}；形状见表 9。 */
-    return not_yet(focas, "报警", "cnc_rdalmmsg2（item 0x23，31 册 §1 #8）");
-}
-
-/*
- * 坐标：`cnc_rdposition` 一条请求拿四路（绝对/机械/相对/剩余），每轴一个
- * **POSELM**（12 字节）：`int32 data` + `dec` + `unit` + `disp` + 轴名 + 后缀。
- * 请求的 9 个块与应答的 9 个块一一对应（§2.3 的约定），所以
- *   块 1 = 绝对、块 2 = 机械、块 3 = 相对、块 4 = 剩余（0 基下标）。
- * 位置值 = `data / 10^dec`（NCGuide 上实测 dec=3、轴名 'X'）。
- */
-#define FOCAS_POSELM_SIZE 12
-
-/** 从"整块载荷的字节数组"里取一个 POSELM 的字段（大端，与线上一致）。 */
-static uint8_t bytes_at(const ncl_json *bytes, size_t index)
-{
-    long long value = 0;
-
-    (void)ncl_json_as_int(ncl_json_arr_get((ncl_json *)bytes, index), &value);
-    return (uint8_t)(value & 0xFF);
-}
-
-static bool poselm_read(const ncl_json *payload, size_t axis, int32_t *data,
-                        int *dec)
-{
-    size_t at = axis * FOCAS_POSELM_SIZE;
-
-    if (payload == NULL || ncl_json_type_of((ncl_json *)payload) != NCL_JSON_ARRAY ||
-        ncl_json_arr_len((ncl_json *)payload) < at + FOCAS_POSELM_SIZE) {
-        return false;
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
     }
-    *data = (int32_t)(((uint32_t)bytes_at(payload, at) << 24) |
-                      ((uint32_t)bytes_at(payload, at + 1) << 16) |
-                      ((uint32_t)bytes_at(payload, at + 2) << 8) |
-                      (uint32_t)bytes_at(payload, at + 3));
-    *dec = (int)(((uint16_t)bytes_at(payload, at + 4) << 8) |
-                 (uint16_t)bytes_at(payload, at + 5));
-    return true;
-}
-
-/** 缩放到实际值：`data / 10^dec`（dec 是小数点位数）。 */
-static double poselm_scale(int32_t data, int dec)
-{
-    double scale = 1.0;
-    int i;
-
-    for (i = 0; i < dec; i++) {
-        scale *= 10.0;
+    (void)ncl_json_obj_set_string(params, "item", "ALMMSG");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc != NCL_OK) {
+        return rc;
     }
-    return (double)data / scale;
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY) {
+        ncl_json_free(answer);
+        return note(focas, "ALMMSG", NCL_ERR_PARSE);
+    }
+    length = ncl_json_arr_len(bytes);
+    array = ncl_json_new_array();
+    if (array == NULL) {
+        ncl_json_free(answer);
+        return NCL_ERR_NOMEM;
+    }
+    records = length / FOCAS_ALM_RECORD;
+    for (i = 0; i < records; i++) {
+        size_t at = i * FOCAS_ALM_RECORD;
+        long long number = 0;
+        long long type = 0;
+        size_t text_len = 0;
+        char raw[FOCAS_ALM_TEXT_MAX + 1u];
+        char *text = NULL;
+        size_t used = 0;
+        size_t j;
+        ncl_json *entry;
+
+        for (j = 0; j < 4u; j++) {
+            number = (number << 8) | (long long)bytes_at(bytes, at + j);
+            type = (type << 8) | (long long)bytes_at(bytes, at + 4u + j);
+            text_len = (text_len << 8) | (size_t)bytes_at(bytes, at + 12u + j);
+        }
+        if (text_len > FOCAS_ALM_TEXT_MAX) {
+            text_len = FOCAS_ALM_TEXT_MAX; /* 机床报的比我们要的多：按我们要的截 */
+        }
+        for (j = 0; j < text_len && at + FOCAS_ALM_TEXT_AT + j < length; j++) {
+            unsigned byte = bytes_at(bytes, at + FOCAS_ALM_TEXT_AT + j);
+
+            if (byte == 0) {
+                break;
+            }
+            raw[used++] = (char)byte;
+        }
+        while (used > 0 && raw[used - 1] == ' ') {
+            used--;
+        }
+        /* 机床给的是 GB2312，NC-Link 的 JSON 要 UTF-8（见 ncl_charset.h）。 */
+        if (ncl_gb2312_to_utf8(raw, used, &text, NULL) != NCL_OK) {
+            ncl_json_free(array);
+            ncl_json_free(answer);
+            return NCL_ERR_NOMEM;
+        }
+        entry = ncl_json_new_object();
+        if (entry == NULL ||
+            ncl_json_obj_set_int(entry, "number", number) != NCL_OK ||
+            ncl_json_obj_set_int(entry, "type", type) != NCL_OK ||
+            ncl_json_obj_set_string(entry, "text", text) != NCL_OK ||
+            ncl_json_arr_push(array, entry) != NCL_OK) {
+            ncl_json_free(entry);
+            ncl_free_safe(text);
+            ncl_json_free(array);
+            ncl_json_free(answer);
+            return NCL_ERR_NOMEM;
+        }
+        ncl_free_safe(text);
+    }
+    ncl_json_free(answer);
+    *value = array;
+    return NCL_OK;
 }
 
 /**
+ * 坐标：`cnc_rdposition` 一条请求拿四路（绝对/机械/相对/剩余），请求 8 个块、应答
+ * 8 个块一一对应（§2.3 的约定），所以 **下标 1 = 绝对、2 = 机械、3 = 相对、4 = 剩余**
+ * （0 基），每块载荷就是上面那种"每轴 8 字节"的记录数组。
+ *
  * 位置那一路的公共读法：`which` 0..3 = 绝对/机械/相对/剩余（对应块 1..4）。
  * 一次请求把四路都取回来，多读一轴也只多花一次查询（本来一条请求就够）。
  *
@@ -640,34 +802,14 @@ static double poselm_scale(int32_t data, int dec)
 static ncl_err position_read_dec(ncl_focas *focas, ncl_focas_axis axis,
                                  int which, double *value, int *dec_out)
 {
-    ncl_json *payload = NULL;
-    int32_t data = 0;
-    int dec = 0;
-    ncl_err rc;
-
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
         return note(focas, "RDPOSITION", NCL_ERR_RANGE);
     }
-    /* 整块载荷按字节取回来（POSELM 是混合结构，驱动层只认单一 dtype）。 */
-    rc = ncl_focas_read_item(focas, "RDPOSITION", 1 + which,
-                             (int)(FOCAS_POSELM_SIZE * NCL_FOCAS_AXIS_COUNT),
-                             NCL_DTYPE_BYTE, &payload);
-    if (rc != NCL_OK) {
-        return rc;
-    }
-    if (!poselm_read(payload, (size_t)axis, &data, &dec)) {
-        ncl_json_free(payload);
-        return note(focas, "RDPOSITION", NCL_ERR_PARSE);
-    }
-    ncl_json_free(payload);
-    *value = poselm_scale(data, dec);
-    if (dec_out != NULL) {
-        *dec_out = dec;
-    }
-    return NCL_OK;
+    /* 块号从 1 起：1 = 绝对、2 = 机械、3 = 相对、4 = 剩余。 */
+    return record_at(focas, "RDPOSITION", 1 + which, (int)axis, value, dec_out);
 }
 
 static ncl_err position_read(ncl_focas *focas, ncl_focas_axis axis, int which,
@@ -765,7 +907,7 @@ static ncl_err srv_delay_raw(ncl_focas *focas, ncl_focas_axis axis, int dec,
         return note(focas, "SV_DELAY", NCL_ERR_PARSE);
     }
     ncl_json_free(payload);
-    *value = poselm_scale(data, dec);
+    *value = record_scale(data, dec);
     return NCL_OK;
 }
 
@@ -824,7 +966,10 @@ ncl_err ncl_focas_axis_position_cmd(ncl_focas *focas, ncl_focas_axis axis,
     return NCL_OK;
 }
 
-/* 伺服负载（cnc_rdsvmeter，0x56 + 0x89）：每轴一个 LOADELM（int32 + dec/unit/name）。 */
+/*
+ * 伺服负载（`cnc_rdsvmeter`）：item `SVMETER` = 一个 `0x56`（d=1 = 全部轴），
+ * 应答 256 字节，每轴 8 字节（形状同位置：data@0、dec@6，§2.8）。机床静止时是 0。
+ */
 ncl_err ncl_focas_axis_load(ncl_focas *focas, ncl_focas_axis axis,
                             double *value)
 {
@@ -834,10 +979,13 @@ ncl_err ncl_focas_axis_load(ncl_focas *focas, ncl_focas_axis axis,
     if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
         return note(focas, "SVLOAD", NCL_ERR_RANGE);
     }
-    return not_yet(focas, "伺服负载", "cnc_rdsvmeter（item 0x56 + 0x89）");
+    return record_at(focas, "SVMETER", 0, (int)axis, value, NULL);
 }
 
-/* 主轴负载/转速（cnc_rdspmeter，0x40：d=4 负载、d=5 转速；再跟一条 0x8a）。 */
+/*
+ * 主轴负载（`cnc_rdspmeter`，item `SPLOAD` = 一个 `0x40`，d=4）：应答 64 字节 =
+ * 8 根主轴 × 8（同一种 8 字节记录）。主轴号是**主轴**编号，不是轴号。
+ */
 ncl_err ncl_focas_spindle_load(ncl_focas *focas, unsigned spindle,
                                double *value)
 {
@@ -847,7 +995,7 @@ ncl_err ncl_focas_spindle_load(ncl_focas *focas, unsigned spindle,
     if (spindle >= NCL_FOCAS_SPINDLE_MAX) {
         return note(focas, "SPLOAD", NCL_ERR_RANGE);
     }
-    return not_yet(focas, "主轴负载", "cnc_rdspmeter（item 0x40 + 0x8a）");
+    return record_at(focas, "SPLOAD", 0, (int)spindle, value, NULL);
 }
 
 /** 每轴一类量的公共壳（扭矩/电流/温度）：轴号先校验，再交回"还没实现"。 */
@@ -897,7 +1045,48 @@ ncl_err ncl_focas_axis_type(ncl_focas *focas, ncl_focas_axis axis, char *out,
         return note(focas, "AXIS", NCL_ERR_RANGE);
     }
     out[0] = '\0';
-    return not_yet(focas, "轴类型", "cnc_rdaxisname / cnc_rdaxisdata 的轴属性");
+    {
+        unsigned char name = 0;
+        ncl_json *params = ncl_json_new_object();
+        ncl_json *answer = NULL;
+        ncl_json *bytes = NULL;
+        size_t length;
+        ncl_err rc;
+
+        if (params == NULL) {
+            return NCL_ERR_NOMEM;
+        }
+        (void)ncl_json_obj_set_string(params, "item", "AXISNAME");
+        (void)ncl_json_obj_set_int(params, "block", 0);
+        rc = ncl_focas_call(focas, "payload", params, &answer);
+        ncl_json_free(params);
+        if (rc != NCL_OK) {
+            return rc;
+        }
+        bytes = ncl_json_obj_get(answer, "bytes");
+        if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY) {
+            ncl_json_free(answer);
+            return note(focas, "AXIS", NCL_ERR_PARSE);
+        }
+        length = ncl_json_arr_len(bytes);
+        if ((size_t)axis * 4u + 4u > length) {
+            ncl_json_free(answer);
+            return note(focas, "AXIS", NCL_ERR_NOT_FOUND);
+        }
+        name = bytes_at(bytes, (size_t)axis * 4u);
+        ncl_json_free(answer);
+        switch (name) {
+    case 'X': case 'x': case 'Y': case 'y': case 'Z': case 'z':
+    case 'U': case 'u': case 'V': case 'v': case 'W': case 'w':
+        snprintf(out, cap, "%s", "linear");
+        return NCL_OK;
+    case 'A': case 'a': case 'B': case 'b': case 'C': case 'c':
+        snprintf(out, cap, "%s", "rotary");
+        return NCL_OK;
+    default:
+        return note(focas, "AXIS", NCL_ERR_NOT_FOUND);
+        }
+    }
 }
 
 /*
@@ -910,7 +1099,42 @@ ncl_err ncl_focas_feed_speed(ncl_focas *focas, double *value)
     if (value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    return not_yet(focas, "合成进给速度", "cnc_rddynamic2（ODBDY2.actf，长度=sizeof(ODBDY2)）");
+    /*
+     * 这台机器**没有**单独的"F 值"那条可用（`cnc_rddynamic2` 死活回 rc=4，长度从 4
+     * 试到 192 都一样），但每轴的进给速度 `cnc_actf`（item `ACTF`）是通的 —— 官方
+     * SDK 的 `cnc_rdaxisdata(cls=5 速度)` 最后也就是发 `0x24`×N（真机抄包确认）。
+     * 所以按"三根直线轴里最大的那个"给：机床只有一个方向在动时就是它。
+     */
+    {
+        static const ncl_focas_axis kAxes[] = { NCL_FOCAS_AXIS_X, NCL_FOCAS_AXIS_Y,
+                                                NCL_FOCAS_AXIS_Z };
+        double best = 0.0;
+        size_t ok = 0;
+        size_t i;
+        ncl_err rc = NCL_OK;
+        ncl_err last = NCL_OK;
+
+        for (i = 0; i < sizeof(kAxes) / sizeof(kAxes[0]); i++) {
+            double one = 0.0;
+
+            rc = ncl_focas_axis_feedrate(focas, kAxes[i], &one);
+            if (rc != NCL_OK) {
+                /* 这台机器 `0x24` 只回**一根轴**的 8 字节（真机实测）：
+                 * 第 2、3 根读不到不算错，跳过；三根都读不到才把错报上去。 */
+                last = rc;
+                continue;
+            }
+            ok++;
+            if (one > best) {
+                best = one;
+            }
+        }
+        if (ok == 0) {
+            return last;
+        }
+        *value = best;
+        return NCL_OK;
+    }
 }
 
 /*
@@ -965,24 +1189,165 @@ ncl_err ncl_focas_spindle_override(ncl_focas *focas, double *value)
 }
 
 /* 正在执行的程序段（cnc_rdexecprog）：应答里是"程序行文本"。 */
+/*
+ * 正在执行的程序段（`cnc_rdexecprog`，item `EXECPROG` = 一个 `0x20`，d = 要多少字节）：
+ * 应答体 = 4 字节 + ASCII 文本（NUL/0 补齐）。真机实测那条：
+ *
+ *     M98P3001 \n\n G49 \n\n T01 \n D1 \n G0G43H1Z100. \n M…
+ *
+ * 出门就是这一整段文本（换行照原样，行尾补 0 的不算）。
+ */
 ncl_err ncl_focas_executed_block(ncl_focas *focas, char *out, size_t cap)
 {
-    if (out == NULL || cap == 0) {
+    ncl_json *params = NULL;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    size_t length;
+    size_t i;
+    ncl_err rc;
+
+    if (focas == NULL || out == NULL || cap == 0) {
         return NCL_ERR_INVALID_ARG;
     }
     out[0] = '\0';
-    return not_yet(focas, "执行中的程序段", "cnc_rdexecprog");
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_string(params, "item", "EXECPROG");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY) {
+        ncl_json_free(answer);
+        return note(focas, "EXECPROG", NCL_ERR_PARSE);
+    }
+    length = ncl_json_arr_len(bytes);
+    /* 文本从 @4 起（前 4 字节官方库也不读）；机床用 0 补齐，遇到第一个 0 就是尾。 */
+    {
+        size_t used = 0;
+
+        for (i = 4u; i < length && used + 1u < cap; i++) {
+            unsigned byte = bytes_at(bytes, i);
+
+            if (byte == 0) {
+                break;
+            }
+            out[used++] = (char)byte;
+        }
+        out[used] = '\0';
+    }
+    ncl_json_free(answer);
+    /* 收尾：把尾部的 0 与空白去掉（机床是补 0 的）。 */
+    {
+        size_t len = strlen(out);
+
+        while (len > 0 && (out[len - 1] == ' ' || out[len - 1] == '\n' ||
+                           out[len - 1] == '\r')) {
+            out[--len] = '\0';
+        }
+    }
+    return NCL_OK;
 }
 
 /* 程序目录（cnc_rdprogdir3，0x06，d = 0x13）：PRGDIR3 数组，形状见 31 册 §1 #7。 */
+/*
+ * 程序目录（`cnc_rdprogdir3`，item `RDPROGDIR3` = 一个 `0x06`：d=0、e=8、arg2=1）：
+ * 应答是 **72 字节一条**的记录，一条一个程序（真机实测，§2.8.4）：
+ *
+ *     [0..2)   （空）
+ *     [2..4)   程序号  (BE16)   例：2001
+ *     [4..8)   4 字节类型/属性（第一个程序是 "M 0 "，其余这台是 0）
+ *     [8..72)  注释（NUL 结尾，后面补 0）
+ *
+ * 出门是一个数组：`[{"number":2001,"comment":"(DEMOMAINGEAR)"}, …]`。
+ */
+#define FOCAS_PROG_RECORD 72u
+#define FOCAS_PROG_NUMBER_AT 2u
+#define FOCAS_PROG_COMMENT_AT 8u
+
 ncl_err ncl_focas_program_directory(ncl_focas *focas, ncl_json **value)
 {
+    ncl_json *params = NULL;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    ncl_json *array = NULL;
+    size_t length;
+    size_t records;
+    size_t i;
+    ncl_err rc;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     *value = NULL;
-    return not_yet(focas, "程序目录",
-                   "cnc_rdprogdir3（item 0x06，d=0x13），32 册 §5 待核");
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_string(params, "item", "RDPROGDIR3");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY) {
+        ncl_json_free(answer);
+        return note(focas, "RDPROGDIR3", NCL_ERR_PARSE);
+    }
+    length = ncl_json_arr_len(bytes);
+    array = ncl_json_new_array();
+    if (array == NULL) {
+        ncl_json_free(answer);
+        return NCL_ERR_NOMEM;
+    }
+    records = length / FOCAS_PROG_RECORD;
+    for (i = 0; i < records; i++) {
+        size_t at = i * FOCAS_PROG_RECORD;
+        long long number = ((long long)bytes_at(bytes, at + FOCAS_PROG_NUMBER_AT)
+                            << 8) |
+                           (long long)bytes_at(bytes, at + FOCAS_PROG_NUMBER_AT + 1u);
+        char comment[FOCAS_PROG_RECORD];
+        size_t used = 0;
+        size_t j;
+        ncl_json *entry;
+
+        for (j = FOCAS_PROG_COMMENT_AT; at + j < length && j < FOCAS_PROG_RECORD;
+             j++) {
+            unsigned byte = bytes_at(bytes, at + j);
+
+            if (byte == 0) {
+                break;
+            }
+            comment[used++] = (char)byte;
+        }
+        while (used > 0 && comment[used - 1] == ' ') {
+            used--;
+        }
+        comment[used] = '\0';
+        if (number == 0 && used == 0) {
+            continue; /* 空槽（机床把没占的格子也铺出来了） */
+        }
+        entry = ncl_json_new_object();
+        if (entry == NULL ||
+            ncl_json_obj_set_int(entry, "number", number) != NCL_OK ||
+            ncl_json_obj_set_string(entry, "comment", comment) != NCL_OK ||
+            ncl_json_arr_push(array, entry) != NCL_OK) {
+            ncl_json_free(entry);
+            ncl_json_free(array);
+            ncl_json_free(answer);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    ncl_json_free(answer);
+    *value = array;
+    return NCL_OK;
 }
 
 ncl_err ncl_focas_tool_list(ncl_focas *focas, ncl_json **value)
@@ -996,7 +1361,72 @@ ncl_err ncl_focas_tool_list(ncl_focas *focas, ncl_json **value)
                    "cnc_rdtooldata / cnc_rdtoolrng，32 册 §5");
 }
 
-/* 一条刀补（cnc_rdtofs，0x08）：形状/磨损 × 长度/半径，字段布局待真机核对。 */
+/*
+ * 一条刀补（`cnc_rdtofs`，item `RDTOFS` = 一个 `0x08`：d = 刀补号、e = 1、
+ * `arg2 = 1000`）。应答就是那条 **8 字节记录**（data@0、dec@6，§2.8.2 同族形状），
+ * 真机实测刀补 1 回 `00 00 00 00 00 0a 00 03` → 0.000 mm。
+ *
+ * 官方 SDK 的 `cnc_rdtofs` 出参也是"先把载荷头 4 字节当值"（斜坡载荷反查过：
+ * 出参的 data 格跟着载荷 @0 走），所以这一条的字段就是"值 + 小数位"两格。
+ */
+static ncl_err record_call(ncl_focas *focas, const char *item, long long number,
+                           long long arg2, const char *what, ncl_json **value)
+{
+    ncl_json *params = NULL;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    int32_t data = 0;
+    int dec = 0;
+    ncl_err rc;
+
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_string(params, "item", item);
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", number);
+    (void)ncl_json_obj_set_int(params, "e", 1);
+    if (arg2 >= 0) {
+        (void)ncl_json_obj_set_int(params, "arg2", arg2);
+    }
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc == NCL_FOCAS_ERR_NO_DATA) {
+        /* 机床回方向 3 = "没有这个号"（见 ncl_focas_pdu.h 里那个码）。 */
+        return note(focas, what, NCL_ERR_NOT_FOUND);
+    }
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY) {
+        ncl_json_free(answer);
+        return note(focas, what, NCL_ERR_PARSE);
+    }
+    if (ncl_json_arr_len(bytes) < (long long)FOCAS_AXIS_RECORD) {
+        /*
+         * 机床回了空载荷 = "没有这个号"（真机实测：宏变量 100 / 刀补 2 / 参数 2
+         * 都是这样，rc=0 但载荷 0 字节，块码还是 0x00）。这不是"读错了"，别报成
+         * 解析失败 —— 上层按"这台没有那一号"处理更对。
+         */
+        ncl_json_free(answer);
+        return note(focas, what, NCL_ERR_NOT_FOUND);
+    }
+    if (!record_read(bytes, 0, &data, &dec)) {
+        ncl_json_free(answer);
+        return note(focas, what, NCL_ERR_PARSE);
+    }
+    ncl_json_free(answer);
+    *value = ncl_json_new_object();
+    if (*value == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_int(*value, "number", number);
+    (void)ncl_json_obj_set_double(*value, "value", record_scale(data, dec));
+    return NCL_OK;
+}
+
 ncl_err ncl_focas_tool_offset(ncl_focas *focas, long long index,
                               ncl_json **value)
 {
@@ -1007,7 +1437,7 @@ ncl_err ncl_focas_tool_offset(ncl_focas *focas, long long index,
         return note(focas, "RDTOFS", NCL_ERR_INVALID_ARG);
     }
     *value = NULL;
-    return not_yet(focas, "刀补", "cnc_rdtofs（item 0x08）");
+    return record_call(focas, "RDTOFS", index, 1000, "RDTOFS", value);
 }
 
 /* 刀具寿命计数（cnc_rdlife，0x8b，d = e = 1）：值不在载荷 0 处，待真机核。 */
@@ -1023,7 +1453,11 @@ ncl_err ncl_focas_tool_life(ncl_focas *focas, long long group,
     return not_yet(focas, "刀具寿命", "cnc_rdlife（item 0x8b，d=e=1）");
 }
 
-/* 一个用户宏变量（cnc_rdmacro，0x15）：值是"数值 + 小数位"，待核。 */
+/*
+ * 一个用户宏变量（`cnc_rdmacro`，item `RDMACRO` = 一个 `0x15`：d = 变量号、e = 1）。
+ * 应答 8 字节：data@0（BE32）、dec@6 —— 真机实测 `00 00 00 00 00 0a ff ff` → 值 0；
+ * dec 那格这台机器给 0xffff（不是 0..9 的合法小数位，按 0 算）。
+ */
 ncl_err ncl_focas_macro_variable(ncl_focas *focas, long long number,
                                  ncl_json **value)
 {
@@ -1034,10 +1468,14 @@ ncl_err ncl_focas_macro_variable(ncl_focas *focas, long long number,
         return note(focas, "RDMACRO", NCL_ERR_INVALID_ARG);
     }
     *value = NULL;
-    return not_yet(focas, "宏变量", "cnc_rdmacro（item 0x15）");
+    return record_call(focas, "RDMACRO", number, -1, "RDMACRO", value);
 }
 
-/* 一个 CNC 参数（cnc_rdparam，0x0e）：载荷里带参数号，布局待核。 */
+/*
+ * 一个 CNC 参数（`cnc_rdparam`，item `RDPARAM` = 一个 **`0x8d`**：d = 参数号、e = 1）。
+ * 应答 264 字节，**最前面 4 字节（BE32）就是参数值**（真机实测：参数 1 → 1），
+ * 同一形状（值 + 小数位）的第一格。0x0e 那条在这台机器上被拒（rc=1），不是这一条。
+ */
 ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
                             ncl_json **value)
 {
@@ -1048,7 +1486,7 @@ ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
         return note(focas, "RDPARAM", NCL_ERR_INVALID_ARG);
     }
     *value = NULL;
-    return not_yet(focas, "参数", "cnc_rdparam（item 0x0e）");
+    return record_call(focas, "RDPARAM", number, -1, "RDPARAM", value);
 }
 
 /* 工件坐标系（cnc_rdwkcdshft 一族）：G54… 的偏移表，帧待抓包。 */
@@ -1066,27 +1504,184 @@ ncl_err ncl_focas_work_offset(ncl_focas *focas, const char *name,
 }
 
 /* 当前模态（cnc_rdgcode）：T/B/S/F 与一组 G 代码，帧待抓包。 */
+/*
+ * 模态（`cnc_rdgcode`，item `RDGCODE` = 一个 `0x96`，**d = 第几组**）：
+ * 每一组回 12 字节，**代码在 @6（BE16，值是码 ×10）**；机床对 0..23 组都答
+ * （24 以上回 rc=3）。真机实测：第 8 组 0x0050 → "G80"、第 20 组 0x0083 → "G13.1"、
+ * 第 9 组 "G98"、第 10 组 "G50"、第 12 组 "G97"、第 16 组 "G15"。
+ *
+ * 出门：`{"gcodes":["G00","G80",…]}` —— 只收**这台机床真报了的组**（每组的码为 0 时
+ * 也照报 "G00"：那是"该组的当前码就是 G00"）。
+ */
+#define FOCAS_GCODE_GROUPS 24
+
+/**
+ * 渲染一个 G 码：`flag`（载荷 @10）非 0 说明那一格是"带一位小数"的（码 = 值 ×10），
+ * 否则就是整数 —— 真机 24 组全对着看过：
+ *
+ *     flag=0 → 17 ⇒ G17、40 ⇒ G40、54 ⇒ G54、80 ⇒ G80、98 ⇒ G98、160 ⇒ G160
+ *     flag=1 → 401 ⇒ G40.1、131 ⇒ G13.1、501 ⇒ G50.1、542 ⇒ G54.2、805 ⇒ G80.5
+ */
+static void gcode_render(unsigned code, unsigned flag, char *out, size_t cap)
+{
+    if (flag != 0u) {
+        snprintf(out, cap, "G%u.%u", code / 10u, code % 10u);
+    } else {
+        snprintf(out, cap, "G%u", code);
+    }
+}
+
 ncl_err ncl_focas_modal(ncl_focas *focas, ncl_json **value)
 {
+    ncl_json *array = NULL;
+    unsigned group;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     *value = NULL;
-    return not_yet(focas, "模态", "cnc_rdgcode");
+    array = ncl_json_new_array();
+    if (array == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    for (group = 0; group < FOCAS_GCODE_GROUPS; group++) {
+        ncl_json *params = NULL;
+        ncl_json *answer = NULL;
+        ncl_json *bytes = NULL;
+        ncl_json *entry = NULL;
+        char text[16];
+        ncl_err rc;
+
+        params = ncl_json_new_object();
+        if (params == NULL) {
+            ncl_json_free(array);
+            return NCL_ERR_NOMEM;
+        }
+        (void)ncl_json_obj_set_string(params, "item", "RDGCODE");
+        (void)ncl_json_obj_set_int(params, "block", 0);
+        (void)ncl_json_obj_set_int(params, "d", (long long)group);
+        rc = ncl_focas_call(focas, "payload", params, &answer);
+        ncl_json_free(params);
+        if (rc == NCL_FOCAS_ERR_NO_DATA) {
+            continue; /* 这一组机床没有 */
+        }
+        if (rc != NCL_OK) {
+            ncl_json_free(array);
+            return rc;
+        }
+        bytes = ncl_json_obj_get(answer, "bytes");
+        if (bytes == NULL || ncl_json_arr_len(bytes) < 8) {
+            ncl_json_free(answer);
+            continue;
+        }
+        gcode_render((unsigned)(((unsigned)bytes_at(bytes, 6) << 8) |
+                                (unsigned)bytes_at(bytes, 7)),
+                     (unsigned)(((unsigned)bytes_at(bytes, 10) << 8) |
+                                (unsigned)bytes_at(bytes, 11)),
+                     text, sizeof(text));
+        ncl_json_free(answer);
+        entry = ncl_json_new_string(text);
+        if (entry == NULL || ncl_json_arr_push(array, entry) != NCL_OK) {
+            ncl_json_free(entry);
+            ncl_json_free(array);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    *value = array;
+    return NCL_OK;
 }
 
 /*
- * 系统信息（cnc_sysinfo）：这一条**不发数据帧** —— 型号/系列/轴数在会话握手的
- * 应答里（`func 01` 的记录 + `func 21` 的 system_info 块）。要解那段记录才能给，
- * 现在的驱动只记了记录条数（`call("session")` 看得到）。
+ * 系统信息（`cnc_sysinfo`）—— 型号 / 系列 / 版本 / 轴数都在 ODBSYS 里：
+ *
+ *     [0..2)  addinfo   (BE16：bit0 有上料器 / bit1 是 i 系列 / bit8..15 MODEL A..F)
+ *     [2..4)  max_axis  (BE16，最大控制轴数)
+ *     [4..6)  cnc_type  (ASCII，如 " 0" = Series 0i、"30" = 30i)
+ *     [6..8)  mt_type   (ASCII，如 " M" = 加工中心、" T" = 车床)
+ *     [8..12) series    (ASCII)
+ *     [12..16) version  (ASCII，如 "28.0")
+ *     [16..18) axes     (ASCII，当前控制轴数，如 "03")
+ *
+ * **它不在数据帧里，是会话探针的应答**：`func 0x21` + 一个 `code 24` 的块
+ * （item `ODBSYS`）。2026-09 真机（0i-MD）实测：那条回 rc=0、载荷 18 字节
+ * `06 62 00 20 " 0" " M" "D4G3" "28.0" "03"`；而老写法那条 `0x0e` +
+ * `d=e=0x26f0`（item `VERSION`）被机床拒（rc=1）。所以先用 `ODBSYS`，只有机床
+ * **明确拒了**那个码（块返回码非 0）才退到 `VERSION` 那条 —— 别的机型说不定只认
+ * 后者（FS0i 那版 `libfwlib32.so` 就是这么发的）。
  */
+static ncl_err odbsys_payload(ncl_focas *focas, int len, ncl_json **out)
+{
+    ncl_err rc = ncl_focas_read_item(focas, "ODBSYS", 0, len, NCL_DTYPE_BYTE, out);
+
+    if (rc == NCL_FOCAS_ERR_RB_CODE) {
+        rc = ncl_focas_read_item(focas, "VERSION", 0, len, NCL_DTYPE_BYTE, out);
+    }
+    return rc;
+}
+
+/** ODBSYS 里的一段 ASCII：空格补齐，两头都去掉（`" 0"` → `"0"`、"D4G3" 原样）。 */
+static void odbsys_text(const ncl_json *payload, size_t at, size_t len, char *out,
+                        size_t cap)
+{
+    size_t used = 0;
+    size_t i;
+
+    if (cap == 0) {
+        return;
+    }
+    for (i = 0; i < len && used + 1u < cap; i++) {
+        unsigned byte = bytes_at(payload, at + i);
+
+        if (byte == 0 || byte == ' ') {
+            if (used > 0) {
+                break; /* 补齐的空格：从第一个空格起就不看了 */
+            }
+            continue;
+        }
+        out[used++] = (char)byte;
+    }
+    out[used] = '\0';
+}
+
 ncl_err ncl_focas_system(ncl_focas *focas, ncl_json **value)
 {
+    ncl_json *payload = NULL;
+    ncl_json *object = NULL;
+    char text[8];
+    ncl_err rc;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     *value = NULL;
-    return not_yet(focas, "系统信息", "cnc_sysinfo（会话握手记录）");
+    rc = odbsys_payload(focas, 18, &payload);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    object = ncl_json_new_object();
+    if (object == NULL) {
+        ncl_json_free(payload);
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_int(object, "addinfo",
+                               (long long)bytes_at(payload, 0) * 256 +
+                                   (long long)bytes_at(payload, 1));
+    (void)ncl_json_obj_set_int(object, "maxAxis",
+                               (long long)bytes_at(payload, 2) * 256 +
+                                   (long long)bytes_at(payload, 3));
+    odbsys_text(payload, 4, 2, text, sizeof(text));
+    (void)ncl_json_obj_set_string(object, "cncType", text);
+    odbsys_text(payload, 6, 2, text, sizeof(text));
+    (void)ncl_json_obj_set_string(object, "machineType", text);
+    odbsys_text(payload, 8, 4, text, sizeof(text));
+    (void)ncl_json_obj_set_string(object, "series", text);
+    odbsys_text(payload, 12, 4, text, sizeof(text));
+    (void)ncl_json_obj_set_string(object, "version", text);
+    odbsys_text(payload, 16, 2, text, sizeof(text));
+    (void)ncl_json_obj_set_string(object, "axes", text);
+    ncl_json_free(payload);
+    *value = object;
+    return NCL_OK;
 }
 
 /* ------------------------------------------------------------ 程序上下行 -- */
@@ -1248,37 +1843,19 @@ ncl_err ncl_focas_work_offsets(ncl_focas *focas, ncl_json **value)
 static ncl_err odbsys_field(ncl_focas *focas, size_t at, size_t len, char *out,
                             size_t cap, const char *what)
 {
-    ncl_json *value = NULL;
-    const char *text;
-    char item[32];
-    size_t used = 0;
-    size_t skip = 0;
+    ncl_json *payload = NULL;
     ncl_err rc;
 
     if (len + 1u > cap) {
         return note(focas, what, NCL_ERR_RANGE);
     }
-    /* 载荷里的位置写在 item 名字里（"VERSION@4"），第 3 个参数是**块号**。 */
-    snprintf(item, sizeof(item), "VERSION@%u", (unsigned)at);
-    rc = ncl_focas_read_item(focas, item, 0, (int)len, NCL_DTYPE_STRING,
-                             &value);
+    rc = odbsys_payload(focas, 18, &payload);
     if (rc != NCL_OK) {
         return rc;
     }
-    text = ncl_json_as_string(value);
-    /* 这几格是**空格补齐**的 ASCII（" 0"、" M"、"D4G2"），两头都要去掉空格。 */
-    while (skip < len && text != NULL &&
-           (text[skip] == ' ' || text[skip] == '\0')) {
-        skip++;
-    }
-    while (skip + used < len && text != NULL && text[skip + used] != '\0' &&
-           text[skip + used] != ' ') {
-        out[used] = text[skip + used];
-        used++;
-    }
-    out[used] = '\0';
-    ncl_json_free(value);
-    if (used == 0) {
+    odbsys_text(payload, at, len, out, cap);
+    ncl_json_free(payload);
+    if (out[0] == '\0') {
         return note(focas, what, NCL_ERR_PARSE); /* 机床没报这一格 */
     }
     return NCL_OK;

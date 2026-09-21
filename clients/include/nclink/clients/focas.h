@@ -42,6 +42,8 @@ extern "C" {
  *
  * 约定：
  *   - open() 不连机床：会话在第一次读时建立，所以机床没开机不影响设备程序启动；
+ *   - 会话是**两条 TCP**（控制通道 hello 计数器 1、数据通道 2，命令走数据通道），
+ *     官方 SDK 就是这么开的；往控制通道上发命令，机床直接 RST（01 册 §2.8）；
  *   - 这些函数可以并发调用（内部串行化），采样通道与 REST 请求会同时用它们；
  *   - 失败返回 ncl_err，原因用 ncl_focas_last_error() 取（一句话，可以直接当
  *     NC-Link 应答里的 reason）；
@@ -56,7 +58,12 @@ typedef struct {
     unsigned    timeout_ms;         /**< 一次请求的超时                       */
     unsigned    connect_timeout_ms;
     unsigned    retries;
-    bool        negotiate;          /**< 先走 hello 再进命令模式（默认开）    */
+    /**
+     * 握手之后要不要再发那条会话探针（`func 0x21` 一个 `code 24` 的块，
+     * 应答就是 ODBSYS）。默认开 —— 官方 SDK 也是这么发的（01 册 §2.8）。
+     * 关掉只跳过它，两条 TCP 与两条 hello 照样走（那是会话本身）。
+     */
+    bool        negotiate;
 } ncl_focas_config;
 
 /** 轴序：与模型里 /MACHINE/AXIS@<轴>/... 的顺序一致。 */
@@ -280,12 +287,15 @@ ncl_err ncl_focas_work_offset(ncl_focas *focas, const char *name,
 ncl_err ncl_focas_work_offsets(ncl_focas *focas, ncl_json **value);
 /** 当前模态（T/B/S/F 等，`cnc_rdgcode`）。**还没实现**（帧待抓包）。 */
 ncl_err ncl_focas_modal(ncl_focas *focas, ncl_json **value);
-/** 系统信息（型号/系列/轴数，`cnc_sysinfo`）：**还没实现** —— 这一条的数据在会话
- *  握手（`func 01`/`func 21` 的应答）里，不在数据帧里，要先解那段记录。 */
+/**
+ * 系统信息（型号/系列/轴数，`cnc_sysinfo`）：会话探针那条 `code 24` 的应答载荷
+ * ODBSYS（18 字节）拆出来的 —— addinfo / maxAxis / cncType / machineType /
+ * series / version / axes。2026-09 真机实测（01 册 §2.8）。
+ */
 ncl_err ncl_focas_system(ncl_focas *focas, ncl_json **value);
-/** 机床型号（`cnc_rdmodel` / `cnc_sysinfo` 的记录）。**还没实现**。 */
+/** 机床型号：ODBSYS 里的 `cnc_type` + `mt_type` + `series`（如 `"0M D4G3"`）。 */
 ncl_err ncl_focas_model(ncl_focas *focas, char *out, size_t cap);
-/** 系统软件版本（`cnc_sysinfo` 的 series/version）。**还没实现**。 */
+/** 系统软件版本（ODBSYS 的 `version`，如 `"28.0"`）。 */
 ncl_err ncl_focas_version(ncl_focas *focas, char *out, size_t cap);
 /** 厂商（表 6 的 MANUFACTURER）：**不用读机床** —— 这一份 client 接的就是 FANUC，
  *  直接回 "FANUC"。 */

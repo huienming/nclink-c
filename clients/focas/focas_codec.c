@@ -111,10 +111,11 @@ ncl_err ncl_focas_hello_reply(const uint8_t *body, size_t body_len,
         return NCL_FOCAS_ERR_LENGTH;
     }
     n = get_u16be(body + 8);
-    /* §2.2 rule 5: the body length must be exactly 16 + 8n. */
-    if (body_len != 16u + 8u * n) {
-        return NCL_FOCAS_ERR_LENGTH;
-    }
+    /*
+     * 2026-09 真机（0i-MD，01 册 §2.3）：应答体 360 字节，而 [8..10) 写的是 8 ——
+     * "体长必须是 16 + 8n" 那条等式对不上，可官方 SDK 收下它并且 rc=0。所以这里
+     * 只要求"像一条握手应答"（至少 16 字节的块头），n 只当"机床自己怎么数"上报。
+     */
     if (records != NULL) {
         *records = n;
     }
@@ -341,21 +342,49 @@ static const ncl_focas_item kItems[] = {
     { "RDTIMER3",   { 0x120, 0, 0 },     { 3, 0, 0 },      { 0, 0, 0 },      1, false },
     { "RDTIMER4",   { 0x120, 0, 0 },     { 4, 0, 0 },      { 0, 0, 0 },      1, false },
     /*
-     * 坐标：官方 SDK 的 `cnc_rdposition` 一条请求带 **9 个块**（§2.5 实测）——
+     * 坐标：`cnc_rdposition` 一条请求带 **8 个块**（§2.8 真机实测）——
      * `0x19` 框住两头、中间四个 `0x26` 就是四种位置（d = 0 绝对 / 1 机械 / 2 相对 /
-     * 3 剩余），再跟 `0x89`/`0x0e`/`0x88` 三条轴信息。**应答块与 Cb 一一对应**
-     * （§2.3 的约定，statinfo 就是这么对的），所以第 2 个块（下标 1）就是绝对位置
-     * 那个数组，每个轴一个 `POSELM`（12 字节：int32 data + dec/unit/disp + 轴名）。
-     * 位置值 = `data / 10^dec`（NCGuide 上实测到 `dec=3`、轴名 'X'）。
+     * 3 剩余），再跟 `0x89`（轴表）/`0x88` 两条轴信息。**应答块与 Cb 一一对应**
+     * （§2.3 的约定），所以下标 1..4 就是那四种位置，每个轴一个 `POSELM`
+     * （12 字节：int32 data + dec/unit/disp + 轴名）。位置值 = `data / 10^dec`。
+     *
+     * **原来这里是 9 个块**，中间多一条 `0x0e` + `d=e=0x26f0`（"能力块"）—— 那是
+     * 照假机床/官方库对假机床的行为定的：真机（0i-MD）**只拒这一条**（块返回码 1，
+     * 上层看到 `NCL_FOCAS_ERR_RB_CODE`），去掉之后八个块全 rc=0（同轮实测，见 §2.8）。
+     * 官方库对着这台机器发的是另一套 7 块帧（`0xa4`/`0x89`/`0x88`×2/`0xa3`/`0x26`/
+     * `0xa4`），同样不带 `0x0e` —— 两套帧都说明"这条别发"。
      */
-    { "RDPOSITION", { 0x19, 0x26, 0x26, 0x26, 0x26, 0x89, 0x0e, 0x88, 0x19, 0, 0, 0 },
-                    { 0, 0, 1, 2, 3, 0xffffffff, 0xc2b, 2, 0, 0, 0, 0 },
-                    { 0, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0, 0xc2b, 0, 0, 0, 0, 0 },
-                    9, false },
+    { "RDPOSITION", { 0x19, 0x26, 0x26, 0x26, 0x26, 0x89, 0x88, 0x19, 0, 0, 0, 0 },
+                    { 0, 0, 1, 2, 3, 0xffffffff, 2, 0, 0, 0, 0, 0 },
+                    { 0, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0, 0, 0, 0, 0, 0, 0 },
+                    8, false },
+    /*
+     * 宏变量（`cnc_rdmacro`，0x15）：d = 变量号、e = 1（官方 SDK 对这台机器就是
+     * `d = 变量号, e = 1`）。应答 8 字节 = 上面那种记录形状里的前 8 字节
+     * （data@0、dec@6），真机实测：`00 00 00 00 00 0a ff ff` → 值 0、dec 那格是
+     * 0xffff（=> 按 0 算）。
+     */
     { "RDMACRO",    { 0x15, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
-    { "RDPARAM",    { 0x0e, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
-    { "RDTOFS",     { 0x08, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
-    { "RDPROGDIR3", { 0x06, 0, 0 },      { 0x13, 0, 0 },   { 1, 0, 0 },      1, false },
+    /*
+     * CNC 参数（`cnc_rdparam`）：**码是 0x8d，不是 0x0e**（真机实测：SDK 发的是
+     * `0x8d`、`d = 参数号`、`e = 1`；0x0e 那条在这台机器上被拒 rc=1）。
+     * 应答 264 字节，最前面 4 字节（BE32）就是参数值（参数 1 → 1）。
+     */
+    { "RDPARAM",    { 0x8d, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
+    /*
+     * 刀补（`cnc_rdtofs`，0x08）：d = 刀补号、e = 1，**`arg2 = 1000`**（SDK 给的
+     * 这一格真机上也确实带着）。应答 8 字节：data@0、dec@6（真机 `…00 0a 00 03` →
+     * dec = 3，即 0.000 mm）。
+     */
+    { "RDTOFS",     { 0x08, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false,
+                     { 1000, 0, 0 },     { 0, 0, 0 } },
+    /*
+     * 程序目录（`cnc_rdprogdir3`）：**码 0x06、`d` = 0、`e` = 8（一次要几条）、
+     * `arg2` = 1**（官方 SDK 对这台机器发的就是这个形状；原来写 `d = 0x13` 是照
+     * 假机床定的）。应答是 72 字节一条的记录，一条一个程序（§2.8.4）。
+     */
+    { "RDPROGDIR3", { 0x06, 0, 0 },      { 0, 0, 0 },      { 8, 0, 0 },      1, false,
+                     { 1, 0, 0 },        { 0, 0, 0 } },
     { "EXEPRGNAME2",{ 0xfc, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
     /*
      * 伺服延迟量（现场口径就是**跟踪误差**）：官方 SDK 的 `cnc_srvdelay` 只发**一条**
@@ -366,7 +395,18 @@ static const ncl_focas_item kItems[] = {
      * 再写进 `ODBAXIS.data[i]`（§2.5 反汇编）。
      */
     { "SV_DELAY",   { 0x26, 0, 0 },      { 9, 0, 0 },      { 0xffffffff, 0, 0 }, 1, false },
-    /* the capability block the session negotiation sends (§2.3) */
+    /*
+     * ODBSYS（= `cnc_sysinfo`）：会话探针那条 `code 24` 的应答载荷，18 字节
+     * （addinfo / max_axis / cnc_type / mt_type / series / version / axes）。
+     * 2026-09 真机实测：`code 24` 拿到它（rc=0），而下面那条 `0x0e` 被机床拒
+     * （rc=1）—— 官方库的 `cnc_sysinfo` 读的也是这一条（见 01 册 §2.3）。
+     */
+    { "ODBSYS",     { NCL_FOCAS_CODE_SYSINFO, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }, 1, false },
+    /*
+     * 连接期的"能力块"：FS0i 那版 `libfwlib32.so` 反汇编里看到的是 `0x0e` +
+     * `d=e=0x26f0`（§2.3 的 step 3）。真机（0i-MD）上这条回 rc=1，所以它只当
+     * ODBSYS 的**退路**（见 focas_values.c 的 odbsys_payload）。
+     */
     { "VERSION",    { 0x0e, 0, 0 },      { 0x26f0, 0, 0 }, { 0x26f0, 0, 0 }, 1, false },
     { "RDBLKCOUNT", { 0x35, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
     /*
@@ -383,6 +423,44 @@ static const ncl_focas_item kItems[] = {
      * 里的 `ncl_focas_feed_override`）。
      */
     { "RDSGNL",     { 0x5d, 0, 0 },      { 0xffff, 0, 0 }, { 0, 0, 0 },      1, false },
+    /*
+     * 正在执行的程序段（`cnc_rdexecprog`）：一个 `0x20`，**`d` = 要多少字节的文本**
+     * （官方 SDK 给 0x594 = 1428，真机回 504 字节）。应答体 = 4 字节 + 文本
+     * （ASCII、NUL/0 补齐），真机实测：`M98P3001\n\nG49\n\nT01\nD1\nG0G43H1Z100.\nM…`
+     */
+    { "EXECPROG",   { 0x20, 0, 0 },      { 0x594, 0, 0 },  { 0, 0, 0 },      1, false },
+    /*
+     * 模态 G 码（`cnc_rdgcode`）：一个 `0x96`，**`d` = 第几组**（0..23 都能答；
+     * 24 以上回 rc=3）。应答 12 字节，**代码在 @6（BE16，值是码 ×10）** ——
+     * 真机：type=8 → 0x0050 = 80 = "G80"、type=20 → 0x0083 = 131 = "G13.1"。
+     * 与 `cnc_rdalmmsg2` 一样，`d` 要按次给，所以语义层走 `call("payload")` 的覆盖。
+     */
+    { "RDGCODE",    { 0x96, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    /*
+     * 轴名（`cnc_rdaxisname`）：一个 `0x89`，应答 **每轴 4 字节** = 轴名 2 字节 +
+     * 2 字节代码（真机 X/Y/Z 都是 `58 00 94 06` / `59 00 …` / `5a 00 …`）。
+     * 轴类型（linear / rotary）这台机器上没有可分辨的那一格，按命名约定推（见语义层）。
+     */
+    { "AXISNAME",   { 0x89, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    /*
+     * 伺服负载（`cnc_rdsvmeter`）：真机实测**一条 `0x56`** 就够（d=1，e=0 =
+     * 全部轴），应答载荷 256 字节 = 32 根轴 × 8（§2.8）。官方库还会捎上 `0xa4`
+     * （轴数）与 `0x89`（轴表）两条上下文块，但机床单收这一条也认。
+     */
+    { "SVMETER",    { 0x56, 0, 0 },      { 1, 0, 0 },      { 0, 0, 0 },      1, false },
+    /*
+     * 主轴那一族（`cnc_rdspmeter`）：`0x40` + `d` 选量（4 = 负载、5 = 转速），
+     * 应答 64 字节 = 8 根主轴 × 8。真机实测单块即 rc=0（§2.8）。
+     */
+    { "SPLOAD",     { 0x40, 0, 0 },      { 4, 0, 0 },      { 0xffffffff, 0, 0 }, 1, false },
+    { "SPSPEED",    { 0x40, 0, 0 },      { 5, 0, 0 },      { 0xffffffff, 0, 0 }, 1, false },
+    /*
+     * 报警消息（`cnc_rdalmmsg2`）：一个 `0x23`，`d` 是类型（-1 = 全部）、`e` 是要几条，
+     * **`arg2 = 2` 才填文本、`arg3 = 64` 是要多少字节的文本**（真机实测：这两格给 0
+     * 时载荷只有 16 字节的抬头，没有消息文本）。没报警时载荷 0 字节。
+     */
+    { "ALMMSG",     { 0x23, 0, 0 },      { 0xffffffff, 0, 0 }, { 10, 0, 0 }, 1, false,
+                     { 2, 0, 0 },        { 64, 0, 0 } },
     /* 下面这些**码已核、应答布局还没核**（要么值不在载荷 0 处，要么是结构体数组）：
      * 表里先记着码，语义层暂时按 NCL_ERR_UNAVAILABLE 回，等真机抓一次再启用。
      *   ABSOLUTE/MACHINE/RELATIVE/DISTANCE  0x26，d = 位置类型，e = ALL_AXES

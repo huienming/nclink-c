@@ -130,6 +130,22 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> `
   不抄官方头**：出参给一块 4 KiB 零缓冲，跑完按 u16/i32 打出来），`--len/--count` 给
   "数据块长度/条数"（这两个给 0 会被本地拒掉，不发帧）。
 - `focas_sdk_probe.ps1`：编译 + 起假机床 + 一次跑一串调用 + 打印每条的 Cb 码。
+- `focas_live.c` / `focas_live.ps1`：**拿这一份 client 去接一台真的 FOCAS 服务端**
+  （机床或仿真），逐条把语义接口读一遍，打"读到了什么 / 读不到的理由"；`-Raw` 把
+  每条收发报文也打出来。假机床过了只说明自洽，这个过得了才说明 01 册 §2.2/§2.3
+  那套是照真机抄的。用法：
+
+  ```powershell
+  .\build.ps1                                    # 先出静态库
+  .\tools\site-probe\focas_live.ps1 192.168.110.192           # 全部条目
+  .\tools\site-probe\focas_live.ps1 192.168.110.192 -Raw      # 连报文一起看
+  ```
+
+  2026-09-21 就是用它发现的"会话是两条 TCP"（01 册 §2.8）：同一台机器上官方 SDK
+  连得上、这一份 client 连不上，于是拿 `focas_tap.py` 抄 SDK 的包对出来的。
+
+  ⚠️ `focas_live.ps1` 里的 `cl` 要加 `/MD`（cl 默认 `/MT`，与静态库的运行库不匹配，
+  链接期会报一串 `__imp_*` 找不到）。
 - `focas_item_scan.py`：静态那一路（PE 导出表 + 反汇编找小立即数），当交叉印证用 ——
   官方库的导出函数多是薄壳，真代码在内部调度里，所以**以线上探针为准**。
 - `focas_dis_range.py`：把官方库里**某一段**反汇编出来（`rva` + 条数），call 目标自动标

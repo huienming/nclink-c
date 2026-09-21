@@ -101,6 +101,12 @@ typedef short (NCL_PROBE_CALL *s2_n_fn)(unsigned short, short, long *, short *,
                                         void *);
 typedef short (NCL_PROBE_CALL *exec_fn)(unsigned short, unsigned short *,
                                         short *, char *);
+/* (h, short *, short *)：cnc_rdparanum 那种"两个数量出参"的 */
+typedef short (NCL_PROBE_CALL *n_n_fn)(unsigned short, short *, short *);
+/* (h, short, short, short, short, short *, void *)：cnc_rdmacror / cnc_rdparar
+ * 那种"给一段范围、回数量 + 一堆记录"的 */
+typedef short (NCL_PROBE_CALL *s4_n_fn)(unsigned short, short, short, short, short,
+                                        short *, void *);
 /* (h, short, short, short *, void *)：cnc_rdgcode 那种"两个入参 + 一个数量出参" */
 typedef short (NCL_PROBE_CALL *s2_n_n_fn)(unsigned short, short, short, short *,
                                           void *);
@@ -150,6 +156,10 @@ static const struct {
     /* 刀补/参数/宏变量（帧抓到了、字段还没核） */
     { "cnc_rdtofs", "s3", 0 }, { "cnc_rdparam", "s3", 0 },
     { "cnc_rdmacro", "s2", 12 }, { "cnc_rddt", "s1", 0 },
+    /* 整表那几条（范围 + 数量出参） */
+    { "cnc_rdparanum", "n_n", 0 }, { "cnc_rdparar", "s4_n", 0 },
+    { "cnc_rdmacror", "s4_n", 0 },
+    { "cnc_rdtooldata", "s2_n", 8 }, { "cnc_rdtoolrng", "s2_n", 8 },
     /* 工件坐标/模态 */
     { "cnc_rdgcode", "s2_n_n", 0 }, { "cnc_rdwkcdshft", "s2", 0 },
     /* 动态数据（速度/倍率一条全有）与主轴负载 */
@@ -385,6 +395,18 @@ int main(int argc, char **argv)
                                        buf);
     } else if (strcmp(kind, "s2_n") == 0) {
         rc = ((s2_n_fn)sym(fn_name))(handle, (short)a0, &lnum, &len, buf);
+    } else if (strcmp(kind, "n_n") == 0) {
+        /* (h, short *, short *)：cnc_rdparanum 那种"两个数量出参" */
+        short second = num2;
+
+        rc = ((n_n_fn)sym(fn_name))(handle, &num, &second);
+        num2 = second;
+    } else if (strcmp(kind, "s4_n") == 0) {
+        /* (h, s1, e1, s2, e2, short *num, buf)：读一段（参数/宏变量） */
+        rc = ((s4_n_fn)sym(fn_name))(handle, (short)a0, (short)a1, (short)a2,
+                                     (short)(npos > 6 ? strtol(positional[6], NULL, 0)
+                                                      : 0),
+                                     &num, buf);
     } else if (strcmp(kind, "exec") == 0) {
         rc = ((exec_fn)sym(fn_name))(handle, &handle, &num, (char *)buf);
     } else if (strcmp(kind, "dwn4") == 0 || strcmp(kind, "up4") == 0) {
