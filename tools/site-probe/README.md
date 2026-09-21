@@ -138,6 +138,29 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> `
 （`0x11/0x12/0x13` 下行、`0x15/0x18` 上行：定长 516 字节 start 体、数据帧 dir=4 不应答、
 错误在 end 那条回）。下行整条已经照这套验通；上行差"应答里程序文本怎么切"。
 
+### 对着 NCGuide 跑（"没有真机的真机"，2026-09 实测通）
+
+FANUC 自己的模拟器 **NCGuide** 带 FOCAS2 服务，所以"待真机核准"的那些应答可以直接在
+本地抓全（§2.5 那张表就是这么做出来的）。配方与踩坑：
+
+```
+# 1) 用 NCGuide 自带的那对 32 位库（Fwlib32.dll + fwlibNCG.dll），放到探针目录
+#    C:\Program Files (x86)\FANUC\NCGuide FS0i-F\{Fwlib32.dll,fwlibNCG.dll}
+# 2) 32 位编译（vcvars32），函数指针要 WINAPI（__stdcall），否则栈坏 → 0xC0000409
+cl /nologo /W4 /utf-8 /O2 focas_sdk_probe.c /Fe:focas_sdk_probe32.exe
+# 3) 走 HSSB（节点号 9；NCGuide 手册 §4.4），不要走以太网
+focas_sdk_probe32.exe --dll Fwlib32.dll --hssb 127.0.0.1 8193 cnc_statinfo
+```
+
+- **别走以太网那条**：Simbase 确实在听 8193（`Simbase.exe` 进程），但用官方 SDK 的库
+  （含 `Fwlib64.dll` + `fwlibe64.dll` 那对）一律回 **-17 EW_PROTOCOL** —— NCGuide 的
+  以太网服务要自己那套握手。HSSB 这条路 `cnc_setdefnode(9)` + `cnc_allclibhndl()` 实测
+  `rc=0`、handle=18433。
+- 不用去开手册 §3.1 说的那个选项（"Extended driver and library function"）：HSSB 这条路
+  不开也能用（省得动 NCGuide 的设置）。
+- 想看它到底发了什么：SDK 自己的日志在 `C:\ProgramData\FANUC\Fwlib\FWLIBETH.LOG`
+  （一行一条：建 socket / 建 circuit / 收应答失败的原因）。
+
 ## 已经拿到什么
 
 1. **FOCAS2 握手字节**（🟢 实测，`focas_run.sh`）。`cnc_allclibhndl3()` 对假机床

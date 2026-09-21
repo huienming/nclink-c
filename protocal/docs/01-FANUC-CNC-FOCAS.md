@@ -296,6 +296,46 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 
 ---
 
+### 2.5 真机实测：NCGuide（FS0i-F 模拟器）能当"没有真机的真机"
+
+NCGuide 自带 **FOCAS2 服务**，所以那批 🟡（"码已核、应答待核"）不用等真机 —— 起一个
+模拟机床就能把应答抓全。2026-09 在本机装好的 `C:\Program Files (x86)\FANUC\NCGuide
+FS0i-F` 上实测通了，**配方**（每一条都是踩出来的）：
+
+1. **走 HSSB，不走以太网**：手册（NCGuide FOCAS2 Function §4.4）说 HSSB 用节点号 **9**，
+   处理库是 NCGuide 自带的 **`Fwlib32.dll` + `fwlibNCG.dll`**（"HSSB connection:
+   Exclusive use for NCGuide of FS31i/32i/35i and FS0i-F"）。调用序列：
+   `cnc_setdefnode(9)` → `cnc_allclibhndl(&h)`。实测 `rc=0`、handle=18433。
+   以太网那条（`cnc_allclibhndl3(127.0.0.1, 8193)`：Simbase 确实在听 8193）**用官方 SDK
+   的库一律 -17 EW_PROTOCOL** —— NCGuide 的以太网服务要它自己那套握手，别在这条上耗。
+2. **必须 32 位**：NCGuide 随包的是 32 位库（`Fwlib32.dll`）。探针要按 `vcvars32` 编，
+   而且**函数指针要标 `WINAPI`（__stdcall）** —— 不标就栈坏，症状是 `0xC0000409`
+   （探针里已经修好：`NCL_PROBE_CALL` + `--hssb`）。
+3. **不用改 NCGuide 的选项**：手册 §3.1 说要开 "Extended driver and library function"
+   再重启；实测 HSSB 这条路**不开也能用**（没有 GUI 自动化时省事）。
+
+**实测结果**（`focas_sdk_probe32.exe --dll Fwlib32.dll --hssb 127.0.0.1 8193 <调用>`，
+默认机床 `1path-3axis-M`）：
+
+| 调用 | rc | 拿到的形状 |
+|---|---|---|
+| `cnc_statinfo` | 0 | ODBST 十一个 u16（块 1/2 + 块 0 载荷的那套切法 ✓ 与 §2.3 一致） |
+| `cnc_rdposition 0`（绝对） | 0 | **每轴一个 `POSELM`（12 字节）**：`int32 data` + `dec=3` + `unit=0`(mm) + `disp=1` + `name='X'` + `suff` ✓ 位置值 = `data / 10^dec` |
+| `cnc_rdsvmeter` | 0 | **每轴一个 `LOADELM`（12 字节）**：`int32 data` + `dec` + `unit` + `name='X'` |
+| `cnc_rdspmeter -1` | 0 | 每主轴一个 `LOADELM`：`name='S'` + `suff1='1'` → "S1"（负载/转速各一） |
+| `cnc_rdalmmsg2 -1` | 0 | `ODBALMMSG2` 数组（这条机床没报警，全 0）；形状与手册一致 |
+| `cnc_rdblkcount` | 0 | 就是一个 **int32**（原来"取值不在载荷 0 处"的判断作废） |
+| `cnc_rdopmode` | 0 | short 数组（内容随主轴状态，值域见手册） |
+| `cnc_absolute -1 --len {12,16,36}` | **2** | `EW_LENGTH`：长度必须是"这台机床的轴数"对应的那个值；**位置建议直接走 `cnc_rdposition`**（一条拿四种） |
+| `cnc_rdtofs` / `cnc_rdmacro` / `cnc_rdparam` | **2** | `--len` 给得不对（要按各结构的实际长度给），下一轮按结构体尺寸补 |
+| `cnc_upstart4` | —— | 探针在这条上没返回（取程序那条要真程序/超时处理），下一轮补 |
+
+> 结论：`POSITION`/`ANGLE`（`cnc_rdposition`）、`TORQUE`+伺服负载（`cnc_rdsvmeter`）、
+> 主轴负载/转速（`cnc_rdspmeter`）、`WARNING`（`cnc_rdalmmsg2`）、`cnc_rdblkcount`
+> 这五组**已经从 🟡 变 🟢**（形状实测过了），client 侧照 `POSELM`/`LOADELM` 解码即可。
+
+---
+
 ## 3. 常用函数表（按域）
 
 ### 3.1 连接与系统（cnc_*）

@@ -44,6 +44,7 @@
  * （EW_LENGTH=2），所以要给个 sane 值（缺省 8）。
  */
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -54,6 +55,16 @@
 #endif
 
 #define NCL_PROBE_BUF 4096
+
+/*
+ * 32 位下 SDK 的导出是 WINAPI（__stdcall），函数指针不标调用约定会把栈弹坏
+ * （症状：STATUS_STACK_BUFFER_OVERRUN / 0xC0000409）。x64 只有一个约定，标了也无害。
+ */
+#if defined(_WIN32)
+#define NCL_PROBE_CALL __stdcall
+#else
+#define NCL_PROBE_CALL
+#endif
 
 static void *g_lib;
 
@@ -71,20 +82,25 @@ static void *sym(const char *name)
     return p;
 }
 
-typedef short (*allclibhndl3_fn)(const char *, unsigned short, long,
-                                 unsigned short *);
-typedef short (*freelibhndl_fn)(unsigned short);
+typedef short (NCL_PROBE_CALL *allclibhndl3_fn)(const char *, unsigned short,
+                                                long, unsigned short *);
+typedef short (NCL_PROBE_CALL *setdefnode_fn)(short);
+typedef short (NCL_PROBE_CALL *allclibhndl_fn)(unsigned short *);
+typedef short (NCL_PROBE_CALL *freelibhndl_fn)(unsigned short);
 
-typedef short (*void_fn)(unsigned short, void *);
-typedef short (*s1_fn)(unsigned short, short, void *);
-typedef short (*s2_fn)(unsigned short, short, short, void *);
-typedef short (*s3_fn)(unsigned short, short, short, short, void *);
-typedef short (*s1_n_fn)(unsigned short, short, short *, void *);
-typedef short (*n_fn)(unsigned short, short *, void *);
-typedef short (*s1_n_s1_n_fn)(unsigned short, short, short *, short, short *,
-                              void *);
-typedef short (*s2_n_fn)(unsigned short, short, long *, short *, void *);
-typedef short (*exec_fn)(unsigned short, unsigned short *, short *, char *);
+typedef short (NCL_PROBE_CALL *void_fn)(unsigned short, void *);
+typedef short (NCL_PROBE_CALL *s1_fn)(unsigned short, short, void *);
+typedef short (NCL_PROBE_CALL *s2_fn)(unsigned short, short, short, void *);
+typedef short (NCL_PROBE_CALL *s3_fn)(unsigned short, short, short, short,
+                                      void *);
+typedef short (NCL_PROBE_CALL *s1_n_fn)(unsigned short, short, short *, void *);
+typedef short (NCL_PROBE_CALL *n_fn)(unsigned short, short *, void *);
+typedef short (NCL_PROBE_CALL *s1_n_s1_n_fn)(unsigned short, short, short *,
+                                             short, short *, void *);
+typedef short (NCL_PROBE_CALL *s2_n_fn)(unsigned short, short, long *, short *,
+                                        void *);
+typedef short (NCL_PROBE_CALL *exec_fn)(unsigned short, unsigned short *,
+                                        short *, char *);
 
 static const struct {
     const char *name;
@@ -180,6 +196,8 @@ int main(int argc, char **argv)
     const char *kind = NULL;
     const char *dll = "Fwlib64.dll";
     const char *name_arg = "";
+    bool        hssb = false;  /* --hssb：走 cnc_allclibhndl（节点号，NCGuide 用 9） */
+    int         node = 9;
     const char *positional[8];
     int npos = 0;
     int block_len = 0;
@@ -210,6 +228,10 @@ int main(int argc, char **argv)
             num2 = num;
         } else if (strcmp(argv[i], "--name") == 0 && i + 1 < (size_t)argc) {
             name_arg = argv[++i]; /* 程序上下行的目录名/文件名（start4 的那个 char *） */
+        } else if (strcmp(argv[i], "--hssb") == 0) {
+            hssb = true;
+        } else if (strcmp(argv[i], "--node") == 0 && i + 1 < (size_t)argc) {
+            node = (int)strtol(argv[++i], NULL, 0);
         } else if (npos < (int)(sizeof(positional) / sizeof(positional[0]))) {
             positional[npos++] = argv[i];
         }
@@ -251,14 +273,34 @@ int main(int argc, char **argv)
         fprintf(stderr, "  (cannot load %s)\n", dll);
         return 2;
     }
-    allclibhndl3 = (allclibhndl3_fn)sym("cnc_allclibhndl3");
     freelibhndl = (freelibhndl_fn)sym("cnc_freelibhndl");
-    if (allclibhndl3 == NULL || freelibhndl == NULL) {
+    if (freelibhndl == NULL) {
         return 2;
     }
-    rc = allclibhndl3(host, port, 3, &handle);
-    printf("cnc_allclibhndl3(%s:%u) = %d, handle=%u\n", host, port, (int)rc,
-           (unsigned)handle);
+    if (hssb) {
+        /* NCGuide 那条路（手册 §4.4）：节点号 9，用 FwlibNCG 那套处理库。 */
+        setdefnode_fn setdefnode = (setdefnode_fn)sym("cnc_setdefnode");
+        allclibhndl_fn allclibhndl = (allclibhndl_fn)sym("cnc_allclibhndl");
+
+        if (setdefnode != NULL) {
+            (void)setdefnode((short)node);
+        }
+        if (allclibhndl == NULL) {
+            fprintf(stderr, "  (no cnc_allclibhndl)\n");
+            return 2;
+        }
+        rc = allclibhndl(&handle);
+        printf("cnc_allclibhndl(node %d) = %d, handle=%u\n", node, (int)rc,
+               (unsigned)handle);
+    } else {
+        allclibhndl3 = (allclibhndl3_fn)sym("cnc_allclibhndl3");
+        if (allclibhndl3 == NULL) {
+            return 2;
+        }
+        rc = allclibhndl3(host, port, 3, &handle);
+        printf("cnc_allclibhndl3(%s:%u) = %d, handle=%u\n", host, port, (int)rc,
+               (unsigned)handle);
+    }
     if (rc != 0) {
         return 1;
     }

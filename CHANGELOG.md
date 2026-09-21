@@ -5,6 +5,33 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 取证：用 NCGuide（FS0i-F 模拟器）抓真应答，五组 🟡 转 🟢
+
+FANUC 自己的模拟器 **NCGuide 自带 FOCAS2 服务** —— 那些"码已核、应答待核"的调用不用
+等真机了。2026-09 在本机装好的 `C:\Program Files (x86)\FANUC\NCGuide FS0i-F` 上把
+路走通（配方写进 01 册 §2.5 与 `tools/site-probe/README.md`）：
+
+- **走 HSSB 不走以太网**：节点号 9（手册 §4.4）+ NCGuide 自带的 32 位
+  `Fwlib32.dll`/`fwlibNCG.dll`，`cnc_setdefnode(9)` → `cnc_allclibhndl()` = rc 0、
+  handle 18433。以太网那条（Simbase 在听 8193）用官方 SDK 一律 **-17 EW_PROTOCOL**
+  —— 它的以太网握手是 NCGuide 自己的一套，别在这条上耗。
+- **探针两个真 bug**：32 位下 SDK 导出是 WINAPI（__stdcall），函数指针不标调用约定会
+  把栈弹坏（症状 `0xC0000409`）；再加一个 `--hssb` / `--node` 入口。修在
+  `tools/site-probe/focas_sdk_probe.c`（x64 那条老路不受影响）。
+- **实测到的形状**（默认机床 `1path-3axis-M`）：`cnc_rdposition` = 每轴一个 **POSELM**
+  （`int32 data` + `dec=3` + `unit=0` + `disp=1` + `name='X'`，位置 = `data/10^dec`）；
+  `cnc_rdsvmeter` = 每轴一个 **LOADELM**（`int32 data` + `dec/unit` + 轴名）；
+  `cnc_rdspmeter` = 每主轴一个 LOADELM（`name='S'` + `suff1='1'` → "S1"，负载/转速各一）；
+  `cnc_rdalmmsg2` = **ODBALMMSG2** 数组（这台没报警，形状与手册一致）；
+  `cnc_rdblkcount` = 就是个 **int32**（原来"不在载荷 0 处"的判断作废）；
+  `cnc_statinfo` 与 §2.3 的切法一致。`cnc_absolute` 对长度很挑（12/16/36 都回
+  `EW_LENGTH`），**位置直接走 `cnc_rdposition`** 更省；`cnc_rdtofs`/`rdmacro`/`rdparam`
+  的 `--len` 要按各自结构体长度给（下一轮）；`cnc_upstart4` 探针没返回（要真程序）。
+
+结论：**`POSITION`/`ANGLE`、伺服负载、主轴负载/转速、`WARNING`、`cnc_rdblkcount`
+这五组从 🟡 变 🟢**，client 侧照 POSELM/LOADELM 解码即可（下一步就做这个）。
+另外那批 FOCAS 调用的**请求码**（§2.4）也在这台模拟机上对着真应答复验过一遍。
+
 ### 文件工具：文件名（key）必须带前导斜杠
 
 `key` 是 NC-Link 的**文件路径**（`/data/source.txt`），文件工具按它拼本地落地区
