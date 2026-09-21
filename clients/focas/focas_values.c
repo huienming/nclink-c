@@ -1147,6 +1147,10 @@ ncl_err ncl_focas_feed_speed(ncl_focas *focas, double *value)
  *     ... 每级 10%（0..20 正好 0%..200%）
  *
  * 所以这里是 `码 × 10`，出门就是标准里的百分比。
+ *
+ * **注意机床可能根本没填这一块**：真机（0i-MD 仿真）上 `0x5d` 的载荷 32 字节里除
+ * `@2 = 0xffff` 全是 0 —— 于是读出来是 0%（现场看到"倍率一直 0"先查这个，别改偏移）。
+ * 偏移本身是按 IODBSGNL 的结构定的（01 册 §1/§2.8.7）。
  */
 ncl_err ncl_focas_feed_override(ncl_focas *focas, double *value)
 {
