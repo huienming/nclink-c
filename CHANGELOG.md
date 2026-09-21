@@ -5,6 +5,54 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### NCGuide 那条路：把"正确环境"的配方抄全了，也把"它为什么起不来"钉死了
+
+用户问得对：手上就有 FANUC 的模拟器，本该"客户端发一帧、服务器回一帧"。这轮就照这个做，
+把两件事都办了 —— 一件是**配方**，一件是**本机为什么起不来**（后者卡在模拟器自己的画屏
+上，最后一步得在 GUI 侧动手）。
+
+**配方**（出自 NCGuide 自带的 `NCGuide FOCAS2 Function.pdf`，官方 SDK 包
+`Document/NCG/`，21 页）：
+
+  * §3.1 只有**一个**选项要求：**`Extended driver and library function`** —— 就是
+    `Message.xml` 里的 **`OPTPRM_401`**（`cncgoptif.dll` 里也带着这张 ID 表）。用
+    `OptionSetting.exe`，**要在 NCGuide 起来之后**开、勾上、再**重启 NCGuide**。
+  * §3.1 **以太网不用再开别的选项**（"equal to embedded Ethernet function"）；屏幕上
+    那个 "Ethernet function" 勾是机床侧的，**别开**（FS0i-F 就是勾了它之后起不来的）。
+  * §4.2 **HSSB 不用装驱动**；§4.3 以太网要跑 NCGuide 那台的网卡/IP。
+  * §4.4 取句柄：HSSB = `cnc_setdefnode(9)` + `cnc_allclibhndl()`（节点 **9**）；
+    以太网 = `cnc_allclibhndl3(IP,…)`，IP 用跑 NCGuide 那台的（手册 NOTE：屏幕上那个
+    以太网设置对 FOCAS2/Ethernet **无效**）。§5 还有一张每函数的 HSSB/Ether 可用性矩阵。
+  * 这条也把上一轮那道闸门解释圆了：`cnc_rdaxisdata` 一族回 `EW_FUNC`，正是"没开
+    `OPTPRM_401`"；基本函数（位置/状态/程序号…）不开也能读（HSSB 早就实测过）。
+
+**本机为什么起不来**：所有机型（FS0i-F、FS0i-F Plus、FS31i-B…）都是起来十几秒后自己死，
+SIM.LOG 只有 `CNCSIMULATOR STARTED`、没有 `FINISHED`。本机没装 cdb/windbg，也没管理员
+权限开 WER 的 LocalDumps —— 所以新写了 `tools/site-probe/win_minidbg.py`：自己当调试器
+（`CreateProcess` + `DEBUG_ONLY_THIS_PROCESS`，只报**二次异常** = WER 记的那一枪，另外把
+栈上落在已知模块里的返回地址列成近似调用链）。抓到的现场：
+
+  * FS31i-B / FS0i-F Plus：致命异常 `ACCESS_VIOLATION`、**写**到**页对齐**地址
+    （`0x21050000`、`0xef670004`），指令是 `MSVCR80!memset` 的 `movdqa [edi], xmm0`；
+    调用链 `USER32 → System.Windows.Forms.ni.dll → mscorwks(.NET 2.0) → msvcr80`
+    —— **画 CNC 屏幕那一步 memset 写过了区域边界**。
+  * FS0i-F 还有第二种：`ns.dll+0x74e2c1`（紧跟"往 `0x125e2402/0x125e2404` 写
+    `0x50/0x1e`"之后按 0..3 分支 —— 像显示尺寸处理）。
+  * **时好时坏**：连开 3 次大约活 1 次；活下来的一路涨到 160→409 MB 之后死（正好在
+    "开始画屏"那一步）。删掉 `SimBaseSetting.xml` 死得更早（那文件必需）；给
+    `Simbase.exe` 挂用户级 DPI 兼容标记 `HIGHDPIAWARE` 也没救（已撤回）。
+
+结论：**卡的是模拟器自己的显示这一路，不是机床数据、也不是 FOCAS2/协议**。所以"把环境
+立起来"的最后一步在 GUI 侧：① 让 NCGuide 起稳（换显示/缩放，或看它弹的框）；②
+`OptionSetting.exe` 勾 `OPTPRM_401`；③ 要以太网就用 NCGuide 的以太网设置把服务开到
+8193（之前 FS0i-F 确实听过 8193）。做完这三步，我们的 client 直接 `--offline` 连
+`127.0.0.1:8193` 就是第一台"真"机床。
+
+顺手把资料归了位：`Document/NCG/*.pdf` 抽成文本、`Fwlib/30i/Fwlib64.h` 与
+`Document/SpecE/**`（1691 份 XML，每份带 `<prottype>`）作为核 item 的上游口径。
+本机清理：FS0i-F 的机床数据已还原成我动手之前的样子（12:36 那份仍在
+`%TEMP%\ncg-bak-123643`，我挪走的那份在 `%TEMP%\ncg-cur-f0if`）；没留后台进程。
+
 ### 型号/版本接上（`ODBSYS`），并把"多块那几条"卡在哪钉出来
 
 **型号与版本**（标准表 6 的 `MODEL` / `VERSION`）原来挂在"待抓包"，来源写的是

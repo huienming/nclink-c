@@ -150,6 +150,46 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> `
 
 ### 对着 NCGuide 跑（"没有真机的真机"，2026-09 实测通）
 
+#### 先把"正确的环境"照手册立起来（🟢 手册原文 + 本机现状，2026-09）
+
+配方在 NCGuide 自带的手册里：官方 SDK 包 `Document/NCG/NCGuide FOCAS2 Function.pdf`
+（21 页，已抽成文本放 `%TEMP%\focas-sdk-doc\NCG\`）。要点：
+
+| 手册 | 说的 |
+|---|---|
+| §3.1 | 只要一个选项：**Extended driver and library function**（`Message.xml` 里编号 `OPTPRM_401`，名字就写在那儿）。用 `OptionSetting.exe` —— **必须在 NCGuide 起来之后**开，勾上，然后**重启 NCGuide** |
+| §3.1 | **以太网不需要额外选项**（"Ethernet connection is equal to embedded Ethernet function"）——所谓"Ethernet function"那个勾**不用开** |
+| §4.2 | HSSB **不用装驱动** |
+| §4.4 | 取句柄：HSSB → `cnc_setdefnode(9)` + `cnc_allclibhndl()`（FS31i/32i/35i、FS0i-F、FS0i-D 的节点号都是 **9**）；以太网 → `cnc_allclibhndl3(IP,…)`，IP 填**跑 NCGuide 那台机器**的地址（屏幕上的那个以太网设置对 FOCAS2/Ethernet **无效**） |
+| §5 | 一张"HSSB / Ether 可用性矩阵"（哪些 FOCAS2 函数在 NCGuide 上可用、哪些是 X）——核某条前先查它 |
+
+装完 `Fwlib32.dll`/`FwlibNCG.dll`（HSSB 用，FS31i/32i/35i 与 FS0i-F 专用）或
+`Fwlibe1.dll`（以太网用）就能跑；**官方 SDK 的 64 位以太网处理库就是 `fwlibe64.dll`**
+—— 与我们 client 对的是同一条协议。
+
+#### 这台机器上它为什么起不来（🟢 自写调试器抓的现场，2026-09）
+
+本机没装 cdb/windbg，也没管理员权限去开 WER 的 LocalDumps —— 所以写了
+`win_minidbg.py`（`CreateProcess` + `DEBUG_ONLY_THIS_PROCESS`，只报**二次异常**
+—— WER 记的就是这个；顺带把栈上落在模块里的返回地址列出来当近似调用链）。
+
+抓到的：
+
+- **FS31i-B / FS0i-F Plus**：致命异常是 `ACCESS_VIOLATION`，**写**到页对齐地址
+  （`0x21050000`、`0xef670004` 这种），指令是 `MSVCR80!memset` 里的
+  `movdqa [edi], xmm0`；调用链上能看到 `USER32 → System.Windows.Forms.ni.dll →
+  mscorwks（.NET 2.0）→ msvcr80`。也就是**画 CNC 屏幕那一步 memset 写过了区域边界**
+  （出错地址正好落在页边界上）。
+- **FS0i-F** 另有第二种死法：`ns.dll+0x74e2c1`，那段紧跟在
+  `mov word [0x125e2402], 0x50 / [0x125e2404], 0x1e` 之后按 0..3 分支 —— 像**显示尺寸**
+  处理（0x50/0x1E = 80×30）。
+- 表现**时好时坏**：连开 3 次大约活 1 次；活下来的一路涨到 160→409 MB 之后死，正好在
+  "开始画屏"那步。把 `SimBaseSetting.xml` 删掉反而死得更早（这文件是必需的）。
+
+结论：**卡的是它自己的显示这一路，不是机床数据、也不是 FOCAS2/协议**（本机显示是
+2880×1920、缩放 200%，逻辑 1440×960；这程序是 .NET 2.0 的 32 位 WinForms）。
+试过按用户级兼容标记给 `Simbase.exe` 挂 `HIGHDPIAWARE` —— 没用，已撤回。
+
 FANUC 自己的模拟器 **NCGuide** 带 FOCAS2 服务，所以"待真机核准"的那些应答可以直接在
 本地抓全（§2.5 那张表就是这么做出来的）。配方与踩坑：
 

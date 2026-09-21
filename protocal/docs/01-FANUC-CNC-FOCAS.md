@@ -310,6 +310,40 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 
 ### 2.5 真机实测：NCGuide（FS0i-F 模拟器）能当"没有真机的真机"
 
+#### 2.5.0 "正确环境"的配方 + 本机现在卡在哪（🟢 2026-09，手册 + 自写调试器）
+
+配方就在 NCGuide 自带的手册 `Document/NCG/NCGuide FOCAS2 Function.pdf`（官方 SDK 包里，
+21 页）：
+
+| 手册 | 说的 |
+|---|---|
+| §3.1 | 只有**一个**选项要求：**`Extended driver and library function`**（消息表 `Message.xml` 里编号 `OPTPRM_401`）；用 `OptionSetting.exe` —— 手册强调要**在 NCGuide 起来之后**开、勾上、**再重启 NCGuide** |
+| §3.1 | **以太网不用再开别的选项**（"Ethernet connection is equal to embedded Ethernet function"）；屏幕里那个 **Ethernet function 勾是给机床侧以太网用的，别开**（FS0i-F 就是勾了它之后起不来的） |
+| §4.2 | **HSSB 不用装驱动**（原文 "The installation of the HSSB driver is unnecessary"） |
+| §4.3 | 以太网要的是**跑 NCGuide 那台机器的网卡 + IP** |
+| §4.4 | 取句柄：HSSB → `cnc_setdefnode(9)` + `cnc_allclibhndl()`（节点号 **9**）；以太网 → `cnc_allclibhndl3(IP,…)`，IP 用跑 NCGuide 那台的（手册特意 NOTE：**屏幕上那个以太网设置对 FOCAS2/Ethernet 无效**） |
+| §5 | 一张**每函数的 HSSB / Ether 可用性矩阵**（O / X / -），核某条前先查它 |
+
+**本机现状（2026-09-21 17:00 前后实测）**：所有 NCGuide 机型（FS0i-F、FS0i-F Plus、
+FS31i-B、…) **都是起来十几秒后自己死**，SIM.LOG 只写 `CNCSIMULATOR STARTED`、没有
+`FINISHED`，事件日志里是 `APPCRASH`。本机没装 cdb/windbg、也没管理员权限开 WER 的
+LocalDumps，所以我写了 `tools/site-probe/win_minidbg.py` 自己当调试器（`CreateProcess`
++ `DEBUG_ONLY_THIS_PROCESS`，只报**二次异常**——WER 记的就是那一枪），抓到的现场是：
+
+- **FS31i-B / FS0i-F Plus**：致命异常 `ACCESS_VIOLATION`、**写**到**页对齐**地址
+  （`0x21050000`、`0xef670004` 这种），指令是 `MSVCR80!memset` 里的
+  `movdqa [edi], xmm0`；调用链 `USER32 → System.Windows.Forms.ni.dll →
+  mscorwks(.NET 2.0) → msvcr80` —— 即**画 CNC 屏幕那一步 memset 写过了区域边界**。
+- **FS0i-F** 另有第二种：`ns.dll+0x74e2c1`，那段紧跟"往 `0x125e2402/0x125e2404` 写
+  `0x50/0x1e`"之后按 0..3 分支 —— 像**显示尺寸**处理。
+- **时好时坏**：连开 3 次大约活 1 次；活下来的一路涨到 160→409 MB 之后死（正好在
+  "开始画屏"那一步）。把 `SimBaseSetting.xml` 删掉死得更早（那文件是必需的）。
+
+所以卡的是**它自己的显示这一路**，不是机床数据、不是 FOCAS2/协议。要把它变成
+"客户端发帧 / 服务器回帧"的环境，得先在 GUI 侧：① 把它起稳（或换个显示/缩放/分辨率），
+② 用 `OptionSetting.exe` 勾上 `OPTPRM_401`，③ 需要以太网就用 NCGuide 的以太网设置把
+服务开到 8193（之前那台 FS0i-F 确实听过 8193）。
+
 NCGuide 自带 **FOCAS2 服务**，所以那批 🟡（"码已核、应答待核"）不用等真机 —— 起一个
 模拟机床就能把应答抓全。2026-09 在本机装好的 `C:\Program Files (x86)\FANUC\NCGuide
 FS0i-F` 上实测通了，**配方**（每一条都是踩出来的）：
@@ -325,6 +359,11 @@ FS0i-F` 上实测通了，**配方**（每一条都是踩出来的）：
    （探针里已经修好：`NCL_PROBE_CALL` + `--hssb`）。
 3. **不用改 NCGuide 的选项**：手册 §3.1 说要开 "Extended driver and library function"
    再重启；实测 HSSB 这条路**不开也能用**（没有 GUI 自动化时省事）。
+   > 2026-09 补：这一句只对**基本函数**成立。那条选项（消息表里的 **`OPTPRM_401`**）
+   > 卡的是**扩展驱动/库功能**——也就是 `cnc_rdaxisdata` 那一族（伺服/主轴负载、电流、
+   > 速度）：官方库对没开这个选项的机床**本地就回 `EW_FUNC`(1)、一个字节都不发**
+   > （见 §2.7）。要核那一族就得在 NCGuide 的 GUI 里用 `OptionSetting.exe` 勾上它
+   > （勾完必须重启 NCGuide）。
 
 **实测结果**（`focas_sdk_probe32.exe --dll Fwlib32.dll --hssb 127.0.0.1 8193 <调用>`，
 默认机床 `1path-3axis-M`）：
