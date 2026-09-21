@@ -212,12 +212,19 @@ feed_rate=123.5 / run_status=2` → client 读到 `POSITION@REAL` = 77.25 / −1
 `STATUS="holding"`、`POSITION@CMD` = 77.0 / −11.75 / 2.75（各减 0.25）。要对着
 ProtoForge 跑真值，把它起回来（`python app.py`，8000 + 8193）再照上面那条命令指过去即可。
 
-> 还没钉死的一格：官方 SDK 对 `ODBAXIS` 那一族（`cnc_srvdelay` / `cnc_absolute`）的
-> 单轴调用**在本地**就回 `EW_ATTRIB`（轴号越界）——它从不把 `data[]` 填出来，说明驱动
-> 眼里的"受控轴数"还是 0。已排除：握手 `func 01` 的 16 字节头、握手记录（A/B/C/D 与
-> 每条的 `0x18` 详情）、能力块 `0x0e/0x26f0` 的载荷（照 NCGuide 的 `ODBSYS` 铺过）。
-> 剩下最可能是 `0x18` 载荷里"记录类型/轴号"那格的取值；桥里开关都留好了，试出来就能把
-> "8 字节还是 4 字节"一次定死。
+`ODBAXIS` 那一族的形状已经**定死**（不再靠 SDK 试）：直接反汇编 x64 以太网库
+`fwlibe64.dll` 的 `cnc_srvdelay` → `sub_180059180` 那段 —— `shr ax, 3`（轴数 = 载荷长度
+/ 8）、`lea rcx, [rax*4+4]`（长度规则 4+4×轴数）、`mov ecx, [载荷 + i*8 + 0x10]`
+（每轴 8 字节、值在第 0 个 dword）、`bswap32`（大端），而且**小数位不在这条载荷里**
+（位数走 `cnc_getfigure`，也就是该轴 `POSELM` 的 `dec`）。见 01 册 §2.5.2。
+用法：`python focas_dis_range.py <fwlibe64.dll> 0x59548`（`cnc_srvdelay` 的 RVA）、
+`python focas_dis_range.py <fwlibe64.dll> 0x59180`（共享函数）；ARM 的
+`libfwlib32.so.1` 用 `elf_dis.py <so> cnc_srvdelay`。
+
+> 还留着的一条（只跟"拿官方 SDK 当裁判"有关）：SDK 对那几条**单轴**调用会**在本地**回
+> `EW_ATTRIB` —— 它从连接期缓存取"控制轴数"，而假机床握手没把这一项喂对（`func 01` 的
+> 16 字节头、记录 A/B/C/D、每条的 `0x18` 详情、能力块 `0x0e` 的载荷都试过）。我们 client
+> 不吃这一套，所以不影响验证；桥里那些开关还留着，谁想接着试都行。
 
 ## 已经拿到什么
 

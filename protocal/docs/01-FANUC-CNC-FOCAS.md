@@ -258,7 +258,7 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 | `cnc_acts` | 0x25 | 0 | 每个主轴一个 float32 | 🟢 已进 client（主轴转速 S） |
 | `cnc_absolute` / `cnc_machine` / `cnc_relative` / `cnc_distance` | 0x26 | **d = 0/1/2/3**，e = 轴号或 `-1`(ALL_AXES) | ODBAXIS（dummy/type/data[]），**切法待核** | 🟡 码已核 |
 | `cnc_rdposition` | 0x26 ×4 | d = 0..3，e = -1 | 同上（一次四条，四种位置） | 🟡 码已核 |
-| `cnc_srvdelay` | 0x26 | **d = 9**，e = -1 | 每轴一条 **8 字节记录**：值 = 记录第 0 个 int32（BE32），`[4..6)` 当小数位（`data / 10^dec`） | 🟢 已进 client（跟踪误差；`POSITION@CMD` = 实际 − 这一条） |
+| `cnc_srvdelay` | 0x26 | **d = 9**，e = -1 | 每轴一条 **8 字节记录**：值 = 记录第 0 个 int32（BE32）；**后 4 字节官方库不读**，小数位走 `cnc_getfigure`（= 该轴 `POSELM` 的 `dec`） | 🟢 已进 client（跟踪误差；`POSITION@CMD` = 实际 − 这一条，见 §2.5.2） |
 | `cnc_rdprgnum` | 0x1c | 0 | 载荷 **@2 运行程序号（BE16）**、@6 主程序号 | 🟢 已进 client |
 | `cnc_rdseqnum` | 0x1d | 0 | 载荷 **@0 顺序号（BE32）** | 🟢 已进 client |
 | `cnc_rdcount` | 0x8b | **0 / 0** | 值（件数） | 🟢 已进 client（原来写成 1/1，是寿命那一支） |
@@ -357,10 +357,43 @@ cnc_skip      (d=8)  ┘     length < 4 + 4×轴数    → EW_LENGTH (2)
     out->type    = axis                     ← 轴号由库自己填
 ```
 
-对上假机床实测的请求帧（`0x26`、d = 9、e = `0xffffffff`），client 侧的口径就是：
-**每轴 8 字节、值在记录第 0 个 int32、`[4..6)` 当小数位**（`focas_values.c` 的
-`svdel_read`）。`cnc_getfigure` 给的是"延迟量的小数点"的另一条路（手册原话），
-真机移动轴时可以把两条对一下。
+对上假机床实测的请求帧（`0x26`、d = 9、e = `0xffffffff`），client 侧的口径就是
+**每轴 8 字节、值在记录第 0 个 int32**。记录后 4 字节是什么，这一节没定 —— 下一节拿
+**以太网**库（我们 client 真正对的那条协议）把它问清楚了。
+
+#### 2.5.2 以太网库 `fwlibe64.dll` 里的同一族（🟢 反汇编，2026-09）
+
+上面那一节读的是 32 位 HSSB 库；**我们 client 对的是以太网协议**，所以又去 x64 的
+以太网处理库 `fwlibe64.dll` 里核了一遍 —— `cnc_srvdelay` 同样是薄壳，把 `kind = 9`
+交给 `sub_180059180`（`cnc_absolute` = 4、`cnc_machine` = 1、`cnc_relative` = 6、
+`cnc_distance` = 7、`cnc_accdecdly` = 10，与 32 位那张表一致）。共享函数里三件事一次说清：
+
+```
+18005923a  movsx r8, [handle+0x96e] / shl rax,5 / movzx eax,[rax+rbx+0x66c]
+           ; 从连接期缓存的"轴表"取控制轴数；axis > 轴数 → 本地回 EW_ATTRIB(4)
+18005928a  mov r9d, 0x26 / mov edx, <kind>        ; 组请求：Cb 码 0x26 + d
+180059304  movzx ecx, [块+0xe] + bswap16          ; 块里 [14..16) 的载荷长度
+180059321  shr ax, 3                              ; 轴数 = 载荷长度 / 8 → **每轴 8 字节**
+180059343  lea rcx, [rax*4 + 4]                   ; 长度规则 = 4 + 4×轴数（不够 EW_LENGTH）
+18005938c  mov ecx, [载荷 + i*8 + 0x10]           ; 取记录第 0 个 dword
+180059391  call bswap32                           ; 线上是**大端**
+180059396  mov [out + i*4 + 4], eax               ; → ODBAXIS.data[i]；type 在 +2 = 轴号
+```
+
+两条结论：**线上每轴 8 字节、值在记录第 0 个 dword（大端）、长度规则 `4 + 4×轴数`** ——
+和 §2.5 的 NCGuide 实测完全对上；**小数位不在这条载荷里**（官方库一个字节都不多看），
+位数走 `cnc_getfigure`，也就是我该轴显示小数位 —— 同一条 `POSELM` 里的 `dec`。所以
+`focas_values.c` 的 `srv_delay_raw()` 借 POSELM 的 dec 缩放，记录的 `[4..8)` 当保留位、
+不解释（早先按 POSELM 一族猜它是 dec/unit，这轮改掉了）。
+
+工具：`tools/site-probe/focas_dis_range.py`（按 RVA 反汇编 PE，64 位也能用）、
+`tools/site-probe/elf_dis.py`（按符号反汇编 ELF，ARM/Thumb 自动 —— 用来开交付包里那份
+`libfwlib32.so.1`）。
+
+> 顺带记一笔：官方 SDK 对这几条**单轴**调用是**在本地**回 `EW_ATTRIB` 的 —— 它从连接期
+> 缓存里取"控制轴数"，而假机床的握手没把这一项喂对（握手 `func 01` 的头 16 字节、记录
+> A/B/C/D、每条记录的 `0x18` 详情、能力块 `0x0e` 的载荷都试过，都没喂动）。这只影响
+> "拿官方 SDK 当裁判"这条路；我们 client 自己解，形状由上面这段反汇编定死。
 
 ---
 

@@ -5,6 +5,39 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 伺服延迟量的形状定死：反汇编以太网库 `fwlibe64.dll`（把上一节"还差一格"关掉）
+
+上一节留了一句"延迟量的小数位是照 `POSELM` 一族猜的、真机移动轴再核"。这轮不猜了，
+直接读**我们 client 真正对的那条协议**的官方实现：x64 以太网库 `fwlibe64.dll` 里
+`cnc_srvdelay` 是薄壳（`kind = 9`，与 32 位 HSSB 库 `fwlibNCG.dll` 那张表一致），
+共享函数 `sub_180059180` 里四行说明一切：
+
+```
+180059321  shr ax, 3                     ; 轴数 = 载荷长度 / 8 → 每轴 8 字节
+180059343  lea rcx, [rax*4 + 4]          ; 长度规则 = 4 + 4×轴数（不够回 EW_LENGTH）
+18005938c  mov ecx, [载荷 + i*8 + 0x10]  ; 取记录第 0 个 dword
+180059391  call bswap32                  ; 线上是大端
+180059396  mov [out + i*4 + 4], eax      ; → ODBAXIS.data[i]，type 在 +2 = 轴号
+```
+
+于是：**每轴 8 字节、值在记录第 0 个 dword（大端）、长度规则 `4+4×轴数`** —— 与 §2.5
+的 NCGuide 实测一致；**小数位不在这条载荷里**（官方库一个字节都不多看），位数走
+`cnc_getfigure`，也就是该轴的显示小数位 = 同一条 `POSELM` 里的 `dec`。
+
+client 跟着改一处：`srv_delay_raw()` 不再把记录 `[4..6)` 当 dec（那是猜的），改成
+借同一条 POSELM 的 `dec` 缩放（`cnc_getfigure` 口径），`[4..8)` 当保留位不解释。
+`ncl_focas_axis_srv_delay()` 自己读一趟位置拿 dec；`ncl_focas_axis_position_cmd()`
+复用同一趟的 dec，所以还是两次请求。golden 用例把 `[4..6)` 填成 `0x9999`（垃圾值），
+断言结果不受影响 —— 这条以后不会再被猜回去。
+
+新增工具：`tools/site-probe/elf_dis.py`（按符号反汇编 ELF，ARM/Thumb 自动）——
+用来开交付包里那份 ARM 的 `libfwlib32.so.1`；PE 那边继续用 `focas_dis_range.py`。
+文档：01 册新增 §2.5.2、§2.4 的 `cnc_srvdelay` 行、`tools/site-probe/README.md`。
+
+验证：`ncl_test_focas` **235 checks / 0 failures**；全量 `ctest` **42/42**；编译零 warning；
+桥 + client 端到端复跑：`POSITION@REAL` 12.345 / 67.89 / −3.5，`POSITION@CMD`
+11.111 / 66.656 / −4.734（各减注入的 1.234）。
+
 ### 修正：`STATINFO` 的 ODBST 偏移（`mode` 一直是错的）+ 真 FOCAS2 假机床
 
 用"**斜坡载荷 + 官方 SDK 填它自己的 `ODBST`**"把 `cnc_statinfo` 的切法钉死了：

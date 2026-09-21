@@ -1022,9 +1022,9 @@ static void test_semantics(void)
     put_u16be(mock->payload[1] + 6, 0);  /* unit = mm  */
     put_u16be(mock->payload[1] + 8, 1);  /* disp = 显示 */
     mock->payload[1][10] = 'X';
-    /* 第二根轴在同一个载荷的 12 字节处（data=6789、dec=2 → 67.89） */
-    put_u32be(mock->payload[1] + 12, 6789);
-    put_u16be(mock->payload[1] + 16, 2);
+    /* 第二根轴在同一个载荷的 12 字节处（data=67890、dec=3 → 67.89） */
+    put_u32be(mock->payload[1] + 12, 67890);
+    put_u16be(mock->payload[1] + 16, 3);
     /* 块 2 = 机械坐标（data=100000、dec=3 → 100.000） */
     put_u32be(mock->payload[2], 100000);
     put_u16be(mock->payload[2] + 4, 3);
@@ -1042,18 +1042,21 @@ static void test_semantics(void)
     NCL_TEST_CASE("跟踪误差与指令位置：指令 = 实际（POSELM）− 延迟量（SV_DELAY）");
     /*
      * SV_DELAY 一条请求只带一个 Cb，所以应答就是块 1（假机床按"载荷序号 = 块号"
-     * 铺，块 1 取载荷 0）。记录 8 字节：值在第 0 个 int32（大端），[4..6) 是小数位。
-     * 这里故意留一根**负延迟**（Y = −2.500）：指令位置要往实际位置外面走。
+     * 铺，块 1 取载荷 0）。记录 8 字节、值在第 0 个 int32（大端）—— 依据是 x64 以太网库
+     * fwlibe64.dll 里 `shr ax,3`（长度/8 = 轴数）与 `[载荷 + i*8 + 0x10]`（每轴 8 字节）
+     * 那几行，见 01 册 §2.5.2。**后 4 字节官方库一个都不读**，所以这里故意填成 0x9999：
+     * 小数位得跟位置一族走（cnc_getfigure 口径），填了也不能被当 dec 用。
+     * 这里再留一根**负延迟**（Y = −2.500）：指令位置要往实际位置外面走。
      */
     mock->payload_count = 9; /* RDPOSITION 那条仍要 9 个块 */
     memset(mock->payload[0], 0, sizeof(mock->payload[0]));
     mock->payload_len[0] = 40; /* 5 根轴 × 8 字节 */
     put_u32be(mock->payload[0], 1234);                  /* X：+1.234 */
-    put_u16be(mock->payload[0] + 4, 3);
+    put_u16be(mock->payload[0] + 4, 0x9999);            /* 官方库不读这 2 字节 */
     put_u32be(mock->payload[0] + 8, 0xFFFFF63Cu);       /* Y：−2.500 */
-    put_u16be(mock->payload[0] + 12, 3);
+    put_u16be(mock->payload[0] + 12, 0x9999);
     put_u32be(mock->payload[0] + 16, 0);                /* Z：静止 */
-    put_u16be(mock->payload[0] + 20, 3);
+    put_u16be(mock->payload[0] + 20, 0x9999);
 
     NCL_CHECK_EQ_INT(ncl_focas_axis_srv_delay(focas, NCL_FOCAS_AXIS_X, &real),
                      NCL_OK);

@@ -616,9 +616,13 @@ static double poselm_scale(int32_t data, int dec)
 /**
  * 位置那一路的公共读法：`which` 0..3 = 绝对/机械/相对/剩余（对应块 1..4）。
  * 一次请求把四路都取回来，多读一轴也只多花一次查询（本来一条请求就够）。
+ *
+ * `dec_out` 非空时把它带出来（`POSELM.dec` = 该轴的显示小数位）——伺服延迟量要按
+ * 同一根轴的小数位缩放到实际值：官方手册说延迟量的小数位走 `cnc_getfigure`（该轴的
+ * 显示小数位），而 POSELM 里带的就是同一个数，不用再问一趟。
  */
-static ncl_err position_read(ncl_focas *focas, ncl_focas_axis axis, int which,
-                            const char *what, double *value)
+static ncl_err position_read_dec(ncl_focas *focas, ncl_focas_axis axis,
+                                 int which, double *value, int *dec_out)
 {
     ncl_json *payload = NULL;
     int32_t data = 0;
@@ -644,8 +648,17 @@ static ncl_err position_read(ncl_focas *focas, ncl_focas_axis axis, int which,
     }
     ncl_json_free(payload);
     *value = poselm_scale(data, dec);
-    (void)what;
+    if (dec_out != NULL) {
+        *dec_out = dec;
+    }
     return NCL_OK;
+}
+
+static ncl_err position_read(ncl_focas *focas, ncl_focas_axis axis, int which,
+                             const char *what, double *value)
+{
+    (void)what;
+    return position_read_dec(focas, axis, which, value, NULL);
 }
 
 ncl_err ncl_focas_axis_position(ncl_focas *focas, ncl_focas_axis axis,
@@ -676,23 +689,27 @@ ncl_err ncl_focas_axis_distance(ncl_focas *focas, ncl_focas_axis axis,
  * 伺服延迟量（`cnc_srvdelay`）= 现场说的**跟踪误差**。请求是一条 Cb（0x26，d = 9，
  * e = ALL_AXES，见 01 册 §2.4 的实测请求帧）；应答每轴一条 **8 字节记录**：
  *
- *   [0..4)  int32 data（大端）—— 延迟量
- *   [4..6)  u16 dec  —— 小数点位数（按 POSELM/LOADELM 一族的排布取，见下）
- *   [6..8)  u16 unit —— 单位（0 = mm）
+ *   [0..4)  int32 data（大端）—— 延迟量（**检测单位**，见下）
+ *   [4..8)  官方库不读这 4 个字节（下面 18005938c 那段只取第 0 个 dword）
  *
- * 依据：官方库 `fwlibNCG.dll` 的 `cnc_srvdelay` 那一层每轴按 **8 字节步长**取值
- * （`mov ecx, [ebp + eax*8 - 0x32c]`），取的是记录第 0 个 dword，再写进
- * `ODBAXIS.data[i]`、`type` 由库自己填轴号（§2.5 的反汇编）。dec/unit 落在 [4..8)
- * 是照 POSELM（int32 + dec + unit + …）的同一族排布取的；真机上让轴动起来再看一眼
- * ——静止时这一路是 0，核不出小数位（这一点写在 01 册 §2.4 的状态栏里）。
+ * 依据（x64 以太网库 `fwlibe64.dll` 的 `cnc_srvdelay` → `sub_180059180`，2026-09 反汇编，
+ * 和 32 位 HSSB 库 `fwlibNCG.dll` 的结论一致）：
+ *
+ *   180059321  shr ax, 3                     ; 轴数 = 载荷长度 / 8 → **每轴 8 字节**
+ *   180059343  lea rcx, [rax*4 + 4]          ; 长度规则 = 4 + 4×轴数（不够回 EW_LENGTH）
+ *   18005938c  mov ecx, [载荷 + i*8 + 0x10]  ; 取记录第 0 个 dword
+ *   180059391  call bswap32                  ; 线上是大端
+ *   180059396  mov [out + i*4 + 4], eax      ; → ODBAXIS.data[i]（type 在 +2、轴号）
+ *
+ * **小数位不在这条载荷里**（官方库一个字节都不多看）：手册说延迟量的小数位走
+ * `cnc_getfigure`，也就是该轴的显示小数位 —— 我们直接拿同一根轴 POSELM 的 `dec`，
+ * 不再多问一趟（见 srv_delay_raw()）。
  */
 #define FOCAS_SVDEL_SIZE 8
 
-static bool svdel_read(const ncl_json *payload, size_t axis, int32_t *data,
-                       int *dec)
+static bool svdel_read(const ncl_json *payload, size_t axis, int32_t *data)
 {
     size_t at = axis * FOCAS_SVDEL_SIZE;
-    int places;
 
     if (payload == NULL || ncl_json_type_of((ncl_json *)payload) != NCL_JSON_ARRAY ||
         ncl_json_arr_len((ncl_json *)payload) < at + FOCAS_SVDEL_SIZE) {
@@ -702,20 +719,15 @@ static bool svdel_read(const ncl_json *payload, size_t axis, int32_t *data,
                       ((uint32_t)bytes_at(payload, at + 1) << 16) |
                       ((uint32_t)bytes_at(payload, at + 2) << 8) |
                       (uint32_t)bytes_at(payload, at + 3));
-    places = (int)(((uint16_t)bytes_at(payload, at + 4) << 8) |
-                   (uint16_t)bytes_at(payload, at + 5));
-    /* dec 只在 0..9 认：万一机床发的是"裸 int32 数组"（每轴 4 字节），这 2 字节就是
-     * 下一根轴的低位，不能拿来当小数位用——那时按 dec = 0（检测单位）算。 */
-    *dec = (places >= 0 && places <= 9) ? places : 0;
     return true;
 }
 
-static ncl_err srv_delay_read(ncl_focas *focas, ncl_focas_axis axis,
-                              double *value)
+/** 读伺服延迟量并按给定的小数位缩放到实际值（`dec` 来自该轴的位置）。 */
+static ncl_err srv_delay_raw(ncl_focas *focas, ncl_focas_axis axis, int dec,
+                             double *value)
 {
     ncl_json *payload = NULL;
     int32_t data = 0;
-    int dec = 0;
     ncl_err rc;
 
     if (focas == NULL || value == NULL) {
@@ -732,7 +744,7 @@ static ncl_err srv_delay_read(ncl_focas *focas, ncl_focas_axis axis,
     if (rc != NCL_OK) {
         return rc;
     }
-    if (!svdel_read(payload, (size_t)axis, &data, &dec)) {
+    if (!svdel_read(payload, (size_t)axis, &data)) {
         ncl_json_free(payload);
         return note(focas, "SV_DELAY", NCL_ERR_PARSE);
     }
@@ -744,7 +756,19 @@ static ncl_err srv_delay_read(ncl_focas *focas, ncl_focas_axis axis,
 ncl_err ncl_focas_axis_srv_delay(ncl_focas *focas, ncl_focas_axis axis,
                                  double *value)
 {
-    return srv_delay_read(focas, axis, value);
+    double position = 0.0;
+    int dec = 0;
+    ncl_err rc;
+
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    /* 小数位跟位置一族走（cnc_getfigure 口径）：借同一条 POSELM 的 dec。 */
+    rc = position_read_dec(focas, axis, 0, &position, &dec);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    return srv_delay_raw(focas, axis, dec, value);
 }
 
 /*
@@ -761,6 +785,7 @@ ncl_err ncl_focas_axis_position_cmd(ncl_focas *focas, ncl_focas_axis axis,
 {
     double actual = 0.0;
     double delay = 0.0;
+    int dec = 0;
     ncl_err rc;
 
     if (focas == NULL || value == NULL) {
@@ -769,11 +794,13 @@ ncl_err ncl_focas_axis_position_cmd(ncl_focas *focas, ncl_focas_axis axis,
     if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
         return note(focas, "AXIS", NCL_ERR_RANGE);
     }
-    rc = ncl_focas_axis_position(focas, axis, &actual);
+    /* 位置那趟顺带把该轴的小数位带出来，伺服延迟量按同一个位数缩放（cnc_getfigure 口径），
+     * 这样两条量在同一口径上相减。 */
+    rc = position_read_dec(focas, axis, 0, &actual, &dec);
     if (rc != NCL_OK) {
         return rc;
     }
-    rc = srv_delay_read(focas, axis, &delay);
+    rc = srv_delay_raw(focas, axis, dec, &delay);
     if (rc != NCL_OK) {
         return rc;
     }
