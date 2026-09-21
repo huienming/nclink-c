@@ -116,6 +116,7 @@ class Machine:
         self.spindle = float(args.spindle)
         self.srv_delay = float(args.srv_delay)
         self.count = int(args.count)
+        self.life = int(args.life)
         self.prog = args.prog
         self.main_prog = args.main_prog
         self.line = int(args.line)
@@ -259,8 +260,9 @@ class Machine:
                                     for _ in AXIS_NAMES)       # ACTF 进给
         table[(0x25, 0)] = b"".join(struct.pack(">f", self.spindle)
                                     for _ in range(4))         # ACTS 主轴
-        table[(0x8b, 0)] = self.scalar(self.count)             # RDCOUNT 件数
-        table[(0x8b, 1)] = struct.pack(">i", 0)                # RDLIFE（形状待核）
+        # Cb 0x8b：d=0 是件数、d=1 是刀具寿命。两块都不是"值在载荷 0 处"。
+        table[(0x8b, 0)] = self.tool_life(self.count, 20)      # RDCOUNT 件数 @20
+        table[(0x8b, 1)] = self.tool_life(self.life, 12)       # RDLIFE 寿命 @12
         prg = bytearray(12)
         prg[2:4] = struct.pack(">H", self.run_prog)            # RDPRG：@2 运行
         prg[6:8] = struct.pack(">H", self.main_prog)           #        @6 主
@@ -280,6 +282,20 @@ class Machine:
         """标量类 item 的载荷：值在前 4 字节，后面补零到 16 —— 官方 SDK 对太短的块
         会挑（`cnc_rdblkcount` 给 4 字节就回 rc = 6）。"""
         return struct.pack(">i", int(value)) + b"\x00" * 12
+
+    @staticmethod
+    def tool_life(value, at):
+        """`ODBTLIFE3` 那两块（Cb `0x8b`）：datano @2，值在 `at` 处（BE32）。
+
+        官方头里 `ODBTLIFE3` 是 `{short datano; short dummy; long data;}`，但**线上
+        不是从头排**：官方 SDK 取 `datano` 于载荷 @2、取件数于 **@20**、取刀具寿命于
+        **@12**（两个偏移不一样，别串用）。证据见 01 册 §2.6（SDK 自动反查 + 现场包里
+        那份 Linux `libfwlib32.so` 的 `cnc_rdcount` 反汇编，两处一致）。
+        """
+        out = bytearray(max(at + 4, 24))
+        out[2:4] = struct.pack(">H", 0)          # datano = 0（"当前组"）
+        out[at:at + 4] = struct.pack(">i", int(value))
+        return bytes(out)
 
     def payload(self, code, d, e):
         table = self._table or {}
@@ -509,6 +525,7 @@ def main(argv):
     ap.add_argument("--hello-hex", default="",
                     help="握手 func 01 应答头 16 字节的 hex（试「轴数在哪一格」用）")
     ap.add_argument("--count", default="952", help="件数")
+    ap.add_argument("--life", default="0", help="刀具寿命计数（RDLIFE，d=e=1）")
     ap.add_argument("--prog", default="O1234", help="执行中的程序名")
     ap.add_argument("--run-prog", default="1234", type=int, help="运行中的程序号")
     ap.add_argument("--main-prog", default="1234", type=int, help="主程序号")

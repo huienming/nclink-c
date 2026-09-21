@@ -101,6 +101,9 @@ typedef short (NCL_PROBE_CALL *s2_n_fn)(unsigned short, short, long *, short *,
                                         void *);
 typedef short (NCL_PROBE_CALL *exec_fn)(unsigned short, unsigned short *,
                                         short *, char *);
+/* (h, short, short, short *, void *)：cnc_rdgcode 那种"两个入参 + 一个数量出参" */
+typedef short (NCL_PROBE_CALL *s2_n_n_fn)(unsigned short, short, short, short *,
+                                          void *);
 
 static const struct {
     const char *name;
@@ -146,9 +149,11 @@ static const struct {
     { "cnc_rdtofsinfo", "void", 0 }, { "cnc_rdmacroinfo", "void", 0 },
     /* 刀补/参数/宏变量（帧抓到了、字段还没核） */
     { "cnc_rdtofs", "s3", 0 }, { "cnc_rdparam", "s3", 0 },
-    { "cnc_rdmacro", "s2", 0 }, { "cnc_rddt", "s1", 0 },
+    { "cnc_rdmacro", "s2", 12 }, { "cnc_rddt", "s1", 0 },
     /* 工件坐标/模态 */
-    { "cnc_rdgcode", "s2", 0 }, { "cnc_rdwkcdshft", "s2", 0 },
+    { "cnc_rdgcode", "s2_n_n", 0 }, { "cnc_rdwkcdshft", "s2", 0 },
+    /* 动态数据（速度/倍率一条全有）与主轴负载 */
+    { "cnc_rddynamic2", "s2", 4 }, { "cnc_loadtorq", "s3", 12 },
     /* 程序上下行（三件套，探针里连着跑） */
     { "cnc_dwnstart4", "dwn4", 0 }, { "cnc_upstart4", "up4", 0 },
     { "cnc_download4", "dwn4", 0 }, { "cnc_upload4", "up4", 0 },
@@ -216,7 +221,7 @@ int main(int argc, char **argv)
     unsigned char buf[NCL_PROBE_BUF];
     short num = 8;
     short num2 = 8;
-    short len = 0;
+    short len = 8;  /* s2_n 的第 3 个 short 是 `*num`（给 0 会被回 EW_LENGTH） */
     long lnum = 0;
     size_t i;
     int a0 = 0;
@@ -355,8 +360,23 @@ int main(int argc, char **argv)
     } else if (strcmp(kind, "n") == 0) {
         rc = ((n_fn)sym(fn_name))(handle, &num, buf);
     } else if (strcmp(kind, "s1_n_s1_n") == 0) {
-        rc = ((s1_n_s1_n_fn)sym(fn_name))(handle, (short)a0, &num, (short)a1,
-                                          &num2, buf);
+        /*
+         * cnc_rdaxisdata(h, cls, short *type, short num, short *len, ODBAXDT*)：
+         * 第 2 个 short 是**指针**（就地读写的类型数组），早先这里把 a1 当指针
+         * 传了，等于让它去写 a1 那个地址。这里老老实实给一块短数组。
+         */
+        short ty[16];
+        int  k;
+
+        for (k = 0; k < 16; k++) {
+            ty[k] = (short)a1;
+        }
+        rc = ((s1_n_s1_n_fn)sym(fn_name))(handle, (short)a0, ty, num, &len,
+                                          buf);
+    } else if (strcmp(kind, "s2_n_n") == 0) {
+        /* cnc_rdgcode(h, short type, short block, short *num, ODBGCD*) */
+        rc = ((s2_n_n_fn)sym(fn_name))(handle, (short)a0, (short)a1, &num,
+                                       buf);
     } else if (strcmp(kind, "s2_n") == 0) {
         rc = ((s2_n_fn)sym(fn_name))(handle, (short)a0, &lnum, &len, buf);
     } else if (strcmp(kind, "exec") == 0) {

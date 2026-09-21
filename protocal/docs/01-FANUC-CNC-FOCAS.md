@@ -261,19 +261,27 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 | `cnc_srvdelay` | 0x26 | **d = 9**，e = -1 | 每轴一条 **8 字节记录**：值 = 记录第 0 个 int32（BE32）；**后 4 字节官方库不读**，小数位走 `cnc_getfigure`（= 该轴 `POSELM` 的 `dec`） | 🟢 已进 client（跟踪误差；`POSITION@CMD` = 实际 − 这一条，见 §2.5.2） |
 | `cnc_rdprgnum` | 0x1c | 0 | 载荷 **@2 运行程序号（BE16）**、@6 主程序号 | 🟢 已进 client |
 | `cnc_rdseqnum` | 0x1d | 0 | 载荷 **@0 顺序号（BE32）** | 🟢 已进 client |
-| `cnc_rdcount` | 0x8b | **0 / 0** | 值（件数） | 🟢 已进 client（原来写成 1/1，是寿命那一支） |
-| `cnc_rdlife` | 0x8b | **1 / 1** | 值（寿命），载荷布局待核 | 🟡 |
+| `cnc_rdcount` | 0x8b | **0 / 0** | `ODBTLIFE3`：`datano` **@2**、件数 **@20**（BE32）—— 见 §2.6 | 🟢 已进 client（原来写成 1/1，是寿命那一支；值也从 @0 改到 @20） |
+| `cnc_rdlife` | 0x8b | **1 / 1** | `ODBTLIFE3`：`datano` **@2**、寿命 **@12**（BE32）—— 与件数**不是一个偏移**，别串用 | 🟢 形状已核（client 侧还没挂点位） |
 | `cnc_alarm2` | 0x1a | 0 | 载荷 **@0 报警状态位（BE32）**，0 = 无报警 | 🟢 已进 client |
 | `cnc_rdngrp` | 0x4a | 0 | 载荷 **@0 刀具组数（BE32）** | 🟢 已进 client |
 | `cnc_rdtimer` | 0x120 | d = 类型（0 通电/1 运行/2 切削/3 循环/4 自由） | 载荷 **@0 分钟、@4 毫秒（BE32）** | 🟢 已进 client |
 | `cnc_rdalmmsg2` | 0x23 | d = 报警类型（-1 = 全部），e = 条数 | ODBALMMSG2 数组（编号/类型/轴/文本 64B） | 🟡 码已核 |
 | `cnc_rdsvmeter` | 0x56 + 0x89 | d = 1 | LOADELM 数组（伺服负载） | 🟡 码已核 |
 | `cnc_rdspmeter` | 0x40（d=4 负载 / 5 转速）+ 0x8a | e = -1 | LOADELM 数组 | 🟡 码已核 |
-| `cnc_rdblkcount` | 0x35 | 0 | 一个数（**不是**载荷 0 处的 BE32，dtype 待核） | 🟡 码已核（原来表里记成 0x06，是错的） |
+| `cnc_rdblkcount` | 0x35 | 0 | 载荷 **@0 的 BE32**（原来的"不是 @0"是错的，§2.6 反查出来的） | 🟢 已核（原来表里记成 0x06，是错的） |
 | `cnc_rdopmode` | 0x57 | 0 | short 数组（主轴调整模式） | 🟡 码已核 |
 | `cnc_exeprgname2` | 0xfc | 0 | 程序名文本 | 🟢 已进 client |
 | `cnc_rdprogdir3` | 0x06 | d = 0x13，e = 1 | PRGDIR3 数组 | 🟡 帧有了、字段待核 |
-| `cnc_rdtofs` / `cnc_rdmacro` / `cnc_rdparam` | 0x08 / 0x15 / 0x0e | d = e = 1 | ODBTOFS / ODBM / IODBPSD | 🟡 帧有了、字段待核 |
+| `cnc_rdtofs` | 0x08 | d = 形状（0 磨耗/1 形状…）、e = 编号 | `ODBTOFS` 的 `data` = 载荷 **@0 的 BE32**（`datano`/`type` 是请求回显） | 🟡 值的位置已核 |
+| `cnc_rdparam` | 0x0e | d = 参数号、e = 轴号 | `IODBPSD`：`datano` **@2**、`type` **@4**、`ldata` **@8**（BE32） | 🟡 字段位置已核 |
+| `cnc_rdmacro` | 0x15 | d = 变量号、e = 1 | `ODBM`（`mcr_val` + `dec_val`），**长度要给对**（给 12 仍回 `EW_LENGTH`=2） | 🟡 码已核、长度待试 |
+| `cnc_rdtofsinfo` | **0x0a** | 0 | `ODBTLINF`：`use_no` **@2**、`ofs_type` **@4**（都是 BE16） | 🟢 码 + 切法都新核出来（§2.6） |
+| `cnc_rdmacroinfo` | **0x17** | 0 | `ODBMVINF`：头两个 short 在 **@2** / **@6** | 🟡 码新核出来、字段名待对 |
+| `cnc_rdexecprog` | **0x20** | arg0 = 0x594（缓冲长度） | 程序段文本**从载荷 @4 原样拷**（不是大端字） | 🟡 码 + 起点新核出来 |
+| `cnc_rdgcode` | **0x96** | d = 类型、e = 段号 | `ODBGCD` 数组 | 🟡 码新核出来 |
+| `cnc_rdwkcdshft` | **0x63** | d = 轴号、e = 长度 | `IODBWCSF` | 🟡 码新核出来 |
+| `cnc_loadtorq` | **0xfd** | d = motor、e = 轴号 | `ODBLOAD`（长度要给对，给 12 回 `EW_LENGTH`） | 🟡 码新核出来 |
 
 > 表里的"🟡 码已核"= **请求帧已经确定**（照着发就行），差的是**应答怎么切**（值不在
 > 载荷 0 处，或是结构体数组）。真机抓一次就能把 🟡 变 🟢；client 里这些函数的
@@ -396,6 +404,69 @@ cnc_skip      (d=8)  ┘     length < 4 + 4×轴数    → EW_LENGTH (2)
 > "拿官方 SDK 当裁判"这条路；我们 client 自己解，形状由上面这段反汇编定死。
 
 ---
+
+#### 2.6 用官方 SDK 反查"载荷第几字节是哪一格"（🟢 2026-09 新方法）
+
+§2.4/§2.5 核 item 用的是"铺斜坡载荷、人眼看结构体" —— 对 `ODBST` 那种十来个 short 的
+结构还行，对"值藏在 @12 还是 @20"这类问题就很容易看岔（本轮就抓到一处：`cnc_rdcount`
+原来按 @0 读，其实是 @20）。这轮把它做成**自动反查**：
+
+```
+python tools/site-probe/focas_sdk_layout.py cnc_rdcount 0          # 自动
+python tools/site-probe/focas_sdk_layout.py --calls "cnc_rdlife:1,cnc_rdtofs:0+0+8"
+python tools/site-probe/focas_sdk_layout.py --payload 01020304... cnc_rdtofsinfo
+```
+
+做法（`tools/site-probe/focas_sdk_layout.py`）：给假机床铺一份**每个字都不一样**的载荷
+（第 i 个字 = `0x1000 + i*0x101`），跑一次官方 SDK 的调用，把 SDK 填进出参的字节抠出来，
+再对出参的每一格在载荷里**反查**它是从哪儿来的（大端/小端 × 16/32 位各试一遍，唯一命中
+才报）。于是"结构体第 n 格 ← 载荷 @m"是机器算出来的，不靠眼力。配套两个小工具：
+
+```
+python tools/site-probe/fwlib_struct.py <Fwlib64.h> ODBTLIFE3 ODBALMMSG2   # 官方头的结构体
+python tools/site-probe/fwlib_proto.py  <SpecE 目录> cnc_rdtofsinfo        # 官方文档的原型
+```
+
+- 结构体/原型从**官方 SDK 包**里拿（`Fwlib64/30i/Fwlib64.h`、`Document/SpecE/**/*.xml`，
+  每份 XML 都有 `<prottype>` 一行）。原型很关键：`focas_sdk_probe.c` 里那些通用形状
+  （`s1/s2/s3/s1_n/s2_n/…`）就是照它配的，配错了出参落在哪一格就全是噪声。
+- 反查只报"唯一命中"；对不上就标 `?`（SDK 自己按语义改写过、或者那一格不是从载荷来的）。
+
+**交叉印证**：同一条 item 再对着**现场包里那份 Linux 实现**（`libfwlib32.so.1`，x86 版
+在官方 SDK 包的 `Fwlib/Linux/x86/` 下）反汇编一遍，两边必须一致。`cnc_rdcount` 就是这么
+钉死的：
+
+```
+0009d627  mov dword ptr [esp+0xc], 0x8b     ; Cb 码
+0009d6a7  mov edx, dword ptr [eax+0x10]     ; 块 +0x10 = 载荷起点
+0009d6aa  bswap edx
+0009d6af  mov word ptr [ecx], dx            ; out->datano = 载荷 @2 的 BE16
+0009d6f8  mov eax, dword ptr [eax+0x24]     ; 载荷 @20
+0009d6fb  bswap eax
+0009d6fd  mov dword ptr [ecx+4], eax        ; out->data   = 载荷 @20 的 BE32
+```
+
+（用 `python tools/site-probe/elf_dis.py <libfwlib32.so.1> cnc_rdcount`；这一轮给
+`elf_dis.py` 补了 x86 / x64，之前只认 ARM。）
+
+**这一轮反查出来的东西**（都已并进上表）：
+
+| 事实 | 出处 |
+|---|---|
+| `cnc_rdcount` = `datano`@2、件数 **@20**；`cnc_rdlife` = `datano`@2、寿命 **@12** | SDK 反查 + `libfwlib32.so` 反汇编，两边一致 |
+| `cnc_rdtofsinfo` 的 Cb 码是 **0x0a**（不是 0x0e），`use_no`@2、`ofs_type`@4 | SDK 反查 |
+| `cnc_rdmacroinfo` 的 Cb 码是 **0x17** | SDK 反查 |
+| `cnc_rdexecprog` 的 Cb 码是 **0x20**、文本从载荷 @4 起（原样字节，不是 BE16） | SDK 反查 |
+| `cnc_rdgcode` = **0x96**、`cnc_rdwkcdshft` = **0x63**、`cnc_loadtorq` = **0xfd** | SDK 反查（后两条还差长度） |
+| `cnc_rdblkcount` 就是**载荷 @0 的 BE32**（上一版写"不是 @0"，反了） | SDK 反查 |
+| `cnc_rdparam` = `datano`@2、`type`@4、`ldata`@8；`cnc_rdtofs` = `data`@0 | SDK 反查 |
+| `cnc_rdprgnum`@2/@6、`cnc_rdseqnum`@0、`cnc_alarm2`@0、`cnc_rdngrp`@0、`cnc_rdtimer`@0+@4 **都对**（client 原来的读法没问题） | SDK 反查（顺带把已进 client 的几条复核了一遍） |
+
+还没啃下来的：`cnc_rdalmmsg2`（`ODBALMMSG2` 数组，块长要跟 `*num` 对上，假机床现在铺的
+形状被 SDK 判无效清成 0）、`cnc_rdsvmeter`/`cnc_rdspmeter`/`cnc_rdposition` 那几条
+**一条请求带多个块**的（`0x89`/`0x88`/`0x0e` 那几块的形状要逐块对），以及
+`cnc_rdprogdir3`/`cnc_rdmacro` 的**长度**（给 12 仍回 `EW_LENGTH`，要按结构体尺寸试）。
+这些都不再需要真机 —— 接着拿这套反查工具磨就行。
 
 ## 3. 常用函数表（按域）
 

@@ -5,6 +5,59 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 反查工具：把"应答载荷第几字节是哪一格"变成机器算出来的（顺手抓到一件数读错位置）
+
+核 FOCAS item 一直是"铺斜坡载荷 + 人眼看结构体"，对 `ODBST` 那种十来个 short 的结构还
+行，对"值藏在 @12 还是 @20"就很容易看岔 —— 本轮就抓到一处：**`cnc_rdcount`（标准
+`PART_COUNT`）的值不在载荷 0 处，在 @20**，client 一直按 @0 读（假机床也一直按 @0 铺，
+所以两边"自洽"地错着）。两处独立证据把它钉死：
+
+1. **官方 SDK 反查**：新工具 `tools/site-probe/focas_sdk_layout.py` 给假机床铺一份"每个
+   字都不一样"的载荷（第 i 个字 = `0x1000 + i*0x101`），跑一次官方 SDK 的调用，把 SDK
+   填进出参的字节抠出来，再对出参每一格**反查**它来自载荷哪一格（大端/小端 × 16/32 位
+   各试一遍，唯一命中才报）。`cnc_rdcount` → `datano`@2、件数 **@20**；同族的
+   `cnc_rdlife` → 寿命 **@12**（两条不是一个偏移）。
+2. **现场包的 Linux 实现**：`libfwlib32.so.1`（x86 版在官方 SDK 包的 `Fwlib/Linux/x86/`
+   下）里 `cnc_rdcount` 取块 +0x10 的 4 字节 `bswap` 后低 16 位当 `datano`（= 载荷 @2 的
+   BE16）、取块 +0x24 的 4 字节 `bswap` 当 `data`（块 +0x10 是载荷起点 → 载荷 @20）。
+   两边完全一致。
+
+client 改一处：`ncl_focas_part_count()` 读 `"RDCOUNT@20"`（原来 `"RDCOUNT"`）；
+假机床 `focas_machine.py` 的 `0x8b` 那块改成按 `ODBTLIFE3` 的真实位置铺（`--count` 落
+@20、新增 `--life` 落 @12）；golden 用例新增"件数在 @20"，并故意把 @0 填成 `0xDEADBEEF`
+当干扰值 —— 这条以后不会被猜回 @0。
+
+**同一套反查顺手核出/更正一批码与布局**（都并进 01 册 §2.4，新方法写在 §2.6）：
+
+| 事实 | 说明 |
+|---|---|
+| `cnc_rdtofsinfo` = **Cb 0x0a**（不是 0x0e），`use_no`@2、`ofs_type`@4 | 新核出来 |
+| `cnc_rdmacroinfo` = **0x17**；`cnc_rdexecprog` = **0x20**（文本从载荷 @4 起，原样字节） | 新核出来 |
+| `cnc_rdgcode` = **0x96**、`cnc_rdwkcdshft` = **0x63**、`cnc_loadtorq` = **0xfd** | 新核出来（后两条还差"长度给多少"） |
+| `cnc_rdparam` = `datano`@2、`type`@4、`ldata`@8；`cnc_rdtofs` = `data`@0 | 字段位置核出来 |
+| `cnc_rdblkcount` 就是**载荷 @0 的 BE32**（上一版写"不是 @0"，反了） | 更正 |
+| `cnc_rdprgnum`@2/@6、`cnc_rdseqnum`@0、`cnc_alarm2`@0、`cnc_rdngrp`@0、`cnc_rdtimer`@0+@4 | 复核：client 原来的读法都对 |
+
+新工具三支（都在 `tools/site-probe/`）：`focas_sdk_layout.py`（反查）、
+`fwlib_struct.py`（从 `Fwlib64.h` 抠结构体）、`fwlib_proto.py`（从官方文档的
+`<prottype>` 抠原型 —— 原型不对的话，探针出参落在哪一格全是噪声）。`elf_dis.py` 补了
+x86 / x64（之前只认 ARM），用来开那份 Linux 库；`focas_sdk_probe.c` 修了
+`s1_n_s1_n`（`cnc_rdaxisdata` 第 2 个 short 是**指针**，原来拿整数当指针传）、给
+`s2_n` 的 `*num` 一个非零初值（给 0 会被本地回 `EW_LENGTH`），并补
+`cnc_rddynamic2` / `cnc_loadtorq` / `cnc_rdgcode` 三个表项。
+
+还没啃下来的（都不用等真机，接着用这套工具磨）：`cnc_rdalmmsg2` 的块长/条数怎么对上
+（`ODBALMMSG2` 的结构体已从官方头拿到）、`cnc_rdprogdir3` 与 `cnc_rdmacro` 的 `--len`
+（给 12 仍回 `EW_LENGTH`）、`cnc_rdsvmeter`/`cnc_rdspmeter`/`cnc_rdposition` 那几条
+"一条请求带多个块"的逐块形状；以及官方 SDK 那几条**单轴**调用的本地闸门（`EW_ATTRIB`）
+——那只是"拿 SDK 当裁判"这条路，不影响 client。
+
+验证：`ncl_test_focas` **237 checks / 0 failures**（新增件数在 @20 一条）；全量 `ctest`
+**42/42**；编译零 warning；假机床 + `ncl_server --offline --once` 端到端：
+`/MACHINE/PART_COUNT = 952`（值由假机床铺在 @20）、`POSITION@REAL` 12.345 / 67.89 / −3.5、
+`POSITION@CMD` 11.111 / 66.656 / −4.734、`STATUS` running、`WORK_MODE` auto，
+自检 **43 个点位（26 可读 / 17 待抓包）、0 个读取失败**。
+
 ### 伺服延迟量的形状定死：反汇编以太网库 `fwlibe64.dll`（把上一节"还差一格"关掉）
 
 上一节留了一句"延迟量的小数位是照 `POSELM` 一族猜的、真机移动轴再核"。这轮不猜了，

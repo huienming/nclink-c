@@ -97,10 +97,17 @@ def main(argv):
         thumb = False
         print("# 地址 %#x" % vaddr)
 
-    if machine != 0x28:  # EM_ARM
-        raise SystemExit("这个脚本只认 ARM（machine=0x%x）" % machine)
-    mode = capstone.CS_MODE_THUMB if thumb else capstone.CS_MODE_ARM
-    md = capstone.Cs(capstone.CS_ARCH_ARM, mode | capstone.CS_MODE_LITTLE_ENDIAN)
+    if machine == 0x28:  # EM_ARM
+        mode = capstone.CS_MODE_THUMB if thumb else capstone.CS_MODE_ARM
+        md = capstone.Cs(capstone.CS_ARCH_ARM,
+                         mode | capstone.CS_MODE_LITTLE_ENDIAN)
+    elif machine == 0x03:  # EM_386（Fwlib/Linux/x86 那份）
+        md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    elif machine == 0x3E:  # EM_X86_64
+        md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+    else:
+        raise SystemExit("不认这个 machine=0x%x（ARM/Thumb、x86、x64 都行）"
+                         % machine)
     offset = elf_vaddr.to_offset(sects, vaddr)
     for index, insn in enumerate(md.disasm(blob[offset:], vaddr)):
         if index >= count:

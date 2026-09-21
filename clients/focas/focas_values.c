@@ -238,7 +238,23 @@ ncl_err ncl_focas_status(ncl_focas *focas, char *out, size_t cap)
     return NCL_OK;
 }
 
-/* RDCOUNT 是 int32，直接交数值（表 7 的 PART_COUNT 是 number）。 */
+/*
+ * RDCOUNT 是 int32，直接交数值（表 7 的 PART_COUNT 是 number）。
+ *
+ * **值不在载荷 0 处，在 @20**（原来按 @0 读，是错的）。两处独立证据：
+ *
+ *   1. 官方 SDK 的 `cnc_rdcount` 对着一台"每个字节都可辨识"的假机床跑，出参
+ *      `ODBTLIFE3.data` 落到载荷 **@20**、`datano` 落到 **@2**（工具
+ *      tools/site-probe/focas_sdk_layout.py 自动反查出来的：第 j 字节的值就是 j，
+ *      出参那一格的值得等于谁，就知道它是从哪儿来的）。同一族里 `cnc_rdlife`
+ *      的 data 在 **@12** —— 两条不是一个偏移，别串用。
+ *   2. 现场包里那份 Linux 实现 `libfwlib32.so` 的 `cnc_rdcount` 也是这么切的：
+ *      取块 +0x10 处 4 字节 `bswap` 后**低 16 位**当 datano（即载荷 @2 的 BE16）、
+ *      取块 +0x24 处 4 字节 `bswap` 当 data（块 +0x10 就是载荷起点 → 载荷 @20）。
+ *      见 01 册 §2.6。
+ *
+ * item 名字后面的 `@20` 就是"载荷里从第 20 字节开始"（同一套写法见 RDPRG@2）。
+ */
 ncl_err ncl_focas_part_count(ncl_focas *focas, long long *value)
 {
     ncl_json *json = NULL;
@@ -247,7 +263,7 @@ ncl_err ncl_focas_part_count(ncl_focas *focas, long long *value)
     if (value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    rc = ncl_focas_read_item(focas, "RDCOUNT", 0, 1, NCL_DTYPE_INT32, &json);
+    rc = ncl_focas_read_item(focas, "RDCOUNT@20", 0, 1, NCL_DTYPE_INT32, &json);
     if (rc != NCL_OK) {
         return rc;
     }

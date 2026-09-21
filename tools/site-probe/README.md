@@ -138,6 +138,10 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> `
 - `focas_tap.py`：TCP 抄包器，插在客户端与机床之间同时看两个方向的字节
   （`python focas_tap.py 8194 127.0.0.1 8193`，探针打 8194 就行）。官方库在**以太网**
   这条路上不发帧日志（`FWLIBETH.LOG` 只记错误文本），要看帧就用它。
+- `focas_sdk_layout.py`：**自动反查**"出参的哪一格是从载荷第几字节来的"（本节下面
+  专门有一段）。核"值在 @12 还是 @20"这类问题用它，不要靠看斜坡载荷的眼力。
+- `fwlib_struct.py` / `fwlib_proto.py`：从官方 SDK 包里抠结构体（`Fwlib64.h`）与
+  函数原型（`Document/SpecE/**/*.xml` 的 `<prottype>`）—— 核 item 之前先看这两个。
 
 结果表（核出来的 item 码、哪些已进 client、哪些还差应答布局）写在
 `protocal/docs/01-FANUC-CNC-FOCAS.md` §2.4 —— 包括**程序上下行的另一套帧**
@@ -279,6 +283,58 @@ ProtoForge 跑真值，把它起回来（`python app.py`，8000 + 8193）再照�
 >   （还没试）。
 > - 库里还引用注册表键 **`Software\FANUC\FwlibEth`**（0x0eb570）—— 本机**这个键不存在**
 >   （`HKCU`/`HKLM` 都没有，只有 `HKCU\Software\FANUC\screen`），所以走的是默认。
+
+### 反查"载荷第几字节是哪一格"（2026-09 新方法，先看这一节）
+
+单轴那条闸门还没开（上面那段），但**"某个 item 的应答里第几字节是哪个字段"已经不用
+等真机了** —— 这轮把它做成了自动反查，顺带抓出 client 里一处读错位置的真 bug。
+
+```
+python tools/site-probe/focas_sdk_layout.py cnc_rdcount 0            # 一条调用
+python tools/site-probe/focas_sdk_layout.py --calls "cnc_rdlife:1,cnc_rdtofs:0+0+8"
+python tools/site-probe/focas_sdk_layout.py --payload 01020304... cnc_rdtofsinfo
+python tools/site-probe/focas_sdk_layout.py --len 12 cnc_rdmacro 0   # 长度查得严的要给
+```
+
+做法：给假机床铺一份**每个字都不一样**的载荷（第 i 个字 = `0x1000 + i*0x101`），跑一次
+官方 SDK 的调用，把 SDK 填进出参的字节抠出来，再对出参每一格在载荷里**反查**它从哪儿来
+（大端/小端 × 16/32 位各试一遍，唯一命中才报）。配套两支：
+
+```
+python tools/site-probe/fwlib_struct.py <Fwlib64.h> ODBTLIFE3 ODBALMMSG2  # 官方头里的结构体
+python tools/site-probe/fwlib_proto.py  <SpecE 目录> cnc_rdtofsinfo       # 官方文档里的原型
+```
+
+- 结构体/原型从官方 SDK 包拿（`Fwlib64/30i/Fwlib64.h`、`Document/SpecE/**/*.xml`，每份
+  XML 第一段就有 `<prottype>`）。**原型很重要**：`focas_sdk_probe.c` 里那些通用形状
+  （`s1/s2/s3/s1_n/s2_n/s2_n_n/…`）就是照它配的，配错的话出参落在哪一格全是噪声 ——
+  这轮顺手修了 `s1_n_s1_n`（`cnc_rdaxisdata` 的第二个 short 是**指针**，原来把整数当
+  指针传了）、给 `s2_n` 的 `*num` 一个非零初值（给 0 会被回 `EW_LENGTH`），并补了
+  `cnc_rddynamic2` / `cnc_loadtorq` / `cnc_rdgcode` 三个表项。
+- 交叉印证：同一条 item 再对着**现场包里那份 Linux `libfwlib32.so`** 反汇编一遍
+  （`python tools/site-probe/elf_dis.py <so> cnc_rdcount`；这轮给 `elf_dis.py` 补了
+  x86 / x64，之前只认 ARM）。x86 那版在官方 SDK 包的 `Fwlib/Linux/x86/` 下。
+
+反查出来的（都已写进 01 册 §2.4/§2.6）：
+
+| item | Cb | 载荷 |
+|---|---|---|
+| `cnc_rdcount` | 0x8b d=e=0 | `datano`@2、件数@**20** ← **client 原来按 @0 读，是错的那一格** |
+| `cnc_rdlife` | 0x8b d=e=1 | `datano`@2、寿命@**12**（和件数不是一个偏移） |
+| `cnc_rdtofsinfo` | **0x0a** | `use_no`@2、`ofs_type`@4 |
+| `cnc_rdmacroinfo` | **0x17** | 头两个 short 在 @2 / @6 |
+| `cnc_rdexecprog` | **0x20** arg0=0x594 | 文本从 @4 起，**原样字节**（不是大端字） |
+| `cnc_rdgcode` / `cnc_rdwkcdshft` / `cnc_loadtorq` | **0x96 / 0x63 / 0xfd** | 码新核出来 |
+| `cnc_rdblkcount` | 0x35 | 就是**载荷 @0 的 BE32**（前一版写的"不是 @0"反了） |
+| `cnc_rdparam` / `cnc_rdtofs` | 0x0e / 0x08 | `datano`@2、`type`@4、`ldata`@8 / `data`@0 |
+| `cnc_rdprgnum`@2+@6、`cnc_rdseqnum`@0、`cnc_rdalarm2`@0、`cnc_rdngrp`@0、`cnc_rdtimer`@0+@4 | — | 复核：client 原来的读法**都对** |
+
+假机床（`focas_machine.py`）跟着改了两处：`0x8b` 那块按 `ODBTLIFE3` 的真实位置铺
+（`--count` 落到 @20、新增 `--life` 落到 @12）。
+
+还差（接着磨就行，都不用真机）：`cnc_rdalmmsg2` 的块长/条数、`cnc_rdprogdir3` 与
+`cnc_rdmacro` 的 `--len`（给 12 仍回 `EW_LENGTH`）、`cnc_rdsvmeter`/`cnc_rdspmeter`/
+`cnc_rdposition` 那几条**一条请求带多个块**的逐块形状。
 
 ## 已经拿到什么
 

@@ -971,6 +971,22 @@ static void test_semantics(void)
     NCL_CHECK_EQ_INT(ncl_focas_main_program_number(focas, &number), NCL_OK);
     NCL_CHECK_EQ_INT(number, 5678);
 
+    /*
+     * 件数（PART_COUNT）：值**不在载荷 0 处**，在 @20（`datano` 在 @2）。
+     * 这一格是 2026-09 用官方 SDK 对着一台"每个字节都可辨识"的假机床反查出来的，
+     * 现场包里那份 Linux `libfwlib32.so` 的 `cnc_rdcount` 也是这么切的（01 册 §2.6）。
+     * 所以这里故意把 @2 填成 7、@0 填成垃圾：只认 @20 那个值。
+     */
+    NCL_TEST_CASE("件数：ODBTLIFE3 的 data 在载荷 @20（不是 @0）");
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_count = 1;
+    mock->payload_len[0] = 24;
+    put_u16be(mock->payload[0] + 2, 7);          /* datano */
+    put_u32be(mock->payload[0] + 0, 0xDEADBEEFu);/* 载荷 0 处的干扰值 */
+    put_u32be(mock->payload[0] + 20, 952);       /* 件数 */
+    NCL_CHECK_EQ_INT(ncl_focas_part_count(focas, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 952);
+
     NCL_TEST_CASE("程序行号：载荷 @0 的 BE32，出门是文本（表 7 的 LINE_NUMBER）");
     mock->payload_len[0] = 4;
     put_u32be(mock->payload[0], 4321);
