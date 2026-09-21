@@ -495,6 +495,40 @@ ncl_err ncl_server_register_file_tool(ncl_server *server);
  */
 const ncl_tool_decl *ncl_file_tool_declaration(void);
 
+/*
+ * ------------------------------------------------------- 文件处理的最后一段 --
+ *
+ * 文件处理的链路是 **client → adapter → 机床**：前两段是上面那套文件流程
+ * （`/CONTROLLER/FILE` 的对象操作 + 传输调用，字节走文件通道 / FTP），**最后一段
+ * （adapter → 机床）由厂商适配器实现** —— FANUC 这份就是 FOCAS 的程序上下行
+ * （`cnc_dwnstart4` 三件套 / `cnc_upstart4` 三件套，01 册 §2.4）。
+ *
+ * 为什么是"注册进来的"：core 不链接任何协议客户端（clients/ 是另一层的库），所以
+ * 最后一段只能是插件在打开自己的连接时把实现注册进来。没装插件（或插件没注册）
+ * 时，文件流程到设备本地目录为止 —— 这也是现在的默认行为。
+ *
+ * 以**设备本地为准**：`write` 把文件落到本地之后调 @p push 送进机床；`read` 在本地
+ * 还没有那份文件时先调 @p pull 从机床取回来；`delete` 连机床上的那份一起删。
+ */
+typedef struct {
+    void *user; /**< 插件的连接上下文（对 FOCAS 就是 open() 拿到的那个 client） */
+    /** 把本地 @p path 的文件送进机床，名字用 @p name（程序名 / 文件名）。 */
+    ncl_err (*push)(void *user, const char *name, const char *path,
+                    char **reason);
+    /** 从机床取回 @p name，写到本地 @p path。 */
+    ncl_err (*pull)(void *user, const char *name, const char *path,
+                    char **reason);
+    /** 删掉机床上的 @p name。 */
+    ncl_err (*remove)(void *user, const char *name, char **reason);
+} ncl_file_backend;
+
+/**
+ * 注册（@p backend 为 NULL 即撤销）最后一段。一个进程一份，后注册的覆盖先注册的
+ * —— 一台设备就一台机床。返回 NCL_ERR_INVALID_ARG 只可能是 @p backend 的
+ * 函数指针不全。
+ */
+ncl_err ncl_file_tool_set_backend(const ncl_file_backend *backend);
+
 /** Register the file tool on @p server (params: the tool's "parameters" object,
  *  "sn" included - the directory layout on the peer is "/<sn>/..."). */
 ncl_err ncl_file_tool_register(ncl_server *server, const ncl_json *params,

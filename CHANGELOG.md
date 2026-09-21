@@ -5,6 +5,32 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 文件处理的"最后一段"：FOCAS 接到文件流程上（client → adapter → 机床）
+
+文件的链路定了：**client → adapter → 机床**。前两段是文件流程本身（`/CONTROLLER/FILE`
+的对象操作 + `call` 里带通道参数的传输，字节走文件通道 / FTP），**最后一段
+（adapter → 机床）由厂商适配器用协议接口实现** —— FANUC 这份就是 FOCAS 的程序上下行。
+
+- **core 加接缝**（`include/nclink/ncl_file.h`）：新增 `ncl_file_backend`
+  （`push` / `pull` / `remove`）与 `ncl_file_tool_set_backend()`。core 不链接协议
+  客户端，所以实现是插件在打开自己的连接时注册进来的；没注册就是现在的"只到本地
+  目录"。
+- **以设备本地为准**：`write` 把文件落到本地之后调 `push` 送进机床；`read` 在本地还
+  没有那份文件时先调 `pull` 从机床取回（再按流程发布给对端）；`delete` 先删机床上的
+  （删不掉——比如正在执行——本地也留着），再删本地。
+- **plugins/focas.c 实现这个后端**：`push` = `ncl_focas_program_download()`
+  （`cnc_dwnstart4` 三件套，已按官方库验通）、`pull` = `program_upload()`、
+  `remove` = `program_delete()`（后两条的应答切法还待核，会明确回"还读不了"），在
+  `focas_open()` 里注册、`focas_close()` 里撤销。
+- **撤掉上一轮给 FOCAS 工具自造的 8 个方法**（`/PROGRAM@*`、`/*@WRITE`）：文件的门面
+  只有文件工具那一个（现场门面是 `/CONTROLLER/{CONSOLE,FILE,PROGRAM_DATA}`，没有一条
+  挂在设备节点上）。点位表里留了注释说明这件事。
+- 测试：`tests/test_file.c` 新增 `test_file_backend()`（接缝的契约：函数指针不全要拒、
+  注册/撤销干净），**并在真文件流程里断言三个调用点**：`openFileChannel` 握手之后
+  `write` 落本地 → `push` 被调到（名字与本地路径都对）、`read` 本地没有 → 先 `pull`
+  再从本地发布、`delete` → 先 `remove`；撤销后端之后不再调它。
+  文件套件 303 checks / 0 failures，全量 42/42、零 warning。
+
 ### FANUC：按"数据字典 × FOCAS 能力"补全点表与方法面
 
 前两轮是"补函数"，这一轮做成**完整映射**：32 册新增 §5.2「点表全映射」（字典的表

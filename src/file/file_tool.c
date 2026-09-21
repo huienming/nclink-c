@@ -300,6 +300,36 @@ static ncl_err file_tool_close_channel(void *instance, const ncl_json *params,
 
 /* ----------------------------------------------------------- tool methods -- */
 
+/*
+ * 文件处理的最后一段（adapter → 机床）：厂商适配器注册进来的实现（见
+ * nclink/ncl_file.h 的 ncl_file_backend）。没注册就是"只到本地目录"。
+ */
+static const ncl_file_backend *g_file_backend;
+
+ncl_err ncl_file_tool_set_backend(const ncl_file_backend *backend)
+{
+    if (backend != NULL &&
+        (backend->push == NULL || backend->pull == NULL ||
+         backend->remove == NULL)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    g_file_backend = backend;
+    return NCL_OK;
+}
+
+/** 最后一段失败时的理由：优先用实现自己给的那句话。 */
+static ncl_err backend_failed(const char *what, const char *name, char *why,
+                              char **reason)
+{
+    if (reason != NULL) {
+        *reason = ncl_strdup(why != NULL ? why : what);
+    }
+    ncl_free_safe(why);
+    ncl_log_warn("文件最后一段（%s %s）失败：%s", what, name,
+                 reason != NULL && *reason != NULL ? *reason : "?");
+    return NCL_ERR_IO;
+}
+
 /**
  * "write" method of the file tool:
  *   value is absent          -> fetch the file from the peer over FTP;
@@ -362,11 +392,21 @@ static ncl_err file_tool_write(void *instance, const ncl_json *params,
     if (value == NULL || strcmp(value, filename) == 0 ||
         strcmp(value, target) == 0) {
         char *local = ncl_server_file_tool_read(state->remote, filename);
+
         if (local == NULL) {
             *result = bool_result(false);
             return NCL_OK;
         }
         ncl_mem_free(local);
+        /* 文件到本地了：接着做最后一段（送进机床）。 */
+        if (g_file_backend != NULL) {
+            char *why = NULL;
+
+            if (g_file_backend->push(g_file_backend->user, filename, target,
+                                     &why) != NCL_OK) {
+                return backend_failed("送到机床", filename, why, reason);
+            }
+        }
         *result = bool_result(true);
         return NCL_OK;
     }
@@ -377,6 +417,15 @@ static ncl_err file_tool_write(void *instance, const ncl_json *params,
                 *reason = ncl_strdup("写文件失败");
             }
             return rc;
+        }
+    }
+    /* 最后一段：文件已经在本地了，装的是机床适配器就接着送进机床。 */
+    if (g_file_backend != NULL) {
+        char *why = NULL;
+
+        if (g_file_backend->push(g_file_backend->user, filename, target, &why) !=
+            NCL_OK) {
+            return backend_failed("送到机床", filename, why, reason);
         }
     }
     *result = bool_result(ncl_path_exists(target));
@@ -424,6 +473,15 @@ static ncl_err file_tool_read(void *instance, const ncl_json *params,
     }
     upload_path(path, sizeof(path), filename);
     remote_parent(filename, parent, sizeof(parent));
+    /* 本地还没有就先从机床取回（"最后一段"，以本地为准）。 */
+    if (!ncl_path_exists(path) && g_file_backend != NULL) {
+        char *why = NULL;
+
+        if (g_file_backend->pull(g_file_backend->user, filename, path, &why) !=
+            NCL_OK) {
+            return backend_failed("从机床取回", filename, why, reason);
+        }
+    }
     if (!ncl_server_file_tool_write(state->remote, path, parent)) {
         if (reason != NULL) {
             *reason = ncl_strdup("读文件失败");
@@ -517,6 +575,14 @@ static ncl_err file_tool_delete(void *instance, const ncl_json *params,
     if (key == NULL) {
         *result = bool_result(false);
         return NCL_OK;
+    }
+    /* 机床上的那份也删掉（先删机床：删不掉——比如它正在执行——本地也留着）。 */
+    if (g_file_backend != NULL) {
+        char *why = NULL;
+
+        if (g_file_backend->remove(g_file_backend->user, key, &why) != NCL_OK) {
+            return backend_failed("删机床上的文件", key, why, reason);
+        }
     }
     *result = bool_result(ncl_server_file_tool_delete(state->remote, key));
     return NCL_OK;

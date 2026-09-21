@@ -25,8 +25,19 @@
  */
 #include "nclink/ncl_tool.h"
 
+#include <string.h>
+
 #include "nclink/clients/focas.h"
+#include "nclink/ncl_env.h"
+#include "nclink/ncl_file.h"
 #include "nclink/ncl_json.h"
+
+/* 文件处理最后一段的实现（定义在下面），open() 里要它们的地址。 */
+static ncl_err focas_file_push(void *user, const char *name, const char *path,
+                               char **reason);
+static ncl_err focas_file_pull(void *user, const char *name, const char *path,
+                               char **reason);
+static ncl_err focas_file_remove(void *user, const char *name, char **reason);
 
 /* ---------------------------------------------------------------- 连接 ---- */
 
@@ -36,7 +47,10 @@
  */
 static void *focas_open(const ncl_json *params, char **err)
 {
+    /* 注册进文件工具的那份要活得比这次 open 长，所以放静态：一个进程一台机床。 */
+    static ncl_file_backend backend;
     ncl_focas_config config;
+    ncl_focas *focas;
 
     ncl_focas_config_default(&config);
     config.host = ncl_tool_param_str(params, "host", "");
@@ -51,11 +65,25 @@ static void *focas_open(const ncl_json *params, char **err)
                                                   (long long)config.retries);
     config.negotiate =
         ncl_tool_param_bool(params, "negotiate", config.negotiate);
-    return ncl_focas_open(&config, err);
+    focas = ncl_focas_open(&config, err);
+    if (focas == NULL) {
+        return NULL;
+    }
+    /* 文件处理的最后一段（adapter → 机床）：把 FOCAS 的程序上下行交给文件工具，
+     * 设备的 `/CONTROLLER/FILE` 从此多走这一段（见 nclink/ncl_file.h）。 */
+    memset(&backend, 0, sizeof(backend));
+    backend.user = focas;
+    backend.push = focas_file_push;
+    backend.pull = focas_file_pull;
+    backend.remove = focas_file_remove;
+    (void)ncl_file_tool_set_backend(&backend);
+    return focas;
 }
 
 static void focas_close(void *ctx)
 {
+    /* 最后一段随连接一起撤（文件工具退回"只到本地目录"）。 */
+    (void)ncl_file_tool_set_backend(NULL);
     ncl_focas_close((ncl_focas *)ctx);
 }
 
@@ -102,149 +130,64 @@ static ncl_err items_method(void *ctx, const ncl_json *params,
     return NCL_OK;
 }
 
+/* ------------------------------------------------------ 文件处理的最后一段 -- */
+
 /*
- * 程序上下行（现场调试用，不进模型、不参与采样）：参数里给程序文本/程序名，
- * 字节走 FOCAS 的三件套（01 册 §2.4）。程序不是数据对象 —— 标准里"文件"是
- * FILE（dict）对象，而"把一段程序下发/取回"是**动作**，所以它们是方法。
+ * client → adapter → 机床 这条链的**最后一段**：文件在设备本地落地之后，由这里用
+ * FOCAS 把它送进机床（`cnc_dwnstart4` 三件套），或从机床取回来（`cnc_upstart4`
+ * 三件套）、删掉机床上的那份。注册进文件工具（`ncl_file_tool_set_backend()`），
+ * 于是 `/CONTROLLER/FILE` 的 write / read / delete 就多走这一段（见 ncl_file.h）。
+ *
+ * 帧与体长按官方 SDK 实测（01 册 §2.4）；上行（取回）的应答切法还没核，所以
+ * pull 现在会明确回"还读不了"（NCL_ERR_UNAVAILABLE）。
  */
-static ncl_err program_download_method(void *ctx, const ncl_json *params,
-                                       ncl_json **result, char **reason)
+static ncl_err focas_file_push(void *user, const char *name, const char *path,
+                               char **reason)
 {
-    ncl_focas *focas = (ncl_focas *)ctx;
-    const char *program = ncl_tool_param_str(params, "data", NULL);
-    long long type = ncl_tool_param_int(params, "type", 0);
+    ncl_focas *focas = (ncl_focas *)user;
+    char *bytes = NULL;
     ncl_err rc;
 
-    if (program == NULL) {
-        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
-                             "下发程序要在 params 里给 \"data\"（程序文本）");
-    }
-    rc = ncl_focas_program_download(focas, type,
-                                    ncl_tool_param_str(params, "dir", NULL),
-                                    program);
+    rc = ncl_file_read_all(path, &bytes, NULL);
     if (rc != NCL_OK) {
-        return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
-    }
-    if (result != NULL) {
-        ncl_json *object = ncl_json_new_object();
-
-        if (object == NULL) {
-            return NCL_ERR_NOMEM;
+        if (reason != NULL) {
+            *reason = ncl_strdup("读本地文件失败");
         }
-        (void)ncl_json_obj_set_int(object, "bytes", (long long)strlen(program));
-        *result = object;
+        return rc;
     }
-    return NCL_OK;
+    rc = ncl_focas_program_download(focas, 0, name, bytes);
+    ncl_free_safe(bytes);
+    if (rc != NCL_OK && reason != NULL) {
+        *reason = ncl_strdup(ncl_focas_last_error(focas));
+    }
+    return rc;
 }
 
-static ncl_err program_upload_method(void *ctx, const ncl_json *params,
-                                     ncl_json **result, char **reason)
+static ncl_err focas_file_pull(void *user, const char *name, const char *path,
+                               char **reason)
 {
-    ncl_focas *focas = (ncl_focas *)ctx;
-    char *program = NULL;
+    ncl_focas *focas = (ncl_focas *)user;
+    char *bytes = NULL;
     size_t len = 0;
-    ncl_err rc = ncl_focas_program_upload(
-        focas, ncl_tool_param_int(params, "type", 0),
-        ncl_tool_param_str(params, "name", NULL), &program, &len);
+    ncl_err rc = ncl_focas_program_upload(focas, 0, name, &bytes, &len);
 
-    (void)result; /* 上传还没实现：成功时才会往 result 里放程序文本 */
-    ncl_free_safe(program);
-    if (rc != NCL_OK) {
-        return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+    (void)path;
+    ncl_free_safe(bytes);
+    if (rc != NCL_OK && reason != NULL) {
+        *reason = ncl_strdup(ncl_focas_last_error(focas));
     }
-    (void)len;
-    return NCL_OK;
+    return rc;
 }
 
-/*
- * 程序目录 / 选主程序 / 删程序：都是**命令**（读一次程序目录也是命令，因为它问的是
- * 机床的程序内存里有哪几个文件，不是某个数据对象的值）。
- */
-static ncl_err program_directory_method(void *ctx, const ncl_json *params,
-                                        ncl_json **result, char **reason)
+static ncl_err focas_file_remove(void *user, const char *name, char **reason)
 {
-    ncl_focas *focas = (ncl_focas *)ctx;
-    ncl_err rc = ncl_focas_program_directory(focas, result);
+    ncl_focas *focas = (ncl_focas *)user;
+    ncl_err rc = ncl_focas_program_delete(focas, name);
 
-    (void)params;
-    if (rc != NCL_OK) {
-        return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+    if (rc != NCL_OK && reason != NULL) {
+        *reason = ncl_strdup(ncl_focas_last_error(focas));
     }
-    return NCL_OK;
-}
-
-/** 选主程序 / 删程序 / 写参数 / 写刀补 / 写宏变量：参数都从 params 里取。 */
-static ncl_err program_select_main_method(void *ctx, const ncl_json *params,
-                                          ncl_json **result, char **reason)
-{
-    ncl_err rc = ncl_focas_program_select_main(
-        (ncl_focas *)ctx, ncl_tool_param_str(params, "name", NULL));
-
-    (void)result;
-    if (rc != NCL_OK) {
-        return ncl_tool_fail(reason, rc, "%s",
-                             ncl_focas_last_error((ncl_focas *)ctx));
-    }
-    return NCL_OK;
-}
-
-static ncl_err program_delete_method(void *ctx, const ncl_json *params,
-                                     ncl_json **result, char **reason)
-{
-    ncl_err rc = ncl_focas_program_delete(
-        (ncl_focas *)ctx, ncl_tool_param_str(params, "name", NULL));
-
-    (void)result;
-    if (rc != NCL_OK) {
-        return ncl_tool_fail(reason, rc, "%s",
-                             ncl_focas_last_error((ncl_focas *)ctx));
-    }
-    return NCL_OK;
-}
-
-static ncl_err parameter_write_method(void *ctx, const ncl_json *params,
-                                      ncl_json **result, char **reason)
-{
-    ncl_err rc = ncl_focas_parameter_write(
-        (ncl_focas *)ctx, ncl_tool_param_int(params, "number", -1),
-        ncl_tool_param_str(params, "value", NULL));
-
-    (void)result;
-    if (rc != NCL_OK) {
-        return ncl_tool_fail(reason, rc, "%s",
-                             ncl_focas_last_error((ncl_focas *)ctx));
-    }
-    return NCL_OK;
-}
-
-static ncl_err tool_offset_write_method(void *ctx, const ncl_json *params,
-                                        ncl_json **result, char **reason)
-{
-    ncl_err rc = ncl_focas_tool_offset_write(
-        (ncl_focas *)ctx, ncl_tool_param_int(params, "index", -1),
-        ncl_tool_param_str(params, "value", NULL));
-
-    (void)result;
-    if (rc != NCL_OK) {
-        return ncl_tool_fail(reason, rc, "%s",
-                             ncl_focas_last_error((ncl_focas *)ctx));
-    }
-    return NCL_OK;
-}
-
-static ncl_err macro_write_method(void *ctx, const ncl_json *params,
-                                  ncl_json **result, char **reason)
-{
-    ncl_err rc = ncl_focas_macro_write(
-        (ncl_focas *)ctx, ncl_tool_param_int(params, "number", -1),
-        (double)ncl_tool_param_int(params, "value", 0));
-
-    (void)result;
-    if (rc != NCL_OK) {
-        return ncl_tool_fail(reason, rc, "%s",
-                             ncl_focas_last_error((ncl_focas *)ctx));
-    }
-    return NCL_OK;
+    return rc;
 }
 
 /* ------------------------------------------------------------------ 工具 -- */
@@ -350,17 +293,17 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
     NCL_METHOD_CALL("/SESSION", session_method)
     NCL_METHOD_CALL("/ITEMS", items_method)
-    /* 程序上下行（动作，不是数据对象）：下发已通（cnc_dwnstart4 三件套），
-     * 上传的应答切法待真机核，现在回"还读不了"（见 client 的注释与 31 册）。 */
-    NCL_METHOD_CALL("/PROGRAM@DOWNLOAD", program_download_method)
-    NCL_METHOD_CALL("/PROGRAM@UPLOAD", program_upload_method)
-    NCL_METHOD_CALL("/PROGRAM@DIRECTORY", program_directory_method)
-    NCL_METHOD_CALL("/PROGRAM@SELECT_MAIN", program_select_main_method)
-    NCL_METHOD_CALL("/PROGRAM@DELETE", program_delete_method)
-    /* 写动作（现场要改参数/刀补/宏变量时用；**刀补写着会撞刀**，权限与备份先想清楚）。 */
-    NCL_METHOD_CALL("/PARAMETER@WRITE", parameter_write_method)
-    NCL_METHOD_CALL("/TOOL@WRITE", tool_offset_write_method)
-    NCL_METHOD_CALL("/VARIABLE@WRITE", macro_write_method)
+
+    /*
+     * **文件/程序不在这里声明。** 文件的门面只有一个：文件工具声明的
+     * `/CONTROLLER/FILE`（dict，进 configs），它的操作走标准那一套（`get_value` /
+     * `get_attributes` / `get_keys` / `add` / `delete` / `call`），**传输的最后
+     * 一段（adapter → 机床）**才由这份工具的 client 用 FOCAS 去搬
+     * （`cnc_dwnstart4` 三件套一族 / `cnc_upstart4` 一族，见 clients/focas）。
+     * 给 FOCAS 工具另开 `/PROGRAM@DOWNLOAD` 这种方法，等于把"文件"做成两套流程
+     * —— 现场那家的门面是 `/CONTROLLER/{CONSOLE,FILE,PROGRAM_DATA}`，没有一条
+     * 挂在设备节点上。
+     */
 
 NCL_TOOL_END_WITH_RAW(focas_last_raw)
 

@@ -583,6 +583,222 @@ static void test_server_file_tool(void)
     ncl_ftp_server_free(ftp);
 }
 
+/* ==================================== 文件处理的最后一段（adapter→机床）== */
+
+/*
+ * 链路是 client → adapter → 机床：前两段是上面那些用例（文件流程 + 文件通道），
+ * **最后一段（adapter → 机床）由厂商适配器注册进来**（FANUC 那份就是 FOCAS 的
+ * 程序上下行，见 nclink/ncl_file.h 的 ncl_file_backend）。
+ *
+ * 这里两头都验：接缝的契约（函数指针不全要拒、注册/撤销干净），以及三个调用点
+ * ——写文件落到本地之后推给机床、读时本地没有就先从机床取回、删文件两边一起删。
+ * 驱动方式就是文件流程本身（`/file/openFileChannel` + `/file/write|read|delete`
+ * 方法调用），所以"最后一段"是在真流程里被调到的。
+ */
+static int g_backend_push;
+static int g_backend_pull;
+static int g_backend_remove;
+static char g_backend_name[256];
+static char g_backend_path[512];
+
+static ncl_err fake_backend_push(void *user, const char *name, const char *path,
+                                 char **reason)
+{
+    (void)user;
+    (void)reason;
+    g_backend_push++;
+    snprintf(g_backend_name, sizeof(g_backend_name), "%s",
+             name != NULL ? name : "");
+    snprintf(g_backend_path, sizeof(g_backend_path), "%s", path != NULL ? path : "");
+    return ncl_path_exists(path) ? NCL_OK : NCL_ERR_NOT_FOUND;
+}
+
+static ncl_err fake_backend_pull(void *user, const char *name, const char *path,
+                                 char **reason)
+{
+    (void)user;
+    (void)reason;
+    g_backend_pull++;
+    snprintf(g_backend_name, sizeof(g_backend_name), "%s",
+             name != NULL ? name : "");
+    /* 从"机床"取回来的内容：写成设备本地的文件，后面按文件流程发布给对端。 */
+    return ncl_file_write_all(path, "FROM-CNC", 8);
+}
+
+static ncl_err fake_backend_remove(void *user, const char *name, char **reason)
+{
+    (void)user;
+    (void)reason;
+    g_backend_remove++;
+    snprintf(g_backend_name, sizeof(g_backend_name), "%s",
+             name != NULL ? name : "");
+    return NCL_OK;
+}
+
+/** 文件流程的方法调用："/file/<方法>"，参数就是请求参数。 */
+static ncl_message *file_call(const char *method, ncl_json *params)
+{
+    ncl_message *request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+
+    ncl_message_set_method(request, method);
+    ncl_message_set_params(request, params);
+    return request;
+}
+
+static ncl_json *file_params(const char *key, const char *value)
+{
+    ncl_json *params = ncl_json_new_object();
+
+    if (key != NULL) {
+        (void)ncl_json_obj_set_string(params, "key", key);
+    }
+    if (value != NULL) {
+        (void)ncl_json_obj_set_string(params, "value", value);
+    }
+    return params;
+}
+
+static void test_file_backend(void)
+{
+    static ncl_file_backend backend; /* 注册进文件工具的指针要活得比这次调用久 */
+    ncl_ftp_server_options ftp_options;
+    ncl_ftp_server *ftp;
+    ncl_server_options server_options;
+    ncl_server *server;
+    char path[512];
+    ncl_message *response;
+
+    NCL_TEST_CASE("最后一段：注册与撤销（函数指针不全就拒）");
+    memset(&backend, 0, sizeof(backend));
+    NCL_CHECK_EQ_INT(ncl_file_tool_set_backend(&backend), NCL_ERR_INVALID_ARG);
+    backend.push = fake_backend_push;
+    NCL_CHECK_EQ_INT(ncl_file_tool_set_backend(&backend), NCL_ERR_INVALID_ARG);
+    backend.pull = fake_backend_pull;
+    NCL_CHECK_EQ_INT(ncl_file_tool_set_backend(&backend), NCL_ERR_INVALID_ARG);
+    backend.remove = fake_backend_remove;
+    NCL_CHECK_EQ_INT(ncl_file_tool_set_backend(&backend), NCL_OK);
+    NCL_CHECK_EQ_INT(g_backend_push + g_backend_pull + g_backend_remove, 0);
+    NCL_CHECK_EQ_INT(ncl_file_tool_set_backend(NULL), NCL_OK);
+
+    NCL_TEST_CASE("最后一段：写落机床、读先取回、删两边都删");
+    memset(&ftp_options, 0, sizeof(ftp_options));
+    ftp_options.port = TEST_FTP_PORT;
+    ftp_options.root = ".";
+    ftp_options.allow_write = true;
+    ftp_options.idle_timeout_ms = 5000;
+    ftp = ncl_ftp_server_create_ex(&ftp_options);
+    NCL_CHECK(ftp != NULL);
+    if (ftp == NULL) {
+        return;
+    }
+    NCL_CHECK_EQ_INT(ncl_ftp_server_start(ftp), NCL_OK);
+
+    memset(&server_options, 0, sizeof(server_options));
+    server_options.sn = TEST_SN;
+    server = ncl_server_create(&server_options);
+    NCL_CHECK(server != NULL);
+    if (server == NULL) {
+        ncl_ftp_server_free(ftp);
+        return;
+    }
+    /* 方法注册那条入口：声明式那条只绑点位，不注册 file/write 这些方法。 */
+    NCL_CHECK_EQ_INT(ncl_server_register_file_tool(server), NCL_OK);
+
+    memset(&backend, 0, sizeof(backend));
+    backend.push = fake_backend_push;
+    backend.pull = fake_backend_pull;
+    backend.remove = fake_backend_remove;
+    NCL_CHECK_EQ_INT(ncl_file_tool_set_backend(&backend), NCL_OK);
+
+    /* 通道握手（"通道随调用走"那一步）。 */
+    {
+        ncl_json *params = file_params(NULL, NULL);
+
+        (void)ncl_json_obj_set_string(params, "host", "127.0.0.1");
+        (void)ncl_json_obj_set_int(params, "port", (long long)TEST_FTP_PORT);
+        (void)ncl_json_obj_set_string(params, "user", "admin");
+        (void)ncl_json_obj_set_string(params, "password", "123456");
+        (void)ncl_json_obj_set_string(params, "channelId", "backend-test");
+        response = ncl_server_invoke_method_call(
+            server, file_call("/file/openFileChannel", params));
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            NCL_CHECK_EQ_STR(response->as.method_call_response.code,
+                             NCL_KW_CODE_OK);
+            ncl_message_free(response);
+        }
+    }
+
+    /* write：本地有源文件 → 落本地之后推给机床。 */
+    NCL_CHECK_EQ_INT(ncl_mkdir_p("uploadFile/data"), NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_file_write_all("uploadFile/data/src.txt", "G0 X0\n", 6),
+                     NCL_OK);
+    response = ncl_server_invoke_method_call(
+        server, file_call("/file/write",
+                          file_params("/data/backend.txt",
+                                      "uploadFile/data/src.txt")));
+    NCL_CHECK(response != NULL);
+    if (response != NULL) {
+        NCL_CHECK_EQ_STR(response->as.method_call_response.code,
+                         NCL_KW_CODE_OK);
+        ncl_message_free(response);
+    }
+    NCL_CHECK_EQ_INT(g_backend_push, 1);
+    NCL_CHECK_EQ_STR(g_backend_name, "/data/backend.txt");
+    /* 设备本地的落地位置就是文件工具的上传区（uploadFile/<name>）。 */
+    snprintf(path, sizeof(path), "uploadFile%cdata%cbackend.txt", NCL_PATH_SEP,
+             NCL_PATH_SEP);
+    NCL_CHECK(ncl_path_exists(path));
+
+    /* delete：机床上的那份先删。 */
+    response = ncl_server_invoke_method_call(
+        server, file_call("/file/delete",
+                          file_params("/data/backend.txt", NULL)));
+    NCL_CHECK(response != NULL);
+    if (response != NULL) {
+        ncl_message_free(response);
+    }
+    NCL_CHECK_EQ_INT(g_backend_remove, 1);
+    NCL_CHECK_EQ_STR(g_backend_name, "/data/backend.txt");
+
+    /* read：本地没有那份文件 → 先从机床取回，再按文件流程发布给对端。 */
+    snprintf(path, sizeof(path), "uploadFile%cdata%cfromcnc.txt", NCL_PATH_SEP,
+             NCL_PATH_SEP);
+    NCL_CHECK(!ncl_path_exists(path));
+    {
+        ncl_json *params = file_params(NULL, NULL);
+        ncl_json *keys = ncl_json_new_array();
+
+        (void)ncl_json_arr_push(keys, ncl_json_new_string("/data/fromcnc.txt"));
+        (void)ncl_json_obj_set(params, "keys", keys);
+        response = ncl_server_invoke_method_call(
+            server, file_call("/file/read", params));
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            NCL_CHECK_EQ_STR(response->as.method_call_response.code,
+                             NCL_KW_CODE_OK);
+            ncl_message_free(response);
+        }
+    }
+    NCL_CHECK_EQ_INT(g_backend_pull, 1);
+    NCL_CHECK_EQ_STR(g_backend_name, "/data/fromcnc.txt");
+    NCL_CHECK(ncl_path_exists(path));
+
+    NCL_TEST_CASE("撤销最后一段之后不再调它");
+    NCL_CHECK_EQ_INT(ncl_file_tool_set_backend(NULL), NCL_OK);
+    response = ncl_server_invoke_method_call(
+        server, file_call("/file/delete",
+                          file_params("/data/backend.txt", NULL)));
+    NCL_CHECK(response != NULL);
+    if (response != NULL) {
+        ncl_message_free(response);
+    }
+    NCL_CHECK_EQ_INT(g_backend_remove, 1);
+
+    ncl_server_free(server);
+    ncl_ftp_server_free(ftp);
+}
+
 /* ===================================================== MQTT end to end === */
 
 /*
@@ -1169,6 +1385,7 @@ NCL_TEST_MAIN_BEGIN()
     test_local_attribute();
     test_ftp_info();
     test_server_file_tool();
+    test_file_backend();
     test_end_to_end();
     test_channel_config();
 
