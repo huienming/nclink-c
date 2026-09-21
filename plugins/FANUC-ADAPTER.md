@@ -202,21 +202,36 @@ NCL_TOOL_END_WITH_RAW(focas_last_raw)
   （其中 7 个绑的是 client 里"帧待抓包"的函数，见第 7 节），2 个方法是覆盖。
 - 改点位 ＝ 改这个 `.c` 并重编模块；**采样周期与上报周期在配置和模型文件里，现场改不用重编**。
 
-出厂点位（5 轴，共 20 个点位 + 2 个方法，名字全部来自数据字典）：
+出厂点位（5 轴 + 1 主轴，名字全部来自数据字典；**完整对照表见 32 册 §5.2**。
+下表 ✔ = 现在真读得到，🟡 = 请求码/来源已核、应答（或字段布局）待真机核，
+现在答"还读不了"）：
 
-| 模型路径 | 读法（client） | 含义 | 采样 |
+| 模型路径 | 读法（client） | 含义 | 状态 / 采样 |
 |---|---|---|---|
-| `/MACHINE/STATUS` | `ncl_focas_status()`（由 ODBST 的 RUN / EMERGENCY 两位推三态） | 运行状态：`running` / `free` / `holding` | ✔ |
-| `/MACHINE/WORK_MODE` | `ncl_focas_mode()`（同一个 ODBST 的 aut / manual 两位） | 工作模式：`manual` / `auto`（表 8） | ✘ 按需读 |
-| `/MACHINE/PART_COUNT` | `ncl_focas_part_count()`（`RDCOUNT`） | 加工件数（number） | ✔ |
-| `/MACHINE/CONTROLLER/PROGRAM` | `ncl_focas_program_name()`（`EXEPRGNAME2`，36 字节） | 主程序名 | ✔ |
-| `/MACHINE/CONTROLLER/PROGRAM_NUMBER` | `ncl_focas_program_number()`（`cnc_rdprgnum`） | 当前程序号 | ✘ 按需读 |
-| `/MACHINE/LINE_NUMBER` | `ncl_focas_line_number()`（`cnc_rdseqnum`） | 程序行号（文本 `N1234`） | ✘ 按需读 |
-| `/MACHINE/WARNING` | `ncl_focas_alarm()`（帧待抓包，现在回 `NCL_ERR_UNAVAILABLE`） | 报警（JSON `number`/`text`）—— 占着通道，**现在取值为 `null`**（见第 7 节） | ✔（null） |
-| `/MACHINE/AXIS@X\|Y\|Z\|A\|C/POSITION@REAL` | `ncl_focas_axis_position()`（`cnc_absolute`，**帧待抓包**，现在回 `NCL_ERR_UNAVAILABLE`） | 5 轴实际位置 | ✘ 按需读 |
-| `/MACHINE/AXIS@X\|Y\|Z\|A\|C/POSITION@CMD` | `ncl_focas_axis_position_cmd()`（帧待抓包，现在回 `NCL_ERR_UNAVAILABLE`） | 5 轴目标位置 | ✘ 按需读 |
-| `/MACHINE/AXIS@X\|Y\|Z\|A\|C/SPEED` | `ncl_focas_axis_feedrate()`（`cnc_actf`，每轴一个 float） | 5 轴**实际进给速度**（mm/min，表 4 的 SPEED） | ✘ 按需读 |
-| `/MACHINE/CONTROLLER/TOOL` | `ncl_focas_tool_list()`（帧待核对，现在回 `NCL_ERR_UNAVAILABLE`） | 刀具列表（`configs`，字典类型是 list） | ✘（配置不进采样通道） |
+| `/MACHINE/STATUS` | `ncl_focas_status()`（ODBST 的 RUN / EMERGENCY 两位推三态） | 运行状态：`running`/`free`/`holding` | ✔ 采样 |
+| `/MACHINE/WORK_MODE` | `ncl_focas_mode()`（同一个 ODBST 的 aut / manual 两位） | 工作模式：`manual`/`auto`（表 8） | ✔ 按需读 |
+| `/MACHINE/PART_COUNT` | `ncl_focas_part_count()`（`RDCOUNT`） | 加工件数 | ✔ 采样 |
+| `/MACHINE/LINE_NUMBER` | `ncl_focas_line_number()`（`cnc_rdseqnum`） | 程序行号（文本 `N1234`） | ✔ 按需读 |
+| `/MACHINE/TOOL_NUMBER` | `ncl_focas_tool_number()`（`cnc_rdgcode` 的模态 T 码） | 当前刀具号 | 🟡 按需读 |
+| `/MACHINE/FEED_SPEED`、`/FEED_OVERRIDE`、`/SPINDLE_OVERRIDE` | `ncl_focas_feed_speed/_override()`（`cnc_rddynamic2`） | 合成进给、两个倍率 | 🟡 按需读 |
+| `/MACHINE/WARNING` | `ncl_focas_alarm()`（`cnc_rdalmmsg2`） | 报警（JSON `number`/`text`）—— 占着通道，**现在取值为 `null`**（见第 7 节） | 🟡 采样（null） |
+| `/MACHINE/MODEL`、`/VERSION` | `ncl_focas_model()/_version()`（`cnc_rdmodel` / `cnc_sysinfo` 的握手记录） | 型号、系统版本 | 🟡 configs |
+| `/MACHINE/MANUFACTURER` | `ncl_focas_manufacturer()`（常量） | 厂商：`FANUC` | ✔ configs |
+| `/MACHINE/CONTROLLER/PROGRAM` | `ncl_focas_program_name()`（`EXEPRGNAME2`） | 主程序名 | ✔ 采样 |
+| `/MACHINE/CONTROLLER/PROGRAM_NUMBER` | `ncl_focas_program_number()`（`cnc_rdprgnum`） | 当前程序号 | ✔ 按需读 |
+| `/MACHINE/CONTROLLER/SUBPROGRAM` | `ncl_focas_subprogram_number()`（`cnc_rdexecprog3`） | 子程序号 | 🟡 按需读 |
+| `/MACHINE/CONTROLLER/TOOL`（list） | `ncl_focas_tool_list()`（`cnc_rdtooldata` 一族） | 刀具列表 | 🟡 configs |
+| `/MACHINE/CONTROLLER/TOOLPARAM`（JSON） | `ncl_focas_tool_param_table()`（刀补 `cnc_rdtofs` + 寿命 `cnc_rdlife`） | 刀具参数（半径/长度/使用次数…） | 🟡 configs |
+| `/MACHINE/CONTROLLER/VARIABLE`（list） | `ncl_focas_variable_table()`（`cnc_rdmacror`） | 运行变量（宏变量） | 🟡 configs |
+| `/MACHINE/CONTROLLER/PARAMETER`（dict） | `ncl_focas_parameter_table()`（`cnc_rdparanum` + `cnc_rdparar`） | 参数表 | 🟡 configs |
+| `/MACHINE/CONTROLLER/COORDINATE`（JSON） | `ncl_focas_work_offsets()`（`cnc_rdwkcdshft` 一族） | 工件坐标系（x/y/z…，表 9） | 🟡 configs |
+| `/MACHINE/AXIS@X\|Y\|Z/POSITION@REAL`、`@CMD` | `ncl_focas_axis_position()`／`_cmd()`（`cnc_absolute`／`cnc_rdposition`，item 0x26） | 线性轴位置（mm，实际/目标） | 🟡 按需读 |
+| `/MACHINE/AXIS@A\|C/ANGLE@REAL` | 同一个 `ncl_focas_axis_position()`（载荷 `unit=2` 是度） | 旋转轴角度 | 🟡 按需读 |
+| `/MACHINE/AXIS@k/SPEED` | `ncl_focas_axis_feedrate()`（`cnc_actf`，每轴一个 float） | **实际进给速度**（mm/min，表 4 的 SPEED） | ✔ 按需读 |
+| `/MACHINE/AXIS@k/PATH_LEFT_LENGTH` | `ncl_focas_axis_distance()`（`cnc_distance`，0x26 d=3） | 剩余进给 | 🟡 按需读 |
+| `/MACHINE/AXIS@k/TORQUE`、`/CURRENT`、`/TEMPERATURE` | `ncl_focas_axis_torque/_current/_temperature()`（`cnc_loadtorq` / `cnc_rdaxisdata`） | 扭矩 / 电流 / 温度 | 🟡 按需读 |
+| `/MACHINE/AXIS@k/TYPE`（`linear`/`rotary`） | `ncl_focas_axis_type()`（`cnc_rdaxisname` / `cnc_rdaxisdata` 的轴属性） | 轴类型 | 🟡 configs |
+| `/MACHINE/MOTOR@S1/SPEED` | `ncl_focas_spindle_speed()`（`cnc_acts`） | 主轴转速（units rpm；表 2 没有 SPINDLE，主轴按 MOTOR 归置） | ✔ 按需读 |
 
 几点现场要知道的：
 

@@ -5,6 +5,38 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### FANUC：按"数据字典 × FOCAS 能力"补全点表与方法面
+
+前两轮是"补函数"，这一轮做成**完整映射**：32 册新增 §5.2「点表全映射」（字典的表
+1/2/3/4/6/7 逐项 ↔ FOCAS 侧调用与 item 码 ↔ 状态 ↔ 归置/采样），声明与 client 照着它
+补齐。状态三档：**✅ 已通** / **🟡 码已核·应答待核**（声明照常、函数回
+`NCL_ERR_UNAVAILABLE` 并写明要抓哪个调用）/ **⛔ 供不了**（写清为什么：FANUC 没有这一
+项，或只有 PMC 地址由现场自定）。
+
+- **点位表**（plugins/focas.c，20 → 40 个点位）：新增 `WORK_MODE`、`LINE_NUMBER`、
+  `PROGRAM_NUMBER`、`SUBPROGRAM`、`TOOL_NUMBER`、`FEED_SPEED`、`FEED_OVERRIDE`、
+  `SPINDLE_OVERRIDE`、`PATH_LEFT_LENGTH`、`TORQUE`、`CURRENT`、`TEMPERATURE`、
+  `ANGLE@REAL`（旋转轴按表 4 的 ANGLE 报）、`TYPE`（轴类型，configs）、
+  `TOOLPARAM`/`VARIABLE`/`PARAMETER`/`COORDINATE`（表 7 的表类数据对象）、
+  `MODEL`/`VERSION`/`MANUFACTURER`（表 6 元信息，configs）、`/MOTOR@S1/SPEED`
+  （主轴转速；表 2 没有 SPINDLE，主轴按 MOTOR 归置 —— 口径写在 32 册 §5.2）。
+- **方法面**（动作）：程序 `@DOWNLOAD`（✅ 已验通）/`@UPLOAD`/`@DIRECTORY`/
+  `@SELECT_MAIN`/`@DELETE`；写动作 `PARAMETER@WRITE`/`TOOL@WRITE`（**改刀补会撞刀**，
+  文档点名）/`VARIABLE@WRITE`。
+- **client** 新增：`axis_torque/current/temperature/type`、`feed_speed/feed_override/
+  spindle_override`、`subprogram_number`、`tool_number`、`tool_param_table`、
+  `parameter_table`、`variable_table`、`work_offsets`、`model`、`version`、
+  `manufacturer`（**唯一一条不用读机床的**：这一份 client 接的就是 FANUC）、
+  `program_select_main/delete`、`parameter_write`、`tool_offset_write`、`macro_write`。
+- 32 册 §5.3 划掉上一轮定下来的两条（`cnc_actf` = 实际进给速度、`cnc_acts` = 实际主轴
+  转速；坐标类调用 = item 0x26），剩下"应答怎么切"的清单交给真机 / NCGuide。
+- plugins/FANUC-ADAPTER.md §5 的点位表按同一张映射重写（每行带状态与归置）。
+
+验证：`--model` 打出来的模型逐个核对（设备 9 个 dataItems + 4 个 configs、CONTROLLER
+3 + 6、AXIS@X 7 + 1、AXIS@A|C 多一个 `ANGLE@REAL`、MOTOR@S1 1 个；采样通道仍是
+`STATUS`/`PART_COUNT`/`CONTROLLER/PROGRAM`/`WARNING` 四条，按 `type: SAMPLE_CHANNEL`
+认它 —— 设备级 config 点位排在它前面了）；MSVC 全量 **42/42**、零 warning。
+
 ### FANUC：按官方 SDK 补全 client 的 API 面 + 修正三处口径
 
 拿到 FANUC 官方 FOCAS 开发包（`Fwlib64.dll` + `Fwlib64.h` + 每个函数一页的文档 +

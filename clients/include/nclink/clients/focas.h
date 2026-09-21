@@ -168,6 +168,25 @@ ncl_err ncl_focas_axis_load(ncl_focas *focas, ncl_focas_axis axis,
 /** 主轴的负载与转速（`cnc_rdspmeter`，item 0x40：d=4 负载 / d=5 转速）。**还没实现**。 */
 ncl_err ncl_focas_spindle_load(ncl_focas *focas, unsigned spindle,
                                double *value);
+/** 轴的扭矩（`cnc_loadtorq`，ODBLOAD 数组）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_axis_torque(ncl_focas *focas, ncl_focas_axis axis,
+                              double *value);
+/** 轴的电流（`cnc_rdaxisdata` 的一类数据）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_axis_current(ncl_focas *focas, ncl_focas_axis axis,
+                               double *value);
+/** 轴的伺服温度（`cnc_rdaxisdata` 的一类数据）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_axis_temperature(ncl_focas *focas, ncl_focas_axis axis,
+                                   double *value);
+/** 轴的种类（linear / rotary，表 7 的 TYPE）：**还没实现**，要读 `cnc_rdaxisname` /
+ *  `cnc_rdaxisdata` 的轴属性。 */
+ncl_err ncl_focas_axis_type(ncl_focas *focas, ncl_focas_axis axis,
+                            char *out, size_t cap);
+/** 合成进给速度（`cnc_rddynamic2` 的 DBDY2）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_feed_speed(ncl_focas *focas, double *value);
+/** 进给倍率（`cnc_rddynamic2`，ODBDY2.feed_override）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_feed_override(ncl_focas *focas, double *value);
+/** 主轴倍率（`cnc_rddynamic2`，ODBDY2.spindle_override）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_spindle_override(ncl_focas *focas, double *value);
 
 /* 程序 --------------------------------------------------------------------- */
 
@@ -177,6 +196,8 @@ ncl_err ncl_focas_program_name(ncl_focas *focas, char *out, size_t cap);
 ncl_err ncl_focas_program_number(ncl_focas *focas, long long *value);
 /** 主程序号（同一条应答的 @6）。 */
 ncl_err ncl_focas_main_program_number(ncl_focas *focas, long long *value);
+/** 子程序号（`cnc_rdexecprog3`，ODBEXEPRGINFO）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_subprogram_number(ncl_focas *focas, long long *value);
 /**
  * 当前程序行号（`cnc_rdseqnum`，item 0x1d，载荷 @0 的 BE32），文本形式 ——
  * 表 7 的 LINE_NUMBER 是 string，所以这里直接给字符串（例如 "N1234"）。
@@ -186,6 +207,8 @@ ncl_err ncl_focas_line_number(ncl_focas *focas, char *out, size_t cap);
 ncl_err ncl_focas_executed_block(ncl_focas *focas, char *out, size_t cap);
 /** 程序目录（`cnc_rdprogdir3`，item 0x06，d = 0x13）。**还没实现**（帧待核对）。 */
 ncl_err ncl_focas_program_directory(ncl_focas *focas, ncl_json **value);
+/** 当前刀具号（模态 T 码，`cnc_rdgcode`）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_tool_number(ncl_focas *focas, long long *value);
 
 /* 计数与计时 --------------------------------------------------------------- */
 
@@ -223,17 +246,43 @@ ncl_err ncl_focas_tool_life(ncl_focas *focas, long long group,
 /** 一个用户宏变量（`cnc_rdmacro`，item 0x15）。**还没实现**（帧待核对）。 */
 ncl_err ncl_focas_macro_variable(ncl_focas *focas, long long number,
                                  ncl_json **value);
+/** 一段宏变量（`cnc_rdmacror`）：表 7 的 VARIABLE（list）就是它。**还没实现**（帧待核对）。 */
+ncl_err ncl_focas_macro_variables(ncl_focas *focas, long long first,
+                                  long long count, ncl_json **value);
 /** 一个 CNC 参数（`cnc_rdparam`，item 0x0e）。**还没实现**（帧待核对）。 */
 ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
                             ncl_json **value);
+/** 一套刀具参数（表 7 的 TOOLPARAM）：刀补 `cnc_rdtofs` + 寿命 `cnc_rdlife` 拼出来。
+ *  **还没实现**（帧待核对）。 */
+ncl_err ncl_focas_tool_param(ncl_focas *focas, long long index,
+                             ncl_json **value);
+/** 整张刀具参数表（表 7 的 TOOLPARAM，JSON 对象）：刀补 + 寿命逐条拼。
+ *  **还没实现**（帧待核对）。 */
+ncl_err ncl_focas_tool_param_table(ncl_focas *focas, ncl_json **value);
+/** 整张参数表（表 6 的 PARAMETER，dict）：`cnc_rdparanum` + `cnc_rdparar`。
+ *  **还没实现**（帧待核对）。 */
+ncl_err ncl_focas_parameter_table(ncl_focas *focas, ncl_json **value);
+/** 宏变量表（表 7 的 VARIABLE，list）：`cnc_rdmacror` 按段读。
+ *  **还没实现**（帧待核对）。 */
+ncl_err ncl_focas_variable_table(ncl_focas *focas, ncl_json **value);
 /** 工件坐标系（`cnc_rdwkcdshft` 一族，G54…）。**还没实现**（帧待抓包）。 */
 ncl_err ncl_focas_work_offset(ncl_focas *focas, const char *name,
                               ncl_json **value);
+/** 整套工件坐标系（表 7 的 COORDINATE，JSON 对象 → 表 9 的 x/y/z…）。
+ *  **还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_work_offsets(ncl_focas *focas, ncl_json **value);
 /** 当前模态（T/B/S/F 等，`cnc_rdgcode`）。**还没实现**（帧待抓包）。 */
 ncl_err ncl_focas_modal(ncl_focas *focas, ncl_json **value);
 /** 系统信息（型号/系列/轴数，`cnc_sysinfo`）：**还没实现** —— 这一条的数据在会话
  *  握手（`func 01`/`func 21` 的应答）里，不在数据帧里，要先解那段记录。 */
 ncl_err ncl_focas_system(ncl_focas *focas, ncl_json **value);
+/** 机床型号（`cnc_rdmodel` / `cnc_sysinfo` 的记录）。**还没实现**。 */
+ncl_err ncl_focas_model(ncl_focas *focas, char *out, size_t cap);
+/** 系统软件版本（`cnc_sysinfo` 的 series/version）。**还没实现**。 */
+ncl_err ncl_focas_version(ncl_focas *focas, char *out, size_t cap);
+/** 厂商（表 6 的 MANUFACTURER）：**不用读机床** —— 这一份 client 接的就是 FANUC，
+ *  直接回 "FANUC"。 */
+ncl_err ncl_focas_manufacturer(ncl_focas *focas, char *out, size_t cap);
 
 /* 程序上下行（不是数据对象，是动作）---------------------------------------- */
 
@@ -263,6 +312,28 @@ ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
 ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
                                  const char *name, char **program,
                                  size_t *len);
+
+/**
+ * 把机床上的某个程序选成主程序（`cnc_pdf_slctmain`）。**还没实现**（帧待抓包）。
+ */
+ncl_err ncl_focas_program_select_main(ncl_focas *focas, const char *name);
+/**
+ * 删掉机床上的某个程序（`cnc_delete` / `cnc_pdf_del`）。**还没实现**（帧待抓包）。
+ * 删正在执行的程序机床会拒，这是机床侧的保护。
+ */
+ncl_err ncl_focas_program_delete(ncl_focas *focas, const char *name);
+/**
+ * 写一个 CNC 参数（`cnc_wrparam`）。**还没实现**（帧待抓包），而且**风险高**：
+ * 参数写错会让机床行为不对，站点用之前先确认权限与备份。
+ */
+ncl_err ncl_focas_parameter_write(ncl_focas *focas, long long number,
+                                  const char *value);
+/** 写一条刀补（`cnc_wrtofs`）。**还没实现**（帧待抓包）——**改刀补会导致撞刀**。 */
+ncl_err ncl_focas_tool_offset_write(ncl_focas *focas, long long index,
+                                    const char *value);
+/** 写一个宏变量（`cnc_wrmacro`）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_macro_write(ncl_focas *focas, long long number,
+                              double value);
 
 /* 底层：给"覆盖"和排障用 --------------------------------------------------- */
 

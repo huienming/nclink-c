@@ -37,6 +37,20 @@ static ncl_err note(ncl_focas *focas, const char *what, ncl_err code)
     return code;
 }
 
+/**
+ * 记一句"要抓哪一帧"再回 NCL_ERR_UNAVAILABLE（last_error 里排障看得到）。这一份
+ * client 里凡是对应的 FOCAS 调用还没核准的，都从这里出去：工具层把这条点位答成
+ * "还读不了"、不进轮询、不进 §6 审计（见 ncl_common.h 里这个码）。
+ */
+static ncl_err not_yet(ncl_focas *focas, const char *what, const char *call)
+{
+    if (focas != NULL) {
+        snprintf(focas->error, sizeof(focas->error), "%s：帧待抓包（%s）", what,
+                 call);
+    }
+    return NCL_ERR_UNAVAILABLE;
+}
+
 void ncl_focas_config_default(ncl_focas_config *config)
 {
     if (config == NULL) {
@@ -412,6 +426,24 @@ ncl_err ncl_focas_main_program_number(ncl_focas *focas, long long *value)
     return program_number(focas, 6, value);
 }
 
+/* 子程序号（cnc_rdexecprog3 的 ODBEXEPRGINFO）：表 7 的 SUBPROGRAM。 */
+ncl_err ncl_focas_subprogram_number(ncl_focas *focas, long long *value)
+{
+    if (value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return not_yet(focas, "子程序号", "cnc_rdexecprog3（ODBEXEPRGINFO）");
+}
+
+/* 当前刀具号（表 7 的 TOOL_NUMBER）：模态 T 码，cnc_rdgcode 一条里带 T/B/S/F。 */
+ncl_err ncl_focas_tool_number(ncl_focas *focas, long long *value)
+{
+    if (value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return not_yet(focas, "当前刀具号", "cnc_rdgcode（模态 T 码）");
+}
+
 /* 程序行号（cnc_rdseqnum，0x1d）：载荷 @0 的 BE32；表 7 的 LINE_NUMBER 是文本。 */
 ncl_err ncl_focas_line_number(ncl_focas *focas, char *out, size_t cap)
 {
@@ -501,16 +533,6 @@ ncl_err ncl_focas_timer(ncl_focas *focas, ncl_focas_timer_kind kind,
  * 适配器里再发明一套"待抓包"的写法，除了重复一句理由什么也表达不了，而且抓包补上
  * 时得改两处（点位表 + client）；现在只改下面的函数体，点位表一行都不用动。
  */
-
-/** 记一句"要抓哪一帧"再回 NCL_ERR_UNAVAILABLE（last_error 里排障看得到）。 */
-static ncl_err not_yet(ncl_focas *focas, const char *what, const char *call)
-{
-    if (focas != NULL) {
-        snprintf(focas->error, sizeof(focas->error), "%s：帧待抓包（%s）", what,
-                 call);
-    }
-    return NCL_ERR_UNAVAILABLE;
-}
 
 ncl_err ncl_focas_alarm(ncl_focas *focas, ncl_json **value)
 {
@@ -603,6 +625,82 @@ ncl_err ncl_focas_spindle_load(ncl_focas *focas, unsigned spindle,
         return note(focas, "SPLOAD", NCL_ERR_RANGE);
     }
     return not_yet(focas, "主轴负载", "cnc_rdspmeter（item 0x40 + 0x8a）");
+}
+
+/** 每轴一类量的公共壳（扭矩/电流/温度）：轴号先校验，再交回"还没实现"。 */
+static ncl_err axis_measure_not_yet(ncl_focas *focas, ncl_focas_axis axis,
+                                    double *value, const char *what,
+                                    const char *call)
+{
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
+        return note(focas, "AXIS", NCL_ERR_RANGE);
+    }
+    return not_yet(focas, what, call);
+}
+
+/* 表 4 的每轴物理量：同一个 cnc_rdaxisdata 一次能取多类（速度/负载/电流/温度）。 */
+ncl_err ncl_focas_axis_torque(ncl_focas *focas, ncl_focas_axis axis,
+                              double *value)
+{
+    return axis_measure_not_yet(focas, axis, value, "轴扭矩",
+                                "cnc_loadtorq（ODBLOAD）");
+}
+
+ncl_err ncl_focas_axis_current(ncl_focas *focas, ncl_focas_axis axis,
+                               double *value)
+{
+    return axis_measure_not_yet(focas, axis, value, "轴电流",
+                                "cnc_rdaxisdata（电流那一类）");
+}
+
+ncl_err ncl_focas_axis_temperature(ncl_focas *focas, ncl_focas_axis axis,
+                                   double *value)
+{
+    return axis_measure_not_yet(focas, axis, value, "轴温",
+                                "cnc_rdaxisdata（温度那一类）");
+}
+
+/* 轴的种类（表 7 的 TYPE）：linear / rotary —— 读轴名与轴属性（cnc_rdaxisname）。 */
+ncl_err ncl_focas_axis_type(ncl_focas *focas, ncl_focas_axis axis, char *out,
+                            size_t cap)
+{
+    if (out == NULL || cap == 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
+        return note(focas, "AXIS", NCL_ERR_RANGE);
+    }
+    out[0] = '\0';
+    return not_yet(focas, "轴类型", "cnc_rdaxisname / cnc_rdaxisdata 的轴属性");
+}
+
+/* 合成进给速度与两个倍率：cnc_rddynamic2 一条应答里全都有（ODBDY2）。 */
+ncl_err ncl_focas_feed_speed(ncl_focas *focas, double *value)
+{
+    if (value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return not_yet(focas, "合成进给速度", "cnc_rddynamic2（ODBDY2.feedrate）");
+}
+
+ncl_err ncl_focas_feed_override(ncl_focas *focas, double *value)
+{
+    if (value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return not_yet(focas, "进给倍率", "cnc_rddynamic2（ODBDY2.feed_override）");
+}
+
+ncl_err ncl_focas_spindle_override(ncl_focas *focas, double *value)
+{
+    if (value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return not_yet(focas, "主轴倍率",
+                   "cnc_rddynamic2（ODBDY2.spindle_override）");
 }
 
 /* 正在执行的程序段（cnc_rdexecprog）：应答里是"程序行文本"。 */
@@ -794,4 +892,154 @@ ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
     (void)len;
     *program = NULL;
     return not_yet(focas, "程序上传", "cnc_upload4（item 0x18 的应答切法）");
+}
+
+/* --------------------------------------------------- 表 7 的那几种表/对象 -- */
+
+/* 一段宏变量（cnc_rdmacror，一次最多 5 个）：表 7 的 VARIABLE（list）。 */
+ncl_err ncl_focas_macro_variables(ncl_focas *focas, long long first,
+                                  long long count, ncl_json **value)
+{
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (first < 0 || count <= 0 || count > 5) {
+        return note(focas, "RDMACROR", NCL_ERR_INVALID_ARG);
+    }
+    *value = NULL;
+    return not_yet(focas, "宏变量表", "cnc_rdmacror（一次最多 5 个）");
+}
+
+/* 一套刀具参数（TOOLPARAM）：刀补（cnc_rdtofs）+ 寿命（cnc_rdlife）拼出来。 */
+ncl_err ncl_focas_tool_param(ncl_focas *focas, long long index,
+                             ncl_json **value)
+{
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (index < 0) {
+        return note(focas, "RDTOFS", NCL_ERR_INVALID_ARG);
+    }
+    *value = NULL;
+    return not_yet(focas, "刀具参数",
+                   "cnc_rdtofs（刀补）+ cnc_rdlife（寿命）");
+}
+
+/* 整张表的那三条（点位表里进 configs）：逐条拼，帧都还没核对。 */
+ncl_err ncl_focas_tool_param_table(ncl_focas *focas, ncl_json **value)
+{
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *value = NULL;
+    return not_yet(focas, "刀具参数表",
+                   "cnc_rdtofs + cnc_rdlife 逐条读（一次一条）");
+}
+
+ncl_err ncl_focas_parameter_table(ncl_focas *focas, ncl_json **value)
+{
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *value = NULL;
+    return not_yet(focas, "参数表",
+                   "cnc_rdparanum + cnc_rdparar（item 0x0e 那一族）");
+}
+
+ncl_err ncl_focas_variable_table(ncl_focas *focas, ncl_json **value)
+{
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *value = NULL;
+    return not_yet(focas, "宏变量表", "cnc_rdmacror（一次最多 5 个）");
+}
+
+ncl_err ncl_focas_work_offsets(ncl_focas *focas, ncl_json **value)
+{
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *value = NULL;
+    return not_yet(focas, "工件坐标系", "cnc_rdwkcdshft 一族（G54…）");
+}
+
+/* 机床型号 / 系统版本：这两条的来源是会话握手那段记录（cnc_sysinfo）。 */
+ncl_err ncl_focas_model(ncl_focas *focas, char *out, size_t cap)
+{
+    if (out == NULL || cap == 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    return not_yet(focas, "机床型号", "cnc_rdmodel / cnc_sysinfo（握手记录）");
+}
+
+ncl_err ncl_focas_version(ncl_focas *focas, char *out, size_t cap)
+{
+    if (out == NULL || cap == 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    return not_yet(focas, "系统版本", "cnc_sysinfo（series / version）");
+}
+
+/* 厂商：这一份 client 接的就是 FANUC，不用问机床（表 6 的 MANUFACTURER）。 */
+ncl_err ncl_focas_manufacturer(ncl_focas *focas, char *out, size_t cap)
+{
+    if (out == NULL || cap == 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    (void)focas;
+    snprintf(out, cap, "%s", "FANUC");
+    return NCL_OK;
+}
+
+/* ------------------------------------------------------------- 写动作 -- */
+
+/* 选主程序（cnc_pdf_slctmain）：现场调试方法，不进模型。 */
+ncl_err ncl_focas_program_select_main(ncl_focas *focas, const char *name)
+{
+    if (focas == NULL || ncl_str_is_blank(name)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return not_yet(focas, "选主程序", "cnc_pdf_slctmain");
+}
+
+/* 删程序（cnc_delete / cnc_pdf_del）：机床会拒掉正在执行的程序。 */
+ncl_err ncl_focas_program_delete(ncl_focas *focas, const char *name)
+{
+    if (focas == NULL || ncl_str_is_blank(name)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return not_yet(focas, "删程序", "cnc_delete / cnc_pdf_del");
+}
+
+/* 写参数（cnc_wrparam）：风险高，站点点位表里要用得想清楚。 */
+ncl_err ncl_focas_parameter_write(ncl_focas *focas, long long number,
+                                  const char *value)
+{
+    if (focas == NULL || ncl_str_is_blank(value) || number < 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return not_yet(focas, "写参数", "cnc_wrparam（写前先确认权限与备份）");
+}
+
+/* 写刀补（cnc_wrtofs）：**改刀补会导致撞刀**，官方手册专门警告过。 */
+ncl_err ncl_focas_tool_offset_write(ncl_focas *focas, long long index,
+                                    const char *value)
+{
+    if (focas == NULL || ncl_str_is_blank(value) || index < 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return not_yet(focas, "写刀补", "cnc_wrtofs（改刀补会导致撞刀）");
+}
+
+/* 写宏变量（cnc_wrmacro）。 */
+ncl_err ncl_focas_macro_write(ncl_focas *focas, long long number, double value)
+{
+    if (focas == NULL || number < 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    (void)value;
+    return not_yet(focas, "写宏变量", "cnc_wrmacro");
 }
