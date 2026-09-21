@@ -5,6 +5,18 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 文件工具：文件名（key）必须带前导斜杠
+
+`key` 是 NC-Link 的**文件路径**（`/data/source.txt`），文件工具按它拼本地落地区
+（`<root>/uploadFile/<key>`）。少一个斜杠会拼成 `uploadFiledata/source.txt` ——
+既不是路径也不是名字，而且只有这一条调用会用到那个名字，别的操作按 `/data/…` 找
+就找不到。现在入口统一挡下来（`write` / `read` / `ll` / `mkdir` / `delete` 都过
+`file_key_check()`），理由里写清正确写法；同时对内的 `upload_path()` 补一次分隔符，
+别的调用点再传裸名字也不会拼歪。
+
+测试：文件套件新增一条（裸名字回 NG 且理由里带 `/`，并且不会走到"最后一段"、
+本地也不会留下拼歪的文件）——308 checks / 0 failures。
+
 ### 文件处理的"最后一段"：FOCAS 接到文件流程上（client → adapter → 机床）
 
 文件的链路定了：**client → adapter → 机床**。前两段是文件流程本身（`/CONTROLLER/FILE`

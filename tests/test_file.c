@@ -729,6 +729,27 @@ static void test_file_backend(void)
         }
     }
 
+    NCL_TEST_CASE("文件名必须带前导斜杠（否则拼出来的本地路径是错的）");
+    {
+        int pushes = g_backend_push;
+
+        response = ncl_server_invoke_method_call(
+            server, file_call("/file/write",
+                              file_params("data/bare.txt",
+                                          "uploadFile/data/src.txt")));
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            NCL_CHECK_EQ_STR(response->as.method_call_response.code,
+                             NCL_KW_CODE_NG);
+            NCL_CHECK(response->as.method_call_response.reason != NULL &&
+                      strstr(response->as.method_call_response.reason, "/") !=
+                          NULL);
+            ncl_message_free(response);
+        }
+        NCL_CHECK_EQ_INT(g_backend_push, pushes); /* 没走到最后一段 */
+        NCL_CHECK(!ncl_path_exists("uploadFiledata/bare.txt"));
+    }
+
     /* write：本地有源文件 → 落本地之后推给机床。 */
     NCL_CHECK_EQ_INT(ncl_mkdir_p("uploadFile/data"), NCL_OK);
     NCL_CHECK_EQ_INT(ncl_file_write_all("uploadFile/data/src.txt", "G0 X0\n", 6),

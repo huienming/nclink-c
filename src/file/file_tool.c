@@ -81,7 +81,10 @@ static void upload_path(char *out, size_t out_len, const char *name)
     char joined[NCL_PATH_MAX_BUF];
     size_t i;
 
-    snprintf(joined, sizeof(joined), "%s%s", NCL_FILE_UPLOAD_DIR,
+    /* 名字按约定带前导斜杠（入口 file_key_check() 挡着）；这里再兜一次分隔符，
+     * 免得别的调用点传个裸名字进来拼成 "uploadFiledata/..." 这种东西。 */
+    snprintf(joined, sizeof(joined), "%s%s%s", NCL_FILE_UPLOAD_DIR,
+             name != NULL && name[0] == '/' ? "" : "/",
              name != NULL ? name : "");
     for (i = 0; joined[i] != '\0'; i++) {
         if (joined[i] == '/') {
@@ -89,6 +92,32 @@ static void upload_path(char *out, size_t out_len, const char *name)
         }
     }
     snprintf(out, out_len, "%s%s", ncl_env_root(), joined);
+}
+
+/**
+ * `key` 是 NC-Link 的**文件路径**，要带前导斜杠（`/data/source.txt`）—— 文件工具的
+ * 本地落地区就是按它拼的（`<root>/uploadFile/<key>`），少一个斜杠会拼成
+ * `uploadFiledata/...` 这种既不是路径也不是名字的东西。这里挡在入口，理由写清楚；
+ * 同时对内的 upload_path() 也补一次分隔符（防别的调用点再踩）。
+ */
+static ncl_err file_key_check(const char *key, char **reason)
+{
+    if (reason != NULL) {
+        *reason = NULL;
+    }
+    if (ncl_str_is_blank(key)) {
+        if (reason != NULL) {
+            *reason = ncl_strdup("文件名不能为空（文件路径要带前导斜杠，例如 /data/source.txt）");
+        }
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (key[0] != '/') {
+        if (reason != NULL) {
+            *reason = ncl_strdup("文件名要以 / 开头（NC-Link 的文件路径，例如 /data/source.txt）");
+        }
+        return NCL_ERR_INVALID_ARG;
+    }
+    return NCL_OK;
 }
 
 /**
@@ -377,11 +406,12 @@ static ncl_err file_tool_write(void *instance, const ncl_json *params,
         }
     }
     key = ncl_params_string(params, "key");
-    if (key == NULL || ncl_str_is_blank(key)) {
-        if (reason != NULL) {
-            *reason = ncl_strdup("文件名不能为空");
+    {
+        ncl_err key_rc = file_key_check(key, reason);
+
+        if (key_rc != NCL_OK) {
+            return key_rc;
         }
-        return NCL_ERR_INVALID_ARG;
     }
     snprintf(filename, sizeof(filename), "%s", key);
     char_p = trim_in_place(filename);
@@ -471,6 +501,13 @@ static ncl_err file_tool_read(void *instance, const ncl_json *params,
         }
         return NCL_ERR_INVALID_ARG;
     }
+    {
+        ncl_err key_rc = file_key_check(filename, reason);
+
+        if (key_rc != NCL_OK) {
+            return key_rc;
+        }
+    }
     upload_path(path, sizeof(path), filename);
     remote_parent(filename, parent, sizeof(parent));
     /* 本地还没有就先从机床取回（"最后一段"，以本地为准）。 */
@@ -523,6 +560,15 @@ static ncl_err file_tool_ll(void *instance, const ncl_json *params,
         if (filename == NULL) {
             continue;
         }
+        {
+            ncl_err key_rc = file_key_check(filename, reason);
+
+            if (key_rc != NCL_OK) {
+                ncl_ptrvec_free(&attributes);
+                ncl_json_free(array);
+                return key_rc;
+            }
+        }
         ncl_ptrvec_init(&attributes, ncl_file_attribute_release);
         if (ncl_server_file_tool_ll(state->remote, filename, &attributes) ==
             NCL_OK) {
@@ -552,9 +598,12 @@ static ncl_err file_tool_mkdir(void *instance, const ncl_json *params,
             return peer_rc;
         }
     }
-    if (key == NULL) {
-        *result = bool_result(false);
-        return NCL_OK;
+    {
+        ncl_err key_rc = file_key_check(key, reason);
+
+        if (key_rc != NCL_OK) {
+            return key_rc;
+        }
     }
     *result = bool_result(ncl_server_file_tool_mkdir(state->remote, key));
     return NCL_OK;
@@ -572,9 +621,12 @@ static ncl_err file_tool_delete(void *instance, const ncl_json *params,
             return peer_rc;
         }
     }
-    if (key == NULL) {
-        *result = bool_result(false);
-        return NCL_OK;
+    {
+        ncl_err key_rc = file_key_check(key, reason);
+
+        if (key_rc != NCL_OK) {
+            return key_rc;
+        }
     }
     /* 机床上的那份也删掉（先删机床：删不掉——比如它正在执行——本地也留着）。 */
     if (g_file_backend != NULL) {
