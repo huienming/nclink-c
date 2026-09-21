@@ -424,6 +424,12 @@ typedef struct {
     size_t      payload_len[3];
     size_t      payload_count;
     int         short_by; /**< reply with fewer blocks than asked */
+    /* 程序上下行（func 0x11/0x12/0x13）：数据帧收下来、不回，别的照块回 */
+    uint8_t     transfer[1024];
+    size_t      transfer_bytes;
+    uint8_t     transfer_dir;
+    uint8_t     seen[16];
+    size_t      seen_count;
 } focas_mock;
 
 static size_t mock_block_body(uint8_t *out, size_t cap, size_t count,
@@ -477,26 +483,53 @@ static void mock_main(void *arg)
             if (ncl_socket_recv_exact(peer, header, sizeof(header), 2000) != NCL_OK) {
                 break;
             }
-            memset(&pdu, 0, sizeof(pdu));
-            if (ncl_focas_split(header, sizeof(header), &pdu, &total) !=
-                NCL_ERR_RANGE) {
-                break;
-            }
-            if (total > sizeof(frame)) {
-                break;
-            }
             memcpy(frame, header, sizeof(header));
-            if (pdu.length > 0 &&
-                ncl_socket_recv_exact(peer, frame + sizeof(header), pdu.length,
-                                      2000) != NCL_OK) {
-                break;
+            memset(&pdu, 0, sizeof(pdu));
+            {
+                ncl_err split = ncl_focas_split(frame, sizeof(header), &pdu,
+                                                &total);
+
+                if (split == NCL_ERR_RANGE) {
+                    if (total > sizeof(frame)) {
+                        break;
+                    }
+                    if (pdu.length > 0 &&
+                        ncl_socket_recv_exact(peer, frame + sizeof(header),
+                                              pdu.length, 2000) != NCL_OK) {
+                        break;
+                    }
+                    split = ncl_focas_split(frame, total, &pdu, NULL);
+                }
+                /* 体长为 0 的帧（bye、传输的 end）split 直接回 OK——原来这里只认
+                 * NCL_ERR_RANGE，把 end 帧当成 bye 断掉了。 */
+                if (split != NCL_OK) {
+                    break;
+                }
             }
             mock->requests++;
             mock->last_func = pdu.func;
+            if (mock->seen_count < sizeof(mock->seen)) {
+                mock->seen[mock->seen_count++] = pdu.func;
+            }
+            if (pdu.func == NCL_FOCAS_FUNC_DWN_DATA) {
+                /* 数据帧：收下程序文本，**不回**（官方 SDK 就是这么发的）。 */
+                size_t keep = pdu.length;
+
+                if (keep > sizeof(mock->transfer) - mock->transfer_bytes) {
+                    keep = sizeof(mock->transfer) - mock->transfer_bytes;
+                }
+                memcpy(mock->transfer + mock->transfer_bytes,
+                       frame + sizeof(header), keep);
+                mock->transfer_bytes += keep;
+                mock->transfer_dir = pdu.dir;
+                continue;
+            }
             if (pdu.func == NCL_FOCAS_FUNC_HELLO) {
                 body_len = mock->hello_len;
                 memcpy(body, mock->hello, body_len);
-            } else if (pdu.func == NCL_FOCAS_FUNC_CMD) {
+            } else if (pdu.func == NCL_FOCAS_FUNC_CMD ||
+                       pdu.func == NCL_FOCAS_FUNC_DWN_START ||
+                       pdu.func == NCL_FOCAS_FUNC_DWN_END) {
                 blocks = 0;
                 if (pdu.length >= 2u) {
                     blocks = get_u16be(frame + sizeof(header));
@@ -1009,6 +1042,59 @@ static void test_semantics(void)
     mock_stop(mock);
 }
 
+/*
+ * 程序下行（PC → CNC）是三件套：func 0x11（start，516 字节体）→ 0x12（数据帧，
+ * dir=4，体就是程序文本，机床不回）→ 0x13（end；下载的错都在这条回）。这一段拿
+ * 假机床把帧序与文本内容验一遍（码与体长来自官方 SDK 实测，见 01 册 §2.4）。
+ */
+static void test_program_transfer(void)
+{
+    static const char kProgram[] = "N100 G0 X0 Y0\nN110 M3 S1200\n";
+    focas_mock *mock = mock_start();
+    ncl_focas_config config;
+    ncl_focas *focas;
+    char *err = NULL;
+    char *program = NULL;
+    size_t len = 0;
+
+    NCL_CHECK(mock != NULL);
+    if (mock == NULL) {
+        return;
+    }
+    ncl_focas_config_default(&config);
+    config.host = "127.0.0.1";
+    config.port = mock->port;
+    focas = ncl_focas_open(&config, &err);
+    NCL_CHECK(focas != NULL);
+    if (focas == NULL) {
+        ncl_free_safe(err);
+        mock_stop(mock);
+        return;
+    }
+
+    NCL_TEST_CASE("程序下发：0x11 start → 0x12 数据帧（dir 4，无应答）→ 0x13 end");
+    NCL_CHECK_EQ_INT(ncl_focas_program_download(focas, 0, NULL, kProgram),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT((int)mock->transfer_bytes, (int)strlen(kProgram));
+    NCL_CHECK(memcmp(mock->transfer, kProgram, strlen(kProgram)) == 0);
+    NCL_CHECK_EQ_INT(mock->transfer_dir, NCL_FOCAS_DIR_DATA);
+    NCL_CHECK_EQ_INT(mock->last_func, NCL_FOCAS_FUNC_DWN_END);
+    /* 帧序：握手（hello + 两条探测）+ start / data / end 各一条 */
+    NCL_CHECK_EQ_INT((int)mock->seen_count, 6);
+    NCL_CHECK_EQ_INT(mock->seen[3], NCL_FOCAS_FUNC_DWN_START);
+    NCL_CHECK_EQ_INT(mock->seen[4], NCL_FOCAS_FUNC_DWN_DATA);
+    NCL_CHECK_EQ_INT(mock->seen[5], NCL_FOCAS_FUNC_DWN_END);
+
+    NCL_TEST_CASE("程序上传：请求码已核、应答待核，先回 NCL_ERR_UNAVAILABLE");
+    NCL_CHECK_EQ_INT(ncl_focas_program_upload(focas, 0, NULL, &program, &len),
+                     NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(program == NULL);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_upload4") != NULL);
+
+    ncl_focas_close(focas);
+    mock_stop(mock);
+}
+
 static void test_not_yet(void)
 {
     ncl_focas_config config;
@@ -1060,4 +1146,5 @@ NCL_TEST_MAIN_BEGIN()
     test_driver_no_negotiate();
     test_not_yet();
     test_semantics();
+    test_program_transfer();
 NCL_TEST_MAIN_END()

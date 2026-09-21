@@ -239,6 +239,11 @@ NCL_TOOL_END_WITH_RAW(focas_last_raw)
   现在没有声明；要加就照 `NCL_CONFIG*` 写一行（详见 `docs/plugins-README.md`）。
 - `/MACHINE/SESSION`、`/MACHINE/ITEMS` 两个方法是**现场调试用**的（会话状态、client 的
   item 表），不进模型、不参与采样。
+- `/MACHINE/PROGRAM@DOWNLOAD`、`/MACHINE/PROGRAM@UPLOAD` 两个方法是**程序上下行**
+  （动作，不是数据对象 —— 标准里"文件"是 `FILE`（dict），"把一段程序下发/取回"是调用）：
+  参数给 `data`（程序文本）/`name`（要取的程序名）与 `type`（0 NC 程序、1 刀补、2 参数…）。
+  下行已通（`cnc_dwnstart4` 三件套，见 01 册 §2.4）；**上行现在回"还读不了"** ——
+  请求码已核（0x15/0x18），差应答里程序文本的切法，真机（或 NCGuide）抓一次就能补。
 - 点位名字从路径自动推（`@`→`_`、`/`→`.`），方法调用地址是 `focas/AXIS_X.POSITION_REAL`
   这样；名字在同一个 tool 里必须唯一，撞了宿主在装载时就拒绝。
 

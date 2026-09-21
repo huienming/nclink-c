@@ -102,6 +102,60 @@ static ncl_err items_method(void *ctx, const ncl_json *params,
     return NCL_OK;
 }
 
+/*
+ * 程序上下行（现场调试用，不进模型、不参与采样）：参数里给程序文本/程序名，
+ * 字节走 FOCAS 的三件套（01 册 §2.4）。程序不是数据对象 —— 标准里"文件"是
+ * FILE（dict）对象，而"把一段程序下发/取回"是**动作**，所以它们是方法。
+ */
+static ncl_err program_download_method(void *ctx, const ncl_json *params,
+                                       ncl_json **result, char **reason)
+{
+    ncl_focas *focas = (ncl_focas *)ctx;
+    const char *program = ncl_tool_param_str(params, "data", NULL);
+    long long type = ncl_tool_param_int(params, "type", 0);
+    ncl_err rc;
+
+    if (program == NULL) {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                             "下发程序要在 params 里给 \"data\"（程序文本）");
+    }
+    rc = ncl_focas_program_download(focas, type,
+                                    ncl_tool_param_str(params, "dir", NULL),
+                                    program);
+    if (rc != NCL_OK) {
+        return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+    }
+    if (result != NULL) {
+        ncl_json *object = ncl_json_new_object();
+
+        if (object == NULL) {
+            return NCL_ERR_NOMEM;
+        }
+        (void)ncl_json_obj_set_int(object, "bytes", (long long)strlen(program));
+        *result = object;
+    }
+    return NCL_OK;
+}
+
+static ncl_err program_upload_method(void *ctx, const ncl_json *params,
+                                     ncl_json **result, char **reason)
+{
+    ncl_focas *focas = (ncl_focas *)ctx;
+    char *program = NULL;
+    size_t len = 0;
+    ncl_err rc = ncl_focas_program_upload(
+        focas, ncl_tool_param_int(params, "type", 0),
+        ncl_tool_param_str(params, "name", NULL), &program, &len);
+
+    (void)result; /* 上传还没实现：成功时才会往 result 里放程序文本 */
+    ncl_free_safe(program);
+    if (rc != NCL_OK) {
+        return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+    }
+    (void)len;
+    return NCL_OK;
+}
+
 /* ------------------------------------------------------------------ 工具 -- */
 
 NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 1000, 1000,
@@ -167,6 +221,10 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
     NCL_METHOD_CALL("/SESSION", session_method)
     NCL_METHOD_CALL("/ITEMS", items_method)
+    /* 程序上下行（动作，不是数据对象）：下发已通（cnc_dwnstart4 三件套），
+     * 上传的应答切法待真机核，现在回"还读不了"（见 client 的注释与 31 册）。 */
+    NCL_METHOD_CALL("/PROGRAM@DOWNLOAD", program_download_method)
+    NCL_METHOD_CALL("/PROGRAM@UPLOAD", program_upload_method)
 
 NCL_TOOL_END_WITH_RAW(focas_last_raw)
 

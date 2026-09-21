@@ -277,6 +277,8 @@ FOCAS 是样板（`clients/focas/focas_values.c` + 公开头 `nclink/clients/foc
 （`tool_list` / `tool_offset` / `macro_variable` / `parameter` …）。
 **请求码已核、应答还没核的那几条**（位置、负载、报警消息、刀补、宏变量…）回
 `NCL_ERR_UNAVAILABLE`，`ncl_focas_last_error()` 里写明要抓哪个调用；帧补上时只改函数体。
+另外长了**程序上下行**：`ncl_focas_program_download()`（`cnc_dwnstart4` 三件套，
+下行已按官方库实测验通）/ `ncl_focas_program_upload()`（请求码已核、应答待核）。
 把"读某个 item 的某一块、按什么类型解、怎么由位域推成三态"这类知识从现场搬到 client，
 对外只留 `ncl_err ncl_focas_part_count(ncl_focas *, long long *)` 这种函数，
 适配器写 `NCL_DATAITEM_I64_SAMPLED("/PART_COUNT", ncl_focas_part_count)` 一行。

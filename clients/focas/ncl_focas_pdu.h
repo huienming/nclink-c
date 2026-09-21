@@ -41,6 +41,23 @@ extern "C" {
 #define NCL_FOCAS_FUNC_CMD 0x21u   /**< "here is a command list"         */
 #define NCL_FOCAS_FUNC_BYE 0x02u   /**< session end (the SDK sends two)  */
 
+/*
+ * 程序上下行的功能码（§2.4，官方 SDK 实测）：下行 start/data/end = 0x11/0x12/0x13，
+ * 上行 start/data = 0x15/0x18。两个 start 的体都是**定长 516 字节**
+ * （[1] = 数据种类、[4..6) = "N:"、[6..) = 目录名/文件名）。
+ */
+#define NCL_FOCAS_FUNC_DWN_START 0x11u
+#define NCL_FOCAS_FUNC_DWN_DATA 0x12u
+#define NCL_FOCAS_FUNC_DWN_END 0x13u
+#define NCL_FOCAS_FUNC_UP_START 0x15u
+#define NCL_FOCAS_FUNC_UP_DATA 0x18u
+/** 数据帧的方向：发完就走，机床不应答（SDK 的 `dir = 4` 那条路）。 */
+#define NCL_FOCAS_DIR_DATA 0x04u
+/** start 帧的体长（定长，官方 SDK 就是这么发的）。 */
+#define NCL_FOCAS_TRANSFER_BODY 516u
+/** 一块数据多少字节（官方建议 1024-1400，以太网单帧上限 1460）。 */
+#define NCL_FOCAS_TRANSFER_CHUNK 1400u
+
 /** The 10 byte header, values in host order. */
 typedef struct {
     uint16_t type;   /**< [4..6) */

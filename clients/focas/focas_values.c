@@ -729,3 +729,69 @@ ncl_err ncl_focas_system(ncl_focas *focas, ncl_json **value)
     *value = NULL;
     return not_yet(focas, "系统信息", "cnc_sysinfo（会话握手记录）");
 }
+
+/* ------------------------------------------------------------ 程序上下行 -- */
+
+/*
+ * 程序的上下行不是"读一个 item"，是三件套（01 册 §2.4，官方 SDK 实测）：
+ *
+ *   下行（PC → CNC）  cnc_dwnstart4（func 0x11，定长 516 字节体：数据种类 +
+ *                     目录名/程序名）→ 分块 cnc_download4（func 0x12、dir 4，
+ *                     体就是程序文本）→ cnc_dwnend4（func 0x13；**下载的错误
+ *                     都在这条上回**）
+ *   上行（CNC → PC）  cnc_upstart4（0x15）→ cnc_upload4（0x18、dir 4）→ cnc_upend4
+ *
+ * 帧在驱动层（focas_driver.c 的 "download" / "upload" 操作），这里只管语义与
+ * 参数；`type` 的取值照官方手册：0 NC 程序 / 1 刀补 / 2 参数 / 3 螺距误差 /
+ * 4 宏变量 / 5 工件零点偏置。
+ */
+
+ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
+                                   const char *dir, const char *program)
+{
+    ncl_json *params;
+    ncl_json *result = NULL;
+    ncl_err rc;
+
+    if (focas == NULL || program == NULL || program[0] == '\0') {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (type < 0 || type > 255) {
+        return note(focas, "DWNSTART4", NCL_ERR_INVALID_ARG);
+    }
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_int(params, "type", type);
+    if (!ncl_str_is_blank(dir)) {
+        (void)ncl_json_obj_set_string(params, "dir", dir);
+    }
+    (void)ncl_json_obj_set_string(params, "data", program);
+    rc = ncl_focas_call(focas, "download", params, &result);
+    ncl_json_free(params);
+    ncl_json_free(result);
+    if (rc != NCL_OK) {
+        return note(focas, "PROGRAM_DOWNLOAD", rc);
+    }
+    return NCL_OK;
+}
+
+/*
+ * 上行（CNC → PC）：请求码 0x15（start，体同下行那 516 字节）/ 0x18（取一块，
+ * 体 8 字节、dir 4）已经核出来了；**应答里程序文本的切法还没核** —— 官方库在
+ * 内部函数里解（0x14fe70），反汇编到那一层没再往下，真机抓一次就能定。
+ * 先照"还读不了"回：点位/方法在模型里看得见，问它有明确答复。
+ */
+ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
+                                 const char *name, char **program, size_t *len)
+{
+    if (focas == NULL || program == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    (void)type;
+    (void)name;
+    (void)len;
+    *program = NULL;
+    return not_yet(focas, "程序上传", "cnc_upload4（item 0x18 的应答切法）");
+}

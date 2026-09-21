@@ -124,6 +124,8 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> `
 
 - `focas_sdk_mock.py`：假机床，`--ramp` 铺"斜坡载荷"（第 i 块第 j 字节 = `i*16+j`）、
   `--payload HEX` 铺指定字节、`--blocks N` 强推块数；每个请求都打 hexdump + `Cb` 表。
+  程序上下行另配三个：`--body HEX`（数据帧回**裸体**）、`--silent 0x12`（下行数据帧
+  机床**不应答** —— 回了会把驱动带歪）、`--reply-func HEX`（应答的 `[6]` 换成别处）。
 - `focas_sdk_probe.c`：`LoadLibrary` + `GetProcAddress` 驱动指定调用（**不 include、
   不抄官方头**：出参给一块 4 KiB 零缓冲，跑完按 u16/i32 打出来），`--len/--count` 给
   "数据块长度/条数"（这两个给 0 会被本地拒掉，不发帧）。
@@ -132,7 +134,9 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> `
   官方库的导出函数多是薄壳，真代码在内部调度里，所以**以线上探针为准**。
 
 结果表（核出来的 item 码、哪些已进 client、哪些还差应答布局）写在
-`protocal/docs/01-FANUC-CNC-FOCAS.md` §2.4。
+`protocal/docs/01-FANUC-CNC-FOCAS.md` §2.4 —— 包括**程序上下行的另一套帧**
+（`0x11/0x12/0x13` 下行、`0x15/0x18` 上行：定长 516 字节 start 体、数据帧 dir=4 不应答、
+错误在 end 那条回）。下行整条已经照这套验通；上行差"应答里程序文本怎么切"。
 
 ## 已经拿到什么
 

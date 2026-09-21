@@ -162,6 +162,121 @@ static ncl_err focas_command(focas_ctx *ctx, const uint8_t *body, size_t body_le
                           reply_len);
 }
 
+/**
+ * 一帧发出去、**不等应答**。程序下行的数据帧就是这种（func 0x12、dir 4）：官方
+ * SDK 发完立刻发下一块，机床不回；回了反而把它带歪（§2.4 实测）。
+ */
+static ncl_err focas_send_only(focas_ctx *ctx, uint8_t func, uint8_t dir,
+                              const uint8_t *body, size_t body_len)
+{
+    size_t frame_len = ncl_focas_build(ctx->tx, sizeof(ctx->tx), func, dir, body,
+                                       body_len);
+
+    if (frame_len == 0) {
+        return NCL_ERR_RANGE;
+    }
+    ctx->last_tx_len = frame_len;
+    ctx->last_rx_len = 0;
+    if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
+        ncl_socket_shutdown(ctx->socket);
+        ctx->session = false;
+        return NCL_DRV_ERR_TRANSPORT(0x90);
+    }
+    return NCL_OK;
+}
+
+/**
+ * 程序上/下行的 start 帧体（§2.4，516 字节定长）：`[1]` 是数据种类（0 NC 程序、
+ * 1 刀补、2 参数…），`[4..6)` 固定 `"N:"`，`[6..)` 是目录名/文件名。
+ */
+static ncl_err focas_transfer_start_body(uint8_t *body, short type,
+                                         const char *name)
+{
+    size_t len = name != NULL ? strlen(name) : 0;
+
+    if (len > NCL_FOCAS_TRANSFER_BODY - 6u || type < 0 || type > 0xFF) {
+        return NCL_ERR_RANGE;
+    }
+    memset(body, 0, NCL_FOCAS_TRANSFER_BODY);
+    body[0] = 0x00;
+    body[1] = (uint8_t)type;
+    body[2] = 0x00;
+    body[3] = 0x01;
+    body[4] = 'N';
+    body[5] = ':';
+    if (len > 0) {
+        memcpy(body + 6, name, len);
+    }
+    return NCL_OK;
+}
+
+/**
+ * 程序下行（PC → CNC）：`cnc_dwnstart4` → 分块 `cnc_download4` → `cnc_dwnend4`。
+ * 参数：`type`（数据种类，缺省 0 = NC 程序）、`dir`（目标目录/程序名，可省）、
+ * `data`（程序文本）。
+ *
+ * 与官方库一致的几点：数据帧发完不等应答；一块 1400 字节以内；**错误在 end 帧
+ * 才回**（`EW_DATA`/`EW_OVRFLOW` 一类），所以 end 没成功就是整条没落地。
+ */
+static ncl_err focas_program_download(focas_ctx *ctx, const ncl_json *params,
+                                      ncl_json **result)
+{
+    ncl_focas_pdu pdu;
+    uint8_t body[NCL_FOCAS_TRANSFER_BODY];
+    const char *text = ncl_json_obj_get_string(params, "data");
+    const char *dir = ncl_json_obj_get_string(params, "dir");
+    long long type = ncl_json_obj_get_int(params, "type", 0);
+    size_t total = text != NULL ? strlen(text) : 0;
+    size_t sent = 0;
+    ncl_err err;
+
+    if (text == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    err = focas_transfer_start_body(body, (short)type, dir);
+    if (err != NCL_OK) {
+        return err;
+    }
+    memset(&pdu, 0, sizeof(pdu));
+    err = focas_exchange(ctx, NCL_FOCAS_FUNC_DWN_START, body, sizeof(body), &pdu,
+                         NULL, NULL);
+    if (err != NCL_OK) {
+        return err;
+    }
+    while (sent < total) {
+        size_t chunk = total - sent;
+
+        if (chunk > NCL_FOCAS_TRANSFER_CHUNK) {
+            chunk = NCL_FOCAS_TRANSFER_CHUNK;
+        }
+        err = focas_send_only(ctx, NCL_FOCAS_FUNC_DWN_DATA, NCL_FOCAS_DIR_DATA,
+                              (const uint8_t *)text + sent, chunk);
+        if (err != NCL_OK) {
+            return err;
+        }
+        sent += chunk;
+    }
+    memset(&pdu, 0, sizeof(pdu));
+    err = focas_exchange(ctx, NCL_FOCAS_FUNC_DWN_END, NULL, 0, &pdu, NULL, NULL);
+    if (err != NCL_OK) {
+        return err; /* 下载的错都在这条上回 */
+    }
+    if (result != NULL) {
+        ncl_json *object = ncl_json_new_object();
+
+        if (object == NULL) {
+            return NCL_ERR_NOMEM;
+        }
+        (void)ncl_json_obj_set_int(object, "type", type);
+        (void)ncl_json_obj_set_int(object, "bytes", (long long)total);
+        if (dir != NULL) {
+            (void)ncl_json_obj_set_string(object, "dir", dir);
+        }
+        *result = object;
+    }
+    return NCL_OK;
+}
+
 /* ------------------------------------------------------------- handshake -- */
 
 /**
@@ -690,6 +805,25 @@ static ncl_err focas_call(ncl_driver *self, const char *operation,
             ncl_json_free(object);
         }
         return NCL_OK;
+    }
+    /* 程序下行（PC → CNC）：cnc_dwnstart4 → 分块 cnc_download4 → cnc_dwnend4。
+     * 帧与体长按官方 SDK 实测（01 册 §2.4），语义层只是把参数转过来。 */
+    if (ncl_streq_ignore_case(operation, "download")) {
+        ncl_err err;
+
+        ncl_mutex_lock(ctx->mutex);
+        err = focas_ensure_session(ctx);
+        if (err == NCL_OK) {
+            err = focas_program_download(ctx, params, result);
+        }
+        ncl_mutex_unlock(ctx->mutex);
+        return err;
+    }
+    /* 程序上行（CNC → PC）：cnc_upstart4 → cnc_upload4 → cnc_upend4。请求码已核
+     * （0x15 / 0x18），但**应答里程序文本的切法还没核**（SDK 里在 0x14fe70 里解，
+     * 2026-09 反汇编到这一层没再往下），所以这里明确回"还没有"。 */
+    if (ncl_streq_ignore_case(operation, "upload")) {
+        return NCL_ERR_UNAVAILABLE;
     }
     return NCL_DRV_ERR_PROTOCOL(0x94); /* no such operation */
 }

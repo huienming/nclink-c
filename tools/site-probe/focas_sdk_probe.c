@@ -35,6 +35,10 @@
  *   s1_n_s1_n    (h, short, short *, short, short *, out)   cnc_rdaxisdata
  *   s2_n         (h, short, long *num, short *len, out)     cnc_rdprogdir3
  *   exec         (h, unsigned short *, short *, char *)      cnc_rdexecprog
+ *   dwn4 / up4   程序上下行的三件套，一次进程里连着跑：
+ *                  cnc_dwnstart4(h,0,"") → cnc_download4(h,&len,buf) → cnc_dwnend4(h)
+ *                  cnc_upstart4(h,0,"")  → cnc_upload4(h,&len,buf)   → cnc_upend4(h)
+ *                （这两个必须成对：不先 start，download4/upload4 回 EW_FUNC=1）
  *
  * `--count N` 给"进/出参数"里那个数量（short *data_num）：FOCAS 把 0 当长度错
  * （EW_LENGTH=2），所以要给个 sane 值（缺省 8）。
@@ -118,6 +122,10 @@ static const struct {
     { "cnc_rdmacro", "s2", 0 }, { "cnc_rddt", "s1", 0 },
     /* 工件坐标/模态 */
     { "cnc_rdgcode", "s2", 0 }, { "cnc_rdwkcdshft", "s2", 0 },
+    /* 程序上下行（三件套，探针里连着跑） */
+    { "cnc_dwnstart4", "dwn4", 0 }, { "cnc_upstart4", "up4", 0 },
+    { "cnc_download4", "dwn4", 0 }, { "cnc_upload4", "up4", 0 },
+    { "cnc_dwnend4", "dwn4", 0 }, { "cnc_upend4", "up4", 0 },
 };
 
 static void dump(const unsigned char *buf, size_t len)
@@ -171,6 +179,7 @@ int main(int argc, char **argv)
     const char *fn_name;
     const char *kind = NULL;
     const char *dll = "Fwlib64.dll";
+    const char *name_arg = "";
     const char *positional[8];
     int npos = 0;
     int block_len = 0;
@@ -199,6 +208,8 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--count") == 0 && i + 1 < (size_t)argc) {
             num = (short)strtol(argv[++i], NULL, 0);
             num2 = num;
+        } else if (strcmp(argv[i], "--name") == 0 && i + 1 < (size_t)argc) {
+            name_arg = argv[++i]; /* 程序上下行的目录名/文件名（start4 的那个 char *） */
         } else if (npos < (int)(sizeof(positional) / sizeof(positional[0]))) {
             positional[npos++] = argv[i];
         }
@@ -281,6 +292,31 @@ int main(int argc, char **argv)
         rc = ((s2_n_fn)sym(fn_name))(handle, (short)a0, &lnum, &len, buf);
     } else if (strcmp(kind, "exec") == 0) {
         rc = ((exec_fn)sym(fn_name))(handle, &handle, &num, (char *)buf);
+    } else if (strcmp(kind, "dwn4") == 0 || strcmp(kind, "up4") == 0) {
+        /* 三件套：start → 一块 → end。块大小按官方建议的 1024-1400 取 1024
+         * （以太网单帧上限 1460）。每一步都打 rc，好看出"哪一步被拒"。 */
+        typedef short (*start4_fn)(unsigned short, short, char *);
+        typedef short (*xfer4_fn)(unsigned short, long *, char *);
+        typedef short (*end4_fn)(unsigned short);
+        long want = 1024;
+        short rc2 = 0;
+        short rc3 = 0;
+
+        memset(buf, 'A', sizeof(buf));
+        rc = ((start4_fn)sym(strcmp(kind, "dwn4") == 0 ? "cnc_dwnstart4"
+                                                       : "cnc_upstart4"))(
+            handle, (short)a0, (char *)name_arg);
+        printf("  start4 rc = %d\n", (int)rc);
+        rc2 = ((xfer4_fn)sym(strcmp(kind, "dwn4") == 0 ? "cnc_download4"
+                                                       : "cnc_upload4"))(
+            handle, &want, (char *)buf);
+        printf("  %s rc = %d, want = %ld, first bytes: %.16s\n",
+               strcmp(kind, "dwn4") == 0 ? "download4" : "upload4", (int)rc2,
+               want, buf);
+        rc3 = ((end4_fn)sym(strcmp(kind, "dwn4") == 0 ? "cnc_dwnend4"
+                                                      : "cnc_upend4"))(handle);
+        printf("  end4 rc = %d\n", (int)rc3);
+        rc = rc2 != 0 ? rc2 : rc3;
     } else {
         rc = -999;
     }

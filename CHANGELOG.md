@@ -46,6 +46,16 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 - 测试：`clients/tests/test_focas.c` 新增 `test_semantics()`（假机床喂值，真读的几条
   逐个核对；待抓包的几条核 `NCL_ERR_UNAVAILABLE` + 理由里的调用名），并锁死新核的
   item 码（含 RDCOUNT/RDLIFE 的 d/e 之别）；`clients` 套件 **197 checks / 0 failures**。
+- **程序上下行（新增能力）**：FOCAS 里"传文件"是三件套，不是一条读 ——
+  下行 `cnc_dwnstart4`（func `0x11`，定长 516 字节体：数据种类 + 目录名）→
+  分块 `cnc_download4`（func `0x12`、**dir 4**，体就是程序文本，机床不应答）→
+  `cnc_dwnend4`（func `0x13`，**下载的错误都在这条回**）；上行是
+  `cnc_upstart4`(0x15) / `cnc_upload4`(0x18) / `cnc_upend4`。帧与体长按官方库实测
+  （01 册 §2.4），并**用假机床把下行整条验通**（帧序 + 文本 + dir + end 收尾）。
+  client 侧 `ncl_focas_program_download()`（已实现）/ `ncl_focas_program_upload()`
+  （请求码已核、应答切法待核 → `NCL_ERR_UNAVAILABLE`），plugin 侧挂成**方法**
+  `/MACHINE/PROGRAM@DOWNLOAD`、`/MACHINE/PROGRAM@UPLOAD`（程序是动作，不是数据对象）。
+  测试 `test_program_transfer()`；`clients` 套件 **211 checks / 0 failures**。
 
 ### 重构：删掉"待抓包"的声明形状 —— 能不能读由 client 的函数返回值说
 

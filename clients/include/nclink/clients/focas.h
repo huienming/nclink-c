@@ -235,6 +235,35 @@ ncl_err ncl_focas_modal(ncl_focas *focas, ncl_json **value);
  *  握手（`func 01`/`func 21` 的应答）里，不在数据帧里，要先解那段记录。 */
 ncl_err ncl_focas_system(ncl_focas *focas, ncl_json **value);
 
+/* 程序上下行（不是数据对象，是动作）---------------------------------------- */
+
+/**
+ * 把一个 NC 程序（或别的 NC 数据）**下发**给机床：`cnc_dwnstart4` →
+ * 分块 `cnc_download4` → `cnc_dwnend4`（帧见 01 册 §2.4，官方 SDK 实测）。
+ *
+ * @param type     数据种类：0 NC 程序 / 1 刀补 / 2 参数 / 3 螺距误差 /
+ *                 4 宏变量 / 5 工件零点偏置（官方手册的取值）
+ * @param dir      目标目录或程序名，可 NULL（NC 程序可以给个目标目录）
+ * @param program  程序文本（NUL 结尾），内部按 1400 字节一块发
+ *
+ * 一块发完不等应答（官方库就是这么发的）；**错误在最后那条 end 帧才回**
+ * （数据错/内存溢出一类），所以返回 NCL_OK 才算真的落地。中途失败会把机床侧的
+ * 传输状态留着，下一次 start 会把它冲掉，但最好别在传输中途放弃。
+ */
+ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
+                                   const char *dir, const char *program);
+
+/**
+ * 把机床上的程序**取回来**（`cnc_upstart4` → `cnc_upload4` → `cnc_upend4`）。
+ *
+ * **还没实现**：请求码已经核出来了（0x15 / 0x18，数据请求 8 字节体、dir 4），
+ * 差的是**应答里程序文本的切法**（SDK 在内部函数里解，2026-09 反汇编到那一层没
+ * 再往下；真机抓一次就知道前缀/长度字段在哪）。现在回 NCL_ERR_UNAVAILABLE。
+ */
+ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
+                                 const char *name, char **program,
+                                 size_t *len);
+
 /* 底层：给"覆盖"和排障用 --------------------------------------------------- */
 
 /**

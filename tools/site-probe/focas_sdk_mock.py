@@ -14,6 +14,13 @@
   --size HEX      块长（默认 0x40；SDK 要求 >= 0x22）
   --blocks N      强制应答块个数（默认 = 请求里的 Cb 个数）。有些调用（例如
                   cnc_absolute ALL_AXES）的数据不在第 0 块，试这个就知道它读第几块。
+  --body HEX      非握手请求一律回这份**裸体**（不做"块个数 + 变长块"那套）。
+                  程序上下行（func 0x11/0x12/0x15/0x18）走的就是裸体，用它试
+                  "应答里怎么放程序文本/长度"。
+  --silent HEXFUNC 对这些功能码**不应答**（程序下行的数据帧 func 0x12 就是这种：
+                   驱动发完就走，不回；回了反而把它带歪）。
+  --reply-func HEX 应答的 [6] 字节换成这个（缺省是回声请求的 func）。数据帧
+                   （上行 0x18）上 SDK 走的是 `dir=4` 那条路，应答的 [6] 要对上它。
 
 握手（01 册 §2.2/§2.3 解出来的那套）：
   func 01（hello）→ 16 字节体（[2..4)=0、[8..10)=记录数 0）
@@ -90,7 +97,14 @@ def cbrep(request, size, payload, adapt, force_blocks):
     return head + body
 
 
-def run(conn, size, payload, adapt, force_blocks):
+def rawrep(request, body, reply_func=None):
+    head = b"\xa0\xa0\xa0\xa0\x00\x01" + bytes([reply_func if reply_func is not None
+                                                else request[6], 0x02]) + \
+        len(body).to_bytes(2, "big")
+    return head + body
+
+
+def run(conn, size, payload, adapt, force_blocks, body, silent, reply_func):
     buf = b""
     while True:
         try:
@@ -111,12 +125,21 @@ def run(conn, size, payload, adapt, force_blocks):
             for cb in cbs(frame):
                 print("    Cb code=0x%02x (%d) arg0=0x%08x arg1=0x%08x  %s" %
                       (cb[0], cb[0], cb[1], cb[2], cb[3].hex()), flush=True)
+            if frame[6] in silent:
+                print("--- (silent)", flush=True)
+                continue
             if frame[6] == 0x01:
                 body = bytes(16)
                 reply = (b"\xa0\xa0\xa0\xa0\x00\x01" + bytes([0x01, 0x02]) +
                          len(body).to_bytes(2, "big") + body)
             else:
-                reply = cbrep(frame, size, payload, adapt, force_blocks)
+                # --body 只管"数据"帧（程序上下行是 0x11/0x12/0x15/0x18）：
+                # 握手（01/02）与探测（21）还是要走原来的形状，否则连不上。
+                # 只管**数据帧**（下行 0x12 / 上行 0x18）：start/end 还是要块形状，
+                # 握手 01/02/21 也一样，否则连不上。
+                use_raw = body is not None and frame[6] in (0x12, 0x18)
+                reply = (rawrep(frame, body, reply_func) if use_raw
+                         else cbrep(frame, size, payload, adapt, force_blocks))
             print("--- reply %d bytes: %s" % (len(reply), reply[:48].hex()),
                   flush=True)
             try:
@@ -125,7 +148,8 @@ def run(conn, size, payload, adapt, force_blocks):
                 return
 
 
-def serve(port, size, payload, adapt, force_blocks=0):
+def serve(port, size, payload, adapt, force_blocks=0, body=None, silent=(),
+          reply_func=None):
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", port))
@@ -134,7 +158,8 @@ def serve(port, size, payload, adapt, force_blocks=0):
     while True:
         conn, _ = listener.accept()
         threading.Thread(target=run, args=(conn, size, payload, adapt,
-                                           force_blocks),
+                                           force_blocks, body, silent,
+                                           reply_func),
                          daemon=True).start()
 
 
@@ -143,6 +168,9 @@ def main(argv):
     size = 0x40
     payload = None
     blocks = 0
+    body = None
+    silent = set()
+    reply_func = None
     args = list(argv)
 
     if args and args[0].isdigit():
@@ -157,11 +185,17 @@ def main(argv):
             payload = None
         elif key == "--blocks":
             blocks = int(args.pop(0), 0)
+        elif key == "--body":
+            body = bytes.fromhex(args.pop(0).replace(" ", ""))
+        elif key == "--silent":
+            silent.add(int(args.pop(0), 0))
+        elif key == "--reply-func":
+            reply_func = int(args.pop(0), 0)
         else:
             raise SystemExit(__doc__)
     if size < 0x22:
         raise SystemExit("块长至少 0x22（SDK 要读块 [16..34)）")
-    serve(port, size, payload, None, blocks)
+    serve(port, size, payload, None, blocks, body, silent, reply_func)
 
 
 if __name__ == "__main__":
