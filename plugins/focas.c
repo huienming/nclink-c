@@ -201,8 +201,9 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
      * 位域推出来，不多花报文，从默认采样通道读。 */
     NCL_DATAITEM_STR("/WORK_MODE", ncl_focas_mode)
     NCL_DATAITEM_I64_SAMPLED("/PART_COUNT", ncl_focas_part_count)
-    /* 表 6/表 7 的对象元信息（进 configs，不进采样通道）：厂商这一条不用读机床，
-     * 型号与版本来自会话握手记录（还没解，先答"还读不了"）。 */
+    /* 表 6/表 7 的对象元信息（进 configs，不进采样通道）：厂商这一条不用读机床；
+     * 型号与版本来自会话探针那条 `code 24` 的 ODBSYS（真机实测，01 册 §2.8）——
+     * 本机出门是 "0M D4G3" / "28.0"。 */
     NCL_CONFIG_STR("/MANUFACTURER", ncl_focas_manufacturer)
     NCL_CONFIG_STR("/MODEL", ncl_focas_model)
     NCL_CONFIG_STR("/VERSION", ncl_focas_version)
@@ -213,26 +214,30 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
     NCL_DATAITEM_I64("/CONTROLLER/PROGRAM_NUMBER", ncl_focas_program_number)
     NCL_DATAITEM_I64("/CONTROLLER/SUBPROGRAM", ncl_focas_subprogram_number)
     NCL_DATAITEM_STR("/LINE_NUMBER", ncl_focas_line_number)
-    /* 当前刀具号（表 7 的 TOOL_NUMBER）与倍率：cnc_rdgcode / cnc_rddynamic2。 */
+    /* 当前刀具号（表 7 的 TOOL_NUMBER）：**还没找到可靠来源**（模态那条 0x96 只报
+     * G 组；cnc_rdexecprog 在这台机器上回的是整段程序，里面 T 码出现多次），所以
+     * 这一格如实答"读不到"，不编数（01 册 §2.8.5）。
+     * 倍率在操作面板信号（0x5d）里：进给倍率真机读得到；**主轴倍率那一格现代系列
+     * 没有**，且这台机器的 0x5d 载荷是桩（32 字节里除 @2=0xffff 全是 0）。 */
     NCL_DATAITEM_I64("/TOOL_NUMBER", ncl_focas_tool_number)
     NCL_DATAITEM_F64("/FEED_OVERRIDE", ncl_focas_feed_override)
     NCL_DATAITEM_F64("/SPINDLE_OVERRIDE", ncl_focas_spindle_override)
     NCL_DATAITEM_F64("/FEED_SPEED", ncl_focas_feed_speed)
 
-    /* 报警（表 6 的 WARNING）：进默认采样通道。帧还没抓到（01 册 §2.3 的码表里没有
-     * cnc_rdalmmsg2），所以 ncl_focas_alarm() 现在回 NCL_ERR_UNAVAILABLE：模型里有
-     * 这条路径、问它答"还读不了"、采样那一列是 null、自检算"待抓包"而不是失败。
-     * 抓包补上只改 client 里那个函数体，这一行不动。 */
+    /* 报警（表 6 的 WARNING）：进默认采样通道。真机实测（01 册 §2.8.2）：没报警时
+     * 机床回 0 字节载荷 → 这里给**空数组**；有报警时给 `{"number":75,"type":3,
+     * "text":"保护"}`（机床的文本是 GB2312，client 出门前过 ncl_gb2312_to_utf8）。
+     * 注意 `0x23` 那两个暗格（arg2=2 / arg3=64）不填就永远拿不到文本。 */
     NCL_DATAITEM_JSON_SAMPLED("/WARNING", ncl_focas_alarm)
 
     /* 五轴的位置与进给速度。线性轴的位置是 POSITION（mm），旋转轴（A/C）是
-     * ANGLE（角度）。位置这一类现在都是**真读**的：
-     *   @REAL  实际位置 —— cnc_rdposition（一条 9 块，下标 1 = 绝对），每轴一个
-     *          POSELM（12 字节），值 = data / 10^dec；
+     * ANGLE（角度）。位置这一类都是**真读**的（真机实测，01 册 §2.8.1）：
+     *   @REAL  实际位置 —— cnc_rdposition（一条 8 块，下标 1 = 绝对），每轴一条
+     *          **8 字节记录**：data(BE32)@0 + dec(BE16)@6，值 = data / 10^dec；
      *   @CMD   指令位置 —— 现场口径"跟踪误差 = 实际 − 指令"，所以指令 = 实际 −
-     *          cnc_srvdelay（0x26 d=9，每轴 8 字节记录）；机床静止时两条相等。
-     * 进给速度也是真读的 —— cnc_actf（0x24），每轴一个 float，mm/min。名字从路径自动推：
-     * /MACHINE/AXIS@X/POSITION@REAL -> AXIS_X.POSITION_REAL。 */
+     *          cnc_srvdelay（0x26 d=9）；机床静止时两条相等。
+     * 进给速度也是真读的 —— cnc_actf（0x24，每轴一条 8 字节记录），mm/min。
+     * 名字从路径自动推：/MACHINE/AXIS@X/POSITION@REAL -> AXIS_X.POSITION_REAL。 */
     NCL_DATAITEM_F64("/AXIS@X/POSITION@REAL", ncl_focas_axis_position,
                  NCL_FOCAS_AXIS_X)
     NCL_DATAITEM_F64("/AXIS@Y/POSITION@REAL", ncl_focas_axis_position,
@@ -278,18 +283,19 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
      * 字典里没有对应项，只留在 client 的 API 里。 */
     NCL_DATAITEM_F64("/MOTOR@S1/SPEED", ncl_focas_spindle_speed, 0)
 
-    /* 刀具列表（表 7 的 TOOL，list）：FOCAS 侧是刀补表/刀具表那一族调用，帧还没核对
-     * （32 册 §5 把它列在"待核"里），所以 ncl_focas_tool_list() 现在回
-     * NCL_ERR_UNAVAILABLE —— 模型里有它、问它有明确答复、轮询跳过；核对完改的就是
-     * client 里那个函数体。 */
+    /* 刀具列表（表 7 的 TOOL，list）：真机上 cnc_rdtooldata rc=1、cnc_rdtoolrng rc=3
+     * —— **机床不提供**（官方 SDK 同样被拒，01 册 §2.8.6），所以这一格答"读不到"。 */
     NCL_CONFIG_JSON("/CONTROLLER/TOOL", ncl_focas_tool_list)
     /* 刀具参数（表 7 的 TOOLPARAM，JSON 对象）：刀补 + 寿命。 */
     NCL_CONFIG_JSON("/CONTROLLER/TOOLPARAM", ncl_focas_tool_param_table)
     /* 参数表（表 6 的 PARAMETER，dict）与宏变量表（表 7 的 VARIABLE，list）：
-     * 帧抓到了、字段布局待核（31 册）。 */
+     * **单条**读得到（`cnc_rdparam` 0x8d / `cnc_rdmacro` 0x15，见 client），整表的
+     * 范围调用（rdparanum/rdparar/rdmacror）在这台机器上被拒（§2.8.6）——哪天有机器
+     * 支持整表，范围从 rdtofsinfo/rdmacroinfo 拿（§2.8.7）。 */
     NCL_CONFIG_JSON("/CONTROLLER/PARAMETER", ncl_focas_parameter_table)
     NCL_CONFIG_JSON("/CONTROLLER/VARIABLE", ncl_focas_variable_table)
-    /* 工件坐标系（表 7 的 COORDINATE，JSON 对象 → 表 9 的 x/y/z…）。 */
+    /* 工件坐标系（表 7 的 COORDINATE，JSON 对象 → 表 9 的 x/y/z…）：
+     * `cnc_rdwkcdshft` type 0..20 全试过，这台机器一律 rc=1 —— 机床不提供。 */
     NCL_CONFIG_JSON("/CONTROLLER/COORDINATE", ncl_focas_work_offsets)
 
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
