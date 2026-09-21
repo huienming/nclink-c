@@ -197,6 +197,21 @@ build\Release\ncl_server.exe -c <conf> -P build\plugins\Release --offline --once
 的候选形状；`--hello-records` / `--rec-a` / `--rec18` / `--hello-hex` / `--cap-hex`
 是"试驱动到底在哪一格读轴数"用的。
 
+**接仿真器（`--protoforge`）**：给个 REST 基址就每 `--pf-interval` 毫秒拉一次点值，
+映射到这台假机床（`x_abs/y_abs/z_abs` → 绝对位置、`feed_rate` → 进给、
+`spindle_speed` → 主轴、`run_status` → 三态、`tool_number` → 刀具组数；件数/程序号/
+跟踪误差这些没有对应点的保持命令行给的值）：
+
+```powershell
+python tools/site-probe/focas_machine.py 8196 --protoforge http://127.0.0.1:8000 `
+    --pf-token-file $env:TEMP\pf-token.txt --srv-delay 0.25 --pf-interval 300
+```
+
+实测（2026-09，用同形状的桩验的链路）：桩里 `x_abs=77.25 / y_abs=-11.5 / z_abs=3.0 /
+feed_rate=123.5 / run_status=2` → client 读到 `POSITION@REAL` = 77.25 / −11.5 / 3.0、
+`STATUS="holding"`、`POSITION@CMD` = 77.0 / −11.75 / 2.75（各减 0.25）。要对着
+ProtoForge 跑真值，把它起回来（`python app.py`，8000 + 8193）再照上面那条命令指过去即可。
+
 > 还没钉死的一格：官方 SDK 对 `ODBAXIS` 那一族（`cnc_srvdelay` / `cnc_absolute`）的
 > 单轴调用**在本地**就回 `EW_ATTRIB`（轴号越界）——它从不把 `data[]` 填出来，说明驱动
 > 眼里的"受控轴数"还是 0。已排除：握手 `func 01` 的 16 字节头、握手记录（A/B/C/D 与

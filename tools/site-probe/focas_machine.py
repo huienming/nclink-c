@@ -26,10 +26,13 @@
 **没被任何一条证据覆盖的 item，这里一律不做**（回一个"无此块"的错块），而不是编字节。
 """
 import argparse
+import json
 import socket
 import struct
 import sys
 import threading
+import time
+import urllib.request
 
 MAGIC = b"\xa0\xa0\xa0\xa0"
 TYPE_NORMAL = 0x0001
@@ -190,8 +193,11 @@ class Machine:
         manual = 1 if self.mode == "manual" else 0
         aut = 1 if self.mode == "auto" else 0
         run = 1 if self.status == "running" else 0
+        # 我们 client 的三态是从 RUN + EMERGENCY 推的（表 6/表 8），所以 --status
+        # holding 也置 EMERGENCY 位 —— 否则自检那行只会看到 "free"。
         hold = 1 if self.status == "holding" else 0
-        fields = [manual, run, 0, hold, hold, 1 if self.emergency else 0,
+        emergency = hold or (1 if self.emergency == "on" else 0)
+        fields = [manual, run, 0, 0, 0, emergency,
                   self.alarm, 0, 0, 0, 0]   # manual,run,edit,motion,mstb,emergency,…
         return {
             "statinfo": [b"".join(struct.pack(">H", v) for v in fields),
@@ -258,6 +264,41 @@ class Machine:
 
     def refresh(self):
         self._table = self.items()
+
+    # ---- 从 ProtoForge 的 REST 拉点值（--protoforge） -------------------------
+
+    def apply_points(self, points):
+        """把 ProtoForge 那几个点映射到这台假机床的状态。
+
+        映射按 `fanuc_focas_cnc` 模板的点名写（x_abs/y_abs/z_abs、feed_rate、
+        spindle_speed、run_status、tool_number）；没有对应点的（件数、程序号、
+        跟踪误差…）保持命令行给的值。`run_status` 的取值口径按它模板里的
+        `free/running/holding`（0/1/2）猜的，对不上就改这一处。
+        """
+        def num(name):
+            value = points.get(name)
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        for i, key in enumerate(("x_abs", "y_abs", "z_abs")):
+            value = num(key)
+            if value is not None:
+                self.axes[i] = value
+        value = num("feed_rate")
+        if value is not None:
+            self.feed = value
+        value = num("spindle_speed")
+        if value is not None:
+            self.spindle = value
+        value = num("tool_number")
+        if value is not None:
+            self.tool_groups = int(value)
+        value = num("run_status")
+        if value is not None:
+            self.status = {0.0: "free", 1.0: "running", 2.0: "holding"}.get(
+                value, self.status)
 
     def reply_for_request(self, wanted):
         """按 Cb **组合**分派：cnc_statinfo 的三个码（25/225/152）和坐标那条的 9 个
@@ -377,6 +418,31 @@ def serve(port, machine, verbose):
                          daemon=True).start()
 
 
+def poll_protoforge(machine, base, device, token, interval_ms, verbose):
+    """每几毫秒去 ProtoForge 拉一趟点值；拉不到就留着上一次的（并打一行）。"""
+    url = "%s/api/v1/devices/%s" % (base.rstrip("/"), device)
+    headers = {"Authorization": "Bearer " + token} if token else {}
+    while True:
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=3) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            points = {p.get("name"): p.get("value")
+                      for p in data.get("points", [])}
+            machine.apply_points(points)
+            if verbose:
+                keep = ("x_abs", "y_abs", "z_abs", "feed_rate",
+                        "spindle_speed", "run_status")
+                print("[protoforge] %s" % ", ".join(
+                    "%s=%s" % (k, points[k]) for k in sorted(points)
+                    if k in keep), flush=True)
+        except Exception as exc:  # 网络/鉴权/JSON：报一次，慢一点再试
+            print("[protoforge] 拉点失败：%s（保持上一次的值）" % exc, flush=True)
+            time.sleep(interval_ms / 1000.0 * 4)
+            continue
+        time.sleep(interval_ms / 1000.0)
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -423,8 +489,27 @@ def main(argv):
     ap.add_argument("--run-minutes", default="65")
     ap.add_argument("--cutting-minutes", default="42")
     ap.add_argument("-v", "--verbose", action="store_true", help="打每帧 hexdump")
+    ap.add_argument("--protoforge", default="",
+                    help="从 ProtoForge 拉点值，例如 http://127.0.0.1:8000")
+    ap.add_argument("--pf-device", default="fanuc", help="ProtoForge 里的设备 id")
+    ap.add_argument("--pf-token", default="", help="ProtoForge 的 Bearer token")
+    ap.add_argument("--pf-token-file", default="", help="从头一个文件读 token")
+    ap.add_argument("--pf-interval", default="500", type=int,
+                    help="拉点周期（毫秒，默认 500）")
     args = ap.parse_args(argv)
     machine = Machine(args)
+    if args.protoforge:
+        token = args.pf_token
+        if not token and args.pf_token_file:
+            with open(args.pf_token_file, encoding="utf-8") as handle:
+                token = handle.read().strip()
+        threading.Thread(
+            target=poll_protoforge,
+            args=(machine, args.protoforge, args.pf_device, token,
+                  args.pf_interval, args.verbose),
+            daemon=True).start()
+        print("[protoforge] 开始拉点：%s/api/v1/devices/%s"
+              % (args.protoforge, args.pf_device), flush=True)
     try:
         serve(args.port, machine, args.verbose)
     except KeyboardInterrupt:

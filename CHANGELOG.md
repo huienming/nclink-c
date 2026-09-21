@@ -39,6 +39,12 @@ XYZ / 进给 / 主轴 / 件数 / 程序号 / 报警 / 跟踪误差，字节按"�
 （`cnc_srvdelay` / `cnc_absolute`）的 `data[]` 填不出来 —— 驱动眼里的"轴数"来自握手，
 得先把 `0x18`（记录详情）的载荷试出来（`--srv-shape rec8/bare4/hdr4` 已经预置在桥里）。
 
+这座桥现在还能**从仿真器拉点值**（`--protoforge <REST 基址>`）：把 ProtoForge
+`fanuc` 设备的 `x_abs/y_abs/z_abs`、`feed_rate`、`spindle_speed`、`run_status`、
+`tool_number` 映射成这台假机床的状态，件数/程序号/跟踪误差这些没有对应点的仍走命令行。
+实测（同形状桩）：`POSITION@REAL` = 77.25 / −11.5 / 3.0、`STATUS="holding"`、
+`POSITION@CMD` = 77.0 / −11.75 / 2.75（各减 0.25）。
+
 ### 跟踪误差与指令位置：`POSITION@CMD` = 实际位置 − 伺服延迟量
 
 现场口径是 **跟踪误差 = 实际位置 − 指令位置**，所以指令位置拿得到：实际位置走
