@@ -69,6 +69,12 @@ typedef enum {
     NCL_FOCAS_AXIS_COUNT
 } ncl_focas_axis;
 
+/**
+ * 主轴号的个数上限：`cnc_acts` / `cnc_rdspmeter` 按**主轴**编号取（不是轴号）。
+ * FOCAS 的 MAX_SPINDLE 随系列不同（4 或 8），这里按 8 留够。
+ */
+#define NCL_FOCAS_SPINDLE_MAX 8
+
 /** 填上默认值（host 留空，其余是驱动自己的默认）。 */
 void ncl_focas_config_default(ncl_focas_config *config);
 
@@ -82,37 +88,152 @@ const char *ncl_focas_last_error(const ncl_focas *focas);
 
 /* 语义：名字就是读回来的东西 ------------------------------------------------- */
 
-/** 设备状态，标准的三态："running" / "free" / "holding"（由 ODBST 位域推出）。 */
-ncl_err ncl_focas_status(ncl_focas *focas, char *out, size_t cap);
-/** 加工件数（RDCOUNT，int32；表 7 的 PART_COUNT 是数值）。 */
-ncl_err ncl_focas_part_count(ncl_focas *focas, long long *value);
-/** 当前主程序名。 */
-ncl_err ncl_focas_program_name(ncl_focas *focas, char *out, size_t cap);
-/** 轴的实际位置（mm / deg）。 @p axis 见 ncl_focas_axis。 */
-ncl_err ncl_focas_axis_position(ncl_focas *focas, ncl_focas_axis axis,
-                                double *value);
-/** 轴的转速/进给速度。 */
-ncl_err ncl_focas_axis_speed(ncl_focas *focas, ncl_focas_axis axis,
-                             double *value);
-
 /*
- * 下面三条的协议调用还没抓帧（有的在 01 册 §2.3 的码表里就没有，有的是 32 册 §5
- * 列在"待核"里的）。函数照样摆在这里、照样能绑到模型路径上：在帧补上之前它们回
- * **NCL_ERR_UNAVAILABLE**，也就是"这一份 client 还没有它要的协议调用" —— 模型里
- * 有这条路径、客户端问它有明确答复、轮询与 §6 审计都不碰它、自检把它算成"待抓包"
- * 而不是失败（见 ncl_common.h 里这个码）。抓包补上之后**改的就是这三个函数的函数
- * 体**：适配器那张点位表一行都不用动。
+ * 每个函数对应一个 FOCAS 调用（注释里给的是 Fwlib64.h 的函数名与线上 item 码）。
+ * 这些码与参数是按 FANUC 官方手册与 SDK 逐条核出来的（见 tools/site-probe/
+ * focas_sdk_probe.*、01 册 §2.3）。
  *
- * 要哪一帧，写在各自的注释里（ncl_focas_last_error() 里也带一句，排障时看得到）。
+ * **还没实现的调用回 NCL_ERR_UNAVAILABLE**：函数照样摆在这里、照样能绑到模型路径
+ * 上 —— 那个点位在模型里看得见、客户端问它答"还读不了（UnavailableException）"、
+ * 轮询与 §6 审计都不碰它、自检把它算成"待抓包"而不是失败（见 ncl_common.h 里这个
+ * 码）。要抓哪一帧写在各自的注释里，ncl_focas_last_error() 里也带一句。抓包补上
+ * 之后**改的就是那个函数的函数体**，适配器的点位表一行都不用动。
  */
 
-/** 报警（表 6 的 WARNING）：cnc_rdalmmsg2 还没抓到帧，所以现在回 NCL_ERR_UNAVAILABLE。 */
+/* 状态与模式 ---------------------------------------------------------------- */
+
+/** 设备状态，标准的三态："running" / "free" / "holding"（`cnc_statinfo`，ODBST 位域）。 */
+ncl_err ncl_focas_status(ncl_focas *focas, char *out, size_t cap);
+/** 工作模式："auto" / "manual" / "other"（同一个 ODBST，aut / manual 两位）。 */
+ncl_err ncl_focas_mode(ncl_focas *focas, char *out, size_t cap);
+/** 急停位（ODBST.emergency）。 */
+ncl_err ncl_focas_emergency(ncl_focas *focas, bool *on);
+
+/* 报警 --------------------------------------------------------------------- */
+
+/**
+ * 报警状态位（`cnc_alarm2`，item 0x1a）：0 = 无报警；非 0 的每一位是哪一类报警，
+ * 见 FOCAS 手册（P/S、OT、SV、IO、SP、MC、PC、EX…）。
+ */
+ncl_err ncl_focas_alarm_status(ncl_focas *focas, long long *bits);
+/**
+ * 报警消息（表 6 的 WARNING：{"number","text"}）。
+ *
+ * **还没实现**（帧待抓包）：要抓 `cnc_rdalmmsg2`（item 0x23，d = 报警类型、
+ * e = 条数；应答按 ODBALMMSG2 数组切）。
+ */
 ncl_err ncl_focas_alarm(ncl_focas *focas, ncl_json **value);
-/** 轴的目标位置：cnc_rdposition 还没抓到帧，所以现在回 NCL_ERR_UNAVAILABLE。 */
+
+/* 轴与主轴 ----------------------------------------------------------------- */
+
+/**
+ * 轴的实际进给速度 F（`cnc_actf`，item 0x24）：每轴一个 float（mm/min）。
+ * 载荷里从第 `axis * 4` 字节开始就是这一根轴的值。
+ */
+ncl_err ncl_focas_axis_feedrate(ncl_focas *focas, ncl_focas_axis axis,
+                                double *value);
+/**
+ * 主轴的实际转速 S（`cnc_acts`，item 0x25）：每个主轴一个 float（rpm）。
+ * 注意是**主轴**号，不是轴号。
+ */
+ncl_err ncl_focas_spindle_speed(ncl_focas *focas, unsigned spindle,
+                                double *value);
+/**
+ * 轴的绝对位置（`cnc_absolute`，item 0x26，d = 0、e = ALL_AXES）。
+ *
+ * **还没实现**（帧待抓包）：0x26 的请求已经会发（一条 Cb、d 选位置类型、e 给轴
+ * 号或 -1），应答的切法还没在真机核准（ODBAXIS 的 dummy/type/data[]）。抓包时
+ * 同时看一眼 `cnc_getfigure`（小数点位数在这里，不在这一条里）。
+ */
+ncl_err ncl_focas_axis_position(ncl_focas *focas, ncl_focas_axis axis,
+                                double *value);
+/** 轴的机械坐标（`cnc_machine`，item 0x26，d = 1）。**还没实现**，同上一句。 */
+ncl_err ncl_focas_axis_position_machine(ncl_focas *focas, ncl_focas_axis axis,
+                                        double *value);
+/** 轴的相对坐标（`cnc_relative`，item 0x26，d = 2）。**还没实现**。 */
+ncl_err ncl_focas_axis_position_relative(ncl_focas *focas, ncl_focas_axis axis,
+                                         double *value);
+/** 轴的剩余距离（`cnc_distance`，item 0x26，d = 3）。**还没实现**。 */
+ncl_err ncl_focas_axis_distance(ncl_focas *focas, ncl_focas_axis axis,
+                                double *value);
+/**
+ * 轴的目标位置（`cnc_rdposition` 的 type = 1，一条 Cb 一种位置类型）。
+ * **还没实现**（帧待抓包）。
+ */
 ncl_err ncl_focas_axis_position_cmd(ncl_focas *focas, ncl_focas_axis axis,
                                     double *value);
-/** 刀具表（表 7 的 TOOL，list）：帧待核对，所以现在回 NCL_ERR_UNAVAILABLE。 */
+/** 轴的伺服负载（`cnc_rdsvmeter`，item 0x56 + 0x89）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_axis_load(ncl_focas *focas, ncl_focas_axis axis,
+                            double *value);
+/** 主轴的负载与转速（`cnc_rdspmeter`，item 0x40：d=4 负载 / d=5 转速）。**还没实现**。 */
+ncl_err ncl_focas_spindle_load(ncl_focas *focas, unsigned spindle,
+                               double *value);
+
+/* 程序 --------------------------------------------------------------------- */
+
+/** 当前主程序名（`cnc_exeprgname2`，item 0xfc）。 */
+ncl_err ncl_focas_program_name(ncl_focas *focas, char *out, size_t cap);
+/** 运行中的程序号（`cnc_rdprgnum`，item 0x1c，载荷 @2 的 BE16）。表 7 的 PROGRAM_NUMBER。 */
+ncl_err ncl_focas_program_number(ncl_focas *focas, long long *value);
+/** 主程序号（同一条应答的 @6）。 */
+ncl_err ncl_focas_main_program_number(ncl_focas *focas, long long *value);
+/**
+ * 当前程序行号（`cnc_rdseqnum`，item 0x1d，载荷 @0 的 BE32），文本形式 ——
+ * 表 7 的 LINE_NUMBER 是 string，所以这里直接给字符串（例如 "N1234"）。
+ */
+ncl_err ncl_focas_line_number(ncl_focas *focas, char *out, size_t cap);
+/** 正在执行的程序段（`cnc_rdexecprog`）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_executed_block(ncl_focas *focas, char *out, size_t cap);
+/** 程序目录（`cnc_rdprogdir3`，item 0x06，d = 0x13）。**还没实现**（帧待核对）。 */
+ncl_err ncl_focas_program_directory(ncl_focas *focas, ncl_json **value);
+
+/* 计数与计时 --------------------------------------------------------------- */
+
+/** 加工件数（`cnc_rdcount`，item 0x8b，d = e = 0；表 7 的 PART_COUNT）。 */
+ncl_err ncl_focas_part_count(ncl_focas *focas, long long *value);
+/** 刀具组数（`cnc_rdngrp`，item 0x4a，载荷 @0 的 BE32）。 */
+ncl_err ncl_focas_tool_group_count(ncl_focas *focas, long long *value);
+
+/** `cnc_rdtimer` 的 type：先看哪一个时钟。 */
+typedef enum {
+    NCL_FOCAS_TIMER_POWER_ON = 0,  /**< 通电时间                       */
+    NCL_FOCAS_TIMER_OPERATING = 1, /**< 运行时间（自动运行）           */
+    NCL_FOCAS_TIMER_CUTTING = 2,   /**< 切削时间                       */
+    NCL_FOCAS_TIMER_CYCLE = 3,     /**< 循环时间                       */
+    NCL_FOCAS_TIMER_FREE = 4       /**< 自由用途                       */
+} ncl_focas_timer_kind;
+
+/**
+ * 机床的时钟（`cnc_rdtimer`，item 0x120）：载荷 @0 = 分钟、@4 = 毫秒（都是 BE32）。
+ * *seconds 收到的是**合计秒数**（分钟 × 60 + 毫秒 / 1000）。
+ */
+ncl_err ncl_focas_timer(ncl_focas *focas, ncl_focas_timer_kind kind,
+                        long long *seconds);
+
+/* 刀具、参数、工件坐标（都还没抓到帧）-------------------------------------- */
+
+/** 刀具表（表 7 的 TOOL，list）：**还没实现**，要抓 `cnc_rdtooldata` / `cnc_rdtoolrng`。 */
 ncl_err ncl_focas_tool_list(ncl_focas *focas, ncl_json **value);
+/** 一条刀补（`cnc_rdtofs`，item 0x08）。**还没实现**（帧待核对：形状/磨损 × 长度/半径）。 */
+ncl_err ncl_focas_tool_offset(ncl_focas *focas, long long index,
+                              ncl_json **value);
+/** 刀具寿命计数（`cnc_rdlife`，item 0x8b，d = e = 1）。**还没实现**（载荷待核）。 */
+ncl_err ncl_focas_tool_life(ncl_focas *focas, long long group,
+                            long long *value);
+/** 一个用户宏变量（`cnc_rdmacro`，item 0x15）。**还没实现**（帧待核对）。 */
+ncl_err ncl_focas_macro_variable(ncl_focas *focas, long long number,
+                                 ncl_json **value);
+/** 一个 CNC 参数（`cnc_rdparam`，item 0x0e）。**还没实现**（帧待核对）。 */
+ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
+                            ncl_json **value);
+/** 工件坐标系（`cnc_rdwkcdshft` 一族，G54…）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_work_offset(ncl_focas *focas, const char *name,
+                              ncl_json **value);
+/** 当前模态（T/B/S/F 等，`cnc_rdgcode`）。**还没实现**（帧待抓包）。 */
+ncl_err ncl_focas_modal(ncl_focas *focas, ncl_json **value);
+/** 系统信息（型号/系列/轴数，`cnc_sysinfo`）：**还没实现** —— 这一条的数据在会话
+ *  握手（`func 01`/`func 21` 的应答）里，不在数据帧里，要先解那段记录。 */
+ncl_err ncl_focas_system(ncl_focas *focas, ncl_json **value);
 
 /* 底层：给"覆盖"和排障用 --------------------------------------------------- */
 

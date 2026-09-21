@@ -301,22 +301,45 @@ ncl_err ncl_focas_check_blocks(const uint8_t *body, size_t body_len,
 /* ================================================================ items == */
 
 /*
- * §2.3: the twelve SDK calls whose request frames were captured. `code` is the
- * block's `c` field, `arg0`/`arg1` are the `d`/`e` longs that came with it,
- * and `scalar` says whether each block carries one value at payload 0 or
- * whether block 0's payload is the whole array.
+ * FOCAS 数据项表：`code` 是命令块的 `c` 字段（item 码），`arg0`/`arg1` 是随它
+ * 一起发的 `d`/`e` 两个 long，`scalar` 说每个块是"载荷偏移 0 处一个值"还是
+ * "块 0 的载荷就是整个数组"。
  *
- * `cnc_statinfo` is the odd one: three blocks, and the SDK reads block 1 and
- * block 2 as the struct's first two shorts while block 0's payload is the rest
- * of the array (§2.3, the ODBST split).
+ * 码从哪来：§2.3 那批（假机床 + 报文对照），以及 2026-09 用 FANUC 官方 SDK
+ * （Fwlib64.dll + 官方手册/文档包）**一条调用一条调用地问出来**的（工具见
+ * tools/site-probe/focas_sdk_probe.*：既印 SDK 发出的 Cb 码，也用"可辨识载荷"
+ * 反推应答布局）。新增的几条：
+ *
+ *   RDPRG     0x1c  cnc_rdprgnum   载荷 @2 = 运行程序号、@6 = 主程序号（都是 BE16）
+ *   RDSEQ     0x1d  cnc_rdseqnum   载荷 @0 = 顺序号（BE32）
+ *   RDALM     0x1a  cnc_alarm2     载荷 @0 = 报警状态位（BE32，0 = 无报警）
+ *   RDNGROUP  0x4a  cnc_rdngrp     载荷 @0 = 刀具组数（BE32）
+ *   RDTIMER   0x120 cnc_rdtimer    载荷 @0 = 分钟、@4 = 毫秒（都是 BE32）
+ *
+ * `cnc_statinfo` 是特例：三个块，块 1 / 块 2 各是结构体的一个 short，块 0 的
+ * 载荷是剩下的数组（§2.3 的 ODBST 切法）。
+ *
+ * 修正（同一轮核出来的）：`cnc_rdcount` 的 d/e 是 **0/0**、`cnc_rdlife` 才是 1/1
+ * —— 原来两条都写 1/1，件数读的其实是寿命那一支；`cnc_rdblkcount` 的码是 **0x35**
+ * （不是 0x06，0x06 是程序目录那一族）。
  */
 static const ncl_focas_item kItems[] = {
     /* name          cbs                  arg0            arg1        n scalar */
     { "STATINFO",   { 25, 225, 152 },    { 0, 0, 0 },      { 0, 0, 0 },      3, true },
     { "ACTF",       { 0x24, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
     { "ACTS",       { 0x25, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
-    { "RDCOUNT",    { 0x8b, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
+    { "RDCOUNT",    { 0x8b, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
     { "RDLIFE",     { 0x8b, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
+    { "RDPRG",      { 0x1c, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    { "RDSEQ",      { 0x1d, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    { "RDALM",      { 0x1a, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    { "RDNGROUP",   { 0x4a, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    /* cnc_rdtimer 的 type 走 Cb 的 d：0 通电 / 1 运行 / 2 切削 / 3 循环 / 4 自由 */
+    { "RDTIMER",    { 0x120, 0, 0 },     { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    { "RDTIMER1",   { 0x120, 0, 0 },     { 1, 0, 0 },      { 0, 0, 0 },      1, false },
+    { "RDTIMER2",   { 0x120, 0, 0 },     { 2, 0, 0 },      { 0, 0, 0 },      1, false },
+    { "RDTIMER3",   { 0x120, 0, 0 },     { 3, 0, 0 },      { 0, 0, 0 },      1, false },
+    { "RDTIMER4",   { 0x120, 0, 0 },     { 4, 0, 0 },      { 0, 0, 0 },      1, false },
     { "RDMACRO",    { 0x15, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
     { "RDPARAM",    { 0x0e, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
     { "RDTOFS",     { 0x08, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
@@ -324,7 +347,17 @@ static const ncl_focas_item kItems[] = {
     { "EXEPRGNAME2",{ 0xfc, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
     /* the capability block the session negotiation sends (§2.3) */
     { "VERSION",    { 0x0e, 0, 0 },      { 0x26f0, 0, 0 }, { 0x26f0, 0, 0 }, 1, false },
-    { "RDBLKCOUNT", { 0x06, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    { "RDBLKCOUNT", { 0x35, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    /* 下面这些**码已核、应答布局还没核**（要么值不在载荷 0 处，要么是结构体数组）：
+     * 表里先记着码，语义层暂时按 NCL_ERR_UNAVAILABLE 回，等真机抓一次再启用。
+     *   ABSOLUTE/MACHINE/RELATIVE/DISTANCE  0x26，d = 位置类型，e = ALL_AXES
+     *   RDPOSITION                          0x26 的四种类型各发一条（d = 0..3）
+     *   RDSVLOAD                            0x56 + 0x89，主轴/伺服负载
+     *   RDSPLOAD                            0x40（d=4 负载 / d=5 转速）+ 0x8a
+     *   RDALMMSG2                           0x23，报警消息（d = 类型，e = 条数）
+     *   RDOPMODE                            0x57，主轴调整模式
+     *   RDaxisdata / rdexecprog / rdgcode / rdwkcdshft 也都在这一档
+     */
 };
 
 #define NCL_FOCAS_ITEM_COUNT (sizeof(kItems) / sizeof(kItems[0]))

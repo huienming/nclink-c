@@ -324,8 +324,33 @@ static void test_items(void)
     NCL_CHECK(item != NULL);
     if (item != NULL) {
         NCL_CHECK_EQ_INT(item->cbs[0], 0x8b);
-        NCL_CHECK_EQ_INT(item->arg0[0], 1);
+        /* 件数是 0x8b 的 d=e=0；d=e=1 那一支是刀具寿命（cnc_rdlife） ——
+         * 2026-09 拿官方 SDK 逐条问过（tools/site-probe/focas_sdk_probe.*）。 */
+        NCL_CHECK_EQ_INT(item->arg0[0], 0);
+        NCL_CHECK_EQ_INT(item->arg1[0], 0);
     }
+    item = ncl_focas_item_lookup("RDLIFE");
+    NCL_CHECK(item != NULL);
+    if (item != NULL) {
+        NCL_CHECK_EQ_INT(item->cbs[0], 0x8b);
+        NCL_CHECK_EQ_INT(item->arg0[0], 1);
+        NCL_CHECK_EQ_INT(item->arg1[0], 1);
+    }
+    /* 这一轮新核出来的码：程序号 / 行号 / 报警状态 / 刀具组数 / 时钟 */
+    item = ncl_focas_item_lookup("RDPRG");
+    NCL_CHECK(item != NULL && item->cbs[0] == 0x1c);
+    item = ncl_focas_item_lookup("RDSEQ");
+    NCL_CHECK(item != NULL && item->cbs[0] == 0x1d);
+    item = ncl_focas_item_lookup("RDALM");
+    NCL_CHECK(item != NULL && item->cbs[0] == 0x1a);
+    item = ncl_focas_item_lookup("RDNGROUP");
+    NCL_CHECK(item != NULL && item->cbs[0] == 0x4a);
+    item = ncl_focas_item_lookup("RDTIMER");
+    NCL_CHECK(item != NULL && item->cbs[0] == 0x120);
+    item = ncl_focas_item_lookup("RDTIMER2");
+    NCL_CHECK(item != NULL && item->cbs[0] == 0x120 && item->arg0[0] == 2);
+    item = ncl_focas_item_lookup("RDBLKCOUNT");
+    NCL_CHECK(item != NULL && item->cbs[0] == 0x35);
     NCL_CHECK(ncl_focas_item_lookup("no-such-item") == NULL);
 
     NCL_TEST_CASE("a bare code is parsed instead");
@@ -867,6 +892,123 @@ static void test_driver_no_negotiate(void)
  * 哪一帧"（排障时从 ncl_focas_last_error() 看）。会话不用连机床 —— open() 本来就不
  * 连（第一次读才连），所以这一段是离线的。
  */
+/*
+ * 语义层对着一台假机床跑一遍：真读的那几条（程序号/行号/报警状态/刀具组数/时钟/
+ * 进给速度/模式）各自把值放对地方，就应当读得回来；还没核准的那几条（位置/负载/
+ * 刀补/参数/宏变量/工件坐标/模态/系统）回 NCL_ERR_UNAVAILABLE，理由里写清要抓
+ * 哪一帧。
+ */
+static void test_semantics(void)
+{
+    focas_mock *mock = mock_start();
+    ncl_focas_config config;
+    ncl_focas *focas;
+    char *err = NULL;
+    char text[64];
+    long long number = 0;
+    double real = 0.0;
+
+    NCL_CHECK(mock != NULL);
+    if (mock == NULL) {
+        return;
+    }
+    ncl_focas_config_default(&config);
+    config.host = "127.0.0.1";
+    config.port = mock->port;
+    focas = ncl_focas_open(&config, &err);
+    NCL_CHECK(focas != NULL);
+    if (focas == NULL) {
+        ncl_free_safe(err);
+        mock_stop(mock);
+        return;
+    }
+
+    NCL_TEST_CASE("程序号：一条应答两个 short（@2 运行中、@6 主程序）");
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_count = 1;
+    mock->payload_len[0] = 8;
+    put_u16be(mock->payload[0] + 2, 1234);
+    put_u16be(mock->payload[0] + 6, 5678);
+    NCL_CHECK_EQ_INT(ncl_focas_program_number(focas, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 1234);
+    NCL_CHECK_EQ_INT(ncl_focas_main_program_number(focas, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 5678);
+
+    NCL_TEST_CASE("程序行号：载荷 @0 的 BE32，出门是文本（表 7 的 LINE_NUMBER）");
+    mock->payload_len[0] = 4;
+    put_u32be(mock->payload[0], 4321);
+    NCL_CHECK_EQ_INT(ncl_focas_line_number(focas, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "N4321");
+
+    NCL_TEST_CASE("报警状态位：0 = 无报警，非 0 就是有报警");
+    mock->payload_len[0] = 4;
+    put_u32be(mock->payload[0], 0);
+    NCL_CHECK_EQ_INT(ncl_focas_alarm_status(focas, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 0);
+    put_u32be(mock->payload[0], 0x00001040u); /* SV + OT 两位 */
+    NCL_CHECK_EQ_INT(ncl_focas_alarm_status(focas, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 0x1040);
+
+    NCL_TEST_CASE("刀具组数与时钟（时钟回合计秒数）");
+    mock->payload_len[0] = 4;
+    put_u32be(mock->payload[0], 12);
+    NCL_CHECK_EQ_INT(ncl_focas_tool_group_count(focas, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 12);
+    mock->payload_len[0] = 8;
+    put_u32be(mock->payload[0], 90);      /* 90 分钟 */
+    put_u32be(mock->payload[0] + 4, 500); /* 500 毫秒 */
+    NCL_CHECK_EQ_INT(ncl_focas_timer(focas, NCL_FOCAS_TIMER_CUTTING, &number),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT(number, 90 * 60);
+
+    NCL_TEST_CASE("进给速度：ACTF 每轴一个 float（第 2 根轴在载荷 @4）");
+    mock->payload_len[0] = 8;
+    put_float_be(mock->payload[0], 1000.0f);
+    put_float_be(mock->payload[0] + 4, 2500.5f);
+    NCL_CHECK_EQ_INT(
+        ncl_focas_axis_feedrate(focas, NCL_FOCAS_AXIS_Y, &real), NCL_OK);
+    NCL_CHECK(real > 2500.4 && real < 2500.6);
+
+    NCL_TEST_CASE("模式与急停：同一个 STATINFO 位域");
+    mock->payload_len[0] = 20;
+    put_u16be(mock->payload[0] + 4, 1);  /* aut    */
+    put_u16be(mock->payload[0] + 6, 0);  /* manual */
+    put_u16be(mock->payload[0] + 10, 1); /* emergency */
+    memset(mock->payload[0], 0, 4);
+    NCL_CHECK_EQ_INT(ncl_focas_mode(focas, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "auto");
+    {
+        bool on = false;
+
+        NCL_CHECK_EQ_INT(ncl_focas_emergency(focas, &on), NCL_OK);
+        NCL_CHECK(on);
+    }
+
+    NCL_TEST_CASE("还没核准的那几条回 NCL_ERR_UNAVAILABLE，并说清要抓哪一帧");
+    NCL_CHECK_EQ_INT(ncl_focas_axis_position(focas, NCL_FOCAS_AXIS_X, &real),
+                     NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_absolute") != NULL);
+    NCL_CHECK_EQ_INT(ncl_focas_axis_load(focas, NCL_FOCAS_AXIS_X, &real),
+                     NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdsvmeter") != NULL);
+    NCL_CHECK_EQ_INT(ncl_focas_spindle_load(focas, 0, &real),
+                     NCL_ERR_UNAVAILABLE);
+    {
+        ncl_json *json = NULL;
+
+        NCL_CHECK_EQ_INT(ncl_focas_macro_variable(focas, 1, &json),
+                         NCL_ERR_UNAVAILABLE);
+        NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdmacro") != NULL);
+        NCL_CHECK_EQ_INT(ncl_focas_parameter(focas, 1, &json),
+                         NCL_ERR_UNAVAILABLE);
+        NCL_CHECK_EQ_INT(ncl_focas_modal(focas, &json), NCL_ERR_UNAVAILABLE);
+        NCL_CHECK_EQ_INT(ncl_focas_system(focas, &json), NCL_ERR_UNAVAILABLE);
+    }
+
+    ncl_focas_close(focas);
+    mock_stop(mock);
+}
+
 static void test_not_yet(void)
 {
     ncl_focas_config config;
@@ -917,4 +1059,5 @@ NCL_TEST_MAIN_BEGIN()
     test_driver_payload_offset();
     test_driver_no_negotiate();
     test_not_yet();
+    test_semantics();
 NCL_TEST_MAIN_END()

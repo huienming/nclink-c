@@ -227,6 +227,59 @@ cnc_startupprocess cnc_exitprocess cnc_rdparam
 
 ---
 
+### 2.4 item 码表（🟢 2026-09 用**官方 SDK** 逐条问出来的）
+
+§2.3 那十二个码是"反汇编 + 假机床"解的。2026-09 拿到 FANUC 官方 SDK 包（`Fwlib64.dll`
++ 官方头 `Fwlib64.h` + 每函数一页的 `Document/SpecE/*.xml` + 手册 `FWLIBPM.TXT`），
+方法换成**"官方库自己对着一台假机床跑"** —— 那条调用发什么帧、收什么载荷，直接看得见：
+
+```
+python tools/site-probe/focas_sdk_mock.py 8193 --size 0x40 --ramp   # 假机床（可辨识载荷）
+tools/site-probe/focas_sdk_probe.exe 127.0.0.1 8193 cnc_rdprgnum     # 探针：印 rc/出参/Cb 码
+tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…"   # 一次跑一串
+```
+
+要点（两次踩坑记下来）：
+
+1. `Fwlib64.dll` 是**前端**，同目录还要有 `fwlib30i64.dll` 等按机型的实现，否则
+   `cnc_allclibhndl3` 直接回 **-15 `EW_NODLL`**（一个字节都不发）。
+2. 好几个调用对"数据块长度/条数"查得很严：`cnc_absolute` 的第二个 short 是
+   **length**（给 0 回 `EW_ATTRIB`=4）、`cnc_rdposition`/`cnc_rdalmmsg2` 的
+   `short *num` 给 0 回 `EW_LENGTH`=2 —— 都是**本地就拒**，不发帧。
+3. 假机床的载荷用"斜坡"（第 i 块第 j 字节 = `i*16+j`）或"可辨识组"（0x1111/0x2222…），
+   出参结构里哪个字段落在哪个偏移**一眼就看出来**。
+
+**核出来的码（`c` = Cb 的 item 码；d/e = 随块发的两个 long）**：
+
+| SDK 调用 | c | d / e | 应答（载荷里怎么切） | 状态 |
+|---|---|---|---|---|
+| `cnc_statinfo` | 25 / 225 / 152 | 0 | 块1→dummy、块2→aut、块0 载荷→其余 9 个 u16 | 🟢 已进 client |
+| `cnc_actf` | 0x24 | 0 | 每轴一个 **float32**（第 k 轴 @4k） | 🟢 已进 client（进给速度 F） |
+| `cnc_acts` | 0x25 | 0 | 每个主轴一个 float32 | 🟢 已进 client（主轴转速 S） |
+| `cnc_absolute` / `cnc_machine` / `cnc_relative` / `cnc_distance` | 0x26 | **d = 0/1/2/3**，e = 轴号或 `-1`(ALL_AXES) | ODBAXIS（dummy/type/data[]），**切法待核** | 🟡 码已核 |
+| `cnc_rdposition` | 0x26 ×4 | d = 0..3，e = -1 | 同上（一次四条，四种位置） | 🟡 码已核 |
+| `cnc_rdprgnum` | 0x1c | 0 | 载荷 **@2 运行程序号（BE16）**、@6 主程序号 | 🟢 已进 client |
+| `cnc_rdseqnum` | 0x1d | 0 | 载荷 **@0 顺序号（BE32）** | 🟢 已进 client |
+| `cnc_rdcount` | 0x8b | **0 / 0** | 值（件数） | 🟢 已进 client（原来写成 1/1，是寿命那一支） |
+| `cnc_rdlife` | 0x8b | **1 / 1** | 值（寿命），载荷布局待核 | 🟡 |
+| `cnc_alarm2` | 0x1a | 0 | 载荷 **@0 报警状态位（BE32）**，0 = 无报警 | 🟢 已进 client |
+| `cnc_rdngrp` | 0x4a | 0 | 载荷 **@0 刀具组数（BE32）** | 🟢 已进 client |
+| `cnc_rdtimer` | 0x120 | d = 类型（0 通电/1 运行/2 切削/3 循环/4 自由） | 载荷 **@0 分钟、@4 毫秒（BE32）** | 🟢 已进 client |
+| `cnc_rdalmmsg2` | 0x23 | d = 报警类型（-1 = 全部），e = 条数 | ODBALMMSG2 数组（编号/类型/轴/文本 64B） | 🟡 码已核 |
+| `cnc_rdsvmeter` | 0x56 + 0x89 | d = 1 | LOADELM 数组（伺服负载） | 🟡 码已核 |
+| `cnc_rdspmeter` | 0x40（d=4 负载 / 5 转速）+ 0x8a | e = -1 | LOADELM 数组 | 🟡 码已核 |
+| `cnc_rdblkcount` | 0x35 | 0 | 一个数（**不是**载荷 0 处的 BE32，dtype 待核） | 🟡 码已核（原来表里记成 0x06，是错的） |
+| `cnc_rdopmode` | 0x57 | 0 | short 数组（主轴调整模式） | 🟡 码已核 |
+| `cnc_exeprgname2` | 0xfc | 0 | 程序名文本 | 🟢 已进 client |
+| `cnc_rdprogdir3` | 0x06 | d = 0x13，e = 1 | PRGDIR3 数组 | 🟡 帧有了、字段待核 |
+| `cnc_rdtofs` / `cnc_rdmacro` / `cnc_rdparam` | 0x08 / 0x15 / 0x0e | d = e = 1 | ODBTOFS / ODBM / IODBPSD | 🟡 帧有了、字段待核 |
+
+> 表里的"🟡 码已核"= **请求帧已经确定**（照着发就行），差的是**应答怎么切**（值不在
+> 载荷 0 处，或是结构体数组）。真机抓一次就能把 🟡 变 🟢；client 里这些函数的
+> `ncl_focas_last_error()` 已经写明"要抓哪一个调用"。
+
+---
+
 ## 3. 常用函数表（按域）
 
 ### 3.1 连接与系统（cnc_*）

@@ -109,6 +109,31 @@ LOOPQ:6d6f6368614653526561644469726563746f7279/<填充帧>/<第1帧>|<第2帧>|�
 即"**请求里含这段 hex 的**才按顺序取，其余请求一律回填充帧"，第 n 帧用完就重复
 最后一帧（所以最后那帧要给"读完"）。M70 的用法见 `m70_fs_probe5.sh`/`probe6.sh`。
 
+## 用 FANUC 官方 SDK 自己问（Windows，2026-09）
+
+上面的 `focas_*_probe.sh` 是在 ARM 容器里对着现场包里的 `libfocas.so` 跑（Linux 版）。
+拿到**官方 SDK**（`Fwlib64.dll` + `Fwlib64.lib` + 每函数一页的 XML 文档）以后，多了一条
+更快、证据更硬的路：让官方库在 Windows 上对着一台假机床跑，逐条把 `Cb` 码与应答布局
+问出来 ——
+
+```
+python tools/site-probe/focas_sdk_mock.py 8193 --size 0x40 --ramp
+tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> `
+    -Calls "cnc_rdprgnum","cnc_absolute -1 --len 36","cnc_rdalmmsg2 -1 --count 10"
+```
+
+- `focas_sdk_mock.py`：假机床，`--ramp` 铺"斜坡载荷"（第 i 块第 j 字节 = `i*16+j`）、
+  `--payload HEX` 铺指定字节、`--blocks N` 强推块数；每个请求都打 hexdump + `Cb` 表。
+- `focas_sdk_probe.c`：`LoadLibrary` + `GetProcAddress` 驱动指定调用（**不 include、
+  不抄官方头**：出参给一块 4 KiB 零缓冲，跑完按 u16/i32 打出来），`--len/--count` 给
+  "数据块长度/条数"（这两个给 0 会被本地拒掉，不发帧）。
+- `focas_sdk_probe.ps1`：编译 + 起假机床 + 一次跑一串调用 + 打印每条的 Cb 码。
+- `focas_item_scan.py`：静态那一路（PE 导出表 + 反汇编找小立即数），当交叉印证用 ——
+  官方库的导出函数多是薄壳，真代码在内部调度里，所以**以线上探针为准**。
+
+结果表（核出来的 item 码、哪些已进 client、哪些还差应答布局）写在
+`protocal/docs/01-FANUC-CNC-FOCAS.md` §2.4。
+
 ## 已经拿到什么
 
 1. **FOCAS2 握手字节**（🟢 实测，`focas_run.sh`）。`cnc_allclibhndl3()` 对假机床

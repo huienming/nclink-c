@@ -5,6 +5,48 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### FANUC：按官方 SDK 补全 client 的 API 面 + 修正三处口径
+
+拿到 FANUC 官方 FOCAS 开发包（`Fwlib64.dll` + `Fwlib64.h` + 每个函数一页的文档 +
+函数手册）后，把"这台机床还能读什么"从**十二个调用**扩到**二十多个**，方法是让**官方库
+自己对着一台假机床跑**：假机床打请求、铺可辨识载荷，探针印出 `Cb` 码与出参结构
+（新工具 `tools/site-probe/focas_sdk_mock.py`、`focas_sdk_probe.c/.ps1`、
+`focas_item_scan.py`，方法写在 01 册 §2.4）。
+
+**核出来的请求码**（完整表见 01 册 §2.4）：`cnc_rdprgnum` = `0x1c`、
+`cnc_rdseqnum` = `0x1d`、`cnc_alarm2` = `0x1a`、`cnc_rdngrp` = `0x4a`、
+`cnc_rdtimer` = `0x120`（d 选哪种时钟）、`cnc_absolute`/`cnc_machine`/`cnc_relative`/
+`cnc_distance`/`cnc_rdposition` = `0x26`（d 选位置类型、e 给轴号或 ALL_AXES）、
+`cnc_rdalmmsg2` = `0x23`、`cnc_rdsvmeter` = `0x56`+`0x89`、`cnc_rdspmeter` = `0x40`+`0x8a`。
+
+- **client 新增语义函数**（`clients/include/nclink/clients/focas.h`，按域分组）：
+  状态/模式（`status` / `mode` / `emergency`）、报警（`alarm_status` / `alarm`）、
+  轴与主轴（`axis_feedrate` / `spindle_speed` / `axis_position[_machine|_relative]` /
+  `axis_distance` / `axis_position_cmd` / `axis_load` / `spindle_load`）、
+  程序（`program_name` / `program_number` / `main_program_number` / `line_number` /
+  `executed_block` / `program_directory`）、计数与计时（`part_count` /
+  `tool_group_count` / `timer`）、刀具与参数（`tool_list` / `tool_offset` /
+  `tool_life` / `macro_variable` / `parameter` / `work_offset` / `modal` / `system`）。
+  **真读的**（码与载荷都核过）：件数、程序号/主程序号、行号、报警状态位、刀具组数、
+  五种时钟、进给速度、主轴转速、模式与急停；**请求码已核、应答待真机核的**照常声明，
+  回 `NCL_ERR_UNAVAILABLE`（理由里写明要抓哪个调用），抓包补上时只改函数体。
+- **修正三处口径**（官方手册与线上实测对照出来的）：
+  1. `cnc_actf` 是**轴的实际进给速度 F**、`cnc_acts` 是**主轴转速 S** —— 早先把它们
+     当成"位置/速度"：`/MACHINE/AXIS@k/POSITION@REAL` 喂进去的其实是进给速度。
+     现在 `ncl_focas_axis_feedrate()`（ACTF）绑 `/AXIS@k/SPEED`（表 4 的 SPEED，
+     mm/min），`POSITION@REAL` 改绑 `cnc_absolute`（帧待抓包，先答"还读不了"）。
+  2. `cnc_rdcount` 的 d/e 是 **0/0**、`cnc_rdlife` 才是 1/1 —— 原 item 表两条都写 1/1，
+     件数读的其实是寿命那一支。
+  3. `cnc_rdblkcount` 的 item 码是 **0x35**（原表写成 0x06，那是程序目录一族）。
+- **plugin 点位表**：新增 `/MACHINE/WORK_MODE`（表 7 的 WORK_MODE，aut/manual 两位推
+  `manual`/`auto`）、`/MACHINE/CONTROLLER/PROGRAM_NUMBER`（表 7 的 PROGRAM_NUMBER）、
+  `/MACHINE/LINE_NUMBER`（表 7 的 LINE_NUMBER，文本 `N1234`）；`/AXIS@k/SPEED` 改绑
+  进给速度。**主轴转速暂不进模型**：表 2 的组件类型里没有 `SPINDLE`，client 里的
+  `ncl_focas_spindle_speed()` 先给 API 用，口径定了再加点位。
+- 测试：`clients/tests/test_focas.c` 新增 `test_semantics()`（假机床喂值，真读的几条
+  逐个核对；待抓包的几条核 `NCL_ERR_UNAVAILABLE` + 理由里的调用名），并锁死新核的
+  item 码（含 RDCOUNT/RDLIFE 的 d/e 之别）；`clients` 套件 **197 checks / 0 failures**。
+
 ### 重构：删掉"待抓包"的声明形状 —— 能不能读由 client 的函数返回值说
 
 `NCL_DATAITEM_PENDING[_SAMPLED]` / `NCL_CONFIG_PENDING` 这种宏只表达一件事：**这条路径还

@@ -109,9 +109,16 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
 
     /* 默认采样通道只放四样（现场口径）：设备状态、加工计件、程序名称、报警。 */
     NCL_DATAITEM_STR_SAMPLED("/STATUS", ncl_focas_status)
+    /* 工作模式（表 7 的 WORK_MODE，取值 manual / auto，表 8）：同一个 STATINFO
+     * 位域推出来，不多花报文，从默认采样通道读。 */
+    NCL_DATAITEM_STR("/WORK_MODE", ncl_focas_mode)
     NCL_DATAITEM_I64_SAMPLED("/PART_COUNT", ncl_focas_part_count)
     /* PROGRAM 属于 CONTROLLER 组件（表 2：组件对象）*/
     NCL_DATAITEM_STR_SAMPLED("/CONTROLLER/PROGRAM", ncl_focas_program_name)
+    /* 程序号与程序行号（表 7 的 PROGRAM_NUMBER / LINE_NUMBER）：cnc_rdprgnum /
+     * cnc_rdseqnum，按需读。 */
+    NCL_DATAITEM_I64("/CONTROLLER/PROGRAM_NUMBER", ncl_focas_program_number)
+    NCL_DATAITEM_STR("/LINE_NUMBER", ncl_focas_line_number)
 
     /* 报警（表 6 的 WARNING）：进默认采样通道。帧还没抓到（01 册 §2.3 的码表里没有
      * cnc_rdalmmsg2），所以 ncl_focas_alarm() 现在回 NCL_ERR_UNAVAILABLE：模型里有
@@ -119,8 +126,10 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
      * 抓包补上只改 client 里那个函数体，这一行不动。 */
     NCL_DATAITEM_JSON_SAMPLED("/WARNING", ncl_focas_alarm)
 
-    /* 五轴的位置：每轴两个 —— 实际（REAL，读得到）与目标（CMD，帧待抓包，函数回
-     * NCL_ERR_UNAVAILABLE），都按需读。名字从路径自动推：
+    /* 五轴的位置与进给速度：位置两个（实际 REAL / 目标 CMD）现在**都还读不了**
+     * （cnc_absolute / cnc_rdposition 的应答切法待真机核，函数回
+     * NCL_ERR_UNAVAILABLE）；进给速度是真读的 —— cnc_actf（0x24），每轴一个
+     * float，mm/min。名字从路径自动推：
      * /MACHINE/AXIS@X/POSITION@REAL -> AXIS_X.POSITION_REAL。 */
     NCL_DATAITEM_F64("/AXIS@X/POSITION@REAL", ncl_focas_axis_position,
                  NCL_FOCAS_AXIS_X)
@@ -143,11 +152,11 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
     NCL_DATAITEM_F64("/AXIS@C/POSITION@CMD", ncl_focas_axis_position_cmd,
                      NCL_FOCAS_AXIS_C)
 
-    NCL_DATAITEM_F64("/AXIS@X/SPEED", ncl_focas_axis_speed, NCL_FOCAS_AXIS_X)
-    NCL_DATAITEM_F64("/AXIS@Y/SPEED", ncl_focas_axis_speed, NCL_FOCAS_AXIS_Y)
-    NCL_DATAITEM_F64("/AXIS@Z/SPEED", ncl_focas_axis_speed, NCL_FOCAS_AXIS_Z)
-    NCL_DATAITEM_F64("/AXIS@A/SPEED", ncl_focas_axis_speed, NCL_FOCAS_AXIS_A)
-    NCL_DATAITEM_F64("/AXIS@C/SPEED", ncl_focas_axis_speed, NCL_FOCAS_AXIS_C)
+    NCL_DATAITEM_F64("/AXIS@X/SPEED", ncl_focas_axis_feedrate, NCL_FOCAS_AXIS_X)
+    NCL_DATAITEM_F64("/AXIS@Y/SPEED", ncl_focas_axis_feedrate, NCL_FOCAS_AXIS_Y)
+    NCL_DATAITEM_F64("/AXIS@Z/SPEED", ncl_focas_axis_feedrate, NCL_FOCAS_AXIS_Z)
+    NCL_DATAITEM_F64("/AXIS@A/SPEED", ncl_focas_axis_feedrate, NCL_FOCAS_AXIS_A)
+    NCL_DATAITEM_F64("/AXIS@C/SPEED", ncl_focas_axis_feedrate, NCL_FOCAS_AXIS_C)
 
     /* 刀具列表（表 7 的 TOOL，list）：FOCAS 侧是刀补表/刀具表那一族调用，帧还没核对
      * （32 册 §5 把它列在"待核"里），所以 ncl_focas_tool_list() 现在回

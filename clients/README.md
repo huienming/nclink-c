@@ -269,7 +269,14 @@ HTTP 客户端（`clients/http/ncl_http_client.c`）与 MTConnect 驱动共用�
 
 ### 语义层（可选，但推荐给"能叫出名字的量"）
 
-FOCAS 是样板（`clients/focas/focas_values.c` + 公开头 `nclink/clients/focas.h`）：
+FOCAS 是样板（`clients/focas/focas_values.c` + 公开头 `nclink/clients/focas.h`）：语义面按
+域铺开 —— 状态/模式（`ncl_focas_status` / `mode` / `emergency`）、报警（`alarm_status` /
+`alarm`）、轴与主轴（`axis_feedrate` / `spindle_speed` / `axis_position` 一族 /
+`axis_load` / `spindle_load`）、程序（`program_name` / `program_number` /
+`line_number` …）、计数与计时（`part_count` / `tool_group_count` / `timer`）、刀具与参数
+（`tool_list` / `tool_offset` / `macro_variable` / `parameter` …）。
+**请求码已核、应答还没核的那几条**（位置、负载、报警消息、刀补、宏变量…）回
+`NCL_ERR_UNAVAILABLE`，`ncl_focas_last_error()` 里写明要抓哪个调用；帧补上时只改函数体。
 把"读某个 item 的某一块、按什么类型解、怎么由位域推成三态"这类知识从现场搬到 client，
 对外只留 `ncl_err ncl_focas_part_count(ncl_focas *, long long *)` 这种函数，
 适配器写 `NCL_DATAITEM_I64_SAMPLED("/PART_COUNT", ncl_focas_part_count)` 一行。

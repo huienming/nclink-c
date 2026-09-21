@@ -207,12 +207,15 @@ NCL_TOOL_END_WITH_RAW(focas_last_raw)
 | 模型路径 | 读法（client） | 含义 | 采样 |
 |---|---|---|---|
 | `/MACHINE/STATUS` | `ncl_focas_status()`（由 ODBST 的 RUN / EMERGENCY 两位推三态） | 运行状态：`running` / `free` / `holding` | ✔ |
+| `/MACHINE/WORK_MODE` | `ncl_focas_mode()`（同一个 ODBST 的 aut / manual 两位） | 工作模式：`manual` / `auto`（表 8） | ✘ 按需读 |
 | `/MACHINE/PART_COUNT` | `ncl_focas_part_count()`（`RDCOUNT`） | 加工件数（number） | ✔ |
 | `/MACHINE/CONTROLLER/PROGRAM` | `ncl_focas_program_name()`（`EXEPRGNAME2`，36 字节） | 主程序名 | ✔ |
+| `/MACHINE/CONTROLLER/PROGRAM_NUMBER` | `ncl_focas_program_number()`（`cnc_rdprgnum`） | 当前程序号 | ✘ 按需读 |
+| `/MACHINE/LINE_NUMBER` | `ncl_focas_line_number()`（`cnc_rdseqnum`） | 程序行号（文本 `N1234`） | ✘ 按需读 |
 | `/MACHINE/WARNING` | `ncl_focas_alarm()`（帧待抓包，现在回 `NCL_ERR_UNAVAILABLE`） | 报警（JSON `number`/`text`）—— 占着通道，**现在取值为 `null`**（见第 7 节） | ✔（null） |
-| `/MACHINE/AXIS@X\|Y\|Z\|A\|C/POSITION@REAL` | `ncl_focas_axis_position()`（`ACTF@4k`） | 5 轴实际位置 | ✘ 按需读 |
+| `/MACHINE/AXIS@X\|Y\|Z\|A\|C/POSITION@REAL` | `ncl_focas_axis_position()`（`cnc_absolute`，**帧待抓包**，现在回 `NCL_ERR_UNAVAILABLE`） | 5 轴实际位置 | ✘ 按需读 |
 | `/MACHINE/AXIS@X\|Y\|Z\|A\|C/POSITION@CMD` | `ncl_focas_axis_position_cmd()`（帧待抓包，现在回 `NCL_ERR_UNAVAILABLE`） | 5 轴目标位置 | ✘ 按需读 |
-| `/MACHINE/AXIS@X\|Y\|Z\|A\|C/SPEED` | `ncl_focas_axis_speed()`（`ACTS@4k`） | 5 轴速度（**量纲待核**，见第 7 节） | ✘ 按需读 |
+| `/MACHINE/AXIS@X\|Y\|Z\|A\|C/SPEED` | `ncl_focas_axis_feedrate()`（`cnc_actf`，每轴一个 float） | 5 轴**实际进给速度**（mm/min，表 4 的 SPEED） | ✘ 按需读 |
 | `/MACHINE/CONTROLLER/TOOL` | `ncl_focas_tool_list()`（帧待核对，现在回 `NCL_ERR_UNAVAILABLE`） | 刀具列表（`configs`，字典类型是 list） | ✘（配置不进采样通道） |
 
 几点现场要知道的：
@@ -291,18 +294,26 @@ plugins\
   里查到。需要什么状态就用标准名表达：`STATUS` 就是 RUN/EMERGENCY 两位推出来的三态；
   要看那些原始位，用方法 `focas/ITEMS`（驱动自己的项表，不进模型）。如果现场要"手动/自动"，
   加一条表 7 的 `WORK_MODE`（取值 `manual`/`auto`，表 8），由 ODBST 的手动/自动方式位推出来。
-- **三组"帧待抓包/待核对"点位（共 7 个）**：`/MACHINE/AXIS@k/POSITION@CMD`（5 个目标位置）、
-  `/MACHINE/WARNING`（报警）与 `/MACHINE/CONTROLLER/TOOL`（刀具列表，配置型）。
-  FOCAS 侧对应的调用（`cnc_rdposition`、`cnc_rdalmmsg2`、`cnc_rdtooldata` / `cnc_rdtoolrng`）
-  在 01 册 §2.3 里**没有抓到帧**，所以 client 里那三个函数（`ncl_focas_alarm()`、
-  `ncl_focas_axis_position_cmd()`、`ncl_focas_tool_list()`）现在回 `NCL_ERR_UNAVAILABLE`：
-  点位照样声明、照样绑函数，模型里有它、`Query` 有明确答复（`NG` + "还读不了"）、自检报
-  `<待抓包>` 而不是失败、轮询与 §6 审计都不碰它，但**取不到值**，不给假值。
+- **"帧待抓包/待核对"的点位（10 个）**：5 条目标位置（`POSITION@CMD`）、5 条实际位置
+  （`POSITION@REAL`）、`/MACHINE/WARNING`（报警）、`/MACHINE/CONTROLLER/TOOL`（刀具列表，
+  配置型）。2026-09 拿 FANUC 官方 SDK 把这些调用的**请求码**都核出来了
+  （`cnc_rdposition`/`cnc_absolute` = item `0x26`、`cnc_rdalmmsg2` = `0x23`、
+  `cnc_rdtooldata` 一族；表见 01 册 §2.4），差的只是**应答怎么切**；
+  client 里对应的函数（`ncl_focas_axis_position()`、`ncl_focas_axis_position_cmd()`、
+  `ncl_focas_alarm()`、`ncl_focas_tool_list()`）现在回 `NCL_ERR_UNAVAILABLE`。
+  于是：点位照样声明、照样绑函数，模型里有它、`Query` 有明确答复（`NG` + "还读不了"）、
+  自检报 `<待抓包>` 而不是失败、轮询与 §6 审计都不碰它，但**取不到值**，不给假值。
   **要抓哪一帧写在 client 那个函数的注释里**（`ncl_focas_last_error()` 里也带一句），
   真机抓一次补上时**只改那个函数体** —— 适配器那张点位表一行都不用动，清单在 31 册 §1 #8。
   差别只有一条：**报警（`/MACHINE/WARNING`）按现场口径已经占着默认采样通道** ——
-  通道里现在有这一列，抓包补上之前每周期都是 `null`（不是"没有报警"，是"还没抓到帧"）；
-  五个目标位置是纯按需读，不在通道里。
+  通道里现在有这一列，抓包补上之前每周期都是 `null`（不是"没有报警"，是"还没抓到帧"）。
+- **进给速度改口径**：`/MACHINE/AXIS@k/SPEED` 现在绑 `ncl_focas_axis_feedrate()`
+  （`cnc_actf`，item 0x24）—— 官方手册里 `cnc_actf` 是**轴的实际进给速度 F**、
+  `cnc_acts` 是**主轴转速 S**，早先那一轮把两者当成"位置/速度"了（`POSITION@REAL`
+  实际喂的是进给速度）。现在位置一栏绑的是真正的 `cnc_absolute`（帧待抓包），
+  进给速度按表 4 的 `SPEED`（mm/min）报。主轴转速（`cnc_acts`）暂时没有模型项：
+  表 2 的组件类型里没有 `SPINDLE`，口径定了再加点位（client 里的
+  `ncl_focas_spindle_speed()` 已经能用）。
 - **坐标缩放**：位置/速度按 01 册 §2.3 实测的 **float 数组**读。Fwlib32 手册里
   `cnc_actf` 的 `ODBACT` 还有 `data + dec`（小数点位数）形态，若真机上是这种形态，
   数值会明显偏大/偏小——用 `--once --raw` 抓一次原始报文再定（`log\out.txt` 里有
