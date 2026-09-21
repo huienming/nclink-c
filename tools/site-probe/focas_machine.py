@@ -104,6 +104,7 @@ class Machine:
         self.hello_records = int(args.hello_records)
         self.hello_hex = args.hello_hex
         self.rec18 = bytes.fromhex(args.rec18) if args.rec18 else b"\x00" * 16
+        self.axis_hex = args.axis_hex
         self.rec_a = int(args.rec_a)
         self.rec_c = int(args.rec_c)
         self.rec_d = int(args.rec_d)
@@ -179,9 +180,31 @@ class Machine:
             # 直接用给的那串（试"驱动到底在哪一格读轴数"时最省事）
             return bytes.fromhex(self.cap_hex).ljust(40, b"\x00")
         out = bytearray(struct.pack(">HH", 0x4206, self.max_axes))
-        out += b" 0 M"                  # cnc_type / mt_type / series
-        out += b"D4G2-49.0"             # version
-        out += b"03\x00"                # path / 补齐
+        # 严格照 NCGuide 那次 cnc_sysinfo 的实测字节：`20 30 20` + "MD4G249.0" 之后
+        # 紧跟 **"03"（= 控制轴数，ASCII）**，再补一个 0。位置差一个字节，驱动就当你
+        # 没报轴数（`axis > 轴数` 直接回 EW_ATTRIB）。
+        out += b" 0 "                   # csv_type / mt_type / series
+        out += b"MD4G249.0"             # 型号串（实测 9 字节）
+        out += b"03\x00"                # 控制轴数（ASCII）+ 补齐
+        return bytes(out)
+
+    def axis_table(self):
+        """轴表（Cb `0x89`）：官方 SDK 的 `cnc_rdaxisname` 就发这一条，驱动拿它的载荷建
+        "控制轴"那张表 —— 而 ODBAXIS 那一族 `axis > 轴数` 的闸门查的正是这张表
+        （`fwlibe64.dll` 0x18005923a 起那几行）。所以这一块**不能再拿填充字节糊**。
+
+        `--axis-hex` 给了就用它（先拿"可辨识载荷"把布局量出来，再填轴名）。
+        """
+        if self.axis_hex:
+            return bytes.fromhex(self.axis_hex).ljust(60, b"\x00")
+        out = bytearray()
+        for i in range(self.axis_count):
+            name = AXIS_NAMES[i] if i < len(AXIS_NAMES) else "?"
+            # 每轴 16 字节：前 4 字节 = 轴名（`cnc_rdaxisname` 的循环就是把
+            # `[载荷 + i*16 + 0x10]` 处的 4 字节 memcpy 到输出的名字字段），
+            # 后面 12 字节 = 两个 double（值），这里给 0。
+            out += name.encode().ljust(4, b"\x00")
+            out += b"\x00" * 12
         return bytes(out)
 
     def statinfo(self):
@@ -217,7 +240,17 @@ class Machine:
         # 注意：`0x19` = 25，和 cnc_statinfo 的第一个 Cb 是同一个码 —— 靠"Cb 组合"
         # 区分（statinfo 只有 25/225/152 三个，坐标那条 9 个）。见 reply_for_request()。
         table[(0x19, 0)] = b"\x00" * 4                         # 坐标那条两头的框
-        table[(0x89, 0xffffffff)] = b"\x00" * 4
+        # 轴表（Cb 0x89）：官方 SDK 的 `cnc_rdaxisname` 就发这一条，驱动从它的载荷里
+        # 建"控制轴"那张表 —— 而 ODBAXIS 那一族的 `axis > 轴数` 闸门正是查这张表
+        # （`fwlibe64.dll` 0x18005924d）。所以这里必须铺**像样的轴表**，不能拿填充块糊。
+        table[(0x89, 0xffffffff)] = self.axis_table()
+        table[(0x89, 0)] = self.axis_table()
+        # 「轴数」那条（Cb 0xa4）：官方 SDK 取应答载荷的**第一个字**当控制轴数
+        # （`fwlibe64.dll` 1800316de 发 0xa4 → 180031783 读 `[应答载荷+0]`、
+        # bswap16 之后存进 r14，再看 `axis > 轴数` 那道闸门）。假机床必须报对，
+        # 否则 `cnc_srvdelay` / `cnc_absolute` 这类**单轴**调用在本地就被拒（rc=4）。
+        table[(0xa4, 0)] = struct.pack(">H", self.axis_count) + b"\x00" * 14
+        table[(0xa4, 0xffffffff)] = table[(0xa4, 0)]
         # 能力块（握手的第 3 条，`system_info_v1`）：载荷就是 ODBSYS —— 官方库从这里
         # 读"这台机床几根轴"（NCGuide 上 cnc_sysinfo 显示 [2..4) = 0x0020 = 32 轴）。
         table[(0x0e, 0x26f0)] = self.odbsys()
@@ -471,6 +504,8 @@ def main(argv):
     ap.add_argument("--rec-a", default="1", type=int, help="握手记录的 A 字段（类型）")
     ap.add_argument("--rec-c", default="0", type=int, help="握手记录的 C 字段")
     ap.add_argument("--rec-d", default="0", type=int, help="握手记录的 D 字段")
+    ap.add_argument("--axis-hex", default="",
+                    help="轴表（Cb 0x89）载荷的 hex；不给就按轴号+轴名生成")
     ap.add_argument("--hello-hex", default="",
                     help="握手 func 01 应答头 16 字节的 hex（试「轴数在哪一格」用）")
     ap.add_argument("--count", default="952", help="件数")

@@ -133,6 +133,14 @@ static const struct {
     { "cnc_rdcount", "s1", 0 }, { "cnc_rdtimer", "s1", 0 },
     /* 跟踪误差那一族：伺服延迟量 / 诊断数据（0i/30i 上跟踪误差在诊断号 300 一族） */
     { "cnc_srvdelay", "s2", 8 }, { "cnc_diagnoss", "s3", 8 },
+    /*
+     * 两连调用：先 `cnc_rdaxisname` 再 `cnc_srvdelay`（同一条连接）。
+     * 官方库的"控制轴数"是 **问过一次轴表之后** 才有的（fwlibe64.dll 1800316de 发
+     * Cb 0xa4、180031783 把应答载荷的第一个字当轴数），而 ODBAXIS 那一族
+     * （cnc_srvdelay / cnc_absolute）的 `axis > 轴数` 闸门查的就是它。分开跑两次探针
+     * 是两个进程两条连接，缓存不共享 —— 所以单独跑 srvdelay 永远 rc=4。
+     */
+    { "seq:axis_then_srvdelay", "seq", 0 },
     { "cnc_rddiagnum", "void", 0 }, { "cnc_rddiaginfo", "s2", 0 },
     { "cnc_rdngrp", "void", 0 }, { "cnc_rdlife", "s1", 8 },
     { "cnc_rdtofsinfo", "void", 0 }, { "cnc_rdmacroinfo", "void", 0 },
@@ -315,7 +323,23 @@ int main(int argc, char **argv)
     }
     printf("\n");
 
-    if (strcmp(kind, "void") == 0) {
+    if (strcmp(kind, "seq") == 0) {
+        n_fn rdaxisname_fn = (n_fn)sym("cnc_rdaxisname");
+        s2_fn srvdelay_fn = (s2_fn)sym("cnc_srvdelay");
+        short num = 8;
+
+        if (rdaxisname_fn == NULL || srvdelay_fn == NULL) {
+            return 2;
+        }
+        rc = rdaxisname_fn(handle, &num, buf);
+        printf("  cnc_rdaxisname rc = %d, num = %d\n", (int)rc, (int)num);
+        memset(buf, 0, sizeof(buf));
+        rc = srvdelay_fn(handle, 1, 8, buf);
+        printf("  cnc_srvdelay 1 (len 8) rc = %d\n", (int)rc);
+        dump(buf, 64);
+        freelibhndl(handle);
+        return 0;
+    } else if (strcmp(kind, "void") == 0) {
         rc = ((void_fn)sym(fn_name))(handle, buf);
     } else if (strcmp(kind, "s1") == 0) {
         rc = ((s1_fn)sym(fn_name))(handle, (short)a0, buf);
