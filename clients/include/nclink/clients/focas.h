@@ -139,26 +139,33 @@ ncl_err ncl_focas_axis_feedrate(ncl_focas *focas, ncl_focas_axis axis,
 ncl_err ncl_focas_spindle_speed(ncl_focas *focas, unsigned spindle,
                                 double *value);
 /**
- * 轴的绝对位置（`cnc_absolute`，item 0x26，d = 0、e = ALL_AXES）。
- *
- * **还没实现**（帧待抓包）：0x26 的请求已经会发（一条 Cb、d 选位置类型、e 给轴
- * 号或 -1），应答的切法还没在真机核准（ODBAXIS 的 dummy/type/data[]）。抓包时
- * 同时看一眼 `cnc_getfigure`（小数点位数在这里，不在这一条里）。
+ * 轴的绝对位置。走 `cnc_rdposition`（item `RDPOSITION`：一条请求 9 个块，绝对位置在
+ * **下标 1**（第 2 个块，块号从 0 数）），每轴一个 `POSELM`（12 字节），值 =
+ * `data / 10^dec`——NCGuide 上实测到 `dec = 3`、轴名 'X'（01 册 §2.5）。
  */
 ncl_err ncl_focas_axis_position(ncl_focas *focas, ncl_focas_axis axis,
                                 double *value);
-/** 轴的机械坐标（`cnc_machine`，item 0x26，d = 1）。**还没实现**，同上一句。 */
+/** 轴的机械坐标（同一条请求的下标 2）。 */
 ncl_err ncl_focas_axis_position_machine(ncl_focas *focas, ncl_focas_axis axis,
                                         double *value);
-/** 轴的相对坐标（`cnc_relative`，item 0x26，d = 2）。**还没实现**。 */
+/** 轴的相对坐标（下标 3）。 */
 ncl_err ncl_focas_axis_position_relative(ncl_focas *focas, ncl_focas_axis axis,
                                          double *value);
-/** 轴的剩余距离（`cnc_distance`，item 0x26，d = 3）。**还没实现**。 */
+/** 轴的剩余距离（下标 4）。 */
 ncl_err ncl_focas_axis_distance(ncl_focas *focas, ncl_focas_axis axis,
                                 double *value);
 /**
- * 轴的目标位置（`cnc_rdposition` 的 type = 1，一条 Cb 一种位置类型）。
- * **还没实现**（帧待抓包）。
+ * 跟踪误差（= 伺服延迟量，`cnc_srvdelay`，item `SV_DELAY`：一条 `0x26`、d = 9、
+ * e = ALL_AXES）。记录里带小数位，出门是 mm；机床静止时是 0。
+ */
+ncl_err ncl_focas_axis_srv_delay(ncl_focas *focas, ncl_focas_axis axis,
+                                 double *value);
+/**
+ * 轴的目标位置（指令位置）= **实际位置 − 跟踪误差**。
+ *
+ * 现场口径是"跟踪误差 = 实际位置 − 指令位置"，所以指令位置是算得出来的：实际位置走
+ * `cnc_rdposition`、跟踪误差走 `cnc_srvdelay`，两条相减（不是拿 `cnc_getfigure`
+ * 那一套凑的）。静止时机床两个量相等，出门就是实际位置。
  */
 ncl_err ncl_focas_axis_position_cmd(ncl_focas *focas, ncl_focas_axis axis,
                                     double *value);

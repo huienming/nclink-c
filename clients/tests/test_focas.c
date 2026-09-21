@@ -351,6 +351,10 @@ static void test_items(void)
     NCL_CHECK(item != NULL && item->cbs[0] == 0x120 && item->arg0[0] == 2);
     item = ncl_focas_item_lookup("RDBLKCOUNT");
     NCL_CHECK(item != NULL && item->cbs[0] == 0x35);
+    /* 伺服延迟量（= 跟踪误差）：0x26 的 d = 9，e = ALL_AXES（假机床实测的请求帧） */
+    item = ncl_focas_item_lookup("SV_DELAY");
+    NCL_CHECK(item != NULL && item->cbs[0] == 0x26 && item->arg0[0] == 9 &&
+              item->arg1[0] == 0xffffffffu);
     NCL_CHECK(ncl_focas_item_lookup("no-such-item") == NULL);
 
     NCL_TEST_CASE("a bare code is parsed instead");
@@ -1035,25 +1039,76 @@ static void test_semantics(void)
         ncl_focas_axis_position_machine(focas, NCL_FOCAS_AXIS_X, &real), NCL_OK);
     NCL_CHECK(real > 99.99 && real < 100.01);
 
-    NCL_TEST_CASE("模式与急停：同一个 STATINFO 位域");
-    mock->payload_len[0] = 20;
-    put_u16be(mock->payload[0] + 4, 1);  /* aut    */
-    put_u16be(mock->payload[0] + 6, 0);  /* manual */
-    put_u16be(mock->payload[0] + 10, 1); /* emergency */
-    memset(mock->payload[0], 0, 4);
+    NCL_TEST_CASE("跟踪误差与指令位置：指令 = 实际（POSELM）− 延迟量（SV_DELAY）");
+    /*
+     * SV_DELAY 一条请求只带一个 Cb，所以应答就是块 1（假机床按"载荷序号 = 块号"
+     * 铺，块 1 取载荷 0）。记录 8 字节：值在第 0 个 int32（大端），[4..6) 是小数位。
+     * 这里故意留一根**负延迟**（Y = −2.500）：指令位置要往实际位置外面走。
+     */
+    mock->payload_count = 9; /* RDPOSITION 那条仍要 9 个块 */
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 40; /* 5 根轴 × 8 字节 */
+    put_u32be(mock->payload[0], 1234);                  /* X：+1.234 */
+    put_u16be(mock->payload[0] + 4, 3);
+    put_u32be(mock->payload[0] + 8, 0xFFFFF63Cu);       /* Y：−2.500 */
+    put_u16be(mock->payload[0] + 12, 3);
+    put_u32be(mock->payload[0] + 16, 0);                /* Z：静止 */
+    put_u16be(mock->payload[0] + 20, 3);
+
+    NCL_CHECK_EQ_INT(ncl_focas_axis_srv_delay(focas, NCL_FOCAS_AXIS_X, &real),
+                     NCL_OK);
+    NCL_CHECK(real > 1.233 && real < 1.235);
+    /* X：实际 12.345 − 1.234 = 11.111 */
+    NCL_CHECK_EQ_INT(ncl_focas_axis_position_cmd(focas, NCL_FOCAS_AXIS_X, &real),
+                     NCL_OK);
+    NCL_CHECK(real > 11.110 && real < 11.112);
+    /* Y：实际 67.89 − (−2.500) = 70.39 */
+    NCL_CHECK_EQ_INT(ncl_focas_axis_position_cmd(focas, NCL_FOCAS_AXIS_Y, &real),
+                     NCL_OK);
+    NCL_CHECK(real > 70.38 && real < 70.40);
+    /* Z：静止，延迟 0 → 指令 = 实际 */
+    NCL_CHECK_EQ_INT(ncl_focas_axis_position_cmd(focas, NCL_FOCAS_AXIS_Z, &real),
+                     NCL_OK);
+    NCL_CHECK(real > -0.001 && real < 0.001);
+    /* 轴号越界是参数错，不是读不到 */
+    NCL_CHECK_EQ_INT(ncl_focas_axis_srv_delay(focas, (ncl_focas_axis)77, &real),
+                     NCL_ERR_RANGE);
+
+    NCL_TEST_CASE("模式与急停：aut 在块 2，manual/run/急停在块 0 的载荷里");
+    /*
+     * 布局是"斜坡载荷 + 官方 SDK 填它自己的 ODBST"钉出来的（01 册 §2.3）：
+     * 块 0 载荷 = manual, run, edit, motion, mstb, emergency, …；块 1 = dummy；
+     * 块 2 = aut。三态 = 急停优先 → running（run）→ free。
+     */
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 18;
+    put_u16be(mock->payload[0], 0);      /* manual    = 0 */
+    put_u16be(mock->payload[0] + 2, 1);  /* run       = 1 */
+    put_u16be(mock->payload[0] + 10, 1); /* emergency = 1 */
+    memset(mock->payload[2], 0, sizeof(mock->payload[2]));
+    mock->payload_len[2] = 2;
+    put_u16be(mock->payload[2], 1);      /* aut = 1 */
     NCL_CHECK_EQ_INT(ncl_focas_mode(focas, text, sizeof(text)), NCL_OK);
     NCL_CHECK_EQ_STR(text, "auto");
+    NCL_CHECK_EQ_INT(ncl_focas_status(focas, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "holding"); /* 急停优先于 run */
     {
         bool on = false;
 
         NCL_CHECK_EQ_INT(ncl_focas_emergency(focas, &on), NCL_OK);
         NCL_CHECK(on);
     }
+    /* 急停撤掉 → running；run 也撤掉 → free */
+    put_u16be(mock->payload[0] + 10, 0);
+    NCL_CHECK_EQ_INT(ncl_focas_status(focas, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "running");
+    put_u16be(mock->payload[0] + 2, 0);
+    NCL_CHECK_EQ_INT(ncl_focas_status(focas, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "free");
 
     NCL_TEST_CASE("还没核准的那几条回 NCL_ERR_UNAVAILABLE，并说清要抓哪一帧");
-    /* 坐标已经能读了（上面那条 POSELM 用例），这里留的还是"还没核准"的几条。 */
-    NCL_CHECK_EQ_INT(ncl_focas_axis_position_cmd(focas, NCL_FOCAS_AXIS_X, &real),
-                     NCL_ERR_UNAVAILABLE);
+    /* 坐标（POSELM）和指令位置（实际 − 跟踪误差）都已经能读了，这里留的还是
+     * "还没核准"的几条。 */
     NCL_CHECK_EQ_INT(ncl_focas_axis_load(focas, NCL_FOCAS_AXIS_X, &real),
                      NCL_ERR_UNAVAILABLE);
     NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdsvmeter") != NULL);
@@ -1151,13 +1206,14 @@ static void test_not_yet(void)
     NCL_CHECK(value == NULL); /* 宁可没有值，也不编一个 */
     NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdalmmsg2") != NULL);
 
-    NCL_CHECK_EQ_INT(ncl_focas_axis_position_cmd(focas, NCL_FOCAS_AXIS_X,
-                                                 &position),
+    /* 指令位置已经实现了（实际位置 − 跟踪误差，见 test_semantics），这里换一条
+     * 还没核准的：合成进给速度要 `cnc_rddynamic2` 的 OBDDY2。 */
+    NCL_CHECK_EQ_INT(ncl_focas_feed_speed(focas, &position),
                      NCL_ERR_UNAVAILABLE);
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdposition") != NULL);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rddynamic2") != NULL);
     /* 轴号越界仍旧是参数错，不是"还没有" */
-    NCL_CHECK_EQ_INT(ncl_focas_axis_position_cmd(focas, (ncl_focas_axis)77,
-                                                 &position),
+    NCL_CHECK_EQ_INT(ncl_focas_axis_srv_delay(focas, (ncl_focas_axis)77,
+                                              &position),
                      NCL_ERR_RANGE);
 
     NCL_CHECK_EQ_INT(ncl_focas_tool_list(focas, &value), NCL_ERR_UNAVAILABLE);

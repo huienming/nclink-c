@@ -5,6 +5,58 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 修正：`STATINFO` 的 ODBST 偏移（`mode` 一直是错的）+ 真 FOCAS2 假机床
+
+用"**斜坡载荷 + 官方 SDK 填它自己的 `ODBST`**"把 `cnc_statinfo` 的切法钉死了：
+结构体偏移 0 收**块 1**（码 225 → `dummy`）、偏移 2 收**块 2**（码 152 → **`aut`**）、
+偏移 4 起收**块 0 的载荷**（码 25 → `manual, run, edit, motion, mstb, emergency,
+alarm, spindle, oper`）。所以块 0 载荷的下标：`0 = manual`、`1 = run`、
+`5 = emergency` —— **`aut` 不在块 0**，它在块 2。
+
+client 原来按"整个 ODBST 都在块 0"读，于是有三处错：
+
+- `ncl_focas_mode()` 读下标 2/3（那实际是 `edit`/`motion`）→ **mode 永远是错的**；
+  现在改成 `aut` 读**块 2**、`manual` 读块 0 下标 0。
+- `ncl_focas_status()` 把下标 5 当 "holding"，而下标 5 就是 **`emergency`** ——
+  急停会被报成 holding；现在按标准口径（表 6/表 8：RUN + EMERGENCY 推三态）：
+  急停优先 → `holding`，否则 run → `running`，否则 `free`。
+- `ncl_focas_emergency()` 跟着改成读下标 5（原来是按"字节偏移 10"算的）。
+- 三处读的长度也收到够用为止（6 / 1 个 int16），不再要求机床把块 0 铺满 20 字节。
+
+golden 用例同步改成实测布局（含 `holding` 那条）→ `ncl_test_focas` **231 checks /
+0 failures**，全量 `ctest` **42/42**，编译零 warning。
+
+顺带入库 `tools/site-probe/focas_machine.py`：**真 FOCAS2 假机床**（命令行给
+XYZ / 进给 / 主轴 / 件数 / 程序号 / 报警 / 跟踪误差，字节按"证据表"铺，没证据的 item
+回错块、不编字节）。官方 SDK 实测 `cnc_statinfo` / `cnc_actf` / `cnc_acts` /
+`cnc_rdcount` / `cnc_rdprgnum` / `cnc_rdseqnum` / `cnc_rdngrp` / `cnc_alarm2` /
+`cnc_exeprgname2` 全部 **rc=0 且数值对得上**。还差一步：`ODBAXIS` 那一族
+（`cnc_srvdelay` / `cnc_absolute`）的 `data[]` 填不出来 —— 驱动眼里的"轴数"来自握手，
+得先把 `0x18`（记录详情）的载荷试出来（`--srv-shape rec8/bare4/hdr4` 已经预置在桥里）。
+
+### 跟踪误差与指令位置：`POSITION@CMD` = 实际位置 − 伺服延迟量
+
+现场口径是 **跟踪误差 = 实际位置 − 指令位置**，所以指令位置拿得到：实际位置走
+`cnc_rdposition`，跟踪误差走 `cnc_srvdelay`，两条相减。这一轮把后者接上：
+
+- **item `SV_DELAY`**（`clients/focas/focas_codec.c`）：一条 Cb —— `0x26`、d = 9、
+  e = `ALL_AXES`，这是官方 SDK 自己发的请求帧（假机床实测，01 册 §2.4）。`0x26` 的
+  d = 0..3 是四种位置，d = 9 才是延迟量，所以没复用 `RDPOSITION`。
+- **`ncl_focas_axis_srv_delay()`**（新）+ **`ncl_focas_axis_position_cmd()`**（原来是
+  `NCL_ERR_UNAVAILABLE`）：应答每轴一条 **8 字节记录**，值取记录第 0 个 int32（大端）、
+  `[4..6)` 当小数位（值 = `data / 10^dec`）。依据是官方库 `fwlibNCG.dll` 里那一层：
+  `axis` 越界回 `EW_ATTRIB`、`length < 4 + 4×轴数` 回 `EW_LENGTH`，取值按 **8 字节
+  步长**、每轴取记录第 0 个 dword 写进 `ODBAXIS.data[i]`（01 册 §2.5.1，工具
+  `tools/site-probe/focas_dis_range.py`）。
+- **测试**（`clients/tests/test_focas.c`）：假机床上铺"实际 12.345 / 延迟 1.234"和
+  "实际 67.89 / 延迟 **−2.500**"两组，断言 `指令 = 实际 − 延迟`（含负延迟、含静止
+  时 `指令 = 实际`）→ `ncl_test_focas` **225 checks / 0 failures**；全量 `ctest`
+  **42/42**，编译零 warning。
+
+> 还差一格：延迟量的小数位是照 `POSELM`/`LOADELM` 同一族的排布取的（记录 `[4..6)`）。
+> 真机让轴**动起来**再看一眼就能钉死两件事——延迟量非 0 时的正负号、以及这 2 字节到底
+> 是不是 dec；NCGuide 上的机床是静止的，这一条实测只能给出 0（§2.5）。
+
 ### 取证：用 NCGuide（FS0i-F 模拟器）抓真应答，五组 🟡 转 🟢
 
 FANUC 自己的模拟器 **NCGuide 自带 FOCAS2 服务** —— 那些"码已核、应答待核"的调用不用

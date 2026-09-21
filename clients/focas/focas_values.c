@@ -207,28 +207,34 @@ void ncl_focas_last_raw(ncl_focas *focas, ncl_driver_raw *out)
 /* ------------------------------------------------------------------ 语义 -- */
 
 /*
- * 状态：读 STATINFO 的前十个 int16（= ODBST 的前 20 字节），由 RUN（载荷偏移 2）
- * 与 EMERGENCY（偏移 10）两位决定三态。三次读并成一次，报文不多花。
+ * 状态：读块 0 载荷的前六个 int16（= ODBST 的 manual/run/edit/motion/mstb/emergency），
+ * 由 RUN（下标 1）与 EMERGENCY（下标 5）两位决定三态（表 6/表 8：
+ * running / free / holding，holding = 紧急保持）。
+ *
+ * 下标是拿"斜坡载荷 + 官方 SDK 填它自己的 ODBST 结构体"钉出来的（01 册 §2.3）：
+ *   块 1 → ODBST.dummy、块 2 → ODBST.aut、**块 0 的载荷** → manual, run, edit, motion,
+ *   mstb, emergency, alarm, spindle, oper。所以 STATINFO@0 的下标 1 是 run、5 是
+ *   emergency —— 而 aut 根本不在块 0（它在块 2），mode 要另读一条。
  */
 ncl_err ncl_focas_status(ncl_focas *focas, char *out, size_t cap)
 {
     ncl_json *bits = NULL;
     long long running = 0;
-    long long holding = 0;
+    long long emergency = 0;
     ncl_err rc;
 
     if (out == NULL || cap == 0) {
         return NCL_ERR_INVALID_ARG;
     }
-    rc = ncl_focas_read_item(focas, "STATINFO@0", 0, 10, NCL_DTYPE_INT16, &bits);
+    rc = ncl_focas_read_item(focas, "STATINFO@0", 0, 6, NCL_DTYPE_INT16, &bits);
     if (rc != NCL_OK) {
         return rc;
     }
-    (void)ncl_json_as_int(ncl_json_arr_get(bits, 1), &running);  /* STATINFO@2  */
-    (void)ncl_json_as_int(ncl_json_arr_get(bits, 5), &holding);  /* STATINFO@10 */
+    (void)ncl_json_as_int(ncl_json_arr_get(bits, 1), &running);    /* run       */
+    (void)ncl_json_as_int(ncl_json_arr_get(bits, 5), &emergency);  /* emergency */
     ncl_json_free(bits);
     snprintf(out, cap, "%s",
-             holding != 0 ? "holding" : running != 0 ? "running" : "free");
+             emergency != 0 ? "holding" : running != 0 ? "running" : "free");
     return NCL_OK;
 }
 
@@ -327,6 +333,7 @@ ncl_err ncl_focas_spindle_speed(ncl_focas *focas, unsigned spindle,
 ncl_err ncl_focas_mode(ncl_focas *focas, char *out, size_t cap)
 {
     ncl_json *bits = NULL;
+    ncl_json *aut_json = NULL;
     long long aut = 0;
     long long manual = 0;
     ncl_err rc;
@@ -334,20 +341,31 @@ ncl_err ncl_focas_mode(ncl_focas *focas, char *out, size_t cap)
     if (out == NULL || cap == 0) {
         return NCL_ERR_INVALID_ARG;
     }
-    /* ODBST：aut 在载荷偏移 4、manual 在 6（表 8 的 WORK_MODE 取值就两个）。 */
-    rc = ncl_focas_read_item(focas, "STATINFO@0", 0, 4, NCL_DTYPE_INT16, &bits);
+    /* aut 在**块 2**（单独一条 Cb，码 152 —— ODBST 里它在偏移 4，不在块 0 的载荷里），
+     * manual 在块 0 载荷的下标 0。表 8 的 WORK_MODE 取值就这两个。 */
+    rc = ncl_focas_read_item(focas, "STATINFO", 2, 1, NCL_DTYPE_INT16, &aut_json);
     if (rc != NCL_OK) {
         return rc;
     }
-    (void)ncl_json_as_int(ncl_json_arr_get(bits, 2), &aut);    /* STATINFO@4 */
-    (void)ncl_json_as_int(ncl_json_arr_get(bits, 3), &manual); /* STATINFO@6 */
+    (void)ncl_json_as_int(aut_json, &aut);
+    ncl_json_free(aut_json);
+    rc = ncl_focas_read_item(focas, "STATINFO@0", 0, 1, NCL_DTYPE_INT16, &bits);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    (void)ncl_json_as_int(ncl_json_arr_get(bits, 0), &manual);  /* manual */
     ncl_json_free(bits);
     snprintf(out, cap, "%s",
              aut != 0 ? "auto" : manual != 0 ? "manual" : "other");
     return NCL_OK;
 }
 
-/** ODBST 里的一个位（急停 10 / 报警 16…）：0/1 变成 bool。 */
+/**
+ * ODBST 块 0 载荷里的一个 u16（下标 = @p index）：0/1 变成 bool。
+ *
+ * 急停是下标 5（原来的 10 是**字节**偏移，对着旧口径写的；块 0 载荷的第一个 u16 是
+ * manual，不是 ODBST 的偏移 0）。
+ */
 static ncl_err status_bit(ncl_focas *focas, int offset, bool *on)
 {
     ncl_json *bits = NULL;
@@ -357,11 +375,12 @@ static ncl_err status_bit(ncl_focas *focas, int offset, bool *on)
     if (on == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    rc = ncl_focas_read_item(focas, "STATINFO@0", 0, 10, NCL_DTYPE_INT16, &bits);
+    rc = ncl_focas_read_item(focas, "STATINFO@0", 0, offset + 1, NCL_DTYPE_INT16,
+                             &bits);
     if (rc != NCL_OK) {
         return rc;
     }
-    (void)ncl_json_as_int(ncl_json_arr_get(bits, offset / 2), &value);
+    (void)ncl_json_as_int(ncl_json_arr_get(bits, offset), &value);
     ncl_json_free(bits);
     *on = value != 0;
     return NCL_OK;
@@ -369,7 +388,7 @@ static ncl_err status_bit(ncl_focas *focas, int offset, bool *on)
 
 ncl_err ncl_focas_emergency(ncl_focas *focas, bool *on)
 {
-    return status_bit(focas, 10, on); /* ODBST.emergency，载荷偏移 10 */
+    return status_bit(focas, 5, on); /* 块 0 载荷下标 5 = ODBST.emergency */
 }
 
 /* 报警状态位（cnc_alarm2，0x1a）：载荷 @0 的 BE32，0 = 无报警。 */
@@ -652,19 +671,113 @@ ncl_err ncl_focas_axis_distance(ncl_focas *focas, ncl_focas_axis axis,
     return position_read(focas, axis, 3, "剩余距离", value);
 }
 
+/*
+ * 伺服延迟量（`cnc_srvdelay`）= 现场说的**跟踪误差**。请求是一条 Cb（0x26，d = 9，
+ * e = ALL_AXES，见 01 册 §2.4 的实测请求帧）；应答每轴一条 **8 字节记录**：
+ *
+ *   [0..4)  int32 data（大端）—— 延迟量
+ *   [4..6)  u16 dec  —— 小数点位数（按 POSELM/LOADELM 一族的排布取，见下）
+ *   [6..8)  u16 unit —— 单位（0 = mm）
+ *
+ * 依据：官方库 `fwlibNCG.dll` 的 `cnc_srvdelay` 那一层每轴按 **8 字节步长**取值
+ * （`mov ecx, [ebp + eax*8 - 0x32c]`），取的是记录第 0 个 dword，再写进
+ * `ODBAXIS.data[i]`、`type` 由库自己填轴号（§2.5 的反汇编）。dec/unit 落在 [4..8)
+ * 是照 POSELM（int32 + dec + unit + …）的同一族排布取的；真机上让轴动起来再看一眼
+ * ——静止时这一路是 0，核不出小数位（这一点写在 01 册 §2.4 的状态栏里）。
+ */
+#define FOCAS_SVDEL_SIZE 8
+
+static bool svdel_read(const ncl_json *payload, size_t axis, int32_t *data,
+                       int *dec)
+{
+    size_t at = axis * FOCAS_SVDEL_SIZE;
+    int places;
+
+    if (payload == NULL || ncl_json_type_of((ncl_json *)payload) != NCL_JSON_ARRAY ||
+        ncl_json_arr_len((ncl_json *)payload) < at + FOCAS_SVDEL_SIZE) {
+        return false;
+    }
+    *data = (int32_t)(((uint32_t)bytes_at(payload, at) << 24) |
+                      ((uint32_t)bytes_at(payload, at + 1) << 16) |
+                      ((uint32_t)bytes_at(payload, at + 2) << 8) |
+                      (uint32_t)bytes_at(payload, at + 3));
+    places = (int)(((uint16_t)bytes_at(payload, at + 4) << 8) |
+                   (uint16_t)bytes_at(payload, at + 5));
+    /* dec 只在 0..9 认：万一机床发的是"裸 int32 数组"（每轴 4 字节），这 2 字节就是
+     * 下一根轴的低位，不能拿来当小数位用——那时按 dec = 0（检测单位）算。 */
+    *dec = (places >= 0 && places <= 9) ? places : 0;
+    return true;
+}
+
+static ncl_err srv_delay_read(ncl_focas *focas, ncl_focas_axis axis,
+                              double *value)
+{
+    ncl_json *payload = NULL;
+    int32_t data = 0;
+    int dec = 0;
+    ncl_err rc;
+
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
+        return note(focas, "SV_DELAY", NCL_ERR_RANGE);
+    }
+    /* 这条 item 只有 1 个 Cb，所以应答也只有 1 个块——块号是**从 0 数**的
+     * （和 STATINFO@0 一个约定），RDPOSITION 那条要的是下标 1。 */
+    rc = ncl_focas_read_item(focas, "SV_DELAY", 0,
+                             (int)(FOCAS_SVDEL_SIZE * NCL_FOCAS_AXIS_COUNT),
+                             NCL_DTYPE_BYTE, &payload);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    if (!svdel_read(payload, (size_t)axis, &data, &dec)) {
+        ncl_json_free(payload);
+        return note(focas, "SV_DELAY", NCL_ERR_PARSE);
+    }
+    ncl_json_free(payload);
+    *value = poselm_scale(data, dec);
+    return NCL_OK;
+}
+
+ncl_err ncl_focas_axis_srv_delay(ncl_focas *focas, ncl_focas_axis axis,
+                                 double *value)
+{
+    return srv_delay_read(focas, axis, value);
+}
+
+/*
+ * 指令位置（目标位置）。现场口径：**跟踪误差 = 实际位置 − 指令位置**，所以
+ *
+ *     指令位置 = 实际位置 − 伺服延迟量
+ *
+ * 两个量分两条读：实际位置走 `cnc_rdposition` 的绝对那一路（POSELM），伺服延迟量走
+ * `cnc_srvdelay`（0x26 d = 9）。机床静止时延迟量是 0，"指令 = 实际"——这不是猜的，
+ * NCGuide 上实测就是 0（§2.5）。
+ */
 ncl_err ncl_focas_axis_position_cmd(ncl_focas *focas, ncl_focas_axis axis,
                                     double *value)
 {
+    double actual = 0.0;
+    double delay = 0.0;
+    ncl_err rc;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
         return note(focas, "AXIS", NCL_ERR_RANGE);
     }
-    /* 目标位置不是 cnc_rdposition 的四路之一（那是绝对/机械/相对/剩余，都是"实际"）。
-     * 指令值要么让机床动起来看 `cnc_rddynamic2` 那一族，要么真机核，先照实回。 */
-    return not_yet(focas, "目标位置",
-                   "cnc_rdposition 只有实际/机械/相对/剩余四路；指令值待核");
+    rc = ncl_focas_axis_position(focas, axis, &actual);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    rc = srv_delay_read(focas, axis, &delay);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    *value = actual - delay;
+    return NCL_OK;
 }
 
 /* 伺服负载（cnc_rdsvmeter，0x56 + 0x89）：每轴一个 LOADELM（int32 + dec/unit/name）。 */

@@ -132,6 +132,12 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> `
 - `focas_sdk_probe.ps1`：编译 + 起假机床 + 一次跑一串调用 + 打印每条的 Cb 码。
 - `focas_item_scan.py`：静态那一路（PE 导出表 + 反汇编找小立即数），当交叉印证用 ——
   官方库的导出函数多是薄壳，真代码在内部调度里，所以**以线上探针为准**。
+- `focas_dis_range.py`：把官方库里**某一段**反汇编出来（`rva` + 条数），call 目标自动标
+  成导出名。问"应答怎么切"时用它——长度校验的常数、拷贝循环的步长都在这段里
+  （`cnc_srvdelay` 那族每轴 8 字节的结论就是这么来的，见 01 册 §2.5.1）。
+- `focas_tap.py`：TCP 抄包器，插在客户端与机床之间同时看两个方向的字节
+  （`python focas_tap.py 8194 127.0.0.1 8193`，探针打 8194 就行）。官方库在**以太网**
+  这条路上不发帧日志（`FWLIBETH.LOG` 只记错误文本），要看帧就用它。
 
 结果表（核出来的 item 码、哪些已进 client、哪些还差应答布局）写在
 `protocal/docs/01-FANUC-CNC-FOCAS.md` §2.4 —— 包括**程序上下行的另一套帧**

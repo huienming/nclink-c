@@ -110,8 +110,8 @@ cd D:\fanuc
 2026-09-20 14:04:22.719 INFO [50060] /MACHINE/CONTROLLER/PROGRAM = "O1234"
 2026-09-20 14:04:22.719 WARNING [50060] /MACHINE/WARNING = <待抓包>（/MACHINE/WARNING：还读不了（UnavailableException））
 2026-09-20 14:04:22.719 INFO [50060] /MACHINE/AXIS@X/POSITION@REAL = 12.345
-2026-09-20 14:04:22.723 WARNING [50060] /MACHINE/AXIS@X/POSITION@CMD = <待抓包>（/MACHINE/AXIS@X/POSITION@CMD：还读不了（UnavailableException））
-自检：20 个点位（13 个可读，7 个待抓包），0 个读取失败      # 退出码 0
+2026-09-20 14:04:22.723 INFO [50060] /MACHINE/AXIS@X/POSITION@CMD = 12.345   # 静止时机床两个量相等
+自检：20 个点位（18 个可读，2 个待抓包），0 个读取失败      # 样例输出（那一轮的点位清单）
 ```
 
 `--probe` 打的是单点结果（客户端视角，带 OK/NG 与原因）：
@@ -320,14 +320,22 @@ plugins\
   里查到。需要什么状态就用标准名表达：`STATUS` 就是 RUN/EMERGENCY 两位推出来的三态；
   要看那些原始位，用方法 `focas/ITEMS`（驱动自己的项表，不进模型）。如果现场要"手动/自动"，
   加一条表 7 的 `WORK_MODE`（取值 `manual`/`auto`，表 8），由 ODBST 的手动/自动方式位推出来。
-- **"帧待抓包/待核对"的点位（10 个）**：5 条目标位置（`POSITION@CMD`）、5 条实际位置
-  （`POSITION@REAL`）、`/MACHINE/WARNING`（报警）、`/MACHINE/CONTROLLER/TOOL`（刀具列表，
-  配置型）。2026-09 拿 FANUC 官方 SDK 把这些调用的**请求码**都核出来了
-  （`cnc_rdposition`/`cnc_absolute` = item `0x26`、`cnc_rdalmmsg2` = `0x23`、
-  `cnc_rdtooldata` 一族；表见 01 册 §2.4），差的只是**应答怎么切**；
-  client 里对应的函数（`ncl_focas_axis_position()`、`ncl_focas_axis_position_cmd()`、
-  `ncl_focas_alarm()`、`ncl_focas_tool_list()`）现在回 `NCL_ERR_UNAVAILABLE`。
-  于是：点位照样声明、照样绑函数，模型里有它、`Query` 有明确答复（`NG` + "还读不了"）、
+- **"还没取到值"的点位（点表 45 条里 17 条）**，分三类：
+  ① **请求码已核、字段布局待核**：`/MACHINE/WARNING`（`cnc_rdalmmsg2` = `0x23`，
+  `ODBALMMSG2` 的字段）、`/MACHINE/CONTROLLER/TOOL`（`cnc_rdtooldata`）。
+  ② **结构体一族，等一次真机载荷**：`/CONTROLLER/PARAMETER`（`cnc_rdparam`，`0x0e`）、
+  `/CONTROLLER/VARIABLE`（`cnc_rdmacro`，`0x15`）、`/CONTROLLER/TOOLPARAM`
+  （`cnc_rdtofs` + `cnc_rdlife`）、`/CONTROLLER/COORDINATE`（`cnc_rdwkcdshft`，G54…）。
+  ③ **要新接一条调用**：`/MODEL`、`/VERSION`（`cnc_rdmodel` / `cnc_sysinfo`）、
+  `/CONTROLLER/SUBPROGRAM`（`cnc_rdexecprog3`）、`/TOOL_NUMBER`（`cnc_rdgcode` 的 T 码）、
+  `/FEED_OVERRIDE` / `/SPINDLE_OVERRIDE` / `/FEED_SPEED`（`cnc_rddynamic2` 的 OBDDY2）、
+  `/AXIS@X/TORQUE`（`cnc_loadtorq`）、`/AXIS@X/CURRENT` / `/AXIS@X/TEMPERATURE`
+  （`cnc_rdaxisdata` 的两类）、`/AXIS@X/TYPE`（`cnc_rdaxisname` / `cnc_rdaxisdata` 的轴属性）。
+  **位置一族（`POSITION@REAL` / `@CMD` / `ANGLE@REAL`）已经不在这一档里**：实际位置 =
+  `cnc_rdposition` 的 `POSELM`（每轴 12 字节，下标 1 = 绝对），指令位置 = 实际 − 跟踪误差
+  （`cnc_srvdelay`，`0x26` d = 9，每轴 8 字节）—— 现场口径是"跟踪误差 = 实际位置 −
+  指令位置"，所以指令位置是算出来的，不是另找一条读的（01 册 §2.4/§2.5）。
+  这 17 条照样声明、照样绑函数：模型里有它、`Query` 有明确答复（`NG` + "还读不了"）、
   自检报 `<待抓包>` 而不是失败、轮询与 §6 审计都不碰它，但**取不到值**，不给假值。
   **要抓哪一帧写在 client 那个函数的注释里**（`ncl_focas_last_error()` 里也带一句），
   真机抓一次补上时**只改那个函数体** —— 适配器那张点位表一行都不用动，清单在 31 册 §1 #8。
@@ -346,7 +354,7 @@ plugins\
   hex）。这条列在 31 册 §1 #7 一起核对。
 - **不做**：PMC 梯形图、程序上传/下载（`cnc_upload4`
   等）、伺服波形、Focas2 Logger。需要的话按 01 册继续扩驱动（改 `plugins` 里的模块）。
-- 采样与轮询**各读一遍机床**：轮询刷新模型里的值（13 个可读点位每轮读一遍；那 7 个"还读不了"的
+- 采样与轮询**各读一遍机床**：轮询刷新模型里的值（可读的点位每轮读一遍；"还读不了"的
   点位第一次问过之后就不再碰 —— 宿主记得住，不必每秒再问一次），
   采样通道按 `sample.intervalMs` 读通道里的 4 个点位（状态 / 计件 / 程序名 / 报警）并按
   `uploadMs` 上报。嫌报文多就把 `--interval` 调大，把某个点位从 `NCL_DATAITEM_SAMPLED`

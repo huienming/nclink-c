@@ -226,10 +226,12 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
     NCL_DATAITEM_JSON_SAMPLED("/WARNING", ncl_focas_alarm)
 
     /* 五轴的位置与进给速度。线性轴的位置是 POSITION（mm），旋转轴（A/C）是
-     * ANGLE（角度）—— 同一个 cnc_absolute 读回来，载荷里的 unit 决定报哪一个。
-     * 位置这一类（实际/目标/机床/相对）现在**都还读不了**：item 0x26 的请求码
-     * 已核、应答切法待真机核，函数回 NCL_ERR_UNAVAILABLE。
-     * 进给速度是真读的 —— cnc_actf（0x24），每轴一个 float，mm/min。名字从路径自动推：
+     * ANGLE（角度）。位置这一类现在都是**真读**的：
+     *   @REAL  实际位置 —— cnc_rdposition（一条 9 块，下标 1 = 绝对），每轴一个
+     *          POSELM（12 字节），值 = data / 10^dec；
+     *   @CMD   指令位置 —— 现场口径"跟踪误差 = 实际 − 指令"，所以指令 = 实际 −
+     *          cnc_srvdelay（0x26 d=9，每轴 8 字节记录）；机床静止时两条相等。
+     * 进给速度也是真读的 —— cnc_actf（0x24），每轴一个 float，mm/min。名字从路径自动推：
      * /MACHINE/AXIS@X/POSITION@REAL -> AXIS_X.POSITION_REAL。 */
     NCL_DATAITEM_F64("/AXIS@X/POSITION@REAL", ncl_focas_axis_position,
                  NCL_FOCAS_AXIS_X)

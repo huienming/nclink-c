@@ -357,18 +357,28 @@ static const ncl_focas_item kItems[] = {
     { "RDTOFS",     { 0x08, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
     { "RDPROGDIR3", { 0x06, 0, 0 },      { 0x13, 0, 0 },   { 1, 0, 0 },      1, false },
     { "EXEPRGNAME2",{ 0xfc, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    /*
+     * 伺服延迟量（现场口径就是**跟踪误差**）：官方 SDK 的 `cnc_srvdelay` 只发**一条**
+     * 块——`0x26`，d = 9，e = ALL_AXES（假机床实测的请求帧，见 01 册 §2.4）。d = 0..3
+     * 是四种位置（RDPOSITION 那一条），d = 9 才是延迟量，所以这里不能复用 RDPOSITION。
+     * 应答每轴一条 **8 字节记录**，值在记录第 0 个 int32（大端）——依据是官方库
+     * `fwlibNCG.dll` 里 `cnc_srvdelay` 那一层：每轴步长 `eax*8`、值取记录第 0 个 dword
+     * 再写进 `ODBAXIS.data[i]`（§2.5 反汇编）。
+     */
+    { "SV_DELAY",   { 0x26, 0, 0 },      { 9, 0, 0 },      { 0xffffffff, 0, 0 }, 1, false },
     /* the capability block the session negotiation sends (§2.3) */
     { "VERSION",    { 0x0e, 0, 0 },      { 0x26f0, 0, 0 }, { 0x26f0, 0, 0 }, 1, false },
     { "RDBLKCOUNT", { 0x35, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
     /* 下面这些**码已核、应答布局还没核**（要么值不在载荷 0 处，要么是结构体数组）：
      * 表里先记着码，语义层暂时按 NCL_ERR_UNAVAILABLE 回，等真机抓一次再启用。
      *   ABSOLUTE/MACHINE/RELATIVE/DISTANCE  0x26，d = 位置类型，e = ALL_AXES
-     *   RDPOSITION                          0x26 的四种类型各发一条（d = 0..3）
      *   RDSVLOAD                            0x56 + 0x89，主轴/伺服负载
      *   RDSPLOAD                            0x40（d=4 负载 / d=5 转速）+ 0x8a
      *   RDALMMSG2                           0x23，报警消息（d = 类型，e = 条数）
      *   RDOPMODE                            0x57，主轴调整模式
      *   RDaxisdata / rdexecprog / rdgcode / rdwkcdshft 也都在这一档
+     * （RDPOSITION 与 SV_DELAY 已经出了这一档：前者块布局 NCGuide 实测，后者按
+     *   官方库的取值步长反推，见 §2.4/§2.5.1。）
      */
 };
 

@@ -258,6 +258,7 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 | `cnc_acts` | 0x25 | 0 | 每个主轴一个 float32 | 🟢 已进 client（主轴转速 S） |
 | `cnc_absolute` / `cnc_machine` / `cnc_relative` / `cnc_distance` | 0x26 | **d = 0/1/2/3**，e = 轴号或 `-1`(ALL_AXES) | ODBAXIS（dummy/type/data[]），**切法待核** | 🟡 码已核 |
 | `cnc_rdposition` | 0x26 ×4 | d = 0..3，e = -1 | 同上（一次四条，四种位置） | 🟡 码已核 |
+| `cnc_srvdelay` | 0x26 | **d = 9**，e = -1 | 每轴一条 **8 字节记录**：值 = 记录第 0 个 int32（BE32），`[4..6)` 当小数位（`data / 10^dec`） | 🟢 已进 client（跟踪误差；`POSITION@CMD` = 实际 − 这一条） |
 | `cnc_rdprgnum` | 0x1c | 0 | 载荷 **@2 运行程序号（BE16）**、@6 主程序号 | 🟢 已进 client |
 | `cnc_rdseqnum` | 0x1d | 0 | 载荷 **@0 顺序号（BE32）** | 🟢 已进 client |
 | `cnc_rdcount` | 0x8b | **0 / 0** | 值（件数） | 🟢 已进 client（原来写成 1/1，是寿命那一支） |
@@ -326,6 +327,7 @@ FS0i-F` 上实测通了，**配方**（每一条都是踩出来的）：
 | `cnc_rdalmmsg2 -1` | 0 | `ODBALMMSG2` 数组（这条机床没报警，全 0）；形状与手册一致 |
 | `cnc_rdblkcount` | 0 | 就是一个 **int32**（原来"取值不在载荷 0 处"的判断作废） |
 | `cnc_rdopmode` | 0 | short 数组（内容随主轴状态，值域见手册） |
+| `cnc_srvdelay -1 --len 132` | 0 | `ODBAXIS`：`type = -1`（ALL_AXES）+ `data[0..31]`（机床静止，全 0）。**长度规则 = `4 + 4×轴数`**：单轴给 `8`，ALL_AXES 要用机床的最大轴数（这台报 32 → `132`）——给 20 / 36 / 68 都回 `EW_LENGTH` |
 | `cnc_absolute -1 --len {12,16,36}` | **2** | `EW_LENGTH`：长度必须是"这台机床的轴数"对应的那个值；**位置建议直接走 `cnc_rdposition`**（一条拿四种） |
 | `cnc_rdtofs` / `cnc_rdmacro` / `cnc_rdparam` | **2** | `--len` 给得不对（要按各结构的实际长度给），下一轮按结构体尺寸补 |
 | `cnc_upstart4` | —— | 探针在这条上没返回（取程序那条要真程序/超时处理），下一轮补 |
@@ -333,6 +335,32 @@ FS0i-F` 上实测通了，**配方**（每一条都是踩出来的）：
 > 结论：`POSITION`/`ANGLE`（`cnc_rdposition`）、`TORQUE`+伺服负载（`cnc_rdsvmeter`）、
 > 主轴负载/转速（`cnc_rdspmeter`）、`WARNING`（`cnc_rdalmmsg2`）、`cnc_rdblkcount`
 > 这五组**已经从 🟡 变 🟢**（形状实测过了），client 侧照 `POSELM`/`LOADELM` 解码即可。
+> 跟踪误差（`cnc_srvdelay`）走的是同一族的 `0x26`，但机床静止时它恒为 0，形状靠
+> **反汇编**钉（下一节）。
+
+#### 2.5.1 库内部：`cnc_srvdelay` 那一族怎么切（🟢 反汇编 + 假机床实测）
+
+用 `tools/site-probe/focas_dis_range.py` 把 32 位 `fwlibNCG.dll` 里那一层读出来
+（`cnc_srvdelay` 的 RVA `0x1bde0` → 内部函数 `0x1b700`）：
+
+```
+cnc_machine   (d=1)  ┐
+cnc_absolute  (d=4)  ├─ 都是同一个内部函数的薄壳：push out, len, axis, <kind>, h
+cnc_relative  (d=6)  │   —— **那个 <kind> 就是 Cb 的 d**（srvdelay = 9）
+cnc_distance  (d=7)  │
+cnc_srvdelay  (d=9)  │   调用前两道检查（都在本地，不发帧）：
+cnc_accdecdly (d=10) │     axis > 轴数            → EW_ATTRIB (4)
+cnc_skip      (d=8)  ┘     length < 4 + 4×轴数    → EW_LENGTH (2)
+
+取值（0x1b878 起）：
+    out->data[i] = *(u32*)(staging + i*8)   ← **每轴步长 8 字节**，取记录第 0 个 dword
+    out->type    = axis                     ← 轴号由库自己填
+```
+
+对上假机床实测的请求帧（`0x26`、d = 9、e = `0xffffffff`），client 侧的口径就是：
+**每轴 8 字节、值在记录第 0 个 int32、`[4..6)` 当小数位**（`focas_values.c` 的
+`svdel_read`）。`cnc_getfigure` 给的是"延迟量的小数点"的另一条路（手册原话），
+真机移动轴时可以把两条对一下。
 
 ---
 
