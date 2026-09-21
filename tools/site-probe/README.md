@@ -336,6 +336,14 @@ python tools/site-probe/fwlib_proto.py  <SpecE 目录> cnc_rdtofsinfo       # �
 `cnc_rdmacro` 的 `--len`（给 12 仍回 `EW_LENGTH`）、`cnc_rdsvmeter`/`cnc_rdspmeter`/
 `cnc_rdposition` 那几条**一条请求带多个块**的逐块形状。
 
+`cnc_rdalmmsg2` 这一条本轮往前推了一格（`focas_sdk_mock.py --almmsg2`）：**每条记录
+80 字节**、`alm_no` 在记录 +0（BE32）、文本 `alm_msg[64]` 在 +0x10 —— 三处都对上了
+（Linux `libfwlib32.so` 里是 `条数 = 载荷长度 / 80` 并把 +0 与 +0x10 那两格拷进出参；
+官方 SDK 跑出来的出参 `[0..4)` 与 `[12..)` 也正好是这两格）。**中间三个字段（type /
+axis / msg_len）还没钉死**：Linux 库读的是 +4 / +8 / +0xc（+6、+0xa、+0xe 各空 2
+字节，正好铺满 80），而官方 SDK 的出参没跟这三格对齐 —— 得再来一轮。所以 client 里
+`WARNING` 先不开（差的就是这三格的位置）。
+
 ## 已经拿到什么
 
 1. **FOCAS2 握手字节**（🟢 实测，`focas_run.sh`）。`cnc_allclibhndl3()` 对假机床

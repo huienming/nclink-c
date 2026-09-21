@@ -46,8 +46,8 @@ x86 / x64（之前只认 ARM），用来开那份 Linux 库；`focas_sdk_probe.c
 `s2_n` 的 `*num` 一个非零初值（给 0 会被本地回 `EW_LENGTH`），并补
 `cnc_rddynamic2` / `cnc_loadtorq` / `cnc_rdgcode` 三个表项。
 
-还没啃下来的（都不用等真机，接着用这套工具磨）：`cnc_rdalmmsg2` 的块长/条数怎么对上
-（`ODBALMMSG2` 的结构体已从官方头拿到）、`cnc_rdprogdir3` 与 `cnc_rdmacro` 的 `--len`
+还没啃下来的（都不用等真机，接着用这套工具磨）：`cnc_rdalmmsg2` 的**中间三个字段**、
+`cnc_rdprogdir3` 与 `cnc_rdmacro` 的 `--len`
 （给 12 仍回 `EW_LENGTH`）、`cnc_rdsvmeter`/`cnc_rdspmeter`/`cnc_rdposition` 那几条
 "一条请求带多个块"的逐块形状；以及官方 SDK 那几条**单轴**调用的本地闸门（`EW_ATTRIB`）
 ——那只是"拿 SDK 当裁判"这条路，不影响 client。
@@ -57,6 +57,14 @@ x86 / x64（之前只认 ARM），用来开那份 Linux 库；`focas_sdk_probe.c
 `/MACHINE/PART_COUNT = 952`（值由假机床铺在 @20）、`POSITION@REAL` 12.345 / 67.89 / −3.5、
 `POSITION@CMD` 11.111 / 66.656 / −4.734、`STATUS` running、`WORK_MODE` auto，
 自检 **43 个点位（26 可读 / 17 待抓包）、0 个读取失败**。
+
+同一轮的收尾：`cnc_rdalmmsg2` 往前推了一格 —— 假机床 `focas_sdk_mock.py` 加了
+`--almmsg2`（铺一串像样的报警记录），核出**每条记录 80 字节**（不是
+`sizeof(ODBALMMSG2)` 的 76）、`alm_no` 在记录 +0（BE32）、文本 `alm_msg[64]` 在 +0x10：
+Linux `libfwlib32.so` 里那一段是"条数 = 载荷长度 / 80"，并把记录 +0 与 +0x10 拷进出参，
+官方 SDK 的出参 `[0..4)`/`[12..)` 也正好是这两格。**中间三个字段（type/axis/msg_len）
+还没钉死**（Linux 库读 +4/+8/+0xc，官方 SDK 的出参没跟这三格对齐），所以 client 的
+`WARNING` 这一档先不开 —— 差的就是这三格的位置。下一轮拿 `ALMMSG2_MARK=1` 再核。
 
 ### 伺服延迟量的形状定死：反汇编以太网库 `fwlibe64.dll`（把上一节"还差一格"关掉）
 

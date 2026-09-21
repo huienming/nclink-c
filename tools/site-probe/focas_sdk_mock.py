@@ -22,9 +22,13 @@
   --reply-func HEX 应答的 [6] 字节换成这个（缺省是回声请求的 func）。数据帧
                    （上行 0x18）上 SDK 走的是 `dir=4` 那条路，应答的 [6] 要对上它。
   --poselm        每块铺一个**像样的 POSELM/LOADELM**（12 字节：int32 data + dec=3 +
-                   unit=0 + disp=1 + name + suff），data 里放块号 ×1000、name 里放
-                   'A'+块号 —— 用来问"哪一块是哪一路"（SDK 对 dec/unit 查得严，
+                    unit=0 + disp=1 + name + suff），data 里放块号 ×1000、name 里放
+                    'A'+块号 —— 用来问"哪一块是哪一路"（SDK 对 dec/unit 查得严，
                    斜坡载荷会被它判无效清成 0）。
+  --almmsg2       每块铺一串**像样的 `cnc_rdalmmsg2` 报警记录**（80 字节一条：
+                   `alm_no`@0、文本 `alm_msg[64]`@0x10），用来核这条的应答切法
+                   （斜坡载荷会被 SDK 判无效清成 0）。ALMMSG2_MARK=1 时每个字段
+                   给可辨识的值，用来找字段偏移。
 
 握手（01 册 §2.2/§2.3 解出来的那套）：
   func 01（hello）→ 16 字节体（[2..4)=0、[8..10)=记录数 0）
@@ -37,6 +41,7 @@
 import socket
 import sys
 import threading
+import os
 
 
 def hexdump(data):
@@ -88,6 +93,45 @@ def poselm(block, size):
         body[k + 8:k + 10] = (1).to_bytes(2, "big")
         body[k + 10] = (ord('A') + block) & 0x7F
         body[k + 11] = 0
+    return bytes(body)
+
+
+def almmsg2(block, size):
+    """一块 = 一串 `cnc_rdalmmsg2` 的报警记录。
+
+    **每条 80 字节**，不是 `sizeof(ODBALMMSG2)` 的 76 —— 线上多出 4 个字节，好让
+    `alm_msg[64]` 落在记录 +0x10、整条正好 0x50 = 80。已核实的：
+
+        +0x00  alm_no   (BE32)
+        +0x10  alm_msg  (64 字节，原样)
+
+    两处证据：现场包那份 Linux `libfwlib32.so` 的 `cnc_rdalmmsg2` 里
+    **条数 = 载荷长度 / 80**，`alm_no` 取记录 +0 的 BE32、文本取 +0x10 的 64 字节；
+    官方 SDK 跑出来的出参里 `alm_no` 与文本（`out[12..)`）也正好对上这两格。
+
+    **还没钉死的**：中间那三个字段。Linux 库读的是记录 +4（type）/ +8（axis）/
+    +0xc（msg_len）—— 也就是记录里 +6/+0xa/+0xe 各空 2 字节，正好铺满 0x50；
+    但官方 SDK 的出参没能跟这三格对齐（可能的解释是这版 `fwlib30i64.dll` 的结构体
+    与官方头不一致）。这里先按 Linux 库那份铺（它自洽且铺满 80），等下一轮再核。
+    见 01 册 §2.6。
+
+    早先按官方头的 76 字节铺，SDK 会把整块判无效、出参一个字节都不写 —— 那不是
+    "机床不答"，是形状不合法。
+    """
+    rec = 80
+    mark = os.environ.get("ALMMSG2_MARK") == "1"
+    body = bytearray(max(0, size - 16))
+    for k in range(0, len(body) - rec + 1, rec):
+        n = k // rec + 1
+        text = ("ALM %d" % n).encode()
+        # ALMMSG2_MARK=1：每个字段给一个"一眼能认出来"的值（核字段偏移用）
+        body[k:k + 4] = (0x11223344 if mark else 1000 * block + n).to_bytes(
+            4, "big", signed=True)
+        body[k + 4:k + 6] = (0x5566 if mark else 1).to_bytes(2, "big")
+        body[k + 8:k + 10] = (0x7788 if mark else 0).to_bytes(2, "big")
+        body[k + 0xc:k + 0xe] = (0xBBCC if mark else len(text)).to_bytes(
+            2, "big")
+        body[k + 0x10:k + 0x10 + len(text)] = text
     return bytes(body)
 
 
@@ -215,6 +259,8 @@ def main(argv):
             reply_func = int(args.pop(0), 0)
         elif key == "--poselm":
             shape = "poselm"
+        elif key == "--almmsg2":
+            shape = "almmsg2"
         else:
             raise SystemExit(__doc__)
     if size < 0x22:
@@ -222,6 +268,9 @@ def main(argv):
     if shape == "poselm":
         serve(port, size, None, None, blocks, body, silent, reply_func,
               poselm)
+    elif shape == "almmsg2":
+        serve(port, size, None, None, blocks, body, silent, reply_func,
+              almmsg2)
     else:
         serve(port, size, payload, None, blocks, body, silent, reply_func)
 

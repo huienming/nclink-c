@@ -462,8 +462,13 @@ python tools/site-probe/fwlib_proto.py  <SpecE 目录> cnc_rdtofsinfo        # �
 | `cnc_rdparam` = `datano`@2、`type`@4、`ldata`@8；`cnc_rdtofs` = `data`@0 | SDK 反查 |
 | `cnc_rdprgnum`@2/@6、`cnc_rdseqnum`@0、`cnc_alarm2`@0、`cnc_rdngrp`@0、`cnc_rdtimer`@0+@4 **都对**（client 原来的读法没问题） | SDK 反查（顺带把已进 client 的几条复核了一遍） |
 
-还没啃下来的：`cnc_rdalmmsg2`（`ODBALMMSG2` 数组，块长要跟 `*num` 对上，假机床现在铺的
-形状被 SDK 判无效清成 0）、`cnc_rdsvmeter`/`cnc_rdspmeter`/`cnc_rdposition` 那几条
+还没啃下来的：`cnc_rdalmmsg2`（**往前推了一格**：每条记录 80 字节、`alm_no` 在 +0、
+文本 `alm_msg[64]` 在 +0x10 —— 依据是 Linux `libfwlib32.so` 里"`条数 = 载荷长度 / 80`"
+外加官方 SDK 出参里 `[0..4)`/`[12..)` 两格正好对上；**中间三个字段 type/axis/msg_len
+还没钉死**：Linux 库读 +4/+8/+0xc（+6/+0xa/+0xe 各空 2 字节，正好铺满 80），官方 SDK
+的出参没跟这三格对齐，所以 client 的 `WARNING` 先不开。假机床那边可以用
+`focas_sdk_mock.py --almmsg2` 复现，`ALMMSG2_MARK=1` 会给每个字段可辨识的值）、
+`cnc_rdsvmeter`/`cnc_rdspmeter`/`cnc_rdposition` 那几条
 **一条请求带多个块**的（`0x89`/`0x88`/`0x0e` 那几块的形状要逐块对），以及
 `cnc_rdprogdir3`/`cnc_rdmacro` 的**长度**（给 12 仍回 `EW_LENGTH`，要按结构体尺寸试）。
 这些都不再需要真机 —— 接着拿这套反查工具磨就行。
