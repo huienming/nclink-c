@@ -61,12 +61,29 @@ D:\fanuc\              <- <root>
 
 1. 把本包解开放到 `<root>`（例如 `D:\fanuc\`）。**`plugins\` 必须跟 `bin\` 一起放**：
    程序默认从 `<root>\plugins` 装载模块：找不到模块时装载器会说清楚是哪个文件、平台报的什么原因。
-2. 改 `conf/fanuc.json`：
-   - `tools[0].parameters.host` ＝ 机床 IP（`port` 默认 8193，另有 `timeoutMs`、
-     `connectTimeoutMs`、`retries`、`negotiate`）；
-   - `sample.intervalMs` / `sample.uploadMs` ＝ 采样与上报周期；
-   - `plugins.load` ＝ 要装载的模块名（默认 `["focas"]`）。
-3. 改 `conf/mqtt.cfg` 里的 `url` 为 broker 地址；或者用命令行的 `-b`（优先级更高）。
+2. 改 `conf/fanuc.json` —— 现场**只有两行要动**，出厂就这么大：
+
+   ```json
+   {
+     "tools": [ { "name": "focas", "parameters": { "host": "192.168.1.100" } } ],
+     "device": { "name": "FANUC 数控机床" }
+   }
+   ```
+
+   `host` 填机床 IP；`device.name` 是上位机看到的名字（`type`/`id` 省略就是 `MACHINE`/`01`）。
+   **其余全部有默认值**，要改才加，加了就生效：
+
+   | 可加在哪 | 键 | 默认 |
+   |---|---|---|
+   | `tools[0].parameters` | `port` / `timeoutMs` / `connectTimeoutMs` / `retries` / `negotiate` | `8193` / `3000` / `3000` / `0` / `true` |
+   | 顶层 | `sample.intervalMs` / `sample.uploadMs` | `1000` / `1000`（也可以不写配置、直接改模型文件，见第 4 节） |
+   | 顶层 | `plugins.load` | 不写 = 装载 `plugins\` 里**全部**模块（本包只有一个） |
+   | 顶层 | `device.type` / `device.id` | `MACHINE` / `01` |
+   | 顶层 | `sn` | 不写就用 `bin\sn.txt` |
+   | 顶层 | `model` | 不写 = 由模块声明生成（见第 4 节） |
+
+3. 改 `conf/mqtt.cfg` 里的 `url` 为 broker 地址（**配置里不用写 `mqtt`**：不写就读这个文件；
+   命令行 `-b` 优先级更高）。`--once` / `--stats` 是自检，按设计**不接 broker**。
 4. 设备 SN：`bin\sn.txt` 不存在时自动生成一个（`V2` + 9 位十六进制）。**同一台机床
    要固定用同一个 SN**，删掉 sn.txt 会变成一台"新设备"。也可以在配置里写一句
    `"sn": "V2XXXXXXXXX"`（顶层）直接指定。
