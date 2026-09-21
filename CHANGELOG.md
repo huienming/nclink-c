@@ -53,6 +53,17 @@ client 跟着实现两处（口径写在 `focas_values.c` 里）：`MODEL` = `cn
 `MANUFACTURER = "FANUC"`、`PART_COUNT = 952`、`FEED_OVERRIDE = 130.0`，
 自检 **29 可读 / 14 待抓包、0 个读取失败**。
 
+顺带把"控制轴数那条闸门"的影响面钉清楚了（写进 01 册 §2.7）：官方库连接期把"几根控制
+轴"记进上下文，凡**按轴数决定长短**的调用都吃这份缓存，而它对我们假机床记的是 **0**——
+于是：指定轴号 → 本地 `EW_ATTRIB` 不发帧；`ALL_AXES` → 帧发得出去但 `data[]` 一条都没有
+（`cnc_rdwkcdshft` 的出参只剩 `type = 0xffff`）；连请求里的"长度"都被算成 0；整族入口
+`cnc_rdaxisdata` 干脆本地 `EW_FUNC`。**所以多块那几条核不出来是这道闸门，不是"应答怎么
+切"**；反过来把那一格喂对，`TORQUE`/`CURRENT`/`TEMPERATURE`/主轴负载/`FEED_SPEED`
+就一起开（写 client 要的 `cnc_rdaxisdata` + `ODBAXDT` 官方文档已给全）。另外两处口径
+更正：`cnc_rdexecprog3`（子程序号那条）**在官方文档包里根本没有这个函数**，
+`cnc_rdmodel` 也没有；`COORDINATE` 那条读的是**当前选中**的那个坐标系
+（`cnc_rdwkcdshft`，Cb 0x63），不是整张 G54… 表。
+
 ### 进给倍率接上 `cnc_rdopnlsgnl`（顺手更正两条 not_yet 的注记）
 
 标准表 7 的 `FEED_OVERRIDE` / `SPINDLE_OVERRIDE` 一直挂在"待抓包"，client 里的注记

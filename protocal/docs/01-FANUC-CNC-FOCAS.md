@@ -477,6 +477,38 @@ python tools/site-probe/fwlib_proto.py  <SpecE 目录> cnc_rdtofsinfo        # �
 `cnc_rdprogdir3`/`cnc_rdmacro` 的**长度**（给 12 仍回 `EW_LENGTH`，要按结构体尺寸试）。
 这些都不再需要真机 —— 接着拿这套反查工具磨就行。
 
+#### 2.7 官方库那条"控制轴数"闸门（🟢 2026-09 把范围钉清楚了）
+
+前面几轮一直说"单轴调用回 `EW_ATTRIB`"，这轮顺着多块调用往下一挖，发现它其实是**同一
+条闸门**，而且影响面比"单轴"大得多 —— 官方库在连接期把"这台机床几根控制轴"记在上下文
+里，之后凡是**按轴数决定长短**的调用都吃这一份缓存。我们假机床上它记成 **0**：
+
+| 现象 | 例子（同一台假机床） |
+|---|---|
+| 指定轴号 → 本地就回 `EW_ATTRIB`(4)、不发帧 | `cnc_rdwkcdshft(h, 1, 8, …)` → rc=4；换成 `ALL_AXES(-1)` → rc=0 |
+| `ALL_AXES` → 帧发得出去，但**一条轴的数据都没有** | `cnc_rdwkcdshft(h, -1, …)`：出参只有 `type` 被填成 `0xffff`，`data[]` 全 0（0 根轴） |
+| 请求里的"长度"也由它算 → 变成 0 | 同一条调用的 Cb `e`（length）发的是 **0**，机床那边"按长度切"的解析全落空 |
+| 整族调用直接本地拒 `EW_FUNC`(1)、一个字节都不发 | `cnc_rdaxisdata`（伺服/主轴负载、电流、速度那一族的入口） |
+
+也就是说：**多块那几条（`cnc_rdsvmeter` / `cnc_rdspmeter` / `cnc_rdaxisdata`）之所以
+核不出来，根子在这条闸门，不在"应答怎么切"**。反过来，哪天把连接期那一格喂对，这一族
+（`AXIS@*/TORQUE`、`CURRENT`、`TEMPERATURE`、主轴负载、`FEED_SPEED`）就一起打开 ——
+写 client 需要的东西官方文档已经给全：
+
+```
+cnc_rdaxisdata(h, cls, short *type, short num, short *len, ODBAXDT *axdata)
+  cls = 1 位置 / 2 伺服 / 3 主轴 / 4 选中的主轴 / 5 速度
+  ODBAXDT = { char name[4]; long data; short dec; short unit; short flag; short reserve; }  // 16 字节
+```
+
+（反汇编 `fwlib30i64.dll` 看到 `cnc_rdsvmeter`/`cnc_rdspmeter` 都是薄壳，内部
+`call cnc_rdaxisdata`（RVA `0x18d60`）—— 这几条在官方库里是同一个入口。）
+
+**另外记一笔**：这轮把假机床改成"`0x89` 回像样的轴表、`0x0e/0x26f0` 回 `ODBSYS`"之后，
+`cnc_rdsvmeter`（`0x56` + `0x89`）从 `-17 EW_PROTOCOL` 变成 `rc = 0` —— 与上一条对照
+说明"闸门"和"多块形状"是两件事：多块调用的每一块都得铺对，`0x89` 回填充字节直接判
+协议错。以后调多块调用先加 `focas_sdk_mock.py --axis-table N`。
+
 ## 3. 常用函数表（按域）
 
 ### 3.1 连接与系统（cnc_*）

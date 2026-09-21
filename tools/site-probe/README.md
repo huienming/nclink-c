@@ -357,6 +357,13 @@ cnc_rdaxisdata(h, cls, short *type, short num, short *len, ODBAXDT *axdata)
 （结构体与 `cls`/`type` 取值表来自官方文档 `SpecE/Position/cnc_rdaxisdata.xml`，
 已经够写 client 了；差的是**拿 SDK 当裁判**去核那几格 —— 闸门没开就只能先按文档写。）
 
+**这条闸门的影响面（01 册 §2.7）**：官方库连接期把"几根控制轴"记进上下文，凡按轴数
+决定长短的调用都吃它；它对我们假机床记的是 0，于是
+`cnc_rdwkcdshft(h, 1, …)` → `EW_ATTRIB`（换成 `ALL_AXES` 才有 rc=0，但 `data[]` 一条
+轴都没有）、请求里的 length 被算成 0、`cnc_rdaxisdata` 干脆本地 `EW_FUNC`。想核这一族
+（`TORQUE`/`CURRENT`/`TEMPERATURE`/主轴负载/`FEED_SPEED`）得先把那一格喂对；写 client
+的料官方文档已经给全（`cnc_rdaxisdata` + `ODBAXDT`，见上面那段）。
+
 `cnc_rdalmmsg2` 这一条本轮往前推了一格（`focas_sdk_mock.py --almmsg2`）：**每条记录
 80 字节**、`alm_no` 在记录 +0（BE32）、文本 `alm_msg[64]` 在 +0x10 —— 三处都对上了
 （Linux `libfwlib32.so` 里是 `条数 = 载荷长度 / 80` 并把 +0 与 +0x10 那两格拷进出参；
