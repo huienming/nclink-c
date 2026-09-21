@@ -131,6 +131,9 @@ static const struct {
     { "cnc_rdproginfo", "s1", 0 },
     /* 计数/时间 */
     { "cnc_rdcount", "s1", 0 }, { "cnc_rdtimer", "s1", 0 },
+    /* 跟踪误差那一族：伺服延迟量 / 诊断数据（0i/30i 上跟踪误差在诊断号 300 一族） */
+    { "cnc_srvdelay", "s2", 8 }, { "cnc_diagnoss", "s3", 8 },
+    { "cnc_rddiagnum", "void", 0 }, { "cnc_rddiaginfo", "s2", 0 },
     { "cnc_rdngrp", "void", 0 }, { "cnc_rdlife", "s1", 8 },
     { "cnc_rdtofsinfo", "void", 0 }, { "cnc_rdmacroinfo", "void", 0 },
     /* 刀补/参数/宏变量（帧抓到了、字段还没核） */
