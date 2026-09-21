@@ -23,7 +23,12 @@ FANUC CNC ──FOCAS(8193)──▶ ncl_driver_focas.dll（插件） ──▶ 
 
 ```
 bin/ncl_server.exe            设备程序（宿主）：一台 NC-Link 服务端 + REST + 轮询调度
-plugins/ncl_driver_focas.dll   FANUC 适配器模块（FOCAS over TCP）——启动时动态装载
+                              **文件工具（/CONTROLLER/FILE）也编在这里面** —— 它不是
+                              单独的模块，plugins\ 里没有对应的 DLL 要配（启动日志里那句
+                              "已注册 file 工具（1 个点位）"就是它；不要就写 "file": false）
+plugins/ncl_driver_focas.dll   FANUC 适配器模块（FOCAS over TCP）——启动时动态装载；
+                              它还负责文件那一链的**最后一段**（adapter → 机床：
+                              程序上下行 `cnc_dwnstart4` 一族，见第 5 节末）
 conf/fanuc.json                设备配置：机床地址、采样周期、broker、要装载的模块
                                （点位表在模块里，见第 5 节）
 conf/mqtt.cfg                  MQTT broker 配置样例
@@ -97,6 +102,8 @@ D:\fanuc\              <- <root>
    | `model` | 用一份自己的模型文件 | 不写 = 由模块声明生成（见第 4 节） |
    | `device.id` / `device.name` | 模型里那台设备的 **ID 与显示名** | `01` / `适配器设备` |
    | `device.type` | **一般别写**：设备类型由模块声明定（本模块是 `MACHINE`），写了就必须一模一样，不一致直接拒绝启动 | 由声明给 |
+   | `file` | 要不要编在宿主体内的**文件工具**（`/CONTROLLER/FILE`，见第 1 节） | `true`（写 `false` 就不注册它） |
+   | `tools` 里再放一条 `{"name":"file", "parameters":{…}}` | 文件工具自己的参数（FTP 端口之类） | 不写用默认 |
 
    `device` 一段只影响**模型里那台设备的标签**（上位机看到的 ID 与名字），不影响连接、
    不影响设备身份 —— 设备身份是 SN。出厂配置里不写它，就是上面那个默认名。
