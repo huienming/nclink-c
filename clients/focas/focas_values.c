@@ -545,10 +545,115 @@ ncl_err ncl_focas_alarm(ncl_focas *focas, ncl_json **value)
     return not_yet(focas, "报警", "cnc_rdalmmsg2（item 0x23，31 册 §1 #8）");
 }
 
-/** 位置那一路的公共壳：轴号先校验，然后交回"还没实现"（四支只是 d 不同）。 */
-static ncl_err position_not_yet(ncl_focas *focas, ncl_focas_axis axis,
-                                double *value, const char *what,
-                                const char *call, const char *d)
+/*
+ * 坐标：`cnc_rdposition` 一条请求拿四路（绝对/机械/相对/剩余），每轴一个
+ * **POSELM**（12 字节）：`int32 data` + `dec` + `unit` + `disp` + 轴名 + 后缀。
+ * 请求的 9 个块与应答的 9 个块一一对应（§2.3 的约定），所以
+ *   块 1 = 绝对、块 2 = 机械、块 3 = 相对、块 4 = 剩余（0 基下标）。
+ * 位置值 = `data / 10^dec`（NCGuide 上实测 dec=3、轴名 'X'）。
+ */
+#define FOCAS_POSELM_SIZE 12
+
+/** 从"整块载荷的字节数组"里取一个 POSELM 的字段（大端，与线上一致）。 */
+static uint8_t bytes_at(const ncl_json *bytes, size_t index)
+{
+    long long value = 0;
+
+    (void)ncl_json_as_int(ncl_json_arr_get((ncl_json *)bytes, index), &value);
+    return (uint8_t)(value & 0xFF);
+}
+
+static bool poselm_read(const ncl_json *payload, size_t axis, int32_t *data,
+                        int *dec)
+{
+    size_t at = axis * FOCAS_POSELM_SIZE;
+
+    if (payload == NULL || ncl_json_type_of((ncl_json *)payload) != NCL_JSON_ARRAY ||
+        ncl_json_arr_len((ncl_json *)payload) < at + FOCAS_POSELM_SIZE) {
+        return false;
+    }
+    *data = (int32_t)(((uint32_t)bytes_at(payload, at) << 24) |
+                      ((uint32_t)bytes_at(payload, at + 1) << 16) |
+                      ((uint32_t)bytes_at(payload, at + 2) << 8) |
+                      (uint32_t)bytes_at(payload, at + 3));
+    *dec = (int)(((uint16_t)bytes_at(payload, at + 4) << 8) |
+                 (uint16_t)bytes_at(payload, at + 5));
+    return true;
+}
+
+/** 缩放到实际值：`data / 10^dec`（dec 是小数点位数）。 */
+static double poselm_scale(int32_t data, int dec)
+{
+    double scale = 1.0;
+    int i;
+
+    for (i = 0; i < dec; i++) {
+        scale *= 10.0;
+    }
+    return (double)data / scale;
+}
+
+/**
+ * 位置那一路的公共读法：`which` 0..3 = 绝对/机械/相对/剩余（对应块 1..4）。
+ * 一次请求把四路都取回来，多读一轴也只多花一次查询（本来一条请求就够）。
+ */
+static ncl_err position_read(ncl_focas *focas, ncl_focas_axis axis, int which,
+                            const char *what, double *value)
+{
+    ncl_json *payload = NULL;
+    int32_t data = 0;
+    int dec = 0;
+    ncl_err rc;
+
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
+        return note(focas, "RDPOSITION", NCL_ERR_RANGE);
+    }
+    /* 整块载荷按字节取回来（POSELM 是混合结构，驱动层只认单一 dtype）。 */
+    rc = ncl_focas_read_item(focas, "RDPOSITION", 1 + which,
+                             (int)(FOCAS_POSELM_SIZE * NCL_FOCAS_AXIS_COUNT),
+                             NCL_DTYPE_BYTE, &payload);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    if (!poselm_read(payload, (size_t)axis, &data, &dec)) {
+        ncl_json_free(payload);
+        return note(focas, "RDPOSITION", NCL_ERR_PARSE);
+    }
+    ncl_json_free(payload);
+    *value = poselm_scale(data, dec);
+    (void)what;
+    return NCL_OK;
+}
+
+ncl_err ncl_focas_axis_position(ncl_focas *focas, ncl_focas_axis axis,
+                                double *value)
+{
+    return position_read(focas, axis, 0, "绝对位置", value);
+}
+
+ncl_err ncl_focas_axis_position_machine(ncl_focas *focas, ncl_focas_axis axis,
+                                        double *value)
+{
+    return position_read(focas, axis, 1, "机械坐标", value);
+}
+
+ncl_err ncl_focas_axis_position_relative(ncl_focas *focas,
+                                         ncl_focas_axis axis, double *value)
+{
+    return position_read(focas, axis, 2, "相对坐标", value);
+}
+
+ncl_err ncl_focas_axis_distance(ncl_focas *focas, ncl_focas_axis axis,
+                                double *value)
+{
+    return position_read(focas, axis, 3, "剩余距离", value);
+}
+
+ncl_err ncl_focas_axis_position_cmd(ncl_focas *focas, ncl_focas_axis axis,
+                                    double *value)
 {
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
@@ -556,49 +661,10 @@ static ncl_err position_not_yet(ncl_focas *focas, ncl_focas_axis axis,
     if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
         return note(focas, "AXIS", NCL_ERR_RANGE);
     }
-    (void)d;
-    return not_yet(focas, what, call);
-}
-
-/*
- * 坐标：`cnc_absolute` / `cnc_machine` / `cnc_relative` / `cnc_distance` 走的是
- * **同一个 item 0x26**，靠 Cb 的 d 选哪一路（0 绝对 / 1 机械 / 2 相对 / 3 剩余），
- * e = 轴号或 ALL_AXES(-1)。请求码已核；应答（ODBAXIS 的 dummy/type/data[]）要真机
- * 抓一次：位置值是**缩放整数**，小数位数在 `cnc_getfigure` 里，不在这一条里。
- */
-ncl_err ncl_focas_axis_position(ncl_focas *focas, ncl_focas_axis axis,
-                                double *value)
-{
-    return position_not_yet(focas, axis, value, "绝对位置",
-                            "cnc_absolute（item 0x26，d=0）", "0");
-}
-
-ncl_err ncl_focas_axis_position_machine(ncl_focas *focas, ncl_focas_axis axis,
-                                        double *value)
-{
-    return position_not_yet(focas, axis, value, "机械坐标",
-                            "cnc_machine（item 0x26，d=1）", "1");
-}
-
-ncl_err ncl_focas_axis_position_relative(ncl_focas *focas,
-                                         ncl_focas_axis axis, double *value)
-{
-    return position_not_yet(focas, axis, value, "相对坐标",
-                            "cnc_relative（item 0x26，d=2）", "2");
-}
-
-ncl_err ncl_focas_axis_distance(ncl_focas *focas, ncl_focas_axis axis,
-                                double *value)
-{
-    return position_not_yet(focas, axis, value, "剩余距离",
-                            "cnc_distance（item 0x26，d=3）", "3");
-}
-
-ncl_err ncl_focas_axis_position_cmd(ncl_focas *focas, ncl_focas_axis axis,
-                                    double *value)
-{
-    return position_not_yet(focas, axis, value, "目标位置",
-                            "cnc_rdposition（item 0x26，一条 Cb 一种类型）", "1");
+    /* 目标位置不是 cnc_rdposition 的四路之一（那是绝对/机械/相对/剩余，都是"实际"）。
+     * 指令值要么让机床动起来看 `cnc_rddynamic2` 那一族，要么真机核，先照实回。 */
+    return not_yet(focas, "目标位置",
+                   "cnc_rdposition 只有实际/机械/相对/剩余四路；指令值待核");
 }
 
 /* 伺服负载（cnc_rdsvmeter，0x56 + 0x89）：每轴一个 LOADELM（int32 + dec/unit/name）。 */

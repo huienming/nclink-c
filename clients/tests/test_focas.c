@@ -420,8 +420,8 @@ typedef struct {
     size_t      last_blocks;
     uint8_t     hello[16u + 8u * 2u];
     size_t      hello_len;
-    uint8_t     payload[3][64];
-    size_t      payload_len[3];
+    uint8_t     payload[NCL_FOCAS_ITEM_CBS][80];
+    size_t      payload_len[NCL_FOCAS_ITEM_CBS];
     size_t      payload_count;
     int         short_by; /**< reply with fewer blocks than asked */
     /* 程序上下行（func 0x11/0x12/0x13）：数据帧收下来、不回，别的照块回 */
@@ -1002,6 +1002,39 @@ static void test_semantics(void)
         ncl_focas_axis_feedrate(focas, NCL_FOCAS_AXIS_Y, &real), NCL_OK);
     NCL_CHECK(real > 2500.4 && real < 2500.6);
 
+    NCL_TEST_CASE("坐标：cnc_rdposition 的 POSELM（NCGuide 实测的形状）");
+    mock->payload_count = 9; /* 这条请求带 9 个块（§2.5） */
+    {
+        int i;
+
+        for (i = 0; i < 9; i++) {
+            memset(mock->payload[i], 0, sizeof(mock->payload[i]));
+            mock->payload_len[i] = 60; /* 5 根轴 × POSELM 12 字节 */
+        }
+    }
+    /* 块 1 = 绝对位置：轴 X 的 POSELM（data=12345、dec=3 → 12.345） */
+    put_u32be(mock->payload[1], 12345);
+    put_u16be(mock->payload[1] + 4, 3);
+    put_u16be(mock->payload[1] + 6, 0);  /* unit = mm  */
+    put_u16be(mock->payload[1] + 8, 1);  /* disp = 显示 */
+    mock->payload[1][10] = 'X';
+    /* 第二根轴在同一个载荷的 12 字节处（data=6789、dec=2 → 67.89） */
+    put_u32be(mock->payload[1] + 12, 6789);
+    put_u16be(mock->payload[1] + 16, 2);
+    /* 块 2 = 机械坐标（data=100000、dec=3 → 100.000） */
+    put_u32be(mock->payload[2], 100000);
+    put_u16be(mock->payload[2] + 4, 3);
+
+    NCL_CHECK_EQ_INT(ncl_focas_axis_position(focas, NCL_FOCAS_AXIS_X, &real),
+                     NCL_OK);
+    NCL_CHECK(real > 12.34 && real < 12.35);
+    NCL_CHECK_EQ_INT(ncl_focas_axis_position(focas, NCL_FOCAS_AXIS_Y, &real),
+                     NCL_OK);
+    NCL_CHECK(real > 67.88 && real < 67.90);
+    NCL_CHECK_EQ_INT(
+        ncl_focas_axis_position_machine(focas, NCL_FOCAS_AXIS_X, &real), NCL_OK);
+    NCL_CHECK(real > 99.99 && real < 100.01);
+
     NCL_TEST_CASE("模式与急停：同一个 STATINFO 位域");
     mock->payload_len[0] = 20;
     put_u16be(mock->payload[0] + 4, 1);  /* aut    */
@@ -1018,9 +1051,9 @@ static void test_semantics(void)
     }
 
     NCL_TEST_CASE("还没核准的那几条回 NCL_ERR_UNAVAILABLE，并说清要抓哪一帧");
-    NCL_CHECK_EQ_INT(ncl_focas_axis_position(focas, NCL_FOCAS_AXIS_X, &real),
+    /* 坐标已经能读了（上面那条 POSELM 用例），这里留的还是"还没核准"的几条。 */
+    NCL_CHECK_EQ_INT(ncl_focas_axis_position_cmd(focas, NCL_FOCAS_AXIS_X, &real),
                      NCL_ERR_UNAVAILABLE);
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_absolute") != NULL);
     NCL_CHECK_EQ_INT(ncl_focas_axis_load(focas, NCL_FOCAS_AXIS_X, &real),
                      NCL_ERR_UNAVAILABLE);
     NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdsvmeter") != NULL);

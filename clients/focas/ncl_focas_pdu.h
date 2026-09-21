@@ -58,6 +58,9 @@ extern "C" {
 /** 一块数据多少字节（官方建议 1024-1400，以太网单帧上限 1460）。 */
 #define NCL_FOCAS_TRANSFER_CHUNK 1400u
 
+/** 一个 item 最多带几个命令块：`cnc_rdposition` 一族实测是 9 个（§2.5）。 */
+#define NCL_FOCAS_ITEM_CBS 12u
+
 /** The 10 byte header, values in host order. */
 typedef struct {
     uint16_t type;   /**< [4..6) */
@@ -181,10 +184,10 @@ ncl_err ncl_focas_check_blocks(const uint8_t *body, size_t body_len,
 /** One data item: a name, the blocks a request carries, and how to read them. */
 typedef struct {
     const char *name;    /**< "ACTF", "STATINFO", ...                       */
-    uint16_t    cbs[3];  /**< command codes the request carries             */
-    uint32_t    arg0[3]; /**< arg0 of each block (the SDK leaves them 0 or 1) */
-    uint32_t    arg1[3]; /**< arg1 of each block                            */
-    uint8_t     cb_count;/**< 1 or 2 or 3                                   */
+    uint16_t    cbs[NCL_FOCAS_ITEM_CBS];   /**< command codes the request carries */
+    uint32_t    arg0[NCL_FOCAS_ITEM_CBS];  /**< arg0 of each block                */
+    uint32_t    arg1[NCL_FOCAS_ITEM_CBS];  /**< arg1 of each block                */
+    uint8_t     cb_count;/**< how many of them the request carries          */
     bool        scalar;  /**< true: block k holds a scalar at payload 0;
                               false: block 0's payload is the whole array  */
 } ncl_focas_item;

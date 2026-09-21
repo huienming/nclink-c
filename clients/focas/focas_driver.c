@@ -25,8 +25,8 @@
 /** The body size class of §2.2 rule 4 keeps a reply under 3470 bytes. */
 #define FOCAS_MAX_BODY 4096
 #define FOCAS_MAX_FRAME (NCL_FOCAS_HEADER + FOCAS_MAX_BODY)
-/** §2.3: at most three blocks are known to be in one request. */
-#define FOCAS_MAX_CB 8
+/** 一个请求最多几个块：`cnc_rdposition` 一族实测 9 个（§2.5），留到 12。 */
+#define FOCAS_MAX_CB NCL_FOCAS_ITEM_CBS
 
 typedef struct {
     char      *host;

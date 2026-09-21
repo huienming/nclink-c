@@ -340,6 +340,18 @@ static const ncl_focas_item kItems[] = {
     { "RDTIMER2",   { 0x120, 0, 0 },     { 2, 0, 0 },      { 0, 0, 0 },      1, false },
     { "RDTIMER3",   { 0x120, 0, 0 },     { 3, 0, 0 },      { 0, 0, 0 },      1, false },
     { "RDTIMER4",   { 0x120, 0, 0 },     { 4, 0, 0 },      { 0, 0, 0 },      1, false },
+    /*
+     * 坐标：官方 SDK 的 `cnc_rdposition` 一条请求带 **9 个块**（§2.5 实测）——
+     * `0x19` 框住两头、中间四个 `0x26` 就是四种位置（d = 0 绝对 / 1 机械 / 2 相对 /
+     * 3 剩余），再跟 `0x89`/`0x0e`/`0x88` 三条轴信息。**应答块与 Cb 一一对应**
+     * （§2.3 的约定，statinfo 就是这么对的），所以第 2 个块（下标 1）就是绝对位置
+     * 那个数组，每个轴一个 `POSELM`（12 字节：int32 data + dec/unit/disp + 轴名）。
+     * 位置值 = `data / 10^dec`（NCGuide 上实测到 `dec=3`、轴名 'X'）。
+     */
+    { "RDPOSITION", { 0x19, 0x26, 0x26, 0x26, 0x26, 0x89, 0x0e, 0x88, 0x19, 0, 0, 0 },
+                    { 0, 0, 1, 2, 3, 0xffffffff, 0xc2b, 2, 0, 0, 0, 0 },
+                    { 0, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0, 0xc2b, 0, 0, 0, 0, 0 },
+                    9, false },
     { "RDMACRO",    { 0x15, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
     { "RDPARAM",    { 0x0e, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
     { "RDTOFS",     { 0x08, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },

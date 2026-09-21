@@ -21,6 +21,10 @@
                    驱动发完就走，不回；回了反而把它带歪）。
   --reply-func HEX 应答的 [6] 字节换成这个（缺省是回声请求的 func）。数据帧
                    （上行 0x18）上 SDK 走的是 `dir=4` 那条路，应答的 [6] 要对上它。
+  --poselm        每块铺一个**像样的 POSELM/LOADELM**（12 字节：int32 data + dec=3 +
+                   unit=0 + disp=1 + name + suff），data 里放块号 ×1000、name 里放
+                   'A'+块号 —— 用来问"哪一块是哪一路"（SDK 对 dec/unit 查得严，
+                   斜坡载荷会被它判无效清成 0）。
 
 握手（01 册 §2.2/§2.3 解出来的那套）：
   func 01（hello）→ 16 字节体（[2..4)=0、[8..10)=记录数 0）
@@ -71,6 +75,20 @@ def cbs(request):
 
 def ramp(block, size):
     return bytes(((block * 16 + j) & 0xFF) for j in range(max(0, size - 16)))
+
+
+def poselm(block, size):
+    """一块 = 一个像样的 POSELM：data=块号*1000、dec=3、unit=0、disp=1、name='A'+块号。"""
+    body = bytearray(max(0, size - 16))
+    for k in range(0, len(body) - 11, 12):
+        data = (block + 1) * 1000 + k // 12
+        body[k:k + 4] = data.to_bytes(4, "big", signed=True)
+        body[k + 4:k + 6] = (3).to_bytes(2, "big")
+        body[k + 6:k + 8] = (0).to_bytes(2, "big")
+        body[k + 8:k + 10] = (1).to_bytes(2, "big")
+        body[k + 10] = (ord('A') + block) & 0x7F
+        body[k + 11] = 0
+    return bytes(body)
 
 
 def cbrep(request, size, payload, adapt, force_blocks):
@@ -149,7 +167,10 @@ def run(conn, size, payload, adapt, force_blocks, body, silent, reply_func):
 
 
 def serve(port, size, payload, adapt, force_blocks=0, body=None, silent=(),
-          reply_func=None):
+          reply_func=None, shape=None):
+    # shape 给"每块铺什么载荷"的函数；None 就用传入的 payload / 斜坡
+    if shape is not None:
+        adapt = lambda i, request: shape(i, size)  # noqa: E731
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", port))
@@ -170,6 +191,7 @@ def main(argv):
     blocks = 0
     body = None
     silent = set()
+    shape = None
     reply_func = None
     args = list(argv)
 
@@ -191,11 +213,17 @@ def main(argv):
             silent.add(int(args.pop(0), 0))
         elif key == "--reply-func":
             reply_func = int(args.pop(0), 0)
+        elif key == "--poselm":
+            shape = "poselm"
         else:
             raise SystemExit(__doc__)
     if size < 0x22:
         raise SystemExit("块长至少 0x22（SDK 要读块 [16..34)）")
-    serve(port, size, payload, None, blocks, body, silent, reply_func)
+    if shape == "poselm":
+        serve(port, size, None, None, blocks, body, silent, reply_func,
+              poselm)
+    else:
+        serve(port, size, payload, None, blocks, body, silent, reply_func)
 
 
 if __name__ == "__main__":
