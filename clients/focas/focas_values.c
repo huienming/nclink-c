@@ -26,6 +26,15 @@
 struct ncl_focas {
     ncl_driver *driver;
     char        error[160];
+    /**
+     * 这台机床**实际有几根轴**（读一次 `cnc_rdaxisname` 的表，记住）。0 = 还没读到。
+     *
+     * 为什么要它：适配器按 5 轴（X/Y/Z/A/C）声明点位，但真正接的机器可能只有 3 根 ——
+     * 那时第 4、5 根轴的记录**根本不在应答里**（真机上读到的是载荷后面的填充/垃圾，
+     * 数值能到 6e8）。所以每根轴先跟这个数比一下：没有那根轴就如实回"没有"，
+     * 而不是把垃圾当坐标报出去。
+     */
+    size_t      axis_count;
 };
 
 /** 记下这次失败（绑定的 NG 理由就是这一句）。 */
@@ -98,6 +107,67 @@ static double record_scale(int32_t data, int dec)
         scale *= 10.0;
     }
     return (double)data / scale;
+}
+
+/**
+ * 这台机床实际有几根轴（`cnc_rdaxisname` 的轴名表：每轴 4 字节）。读一次就记住 ——
+ * 机床的轴数不会变。读不到就回错，让调用方如实报"读不到"，别拿垃圾当坐标。
+ */
+static ncl_err axis_count(ncl_focas *focas, size_t *count)
+{
+    ncl_json *params;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    size_t length;
+    ncl_err rc;
+
+    if (focas->axis_count > 0) {
+        *count = focas->axis_count;
+        return NCL_OK;
+    }
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_string(params, "item", "AXISNAME");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY) {
+        ncl_json_free(answer);
+        return note(focas, "AXISNAME", NCL_ERR_PARSE);
+    }
+    length = ncl_json_arr_len(bytes) / 4u; /* 每轴 4 字节 */
+    ncl_json_free(answer);
+    if (length == 0) {
+        return note(focas, "AXISNAME", NCL_ERR_NOT_FOUND);
+    }
+    focas->axis_count = length;
+    *count = length;
+    return NCL_OK;
+}
+
+/** 这个轴号在机床上有吗（`which` 0 基）。没有就如实回"没有"。 */
+static ncl_err axis_check(ncl_focas *focas, ncl_focas_axis axis, const char *what)
+{
+    size_t count = 0;
+    ncl_err rc;
+
+    if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
+        return note(focas, what, NCL_ERR_RANGE);
+    }
+    rc = axis_count(focas, &count);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    if ((size_t)axis >= count) {
+        return note(focas, what, NCL_ERR_NOT_FOUND); /* 这台机床没有这根轴 */
+    }
+    return NCL_OK;
 }
 
 /**
@@ -420,6 +490,15 @@ static ncl_err per_unit_record(ncl_focas *focas, const char *item_name,
 ncl_err ncl_focas_axis_feedrate(ncl_focas *focas, ncl_focas_axis axis,
                                 double *value)
 {
+    ncl_err rc;
+
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    rc = axis_check(focas, axis, "ACTF");
+    if (rc != NCL_OK) {
+        return rc;
+    }
     return per_unit_record(focas, "ACTF", (int)axis, (int)NCL_FOCAS_AXIS_COUNT,
                            value);
 }
@@ -802,11 +881,14 @@ ncl_err ncl_focas_alarm(ncl_focas *focas, ncl_json **value)
 static ncl_err position_read_dec(ncl_focas *focas, ncl_focas_axis axis,
                                  int which, double *value, int *dec_out)
 {
+    ncl_err rc;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
-        return note(focas, "RDPOSITION", NCL_ERR_RANGE);
+    rc = axis_check(focas, axis, "RDPOSITION");
+    if (rc != NCL_OK) {
+        return rc; /* 这台机床没有这根轴，或者轴表都读不到 */
     }
     /* 块号从 1 起：1 = 绝对、2 = 机械、3 = 相对、4 = 剩余。 */
     return record_at(focas, "RDPOSITION", 1 + which, (int)axis, value, dec_out);
@@ -891,8 +973,9 @@ static ncl_err srv_delay_raw(ncl_focas *focas, ncl_focas_axis axis, int dec,
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
-        return note(focas, "SV_DELAY", NCL_ERR_RANGE);
+    rc = axis_check(focas, axis, "SV_DELAY");
+    if (rc != NCL_OK) {
+        return rc;
     }
     /* 这条 item 只有 1 个 Cb，所以应答也只有 1 个块——块号是**从 0 数**的
      * （和 STATINFO@0 一个约定），RDPOSITION 那条要的是下标 1。 */
@@ -973,11 +1056,14 @@ ncl_err ncl_focas_axis_position_cmd(ncl_focas *focas, ncl_focas_axis axis,
 ncl_err ncl_focas_axis_load(ncl_focas *focas, ncl_focas_axis axis,
                             double *value)
 {
+    ncl_err rc;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
-        return note(focas, "SVLOAD", NCL_ERR_RANGE);
+    rc = axis_check(focas, axis, "SVLOAD");
+    if (rc != NCL_OK) {
+        return rc;
     }
     return record_at(focas, "SVMETER", 0, (int)axis, value, NULL);
 }

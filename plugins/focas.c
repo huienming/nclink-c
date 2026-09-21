@@ -315,4 +315,4 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
 
 NCL_TOOL_END_WITH_RAW(focas_last_raw)
 
-NCL_TOOL_MODULE("1.4.0", "FANUC FOCAS / Fwlib32 over TCP, read only (01 册 §2.1-§2.3，32 册数据项)")
+NCL_TOOL_MODULE("1.5.0", "FANUC FOCAS / Fwlib32 over TCP, read only (会话与报文形状按真机实测：01 册 §2.8；点位对照 32 册数据项)")

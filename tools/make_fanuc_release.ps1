@@ -38,7 +38,8 @@ if ($Name -eq "") { $Name = "nclink-fanuc-adapter-$Version-win-x64" }
 $pkg = Join-Path $root "dist\$Name"
 $zip = Join-Path $root "dist\$Name.zip"
 
-# 产物位置取决于生成器：Ninja 直接在 <build>/ 下，VS 多一层 <config>/。
+# Where the built files land depends on the generator: Ninja puts them
+# straight under <build>/, Visual Studio adds a <config>/ level.
 function Find-Built([string[]]$candidates) {
     foreach ($candidate in $candidates) {
         $path = Join-Path $root $candidate

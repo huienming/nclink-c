@@ -102,16 +102,19 @@ cd D:\fanuc
 `list-plugins.ps1` 会列出 `plugins\` 里装载到的模块、协议名、别名与版本，然后退出
 （等价于 `ncl_server.exe --plugins`）。
 
-自检输出长这样（每个点位一行，同时写进 `log\out.txt`）：
+自检输出长这样（每个点位一行，同时写进 `log\out.txt`；下面这段是拿**一台 0i-MD（3 轴）**
+真机跑出来的，原样贴的）：
 
 ```
-2026-09-20 14:04:22.719 INFO [50060] /MACHINE/STATUS = running
-2026-09-20 14:04:22.719 INFO [50060] /MACHINE/PART_COUNT = 1234
-2026-09-20 14:04:22.719 INFO [50060] /MACHINE/CONTROLLER/PROGRAM = "O1234"
-2026-09-20 14:04:22.719 WARNING [50060] /MACHINE/WARNING = <待抓包>（/MACHINE/WARNING：还读不了（UnavailableException））
-2026-09-20 14:04:22.719 INFO [50060] /MACHINE/AXIS@X/POSITION@REAL = 12.345
-2026-09-20 14:04:22.723 INFO [50060] /MACHINE/AXIS@X/POSITION@CMD = 12.345   # 静止时机床两个量相等
-自检：20 个点位（18 个可读，2 个待抓包），0 个读取失败      # 样例输出（那一轮的点位清单）
+2026-09-21 21:00:35.092 INFO    [23612] /MACHINE/STATUS = "free"
+2026-09-21 21:00:35.097 INFO    [23612] /MACHINE/WORK_MODE = "manual"
+2026-09-21 21:00:35.102 INFO    [23612] /MACHINE/AXIS@X/POSITION@REAL = 0.0
+2026-09-21 21:00:35.102 INFO    [23612] /MACHINE/AXIS@Z/POSITION@REAL = 100.0
+2026-09-21 21:00:35.149 INFO    [23612] /MACHINE/MOTOR@S1/SPEED = 2201.0
+2026-09-21 21:00:35.088 INFO    [23612] /MACHINE/WARNING = []                # 没报警就是空数组
+2026-09-21 21:00:35.102 WARNING [23612] /MACHINE/AXIS@A/POSITION@REAL = <读取失败>（…NotFoundException）
+2026-09-21 21:00:35.149 WARNING [23612] /MACHINE/CONTROLLER/TOOL = <待抓包>（…UnavailableException）
+自检：43 个点位（32 个可读，11 个待抓包），11 个读取失败
 ```
 
 `--probe` 打的是单点结果（客户端视角，带 OK/NG 与原因）：
@@ -123,14 +126,21 @@ cd D:\fanuc
 /MACHINE/WARNING: NG —— /MACHINE/WARNING：还读不了（UnavailableException）
 ```
 
-读到不出来的点位会打 `<读取失败>`；**只要有一个点位没读到，退出码就是 1**，所以
-`run-once.ps1` 可以直接用来看"这台机器接好了没有"。**"待抓包"不算读取失败**：那 7 个点位
-（报警、5 条目标位置、刀具列表）的 FOCAS 调用还没抓到帧（见第 7 节），client 里对应的函数
-现在回 `NCL_ERR_UNAVAILABLE`（"还读不了"），自检给它们打 `<待抓包>`，**不计数**，退出码照旧是
-0 —— 现场不会因为"我们还没抓包"而以为机床坏了。
-**自检全过不等于点表全对**：
-数值是否合理要看表（见第 5 节）。机床不在线时，自检在第一个传输层错误后停止，
-不会把每个点位都各等一次超时。
+读到不出来的点位有两种，自检分得很清楚：
+
+- **`<待抓包>`**：这一份 client 还没有实现那条调用，函数回 `NCL_ERR_UNAVAILABLE`
+  （"还读不了"）—— **不计数**，退出码不受它影响。现场不会因为"我们还没实现"而以为机床坏了。
+- **`<读取失败>`**：调用发出去了，机床说"没有 / 不支持 / 读不到"，或者这台机器没有那根轴。
+  这个**计数**，退出码变成 1。
+
+**"读取失败"里有一部分是机床本身的性质，不是故障**（上面那段样例就是）：点位表按 **5 轴**
+出厂配置声明，3 轴机床上的 `AXIS@A` / `AXIS@C` 几条会明确回 `NotFoundException`
+（"这台机床没有这根轴"）—— 现场把点位表里那几行删掉就不再出现（第 5 节）。`PART_COUNT`、
+`CONTROLLER/COORDINATE` 这些同理，看机床给不给（第 7 节那张表）。
+
+退出码：只要有**一个读取失败**就是 1；全是"可读 + 待抓包"就是 0。**机床不在线时**，
+自检在第一个传输层错误后停止，不会把每个点位都各等一次超时。
+**自检全过不等于点表全对**：数值是否合理要看第 5 节的表。
 
 ### 常用参数
 
@@ -204,39 +214,41 @@ NCL_TOOL_END_WITH_RAW(focas_last_raw)
   现场只要读 `nclink/clients/focas.h` 那一个头：`ncl_focas_status()` 读回来就是三态，
   `ncl_focas_part_count()` 读回来就是加工件数。
 - 需要自己的解释（报警拼文本、位置换算单位、两个量凑一个）时才写函数（覆盖档）；
-  绑定与覆盖可以混在同一张表里 —— 本文件对应的模块就是混用的：20 个点位**全是绑定**
-  （其中 7 个绑的是 client 里"帧待抓包"的函数，见第 7 节），2 个方法是覆盖。
+  绑定与覆盖可以混在同一张表里 —— 本文件对应的模块就是混用的：**43 个点位全是绑定**
+  （其中 11 个绑的是 client 里"还读不了"的函数，见第 7 节 7.2），2 个方法是覆盖。
 - 改点位 ＝ 改这个 `.c` 并重编模块；**采样周期与上报周期在配置和模型文件里，现场改不用重编**。
 
-出厂点位（5 轴 + 1 主轴，名字全部来自数据字典；**完整对照表见 32 册 §5.2**。
-下表 ✔ = 现在真读得到，🟡 = 请求码/来源已核、应答（或字段布局）待真机核，
-现在答"还读不了"）：
+出厂点位（5 轴 + 1 主轴，名字全部来自数据字典；**完整对照表见 32 册 §5.2**）。
+下表 **✔ = 现在真读得到**（真机验过值）、**🟡 = 这一份 client 还没实现**（答"还读不了"，不计数）、
+**⛔ = 机床不提供**（调用被机床拒，或这台机器没有那根轴 —— 属于现场性质，不是故障）：
 
 | 模型路径 | 读法（client） | 含义 | 状态 / 采样 |
 |---|---|---|---|
 | `/MACHINE/STATUS` | `ncl_focas_status()`（ODBST 的 RUN / EMERGENCY 两位推三态） | 运行状态：`running`/`free`/`holding` | ✔ 采样 |
 | `/MACHINE/WORK_MODE` | `ncl_focas_mode()`（同一个 ODBST 的 aut / manual 两位） | 工作模式：`manual`/`auto`（表 8） | ✔ 按需读 |
-| `/MACHINE/PART_COUNT` | `ncl_focas_part_count()`（`RDCOUNT`） | 加工件数 | ✔ 采样 |
+| `/MACHINE/PART_COUNT` | `ncl_focas_part_count()`（`RDCOUNT`） | 加工件数 | ⛔ 采样（机床 rc=6） |
 | `/MACHINE/LINE_NUMBER` | `ncl_focas_line_number()`（`cnc_rdseqnum`） | 程序行号（文本 `N1234`） | ✔ 按需读 |
-| `/MACHINE/TOOL_NUMBER` | `ncl_focas_tool_number()`（`cnc_rdgcode` 的模态 T 码） | 当前刀具号 | 🟡 按需读 |
-| `/MACHINE/FEED_SPEED`、`/FEED_OVERRIDE`、`/SPINDLE_OVERRIDE` | `ncl_focas_feed_speed/_override()`（`cnc_rddynamic2`） | 合成进给、两个倍率 | 🟡 按需读 |
-| `/MACHINE/WARNING` | `ncl_focas_alarm()`（`cnc_rdalmmsg2`） | 报警（JSON `number`/`text`）—— 占着通道，**现在取值为 `null`**（见第 7 节） | 🟡 采样（null） |
-| `/MACHINE/MODEL`、`/VERSION` | `ncl_focas_model()/_version()`（`cnc_rdmodel` / `cnc_sysinfo` 的握手记录） | 型号、系统版本 | 🟡 configs |
+| `/MACHINE/TOOL_NUMBER` | `ncl_focas_tool_number()` | 当前刀具号 | 🟡 按需读（还没有可靠来源） |
+| `/MACHINE/FEED_SPEED` | `ncl_focas_feed_speed()`（每轴 `cnc_actf` 取最大） | 合成进给速度 | ✔ 按需读 |
+| `/MACHINE/FEED_OVERRIDE` | `ncl_focas_feed_override()`（面板信号 `0x5d` @0xa） | 进给倍率 | ✔ 按需读 |
+| `/MACHINE/SPINDLE_OVERRIDE` | `ncl_focas_spindle_override()` | 主轴倍率 | 🟡 按需读（现代系列没有那一格） |
+| `/MACHINE/WARNING` | `ncl_focas_alarm()`（`cnc_rdalmmsg2`，`0x23`） | 报警（JSON 数组：`number`/`type`/`text`）；**没报警是空数组** | ✔ 采样 |
+| `/MACHINE/MODEL`、`/VERSION` | `ncl_focas_model()/_version()`（会话探针的 ODBSYS） | 型号（如 `0M D4G3`）、系统版本（`28.0`） | ✔ configs |
 | `/MACHINE/MANUFACTURER` | `ncl_focas_manufacturer()`（常量） | 厂商：`FANUC` | ✔ configs |
 | `/MACHINE/CONTROLLER/PROGRAM` | `ncl_focas_program_name()`（`EXEPRGNAME2`） | 主程序名 | ✔ 采样 |
 | `/MACHINE/CONTROLLER/PROGRAM_NUMBER` | `ncl_focas_program_number()`（`cnc_rdprgnum`） | 当前程序号 | ✔ 按需读 |
-| `/MACHINE/CONTROLLER/SUBPROGRAM` | `ncl_focas_subprogram_number()`（`cnc_rdexecprog3`） | 子程序号 | 🟡 按需读 |
-| `/MACHINE/CONTROLLER/TOOL`（list） | `ncl_focas_tool_list()`（`cnc_rdtooldata` 一族） | 刀具列表 | 🟡 configs |
-| `/MACHINE/CONTROLLER/TOOLPARAM`（JSON） | `ncl_focas_tool_param_table()`（刀补 `cnc_rdtofs` + 寿命 `cnc_rdlife`） | 刀具参数（半径/长度/使用次数…） | 🟡 configs |
-| `/MACHINE/CONTROLLER/VARIABLE`（list） | `ncl_focas_variable_table()`（`cnc_rdmacror`） | 运行变量（宏变量） | 🟡 configs |
-| `/MACHINE/CONTROLLER/PARAMETER`（dict） | `ncl_focas_parameter_table()`（`cnc_rdparanum` + `cnc_rdparar`） | 参数表 | 🟡 configs |
-| `/MACHINE/CONTROLLER/COORDINATE`（JSON） | `ncl_focas_work_offsets()`（`cnc_rdwkcdshft` 一族） | 工件坐标系（x/y/z…，表 9） | 🟡 configs |
-| `/MACHINE/AXIS@X\|Y\|Z/POSITION@REAL`、`@CMD` | `ncl_focas_axis_position()`／`_cmd()`（`cnc_absolute`／`cnc_rdposition`，item 0x26） | 线性轴位置（mm，实际/目标） | 🟡 按需读 |
-| `/MACHINE/AXIS@A\|C/ANGLE@REAL` | 同一个 `ncl_focas_axis_position()`（载荷 `unit=2` 是度） | 旋转轴角度 | 🟡 按需读 |
-| `/MACHINE/AXIS@k/SPEED` | `ncl_focas_axis_feedrate()`（`cnc_actf`，每轴一个 float） | **实际进给速度**（mm/min，表 4 的 SPEED） | ✔ 按需读 |
-| `/MACHINE/AXIS@k/PATH_LEFT_LENGTH` | `ncl_focas_axis_distance()`（`cnc_distance`，0x26 d=3） | 剩余进给 | 🟡 按需读 |
-| `/MACHINE/AXIS@k/TORQUE`、`/CURRENT`、`/TEMPERATURE` | `ncl_focas_axis_torque/_current/_temperature()`（`cnc_loadtorq` / `cnc_rdaxisdata`） | 扭矩 / 电流 / 温度 | 🟡 按需读 |
-| `/MACHINE/AXIS@k/TYPE`（`linear`/`rotary`） | `ncl_focas_axis_type()`（`cnc_rdaxisname` / `cnc_rdaxisdata` 的轴属性） | 轴类型 | 🟡 configs |
+| `/MACHINE/CONTROLLER/SUBPROGRAM` | `ncl_focas_subprogram_number()` | 子程序号 | 🟡 按需读（这套 SDK 没有 `cnc_rdexecprog3`） |
+| `/MACHINE/CONTROLLER/TOOL`（list） | `ncl_focas_tool_list()` | 刀具列表 | ⛔ configs（机床 rc=1/3） |
+| `/MACHINE/CONTROLLER/TOOLPARAM`（JSON） | `ncl_focas_tool_param_table()`（`cnc_rdtofs` + `cnc_rdlife`） | 刀具参数 | 🟡 configs（**单条刀补已通**：`ncl_focas_tool_offset()`，寿命机床 rc=6） |
+| `/MACHINE/CONTROLLER/VARIABLE`（list） | `ncl_focas_variable_table()`（`cnc_rdmacror`） | 运行变量（宏变量） | 🟡 configs（**单条已通**：`ncl_focas_macro_variable()`；整表机床 rc=2） |
+| `/MACHINE/CONTROLLER/PARAMETER`（dict） | `ncl_focas_parameter_table()`（`cnc_rdparanum` + `cnc_rdparar`） | 参数表 | 🟡 configs（**单条已通**：`ncl_focas_parameter()`；整表机床拒） |
+| `/MACHINE/CONTROLLER/COORDINATE`（JSON） | `ncl_focas_work_offsets()`（`cnc_rdwkcdshft`） | 工件坐标系（x/y/z…，表 9） | ⛔ configs（type 0..20 全被拒） |
+| `/MACHINE/AXIS@X\|Y\|Z/POSITION@REAL`、`@CMD` | `ncl_focas_axis_position()` / `_cmd()`（`cnc_rdposition`，8 字节记录） | 线性轴位置（mm，实际/目标） | ✔ 按需读 |
+| `/MACHINE/AXIS@A\|C/ANGLE@REAL` | 同一个 `ncl_focas_axis_position()` | 旋转轴角度 | ⛔ 这台机器没有 A/C 轴（回 `NotFoundException`；3 轴机上删掉这几行） |
+| `/MACHINE/AXIS@k/SPEED` | `ncl_focas_axis_feedrate()`（`cnc_actf`，每轴 8 字节记录） | **实际进给速度**（mm/min，表 4 的 SPEED） | ✔ 按需读（这台机器 `0x24` 只回一根轴） |
+| `/MACHINE/AXIS@k/PATH_LEFT_LENGTH` | `ncl_focas_axis_distance()`（`cnc_rdposition` 的剩余那一块） | 剩余进给 | ✔ 按需读 |
+| `/MACHINE/AXIS@k/TORQUE`、`/CURRENT`、`/TEMPERATURE` | `ncl_focas_axis_torque/_current/_temperature()` | 扭矩 / 电流 / 温度 | 🟡 按需读（机床那两条不是被拒就是桩） |
+| `/MACHINE/AXIS@k/TYPE`（`linear`/`rotary`） | `ncl_focas_axis_type()`（`cnc_rdaxisname` 的轴名 + 命名约定） | 轴类型 | ✔ configs（真机 `X` → `linear`） |
 | `/MACHINE/MOTOR@S1/SPEED` | `ncl_focas_spindle_speed()`（`cnc_acts`） | 主轴转速（units rpm；表 2 没有 SPINDLE，主轴按 MOTOR 归置） | ✔ 按需读 |
 
 几点现场要知道的：
@@ -245,9 +257,10 @@ NCL_TOOL_END_WITH_RAW(focas_last_raw)
   （某个轴的位置、速度）就把那一行的 `NCL_DATAITEM(...)` 换成 `NCL_DATAITEM_SAMPLED(...)`
   重编模块；不想上报就去掉 `_SAMPLED`。通道本身开在模型里（`configs` 里的采样通道），
   周期在配置/模型文件里调。
-- **机床没有的轴**：读那一条会报错（client 在应答载荷不足时返回 `NCL_ERR_RANGE` 或
-  `NCL_FOCAS_ERR_LENGTH`），不会给 0 之类的假值。5 轴是出厂配置，实际轴少的机床会看到
-  对应点位读失败，这是预期行为。
+- **机床没有的轴**：读那一条会明确回 `NotFoundException`（"这台机床没有这根轴"）——
+  client 先读一次轴名表问"这台几根轴"，再逐个轴比。**不会给 0、更不会给垃圾值**：
+  3 轴机上照 5 轴表读第 4、5 根，读到的是应答载荷后面的填充（真机上出现过 6e8 这种数），
+  所以这一层闸门是必须的。5 轴是出厂配置，3 轴机把 A/C 那几行删掉即可。
 - 模型树是标准的 **`MACHINE → CONTROLLER / AXIS@X → 数据对象`**：相对路径里最后一段是数据
   对象，前面每一段都是组件（可以嵌套），组件与数据对象都能用 `@number` 区分
   （`AXIS@X`、`POSITION@REAL`）。
@@ -256,15 +269,16 @@ NCL_TOOL_END_WITH_RAW(focas_last_raw)
   **名字与路径无关**：路径由 `type` 与 `number` 拼出来，上位机按路径问、按名字显示。
 - 表里绝大多数点位是 **`dataItems`**（可采集）；刀具列表是 **`configs`**（不常变、可查询，
   按册 3 表 1 注 b **不得作为采样数据源**）。参数 `PARAMETER`、坐标系 `COORDINATE`、
-  宏变量 `VARIABLE` 这些也是 configs，但 FOCAS 侧的帧还没核对字段布局（31 册 §1 #7），
-  现在没有声明；要加就照 `NCL_CONFIG*` 写一行（详见 `docs/plugins-README.md`）。
+  宏变量 `VARIABLE` 这些也是 configs；它们现在属于"声明了但读不到"（第 7 节那张表），
+  要动就照 `NCL_CONFIG*` 写一行（详见 `docs/plugins-README.md`）。
 - `/MACHINE/SESSION`、`/MACHINE/ITEMS` 两个方法是**现场调试用**的（会话状态、client 的
   item 表），不进模型、不参与采样。
 - `/MACHINE/PROGRAM@DOWNLOAD`、`/MACHINE/PROGRAM@UPLOAD` 两个方法是**程序上下行**
   （动作，不是数据对象 —— 标准里"文件"是 `FILE`（dict），"把一段程序下发/取回"是调用）：
   参数给 `data`（程序文本）/`name`（要取的程序名）与 `type`（0 NC 程序、1 刀补、2 参数…）。
   下行已通（`cnc_dwnstart4` 三件套，见 01 册 §2.4）；**上行现在回"还读不了"** ——
-  请求码已核（0x15/0x18），差应答里程序文本的切法，真机（或 NCGuide）抓一次就能补。
+  请求码已核（0x15/0x18），真机上 `cnc_upstart4` rc=0 而取数据那一步被机床拒（rc=10），
+  换一台愿意给数据的机床就能补上。
 - 点位名字从路径自动推（`@`→`_`、`/`→`.`），方法调用地址是 `focas/AXIS_X.POSITION_REAL`
   这样；名字在同一个 tool 里必须唯一，撞了宿主在装载时就拒绝。
 
@@ -311,54 +325,56 @@ plugins\
 ---
 ## 7. 已知限制
 
-- **只读**：01 册只抓到读的报文，写操作（MDI、启程序、写刀补）没有实现，调
-  `set_value` 会明确返回"不支持"。要写就走机床自己的通道。
-- **五处字段布局待真机核对**：`RDLIFE` / `RDPARAM` / `RDMACRO` / `RDTOFS` /
-  `RDPROGDIR3`（要用就自己加点位，别开采样）。
-- **私有位不进模型**：FANUC 的 ODBST 位域（手动、自动、编辑、移动、急停、主轴、操作者…）
-  在数据字典里**没有名字**，所以模型里一个都不出现 —— 模型里每个 `type` 都要能在 32 册
-  里查到。需要什么状态就用标准名表达：`STATUS` 就是 RUN/EMERGENCY 两位推出来的三态；
-  要看那些原始位，用方法 `focas/ITEMS`（驱动自己的项表，不进模型）。如果现场要"手动/自动"，
-  加一条表 7 的 `WORK_MODE`（取值 `manual`/`auto`，表 8），由 ODBST 的手动/自动方式位推出来。
-- **"还没取到值"的点位（点表 45 条里 17 条）**，分三类：
-  ① **请求码已核、字段布局待核**：`/MACHINE/WARNING`（`cnc_rdalmmsg2` = `0x23`，
-  `ODBALMMSG2` 的字段）、`/MACHINE/CONTROLLER/TOOL`（`cnc_rdtooldata`）。
-  ② **结构体一族，等一次真机载荷**：`/CONTROLLER/PARAMETER`（`cnc_rdparam`，`0x0e`）、
-  `/CONTROLLER/VARIABLE`（`cnc_rdmacro`，`0x15`）、`/CONTROLLER/TOOLPARAM`
-  （`cnc_rdtofs` + `cnc_rdlife`）、`/CONTROLLER/COORDINATE`（`cnc_rdwkcdshft`，G54…）。
-  ③ **要新接一条调用**：`/MODEL`、`/VERSION`（`cnc_rdmodel` / `cnc_sysinfo`）、
-  `/CONTROLLER/SUBPROGRAM`（`cnc_rdexecprog3`）、`/TOOL_NUMBER`（`cnc_rdgcode` 的 T 码）、
-  `/FEED_OVERRIDE` / `/SPINDLE_OVERRIDE` / `/FEED_SPEED`（`cnc_rddynamic2` 的 OBDDY2）、
-  `/AXIS@X/TORQUE`（`cnc_loadtorq`）、`/AXIS@X/CURRENT` / `/AXIS@X/TEMPERATURE`
-  （`cnc_rdaxisdata` 的两类）、`/AXIS@X/TYPE`（`cnc_rdaxisname` / `cnc_rdaxisdata` 的轴属性）。
-  **位置一族（`POSITION@REAL` / `@CMD` / `ANGLE@REAL`）已经不在这一档里**：实际位置 =
-  `cnc_rdposition` 的 `POSELM`（每轴 12 字节，下标 1 = 绝对），指令位置 = 实际 − 跟踪误差
-  （`cnc_srvdelay`，`0x26` d = 9，每轴 8 字节）—— 现场口径是"跟踪误差 = 实际位置 −
-  指令位置"，所以指令位置是算出来的，不是另找一条读的（01 册 §2.4/§2.5）。
-  这 17 条照样声明、照样绑函数：模型里有它、`Query` 有明确答复（`NG` + "还读不了"）、
-  自检报 `<待抓包>` 而不是失败、轮询与 §6 审计都不碰它，但**取不到值**，不给假值。
-  **要抓哪一帧写在 client 那个函数的注释里**（`ncl_focas_last_error()` 里也带一句），
-  真机抓一次补上时**只改那个函数体** —— 适配器那张点位表一行都不用动，清单在 31 册 §1 #8。
-  差别只有一条：**报警（`/MACHINE/WARNING`）按现场口径已经占着默认采样通道** ——
-  通道里现在有这一列，抓包补上之前每周期都是 `null`（不是"没有报警"，是"还没抓到帧"）。
-- **进给速度改口径**：`/MACHINE/AXIS@k/SPEED` 现在绑 `ncl_focas_axis_feedrate()`
-  （`cnc_actf`，item 0x24）—— 官方手册里 `cnc_actf` 是**轴的实际进给速度 F**、
-  `cnc_acts` 是**主轴转速 S**，早先那一轮把两者当成"位置/速度"了（`POSITION@REAL`
-  实际喂的是进给速度）。现在位置一栏绑的是真正的 `cnc_absolute`（帧待抓包），
-  进给速度按表 4 的 `SPEED`（mm/min）报。主轴转速（`cnc_acts`）暂时没有模型项：
-  表 2 的组件类型里没有 `SPINDLE`，口径定了再加点位（client 里的
-  `ncl_focas_spindle_speed()` 已经能用）。
-- **坐标缩放**：位置/速度按 01 册 §2.3 实测的 **float 数组**读。Fwlib32 手册里
-  `cnc_actf` 的 `ODBACT` 还有 `data + dec`（小数点位数）形态，若真机上是这种形态，
-  数值会明显偏大/偏小——用 `--once --raw` 抓一次原始报文再定（`log\out.txt` 里有
-  hex）。这条列在 31 册 §1 #7 一起核对。
-- **不做**：PMC 梯形图、程序上传/下载（`cnc_upload4`
-  等）、伺服波形、Focas2 Logger。需要的话按 01 册继续扩驱动（改 `plugins` 里的模块）。
-- 采样与轮询**各读一遍机床**：轮询刷新模型里的值（可读的点位每轮读一遍；"还读不了"的
-  点位第一次问过之后就不再碰 —— 宿主记得住，不必每秒再问一次），
-  采样通道按 `sample.intervalMs` 读通道里的 4 个点位（状态 / 计件 / 程序名 / 报警）并按
-  `uploadMs` 上报。嫌报文多就把 `--interval` 调大，把某个点位从 `NCL_DATAITEM_SAMPLED`
-  换成 `NCL_DATAITEM`（只按需读），或者把采样周期调大。
+**这一节按真机（0i-MD，3 轴）实测写的**；内部资料版（`docs/FANUC-CNC-FOCAS.md` §2.8）
+有逐条的证据与判据。
+
+### 7.1 机床自己不提供的（不是我们的帧错 —— 官方 SDK 用同样参数也被拒）
+
+现场看到下面这些点位读到"不支持/失败"，先看这张表，别去查程序：
+
+| 点位 | FOCAS 调用 | 机床回的 |
+|---|---|---|
+| `/MACHINE/PART_COUNT` | `cnc_rdcount`（`0x8b` d=e=0） | rc=6 |
+| `/MACHINE/CONTROLLER/TOOL` | `cnc_rdtooldata` / `cnc_rdtoolrng` | rc=1 / rc=3 |
+| `/MACHINE/CONTROLLER/COORDINATE` | `cnc_rdwkcdshft`（type 0..20 全试） | rc=1 |
+| `/MACHINE/AXIS@A`、`@C` 那几条（3 轴机上） | `cnc_rdposition` | 明确回 `NotFoundException`（"没有这根轴"） |
+| （client 里没绑点位的几个量） | 刀具寿命 `cnc_rdlife` / 扭矩 `cnc_loadtorq` / 刀具组数 `cnc_rdngrp` | rc=6 / rc=4 / rc=6 |
+
+另外有两个"机床回了、但内容是桩"的：**操作面板信号**（`0x5d`）在这台机器上 32 字节里除
+`@2 = 0xffff` 全是 0 —— 所以 `FEED_OVERRIDE` 会读成 0%（不是 100%），**不是偏移读错**；
+**伺服那一类**（`cnc_rdaxisdata` 的 `cls=2`）回的也不是数据（`08 00 09 00` 这种）。
+
+### 7.2 这一份 client 还没实现的（答"还读不了"，自检里是 `<待抓包>`）
+
+- **写操作一律不做**：MDI、启程序、写刀补/参数/宏变量都没有实现，`set_value` 明确回
+  "不支持"。要写就走机床自己的通道。
+- `/MACHINE/TOOL_NUMBER`：**还没有可靠来源**。模态那条 `0x96` 只报 G 码组（24 组全扫过），
+  `cnc_rdexecprog` 在这台机器上回的是**整段程序**（里面 T 码出现多次）—— 与其编个数，
+  不如如实说"读不到"。
+- `/MACHINE/CONTROLLER/SUBPROGRAM`：这套官方 SDK **没有导出** `cnc_rdexecprog3`。
+- `/MACHINE/CONTROLLER/TOOLPARAM`、`/PARAMETER`、`/VARIABLE`：**单条**已经能读
+  （`ncl_focas_tool_offset()` / `ncl_focas_parameter()` / `ncl_focas_macro_variable()`），
+  但整表要的范围调用（`cnc_rdparanum` / `cnc_rdparar` / `cnc_rdmacror`）在这台机器上被拒
+  （数量 0 / 带崩 SDK / rc=2），所以表格形态先不声明。
+- `/MACHINE/AXIS@k/TORQUE`、`/CURRENT`、`/TEMPERATURE`：来源要么被机床拒、要么是桩（7.1）。
+- 程序上行（`/MACHINE/PROGRAM@UPLOAD`）：见第 5 节末。
+- 采样与轮询**各读一遍机床**：轮询刷新模型里的值（"还读不了"的点位第一次问过之后就不再碰），
+  采样通道按 `sample.intervalMs` 读通道里的点位并按 `uploadMs` 上报。
+
+### 7.3 现场要知道的几条口径
+
+- **点位表按 5 轴声明**：3 轴机上 A/C 那几条会回"没有这根轴"（7.1 第四行）——
+  把点位表里那几行删掉即可，这是预期行为，不是故障。
+- **私有位不进模型**：FANUC 的 ODBST 位域（手动、自动、编辑、移动、急停、主轴…）
+  在数据字典里**没有名字**，所以模型里一个都不出现；`STATUS` 是 RUN/EMERGENCY 两位推出来的
+  三态，`WORK_MODE` 由 aut/manual 两位推出来（表 8 的 `manual`/`auto`）。要看原始位就用方法
+  `focas/ITEMS`（驱动自己的项表，不进模型）。
+- **倍率的口径**：`FEED_OVERRIDE` 走操作面板信号（`0x5d`）的 `feed_ovrd`，码 × 10 = 百分比；
+  `cnc_rddynamic2` 的 `ODBDY2` **没有倍率字段**（真机抄包确认），别去找。
+- **计时器有台机床是小端**：`cnc_rdtimer` 的载荷在这台仿真机上按小端写，分钟数于是读成天文
+  数字（官方 SDK 也一样）—— client 按**官方口径（大端）**读，遇到这种机床就是把机床的毛病
+  照实报出来。真要这个量先跟机床厂对一下。
+- **不做**：PMC 梯形图、伺服波形、Focas2 Logger。需要的话按 01 册继续扩驱动。
 
 ---
 
@@ -370,11 +386,11 @@ plugins\
 | 启动就报 `协议 "xxx" 未注册：…` | 老式写法（配置里 `drivers[]` + `points[]`）才需要注册协议；先看第 6 节，或 `--plugins` 看装载结果 |
 | `模块 ... 的 ABI 是 N，本宿主只认 M` | 模块与程序不是同一次构建的产物，换配套的模块 |
 | 日志 `cnc_allclibhndl3 ... -16`（连接超时） | 机床没开以太网功能、IP/端口不对、被防火墙挡；先用 `ping` 与 `telnet <ip> 8193` 确认 |
-| 日志 `-17`（协议/握手类） | 协商没通过。FOCAS 需机床侧授权"以太网功能"；先试 `--raw` 抓帧，把 `log\out.txt` 给开发 |
-| 单个点位读失败但其它正常 | 该点位的 `area`/`dtype`/`offset` 不对：第 5 节的表里对一下，或先用 `--probe <路径>` 单独试这一个点位 |
-| 自检里有点位是 `<待抓包>` | 那个点位的协议调用还没实现：client 的函数回 `NCL_ERR_UNAVAILABLE`，不是机床的问题，也不计失败。要抓哪一帧看第 7 节与 `clients/focas/focas_values.c` 里那个函数的注释 |
+| 日志 `-17`（协议/握手类） | 协商没通过。FOCAS 需机床侧授权"以太网功能"；先试 `--raw` 抓帧，把 `log\out.txt` 给开发。**注意**：机床用"方向 3"的帧回"没有这个数"（宏变量/刀补/参数里不存在的号），那一类 client 已经翻成 `NotFoundException`，不是协议错 |
+| 单个点位读失败但其它正常 | 先看第 7 节那张"机床不提供"的表（`PART_COUNT`、`COORDINATE`、3 轴机上的 `AXIS@A/@C` 都在里面）；不在表里再用 `--probe <路径>` 单独试这一个点位 |
+| 自检里有点位是 `<待抓包>` | 那个点位的协议调用在这一份 client 里还没实现：函数回 `NCL_ERR_UNAVAILABLE`（"还读不了"），不是机床的问题，**不计失败**。清单看第 7 节 7.2 |
 | 想单独确认一个点位 | `--probe /MACHINE/PART_COUNT`：走客户端一样的绑定，打印值或 NG 与原因 |
-| 数值明显不对（比如位置是 12345 而不是 12.345） | 见第 7 节的坐标形态说明，用 `--raw` 抓一次 |
+| 数值明显不对（比如位置是 12345 而不是 12.345） | 拿 `--once --raw` 抓一次原始报文（`log\out.txt` 里有 hex），对着 `docs/FANUC-CNC-FOCAS.md` §2.8.1 的"每轴 8 字节记录（data@0 + dec@6）"核 |
 | `MQTT 暂未连上 / broker 未就绪` | broker 没起或地址不对。**不影响读机床**：程序会 1 s→30 s 退避重试，连上自动补订阅 |
 | REST 没起来（端口被占？） | 换 `--port 8081` |
 | 想确认真的发上去了 | `--stats` 打审计计数；上位机订阅 `Sample` 主题；或开 `--raw` 看每次请求的 hex |
