@@ -12,7 +12,7 @@
  * looked up by.
  *
  * What a module contains and how its entry point is called is not a core
- * concern: the adapter layer defines that ABI (nclink_adapter/ncl_module.h).
+ * concern: the adapter layer defines that ABI (nclink/ncl_module.h).
  */
 #ifndef NCL_LIBRARY_H
 #define NCL_LIBRARY_H

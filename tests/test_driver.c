@@ -2,15 +2,15 @@
 /* Copyright (c) 2026 huienming */
 
 /*
- * The driver layer: type names, error tiers, the response envelope, the
- * unified address parser and the protocol registry, exercised through the
- * "mock" driver so the whole interface runs without a wire.
+ * The driver layer: type names, error tiers, the response envelope and the
+ * unified address parser, exercised through the "mock" driver so the whole
+ * interface runs without a wire.
  */
 #include <stdio.h>
 
 #include "ncl_test.h"
 
-#include "nclink_adapter/ncl_driver.h"
+#include "nclink/ncl_driver.h"
 #include "mock/ncl_mock_driver.h"
 
 /* ------------------------------------------------------------- helpers --- */
@@ -57,7 +57,7 @@ static ncl_err write_spec(ncl_driver *driver, const char *spec,
 
 static ncl_driver *make_mock(const ncl_json *parameters)
 {
-    ncl_driver *driver = ncl_driver_create("mock");
+    ncl_driver *driver = ncl_mock_driver_create();
 
     if (driver == NULL) {
         return NULL;
@@ -264,46 +264,6 @@ static void test_address(void)
     NCL_CHECK_EQ_INT(parse_addr("{\"offset\":1}", &addr), NCL_ERR_INVALID_ARG);
     NCL_CHECK_EQ_INT(parse_addr("42", &addr), NCL_ERR_PARSE);
     NCL_CHECK_EQ_INT(parse_addr("null", &addr), NCL_ERR_PARSE);
-}
-
-/* ------------------------------------------------------------ registry --- */
-
-static void test_registry(void)
-{
-    ncl_driver *driver;
-    size_t before;
-
-    NCL_TEST_CASE("protocol registry");
-    ncl_driver_register_builtin();
-    before = ncl_driver_protocol_count();
-    NCL_CHECK(before >= 1);
-
-    driver = ncl_driver_create("mock");
-    NCL_CHECK(driver != NULL);
-    NCL_CHECK_EQ_STR(ncl_driver_protocol(driver), "mock");
-    NCL_CHECK(ncl_driver_ops_of(driver) != NULL);
-    if (driver != NULL) {
-        driver->ops->destroy(driver);
-    }
-
-    NCL_CHECK(ncl_driver_create("MOCK") != NULL); /* names are case-insensitive */
-    NCL_CHECK(ncl_driver_create("mpi") == NULL);
-    driver = ncl_driver_create("MOCK");
-    if (driver != NULL) {
-        driver->ops->destroy(driver);
-    }
-
-    NCL_CHECK_EQ_INT(ncl_driver_register_protocol("mock", ncl_mock_driver_create),
-                     NCL_ERR_EXISTS);
-    NCL_CHECK_EQ_INT(ncl_driver_register_protocol("  ", ncl_mock_driver_create),
-                     NCL_ERR_INVALID_ARG);
-    NCL_CHECK_EQ_INT(ncl_driver_register_protocol("test_only", NULL),
-                     NCL_ERR_INVALID_ARG);
-    NCL_CHECK_EQ_INT(ncl_driver_register_protocol("test_only",
-                                                  ncl_mock_driver_create),
-                     NCL_OK);
-    NCL_CHECK_EQ_INT(ncl_driver_protocol_count(), before + 1);
-    NCL_CHECK(ncl_driver_create("test_only") != NULL);
 }
 
 /* --------------------------------------------------------------- mock ---- */
@@ -529,7 +489,7 @@ static void test_mock_call_and_events(void)
 
     NCL_TEST_CASE("mock: methods are not supported by every driver");
     {
-        ncl_driver *bare = ncl_driver_create("mock");
+        ncl_driver *bare = ncl_mock_driver_create();
 
         NCL_CHECK(bare != NULL);
         NCL_CHECK_EQ_INT(ncl_driver_write_one(bare, NULL, NULL),
@@ -543,7 +503,6 @@ NCL_TEST_MAIN_BEGIN()
     test_types();
     test_errors();
     test_address();
-    test_registry();
     test_mock_memory();
     test_mock_failures();
     test_mock_call_and_events();

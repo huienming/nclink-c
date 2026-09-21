@@ -30,6 +30,7 @@ const char *ncl_err_name(ncl_err err)
     case NCL_ERR_CONNECT: return "MqttException";
     case NCL_ERR_CLOSED: return "ClosedException";
     case NCL_ERR_NO_CHANNEL: return "NoFileChannelException";
+    case NCL_ERR_UNAVAILABLE: return "UnavailableException";
     case NCL_ERR_INVALID_CODE: return "InvalidCodeException";
     case NCL_ERR_INVALID_DATA_NAME: return "InvalidDataNameException";
     case NCL_ERR_INVALID_DATA_TYPE: return "InvalidDataTypException";

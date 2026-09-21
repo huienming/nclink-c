@@ -14,7 +14,7 @@
 #   .\tools\make_fanuc_release.ps1 -NoZip
 #   .\tools\make_fanuc_release.ps1 -WithProtocolDocs   # internal notes too
 #
-# -WithProtocolDocs also ships docs/FANUC-CNC-FOCAS.md and docs/adapters-README.md.
+# -WithProtocolDocs also ships docs/FANUC-CNC-FOCAS.md and docs/plugins-README.md.
 # They are engineering notes (reverse engineering evidence, field box details),
 # so they stay out of the default package: a package that goes to a machine
 # tool builder carries the site manual only.
@@ -38,9 +38,18 @@ if ($Name -eq "") { $Name = "nclink-fanuc-adapter-$Version-win-x64" }
 $pkg = Join-Path $root "dist\$Name"
 $zip = Join-Path $root "dist\$Name.zip"
 
-$hostExe = Join-Path $root "$BuildDir\adapters\ncl_adapter.exe"
-$module = Join-Path $root "$BuildDir\plugins\ncl_driver_focas.dll"
-$siteManual = Join-Path $root "adapters\FANUC-ADAPTER.md"
+# 产物位置取决于生成器：Ninja 直接在 <build>/ 下，VS 多一层 <config>/。
+function Find-Built([string[]]$candidates) {
+    foreach ($candidate in $candidates) {
+        $path = Join-Path $root $candidate
+        if (Test-Path -LiteralPath $path) { return $path }
+    }
+    return Join-Path $root $candidates[0]
+}
+$hostExe = Find-Built @("$BuildDir\Release\ncl_server.exe", "$BuildDir\ncl_server.exe")
+$module = Find-Built @("$BuildDir\plugins\Release\ncl_driver_focas.dll",
+                       "$BuildDir\plugins\ncl_driver_focas.dll")
+$siteManual = Join-Path $root "plugins\FANUC-ADAPTER.md"
 $fanucConfig = Join-Path $root "conf\fanuc.json"
 $mqttConfig = Join-Path $root "conf\mqtt.cfg"
 $license = Join-Path $root "LICENSE"
@@ -62,8 +71,8 @@ if ($WithProtocolDocs) {
 
 Write-Host "assembling $pkg"
 
-Copy-Item -LiteralPath $hostExe -Destination (Join-Path $pkg "bin\ncl_adapter.exe") -Force
-Write-Host "  + bin/ncl_adapter.exe"
+Copy-Item -LiteralPath $hostExe -Destination (Join-Path $pkg "bin\ncl_server.exe") -Force
+Write-Host "  + bin/ncl_server.exe"
 Copy-Item -LiteralPath $module -Destination (Join-Path $pkg "plugins\ncl_driver_focas.dll") -Force
 Write-Host "  + plugins/ncl_driver_focas.dll"
 Copy-Item -LiteralPath $fanucConfig -Destination (Join-Path $pkg "conf\fanuc.json") -Force
@@ -80,7 +89,7 @@ Copy-Item -LiteralPath $license -Destination (Join-Path $pkg "LICENSE") -Force
 if ($WithProtocolDocs) {
     foreach ($pair in @(
             @{ Src = "protocal\docs\01-FANUC-CNC-FOCAS.md"; Dst = "docs\FANUC-CNC-FOCAS.md" },
-            @{ Src = "adapters\README.md"; Dst = "docs\adapters-README.md" })) {
+            @{ Src = "plugins\README.md"; Dst = "docs\plugins-README.md" })) {
         $src = Join-Path $root $pair.Src
         if (Test-Path -LiteralPath $src) {
             Copy-Item -LiteralPath $src -Destination (Join-Path $pkg $pair.Dst) -Force
@@ -106,7 +115,7 @@ param(
     [switch]$Raw
 )
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$exe = Join-Path $root "bin\ncl_adapter.exe"
+$exe = Join-Path $root "bin\ncl_server.exe"
 if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
 $forward = @("-r", $root, "-c", $Config, "--once", "--stats", "-b", "-")
 if ($Raw) { $forward += "--raw" }
@@ -132,7 +141,7 @@ param(
     [switch]$Raw
 )
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$exe = Join-Path $root "bin\ncl_adapter.exe"
+$exe = Join-Path $root "bin\ncl_server.exe"
 if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
 if ($PluginDir -eq "") { $PluginDir = Join-Path $root "plugins" }
 $forward = @("-r", $root, "-c", $Config, "-P", $PluginDir,
@@ -148,7 +157,7 @@ Write-Host "  + run.ps1"
 $listPlugins = @'
 # What can this program talk to? Lists the adapter modules found in plugins/.
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-& (Join-Path $root "bin\ncl_adapter.exe") -r $root --plugins
+& (Join-Path $root "bin\ncl_server.exe") -r $root --plugins
 exit $LASTEXITCODE
 '@
 Set-Content -LiteralPath (Join-Path $pkg "list-plugins.ps1") -Value $listPlugins -Encoding ASCII

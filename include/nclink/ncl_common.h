@@ -46,6 +46,22 @@ typedef int ncl_err;
 #define NCL_ERR_CONNECT      (-12) /**< transport connect failed   */
 #define NCL_ERR_CLOSED       (-13) /**< object already closed      */
 #define NCL_ERR_NO_CHANNEL   (-14) /**< no file transfer channel is open */
+#define NCL_ERR_UNAVAILABLE  (-15) /**< declared, but this build cannot read it yet */
+
+/*
+ * NCL_ERR_UNAVAILABLE in full, because it is not a failure like the others: it
+ * means "the point is declared and it is in the model, but this build cannot
+ * read it yet" - the protocol call it needs has not been implemented, typically
+ * because the frame has not been captured. A point's function returns it to say
+ * so, and the tool layer answers the standard "还读不了" instead of a value,
+ * keeps the point out of the polling rounds and out of the §6 trail, and makes
+ * the self check (--once) list it as 待抓包 rather than as a failure.
+ *
+ * It is not NCL_ERR_NOT_SUPPORTED (the operation was never declared), and it is
+ * not NCL_ERR_IO / TIMEOUT / CONNECT either: nothing was asked of the machine.
+ * The state is a property of the build, so it cannot change while the process
+ * runs - the tool layer learns it from the first answer and remembers it.
+ */
 
 /* Domain validation errors, one per NC-Link validity rule. */
 #define NCL_ERR_INVALID_CODE        (-100) /**< InvalidCodeException        */

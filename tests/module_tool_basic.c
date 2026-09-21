@@ -20,12 +20,15 @@
 typedef struct {
     long long value;
     bool      writable;
+    /** 帧还没抓到：取值回 NCL_ERR_UNAVAILABLE（适配器照常绑函数，见 ncl_common.h）。 */
+    bool      not_yet;
 } test_register;
 
-static test_register k_run = {7, false};
-static test_register k_mode = {1, true};
+static test_register k_run = {7, false, false};
+static test_register k_mode = {1, true, false};
+static test_register k_alarm = {0, false, true};
 /* 参数表：不常变，所以它是"配置型数据对象"，进模型的 configs（不是 dataItems）。 */
-static test_register k_param = {1234, true};
+static test_register k_param = {1234, true, false};
 
 static void *test_open(const ncl_json *params, char **err)
 {
@@ -53,6 +56,11 @@ static ncl_err test_dispatch(void *ctx, const ncl_tool_point *self,
     }
     switch (op) {
     case NCL_OP_GET_VALUE:
+        if (reg->not_yet) {
+            /* 这个点位要的协议调用还没实现：说"还没有"，而不是编一个值出来。
+             * 工具层把它答成"还读不了"、不进轮询、不进 §6 审计。 */
+            return NCL_ERR_UNAVAILABLE;
+        }
         return ncl_tool_reply_int(result, reg->value);
     case NCL_OP_SET_VALUE:
     {
@@ -77,14 +85,15 @@ static ncl_err test_dispatch(void *ctx, const ncl_tool_point *self,
                          self->path);
 }
 
-NCL_TOOL_BEGIN("test_tool_basic", "夹具：一个文件的小适配器", 500, 0,
+NCL_TOOL_BEGIN("test_tool_basic", "夹具：一个文件的小适配器", "MACHINE", 500, 0,
                test_open, test_close)
-    NCL_DATAITEM_SAMPLED("/MACHINE/RUN", test_dispatch, &k_run)
-    NCL_DATAITEM_RW("/MACHINE/MODE", test_dispatch, &k_mode)
-    /* 声明了、但还没有帧可读的点位：模型里有它，问它答"待抓包"，自检不算失败。 */
-    NCL_DATAITEM_PENDING("/MACHINE/ALARM", "报警：待抓包（帧还没抓到）")
+    NCL_DATAITEM_SAMPLED("/RUN", test_dispatch, &k_run)
+    NCL_DATAITEM_RW("/MODE", test_dispatch, &k_mode)
+    /* 声明了、但还没有帧可读的点位：照样绑函数，函数回 NCL_ERR_UNAVAILABLE ——
+     * 模型里有它，问它答"还读不了"，自检不算失败。 */
+    NCL_DATAITEM("/ALARM", test_dispatch, &k_alarm)
     /* 配置型数据：PARAMETER 在数据字典里属"不常变"，因此进 CONTROLLER 组件的 configs。 */
-    NCL_CONFIG("/MACHINE/CONTROLLER/PARAMETER", test_dispatch, &k_param)
+    NCL_CONFIG("/CONTROLLER/PARAMETER", test_dispatch, &k_param)
 NCL_TOOL_END()
 
 /* The last line of the file: who this module is. */

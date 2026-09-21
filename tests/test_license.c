@@ -31,8 +31,8 @@
 #define SPDX_LINE "SPDX-License-Identifier: MIT"
 #define COPYRIGHT_LINE "Copyright (c) 2026 huienming"
 
-static const char *const kDirs[] = {"include", "src", "tests", "examples",
-                                    "tools",   "adapters"};
+static const char *const kDirs[] = {"include", "src",    "tests", "examples",
+                                    "tools",   "clients", "plugins"};
 static const char *const kRootFiles[] = {"build.ps1", "build-linux.sh"};
 static const char *const kExtensions[] = {".c",  ".h",   ".py", ".java",
                                           ".mjs", ".ps1", ".sh"};

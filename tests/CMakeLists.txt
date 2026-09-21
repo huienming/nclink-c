@@ -168,6 +168,79 @@ target_compile_definitions(ncl_test_tls PRIVATE
 add_test(NAME tls COMMAND ncl_test_tls)
 set_tests_properties(tls PROPERTIES TIMEOUT 120)
 
+# ------------------------------------------------------------- tool layer ----
+# 驱动骨架（地址解析、错误分级、read_one/write_one 的会话规则）、审计、宿主与
+# 模块装载都在核心库里，所以这两个套件只连 nclink_core；它们用 "mock" 协议
+# 实现来驱动骨架，所以还要连 nclink_clients（-DNCLINK_BUILD_CLIENTS=OFF 时跳过）。
+#
+# 这里用 NCLINK_BUILD_CLIENTS 而不是 if(TARGET nclink_clients)：根 CMakeLists 先
+# add_subdirectory(tests) 再 add_subdirectory(clients)，此刻那个目标还不存在。
+if(NCLINK_BUILD_CLIENTS)
+    add_executable(ncl_test_driver test_driver.c)
+    target_link_libraries(ncl_test_driver PRIVATE nclink_core nclink_clients)
+    add_test(NAME driver COMMAND ncl_test_driver)
+
+    add_executable(ncl_test_audit test_audit.c)
+    target_link_libraries(ncl_test_audit PRIVATE nclink_core nclink_clients)
+    add_test(NAME audit COMMAND ncl_test_audit)
+
+    # 绑定档：client 的语义函数直接绑到模型路径上（不需要 author 写 dispatch）
+    add_executable(ncl_test_bind test_bind.c)
+    target_link_libraries(ncl_test_bind PRIVATE nclink_core)
+    add_test(NAME bind COMMAND ncl_test_bind)
+endif()
+
+# 宿主 + 模块装载的端到端：一个模块声明点位，宿主把它变成模型、绑定与请求
+# 应答；同一个套件覆盖装载器的失败路径（外来 ABI、没有入口的 .dll）。
+if(NCLINK_BUILD_PLUGINS)
+    # 一个文件一个适配器，按作者的方式编译：只连核心库。
+    add_library(ncl_driver_test_tool_basic MODULE module_tool_basic.c)
+    target_link_libraries(ncl_driver_test_tool_basic PRIVATE nclink_core)
+    target_include_directories(ncl_driver_test_tool_basic PRIVATE
+            "${CMAKE_SOURCE_DIR}/include")
+    set_target_properties(ncl_driver_test_tool_basic PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins-tool-fixture"
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins-tool-fixture")
+    if(MSVC)
+        set_target_properties(ncl_driver_test_tool_basic PROPERTIES PREFIX "")
+        target_compile_options(ncl_driver_test_tool_basic PRIVATE /W4 /wd4996
+                /utf-8)
+        target_compile_definitions(ncl_driver_test_tool_basic PRIVATE
+                _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+    else()
+        target_compile_options(ncl_driver_test_tool_basic PRIVATE -Wall -Wextra
+                -Wshadow -Wstrict-prototypes -Wmissing-prototypes)
+    endif()
+
+    # 装载器必须拒收的两个夹具：外来 ABI（含旧式"交驱动工厂"的模块），以及
+    # 根本不导出入口的文件。
+    add_library(ncl_driver_test_bad_abi MODULE module_bad_abi.c)
+    add_library(ncl_driver_test_no_entry MODULE module_no_entry.c)
+    foreach(fixture ncl_driver_test_bad_abi ncl_driver_test_no_entry)
+        set_target_properties(${fixture} PROPERTIES
+                LIBRARY_OUTPUT_DIRECTORY
+                "${CMAKE_BINARY_DIR}/plugins-refused-fixture"
+                RUNTIME_OUTPUT_DIRECTORY
+                "${CMAKE_BINARY_DIR}/plugins-refused-fixture")
+        # 装载器会用平台的文件名补全模块名（POSIX 上是 libncl_*.so），所以只有
+        # MSVC 需要去掉前缀。
+        if(MSVC)
+            set_target_properties(${fixture} PROPERTIES PREFIX "")
+        endif()
+        target_include_directories(${fixture} PRIVATE
+                "${CMAKE_SOURCE_DIR}/include")
+    endforeach()
+
+    add_executable(ncl_test_host_tool test_host_tool.c)
+    target_link_libraries(ncl_test_host_tool PRIVATE nclink_core)
+    target_compile_definitions(ncl_test_host_tool PRIVATE
+            NCL_TEST_PLUGIN_DIR="$<TARGET_FILE_DIR:ncl_driver_test_tool_basic>"
+            NCL_TEST_MODULE_DIR="$<TARGET_FILE_DIR:ncl_driver_test_bad_abi>")
+    add_dependencies(ncl_test_host_tool ncl_driver_test_tool_basic
+            ncl_driver_test_bad_abi ncl_driver_test_no_entry)
+    add_test(NAME host_tool COMMAND ncl_test_host_tool)
+endif()
+
 # C++ wrapper: RAII, moves and exception mapping (header only, C++17).
 if(NCLINK_BUILD_CPP)
     enable_language(CXX)

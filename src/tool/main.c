@@ -2,19 +2,24 @@
 /* Copyright (c) 2026 huienming */
 
 /*
- * ncl_adapter - the adapter host: one NC-Link device program.
+ * ncl_server - the one device program of this library.
  *
- * It is a single ncl_server plus everything around it (MQTT, REST, sampling,
- * audit). The vendor side is not compiled in: the host loads adapter modules
- * (plugins/ncl_driver_<protocol>.dll / .so) at start-up, registers the driver
- * factories they hand over, and then builds the device from the configuration
- * file - which is also where the point map lives.
+ * It is a single ncl_server device plus everything around it (MQTT, HTTP/REST,
+ * sampling, audit, configuration). The vendor side is not compiled in: the
+ * program loads the adapter modules in <root>/plugins, each of which *declares*
+ * the points it serves (see nclink/ncl_tool.h), and hands the configuration to
+ * the host layer. Nothing here knows a protocol, a point or an address.
  *
- *   ncl_adapter -c conf/fanuc.json
- *   ncl_adapter -c conf/fanuc.json --plugins        # what is loaded
- *   ncl_adapter -c conf/fanuc.json -b tcp://10.0.0.9:1883
- *   ncl_adapter -c conf/fanuc.json --once           # read every point, exit
- *   ncl_adapter -c conf/fanuc.json --stats --raw    # ... then the §6 counters
+ *   ncl_server -c conf/device.json
+ *   ncl_server -c conf/device.json --plugins        # what is loaded
+ *   ncl_server -c conf/device.json -b tcp://10.0.0.9:1883
+ *   ncl_server -c conf/device.json --once           # read every point, exit
+ *   ncl_server -c conf/device.json --stats --raw    # ... then the §6 counters
+ *
+ * A site that would rather compile its adapter in (one .c file, no module
+ * directory) writes its own main() the same way: build the declaration, hand it
+ * to ncl_host_register_tool(), run the host. This file is the generic version
+ * of exactly that program.
  */
 
 #include <stdio.h>
@@ -27,11 +32,11 @@
 #include "nclink/ncl_logger.h"
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_rest.h"
-#include "nclink_adapter/ncl_audit.h"
-#include "nclink_adapter/ncl_adapter.h"
-#include "nclink_adapter/ncl_module.h"
+#include "nclink/ncl_audit.h"
+#include "nclink/ncl_host.h"
+#include "nclink/ncl_module.h"
 
-#include "core/adapter_text.h"
+#include "tool/text.h"
 
 typedef struct {
     const char *root;          /**< --root: conf/ bin/ plugins/ log/ live here */
@@ -50,13 +55,13 @@ typedef struct {
     const char *operator_name; /**< who is driving, for the write audit */
     unsigned    port;
     unsigned    interval_ms;
-} adapter_args;
+} host_args;
 
 static void usage(const char *program)
 {
     printf("用法: %s [选项]\n", program);
     printf("  -r, --root <目录>     安装根目录（conf/ bin/ plugins/ log/ 都在它下面；默认当前目录）\n");
-    printf("  -c, --config <文件>   设备配置（默认 <root>/conf/adapter.json）\n");
+    printf("  -c, --config <文件>   设备配置（默认 <root>/conf/host.json）\n");
     printf("  -b, --broker <URL>    MQTT broker；\"-\" 表示不接（省略 = conf/mqtt.cfg）\n");
     printf("  -P, --plugin-dir <目录>  适配器模块目录（默认 <root>/plugins）\n");
     printf("      --plugin <名字|文件> 再加载一个模块（可重复；名字= <dir>/ncl_driver_<名字>.*）\n");
@@ -74,7 +79,7 @@ static void usage(const char *program)
     printf("      --interval <毫秒> 轮询周期（默认 1000）\n");
 }
 
-static bool parse_args(int argc, char **argv, adapter_args *args)
+static bool parse_args(int argc, char **argv, host_args *args)
 {
     int i;
 
@@ -173,23 +178,23 @@ static bool parse_args(int argc, char **argv, adapter_args *args)
  *   --once / --stats  no broker (a one-shot self check stays off the bus)
  *   (nothing)         <conf>/mqtt.cfg, the same file the device demos read
  */
-static ncl_err config_apply_broker(ncl_json *config, const adapter_args *args,
+static ncl_err config_apply_broker(ncl_json *config, const host_args *args,
                                    ncl_strbuf *err)
 {
-    return ncl_adapter_config_set_broker(config, args->broker, args->offline,
+    return ncl_host_config_set_broker(config, args->broker, args->offline,
                                          err);
 }
 
 /* ---------------------------------------------------------------- modules -- */
 
-/** One line per loaded module, plus what the built-in registry holds. */
+/** One line per loaded module: the tool it declares and what it serves. */
 static void log_modules(const ncl_module_set *set)
 {
     size_t i;
 
     if (ncl_module_count(set) == 0) {
-        ncl_log_info("未装载适配器模块（内置协议 %u 个）",
-                     (unsigned)ncl_driver_protocol_count());
+        ncl_log_info("未装载适配器模块：<root>/plugins 为空，这台设备没有点位"
+                     "（只会回答文件工具）");
         return;
     }
     for (i = 0; i < ncl_module_count(set); i++) {
@@ -227,13 +232,13 @@ static void log_modules(const ncl_module_set *set)
 }
 
 /**
- * Load the adapter modules the configuration (and the command line) asks for.
+ * Load the host modules the configuration (and the command line) asks for.
  *
  * The default is <root>/plugins, loaded whole: a site "adds a brand" by
  * copying a module in, and the configuration's drivers section then names the
  * protocol. A "plugins" section may narrow that down (see ncl_module.h).
  */
-static ncl_module_set *load_modules(const adapter_args *args,
+static ncl_module_set *load_modules(const host_args *args,
                                     const ncl_json *config, ncl_strbuf *err)
 {
     ncl_module_set *set = ncl_modules_create();
@@ -307,44 +312,45 @@ static ncl_err check_tools(const ncl_json *config, const char *plugin_dir,
 /**
  * Print the value of every point, for --once and for a first bring-up.
  *
- * 待抓包的点位（声明了、但那个协议调用还没抓到帧）单独列出来，不算失败 ——
- * 它们是"还没有"，不是"机床坏了"。@p pending 收到它们的个数。
+ * 读不了的点位（client 那边那个协议调用还没实现，回来的码是 NCL_ERR_UNAVAILABLE）
+ * 单独列出来，不算失败 —— 它们是"还没有"，不是"机床坏了"。@p pending 收到它们的
+ * 个数。
  *
  * @return how many points could not be read - --once turns that into the
  *         process exit code, so a site script can tell "自检全过" from "有机床
  *         点位没读到" without reading the log.
  */
-static size_t dump_points(ncl_adapter *adapter, size_t *pending)
+static size_t dump_points(ncl_host *host, size_t *pending)
 {
     size_t failed = 0;
     size_t waiting = 0;
     size_t i;
 
-    for (i = 0; i < ncl_adapter_point_count(adapter); i++) {
-        const char *path = ncl_adapter_point_path(adapter, i);
+    for (i = 0; i < ncl_host_point_count(host); i++) {
+        const char *path = ncl_host_point_path(host, i);
         const ncl_json *value;
         char *text = NULL;
         ncl_strbuf note;
+        ncl_err rc;
 
-        if (!ncl_adapter_point_available(adapter, i)) {
-            const char *why = ncl_adapter_point_summary(adapter, i);
-
-            ncl_log_warn("%s = <待抓包>（%s）", path,
-                         why != NULL ? why : "还没有抓到帧");
+        /* The host knows how this point is served - a driver or a declared
+         * module - so the self check goes through it rather than the manager. */
+        ncl_strbuf_init(&note);
+        rc = ncl_host_poll_one(host, path, &note);
+        if (rc == NCL_ERR_UNAVAILABLE) {
+            ncl_log_warn("%s = <待抓包>（%s）", path, ncl_strbuf_cstr(&note));
+            ncl_strbuf_free(&note);
             waiting++;
             continue;
         }
-        /* The adapter knows how this point is served - a driver or a declared
-         * module - so the self check goes through it rather than the manager. */
-        ncl_strbuf_init(&note);
-        if (ncl_adapter_poll_one(adapter, path, &note) != NCL_OK) {
+        if (rc != NCL_OK) {
             ncl_log_warn("%s = <读取失败>（%s）", path, ncl_strbuf_cstr(&note));
             ncl_strbuf_free(&note);
             failed++;
             continue;
         }
         ncl_strbuf_free(&note);
-        value = ncl_adapter_point_value(adapter, i);
+        value = ncl_host_point_value(host, i);
         text = ncl_json_write_string(value);
         ncl_log_info("%s = %s", path, text != NULL ? text : "?");
         ncl_free_safe(text);
@@ -362,7 +368,7 @@ static size_t dump_points(ncl_adapter *adapter, size_t *pending)
  * the same binding and the same code a client would get, without a broker, a
  * REST port or a poll round in the way. Exit code 0 when the read answered OK.
  */
-static int probe_point(ncl_adapter *adapter, const char *path)
+static int probe_point(ncl_host *host, const char *path)
 {
     ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
     ncl_query_request_item *item;
@@ -382,7 +388,7 @@ static int probe_point(ncl_adapter *adapter, const char *path)
     (void)ncl_params_set_string(&item->params, "operation", "get_value");
     (void)ncl_message_set_message_id(request, "probe");
     (void)ncl_message_add_query_request_item(request, item);
-    response = ncl_server_invoke_query(ncl_adapter_server(adapter), request);
+    response = ncl_server_invoke_query(ncl_host_server(host), request);
     ncl_message_free(request);
     if (response == NULL) {
         ncl_log_error("探测失败: 服务器没有应答");
@@ -408,8 +414,8 @@ static int probe_point(ncl_adapter *adapter, const char *path)
 
 int main(int argc, char **argv)
 {
-    adapter_args args;
-    ncl_adapter *adapter;
+    host_args args;
+    ncl_host *host;
     ncl_json *config = NULL;
     ncl_module_set *modules = NULL;
     ncl_strbuf err;
@@ -426,7 +432,7 @@ int main(int argc, char **argv)
      * plugin directory, bin/sn.txt, log/) is resolved against it. */
     ncl_env_set_root(args.root);
     if (args.config == NULL) {
-        snprintf(default_config, sizeof(default_config), "%s/adapter.json",
+        snprintf(default_config, sizeof(default_config), "%s/device.json",
                  ncl_env_conf_path());
         args.config = default_config;
     }
@@ -445,7 +451,7 @@ int main(int argc, char **argv)
         }
     }
     ncl_strbuf_init(&err);
-    config = ncl_adapter_json_from_file(args.config, &err);
+    config = ncl_tool_json_from_file(args.config, &err);
     if (config == NULL && args.plugins_list) {
         /* `--plugins` answers "what can this program talk to", which must not
          * depend on a readable device configuration. */
@@ -491,31 +497,31 @@ int main(int argc, char **argv)
     }
 
     if (config_apply_broker(config, &args, &err) == NCL_OK) {
-        adapter = ncl_adapter_create_with_modules(config, modules, &err);
+        host = ncl_host_create_with_modules(config, modules, &err);
     } else {
-        adapter = NULL;
+        host = NULL;
     }
     ncl_json_free(config);
-    if (adapter == NULL) {
+    if (host == NULL) {
         ncl_log_error("适配器启动失败: %s", ncl_strbuf_cstr(&err));
         ncl_strbuf_free(&err);
         return 1;
     }
     ncl_log_info("设备 %s：声明式适配器 \"%s\" 提供 %u 个点位（模型与绑定来自模块）",
-                 ncl_adapter_sn(adapter), ncl_adapter_tool(adapter)->name,
-                 (unsigned)ncl_adapter_point_count(adapter));
-    if (ncl_adapter_broker_url(adapter) != NULL) {
-        ncl_log_info("MQTT: %s（%s）", ncl_adapter_broker_url(adapter),
-                     ncl_adapter_online(adapter) ? "已连接" : "待连接");
+                 ncl_host_sn(host), ncl_host_tool(host)->name,
+                 (unsigned)ncl_host_point_count(host));
+    if (ncl_host_broker_url(host) != NULL) {
+        ncl_log_info("MQTT: %s（%s）", ncl_host_broker_url(host),
+                     ncl_host_online(host) ? "已连接" : "待连接");
     } else {
         ncl_log_info("离线运行：不接 broker，REST 与轮询照常");
     }
 
 
     if (args.probe != NULL) {
-        exit_code = probe_point(adapter, args.probe);
+        exit_code = probe_point(host, args.probe);
     } else if (args.model_dump) {
-        char *text = ncl_json_write_pretty_string(ncl_adapter_model(adapter));
+        char *text = ncl_json_write_pretty_string(ncl_host_model(host));
 
         if (text == NULL) {
             ncl_log_error("模型打印失败: 内存不足");
@@ -526,11 +532,11 @@ int main(int argc, char **argv)
         }
     } else if (args.once) {
         size_t pending = 0;
-        size_t failed = dump_points(adapter, &pending);
+        size_t failed = dump_points(host, &pending);
 
         printf("自检：%u 个点位（%u 个可读，%u 个待抓包），%u 个读取失败\n",
-               (unsigned)ncl_adapter_point_count(adapter),
-               (unsigned)(ncl_adapter_point_count(adapter) - pending),
+               (unsigned)ncl_host_point_count(host),
+               (unsigned)(ncl_host_point_count(host) - pending),
                (unsigned)pending, (unsigned)failed);
         if (failed > 0) {
             exit_code = 1; /* a self check that could not read is a failure */
@@ -542,22 +548,22 @@ int main(int argc, char **argv)
 
         http = ncl_http_server_create(args.port);
         if (http != NULL && ncl_http_server_start(http) == NCL_OK) {
-            ncl_rest_attach(http, ncl_adapter_server(adapter));
+            ncl_rest_attach(http, ncl_host_server(host));
             ncl_rest_attach_config(http);
             ncl_log_info("HTTP: http://localhost:%u/swagger-ui",
                          ncl_http_server_port(http));
         } else {
             ncl_log_warn("REST 未能启动，只跑 MQTT 与轮询");
         }
-        ncl_server_register_builtin_tool(ncl_adapter_server(adapter));
-        ncl_server_init_samples(ncl_adapter_server(adapter));
+        ncl_server_register_builtin_tool(ncl_host_server(host));
+        ncl_server_init_samples(ncl_host_server(host));
 
         for (;;) {
             size_t failed = 0;
             ncl_err result;
 
             ncl_strbuf_reset(&err);
-            result = ncl_adapter_broker_poll(adapter, &err);
+            result = ncl_host_broker_poll(host, &err);
             if (result == NCL_ERR_CLOSED) {
                 /* Once when it breaks, then about once a minute: a broker that
                  * is not up yet must not fill the log at the poll rate. */
@@ -570,7 +576,7 @@ int main(int argc, char **argv)
                 broker_reported = false;
             }
             ncl_strbuf_reset(&err);
-            if (ncl_adapter_poll_round(adapter, &failed, &err) != NCL_OK) {
+            if (ncl_host_poll_round(host, &failed, &err) != NCL_OK) {
                 if (!machine_reported || round % 60u == 0u) {
                     ncl_log_warn("轮询有失败（%u 个点位未应答）: %s",
                                  (unsigned)failed, ncl_strbuf_cstr(&err));
@@ -601,7 +607,7 @@ int main(int argc, char **argv)
     if (http != NULL) {
         ncl_http_server_stop(http);
     }
-    ncl_adapter_free(adapter);
+    ncl_host_free(host);
     /* The modules outlive the device (their factories are still registered in
      * the process-wide registry), so they go last. */
     ncl_modules_free(modules);

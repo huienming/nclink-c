@@ -8,7 +8,7 @@
  * what `Pdu::receive` byte swaps before comparing against its literals.
  */
 
-#include "nclink/clients/focas.h"
+#include "focas/ncl_focas_pdu.h"
 
 #include <ctype.h>
 #include <stdio.h>

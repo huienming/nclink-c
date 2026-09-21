@@ -2,7 +2,7 @@
 /* Copyright (c) 2026 huienming */
 
 /*
- * End to end test of the declaration seam: a one file adapter
+ * End to end test of the declaration seam: a one file host
  * (module_tool_basic.c) is built as a module, loaded by protocol name, and its
  * declaration is turned into the model, the bindings and - through real
  * Query/Set requests - into calls to its own functions.
@@ -15,9 +15,9 @@
 
 #include "nclink/ncl_message.h"
 #include "nclink/ncl_tool.h"
-#include "nclink_adapter/ncl_audit.h"
-#include "nclink_adapter/ncl_adapter.h"
-#include "nclink_adapter/ncl_module.h"
+#include "nclink/ncl_audit.h"
+#include "nclink/ncl_host.h"
+#include "nclink/ncl_module.h"
 
 #ifndef NCL_TEST_PLUGIN_DIR
 #  error "NCL_TEST_PLUGIN_DIR must point at the directory holding the modules"
@@ -87,7 +87,7 @@ NCL_TEST_MAIN_BEGIN()
     ncl_strbuf_init(&err);
     NCL_CHECK(modules != NULL);
 
-    NCL_TEST_CASE("a one file adapter loads as a tool module");
+    NCL_TEST_CASE("a one file host loads as a tool module");
     NCL_CHECK_EQ_INT(ncl_modules_add(modules, "test_tool_basic",
                                      NCL_TEST_PLUGIN_DIR, &err),
                      NCL_OK);
@@ -109,13 +109,14 @@ NCL_TEST_MAIN_BEGIN()
     NCL_CHECK_EQ_STR(decl->name, "test_tool_basic");
     NCL_CHECK_EQ_INT(decl->sample_ms, 500);
     NCL_CHECK_EQ_INT(decl->point_count, 4);
-    NCL_CHECK_EQ_STR(decl->points[0].path, "/MACHINE/RUN");
+    NCL_CHECK_EQ_STR(decl->points[0].path, "/RUN");
     NCL_CHECK(decl->points[0].sampled);
     NCL_CHECK(ncl_tool_point_handles(&decl->points[1], NCL_OP_SET_VALUE));
-    /* 第三个点位是"待抓包"：声明了、可查，但没有函数。 */
-    NCL_CHECK(!decl->points[2].available);
-    NCL_CHECK(decl->points[2].fn == NULL);
-    NCL_CHECK_EQ_STR(decl->points[2].summary, "报警：待抓包（帧还没抓到）");
+    /* 第三个点位是"待抓包"：声明得和别的点位一样（有函数），差别在函数回什么 ——
+     * 它回 NCL_ERR_UNAVAILABLE（见 ncl_common.h），所以"还没实现"这件事只写在
+     * client 里，点位表上没有任何"待抓包"的形状。 */
+    NCL_CHECK(decl->points[2].fn != NULL);
+    NCL_CHECK(ncl_tool_point_handles(&decl->points[2], NCL_OP_GET_VALUE));
     NCL_CHECK_EQ_INT(ncl_tool_validate(decl, &err), NCL_OK);
 
 
@@ -158,7 +159,7 @@ NCL_TEST_MAIN_BEGIN()
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 0), "name"),
                          "RUN");
-        /* 待抓包的点位也在模型里，理由是它的 description。 */
+        /* 待抓包的点位也在模型里：现场看得见它要来（模型不止是"现在读得到的"）。 */
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
                              ncl_json_arr_get(items, 2), "name"),
                          "ALARM");
@@ -180,9 +181,6 @@ NCL_TEST_MAIN_BEGIN()
             NCL_CHECK_EQ_STR(ncl_json_obj_get_string(param, "type"), "PARAMETER");
             NCL_CHECK_EQ_STR(ncl_json_obj_get_string(param, "name"), "参数");
         }
-        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
-                             ncl_json_arr_get(items, 2), "description"),
-                         "报警：待抓包（帧还没抓到）");
         NCL_CHECK(channel != NULL);
         if (channel != NULL) {
             NCL_CHECK_EQ_STR(ncl_json_obj_get_string(channel, "id"),
@@ -198,7 +196,7 @@ NCL_TEST_MAIN_BEGIN()
     ncl_json_free(model);
     NCL_CHECK(model_json != NULL);
 
-    NCL_TEST_CASE("the loaded adapter serves requests through the server");
+    NCL_TEST_CASE("the loaded host serves requests through the server");
     memset(&options, 0, sizeof(options));
     options.sn = "V000000001";
     options.model_json = model_json;
@@ -236,7 +234,7 @@ NCL_TEST_MAIN_BEGIN()
         NCL_CHECK_EQ_INT(query_int(server, "/MACHINE/MODE", &ok), 5);
         NCL_CHECK(ok);
 
-        /* Writing the read only point is refused by the adapter itself, with
+        /* Writing the read only point is refused by the host itself, with
          * its own protocol error. */
         {
             ncl_message *request = set_value("/MACHINE/RUN", 3);
@@ -259,7 +257,7 @@ NCL_TEST_MAIN_BEGIN()
         ncl_server_free(server);
     }
 
-    NCL_TEST_CASE("the adapter builds the device from the loaded module");
+    NCL_TEST_CASE("the host builds the device from the loaded module");
     {
         ncl_json *config = ncl_json_parse_cstr(
             "{ \"sn\": \"V000000001\","
@@ -269,22 +267,22 @@ NCL_TEST_MAIN_BEGIN()
             "                \"name\": \"夹具机床\" },"
             "  \"sample\": { \"intervalMs\": 250, \"uploadMs\": 250 } }",
             &err);
-        ncl_adapter *adapter;
+        ncl_host *host;
 
         NCL_CHECK(config != NULL);
         if (config != NULL) {
-            adapter = ncl_adapter_create_with_modules(config, modules, &err);
+            host = ncl_host_create_with_modules(config, modules, &err);
             ncl_json_free(config);
-            NCL_CHECK(adapter != NULL);
-            if (adapter != NULL) {
-                NCL_CHECK(ncl_adapter_tool(adapter) == decl);
-                NCL_CHECK_EQ_INT(ncl_adapter_point_count(adapter), 4);
-                NCL_CHECK_EQ_STR(ncl_adapter_point_path(adapter, 0),
+            NCL_CHECK(host != NULL);
+            if (host != NULL) {
+                NCL_CHECK(ncl_host_tool(host) == decl);
+                NCL_CHECK_EQ_INT(ncl_host_point_count(host), 4);
+                NCL_CHECK_EQ_STR(ncl_host_point_path(host, 0),
                                  "/MACHINE/RUN");
                 /* 点位名字从路径推：方法调用地址就是 <工具>/<名字>。 */
                 {
                     char name[256];
-                    const ncl_tool_decl *d = ncl_adapter_tool(adapter);
+                    const ncl_tool_decl *d = ncl_host_tool(host);
 
                     NCL_CHECK_EQ_STR(ncl_tool_point_name(&d->points[0], name,
                                                          sizeof(name)),
@@ -295,7 +293,7 @@ NCL_TEST_MAIN_BEGIN()
                 }
                 /* 配置型数据（PARAMETER）也在点位表里、也能按路径读，但它在模型的
                  * configs 里（不是 dataItems），因此永远不进采样通道。 */
-                NCL_CHECK_EQ_STR(ncl_adapter_point_path(adapter, 3),
+                NCL_CHECK_EQ_STR(ncl_host_point_path(host, 3),
                                  "/MACHINE/CONTROLLER/PARAMETER");
                 {
                     ncl_strbuf note;
@@ -304,61 +302,67 @@ NCL_TEST_MAIN_BEGIN()
 
                     ncl_strbuf_init(&note);
                     NCL_CHECK_EQ_INT(
-                        ncl_adapter_poll_one(adapter,
+                        ncl_host_poll_one(host,
                                              "/MACHINE/CONTROLLER/PARAMETER",
                                              &note),
                         NCL_OK);
                     ncl_strbuf_free(&note);
-                    value = ncl_adapter_point_value(adapter, 3);
+                    value = ncl_host_point_value(host, 3);
                     NCL_CHECK(value != NULL && ncl_json_as_int(value, &got));
                     NCL_CHECK_EQ_INT(got, 1234);
                 }
-                /* 待抓包的点位在列表里（自检要点名它），但读取直接说清楚，
-                 * 不走服务器、也不进轮询失败数。 */
-                NCL_CHECK(!ncl_adapter_point_available(adapter, 2));
-                NCL_CHECK_EQ_STR(ncl_adapter_point_summary(adapter, 2),
-                                 "报警：待抓包（帧还没抓到）");
+                /* 待抓包的点位在列表里（自检要点名它）。读一次：回来的不是失败，
+                 * 而是"还读不了"（NCL_ERR_UNAVAILABLE），理由也照实说。 */
                 ncl_strbuf_reset(&err);
-                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/MACHINE/ALARM",
+                NCL_CHECK(!ncl_host_point_unavailable(host, 2));
+                NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/ALARM",
                                                       &err),
-                                 NCL_ERR_NOT_SUPPORTED);
-                NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "待抓包") != NULL);
+                                 NCL_ERR_UNAVAILABLE);
+                NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "还读不了") != NULL);
+                /* 学过一次就记住了：宿主不再把轮询浪费在它身上。 */
+                NCL_CHECK(ncl_host_point_unavailable(host, 2));
                 {
                     size_t failed = 99;
 
                     ncl_strbuf_reset(&err);
-                    NCL_CHECK_EQ_INT(ncl_adapter_poll_round(adapter, &failed,
+                    NCL_CHECK_EQ_INT(ncl_host_poll_round(host, &failed,
                                                             &err),
                                      NCL_OK);
                     NCL_CHECK_EQ_INT(failed, 0);
                 }
+                /* 再来一次，照样是"还读不了"，而且没再问过机床（没走服务器）。 */
+                ncl_strbuf_reset(&err);
+                NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/ALARM",
+                                                      &err),
+                                 NCL_ERR_UNAVAILABLE);
+                NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "还读不了") != NULL);
 
                 /* The host's own read path (what --once and the poll loop use)
                  * goes through the module's binding. */
-                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/MACHINE/RUN",
+                NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/RUN",
                                                       &err),
                                  NCL_OK);
                 {
                     const ncl_json *value =
-                        ncl_adapter_point_value(adapter, 0);
+                        ncl_host_point_value(host, 0);
                     long long got = 0;
 
                     NCL_CHECK(value != NULL);
                     NCL_CHECK(value != NULL && ncl_json_as_int(value, &got));
                     NCL_CHECK_EQ_INT(got, 7);
                 }
-                NCL_CHECK_EQ_INT(ncl_adapter_poll_one(adapter, "/MACHINE/NOPE",
+                NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/NOPE",
                                                       &err),
                                  NCL_ERR_NOT_FOUND);
 
                 /* §6: the host keeps the trail for the declared tool - an
-                 * adapter author never writes audit code. */
+                 * host author never writes audit code. */
                 NCL_TEST_CASE("the host's trail records what the tool did");
                 ncl_audit_reset_stats();
                 {
                     ncl_message *request = query("/MACHINE/RUN");
                     ncl_message *response = ncl_server_invoke_query(
-                        ncl_adapter_server(adapter), request);
+                        ncl_host_server(host), request);
 
                     ncl_message_free(response);
                     ncl_message_free(request);
@@ -366,7 +370,7 @@ NCL_TEST_MAIN_BEGIN()
                 {
                     ncl_message *request = set_value("/MACHINE/MODE", 9);
                     ncl_message *response = ncl_server_invoke_set(
-                        ncl_adapter_server(adapter), request);
+                        ncl_host_server(host), request);
 
                     ncl_message_free(response);
                     ncl_message_free(request);
@@ -386,7 +390,7 @@ NCL_TEST_MAIN_BEGIN()
                         ncl_json_free(stats);
                     }
                 }
-                ncl_adapter_free(adapter);
+                ncl_host_free(host);
             }
         }
     }

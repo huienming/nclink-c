@@ -37,7 +37,12 @@ nclink-c/
 │   ├── ncl_env.h          # 运行环境、conf/mqtt.cfg、sn.txt
 │   ├── ncl_ftp.h          # FTP 服务端与客户端（自研，无第三方依赖）
 │   ├── ncl_file.h         # 文件传输：文件属性、校验和、FTP 文件工具、file 工具
-│   └── ncl_schema.h       # JSON Schema 校验（draft-07 子集）与正则引擎
+│   ├── ncl_schema.h       # JSON Schema 校验（draft-07 子集）与正则引擎
+│   ├── ncl_tool.h         # 声明式适配器：一个文件一台设备的点位声明宏
+│   ├── ncl_driver.h       # 厂商协议驱动接口（地址模型、错误分级、会话规则）
+│   ├── ncl_audit.h        # 审计轨迹（§6）：计数、写记录、原始报文
+│   ├── ncl_module.h       # 适配器模块装载器（plugins/ncl_driver_*.dll|.so）
+│   └── ncl_host.h         # 宿主：声明 + 配置 → 一台活的 NC-Link 设备
 ├── src/core/              # JSON、字符串、日志、环境、线程、平台
 ├── src/general/           # 常量、主题
 ├── src/message/           # 消息与消息项
@@ -46,21 +51,18 @@ nclink-c/
 ├── src/mqtt/              # MQTT 5.0 报文层
 ├── src/client/            # 客户端与进程级客户端管理器
 ├── src/server/            # 服务端
+├── src/tool/              # tool 层：声明→模型/绑定、驱动骨架、审计、装载器、宿主
+│   └── main.c             # 唯一的设备程序 ncl_server（装载 plugins/ 后启动）
 ├── src/http/              # HTTP/1.1 服务端基础层
 ├── src/rest/              # REST 应答封装与 schema/UI 端点
 ├── src/config/            # 设备配置文件读写
 ├── src/ftp/               # FTP 协议两端（RFC 959/2389 子集）
 ├── src/file/              # 文件属性/SHA-256/FTP 文件工具/临时目录交换
 ├── src/schema/            # JSON Schema 校验器 + 正则引擎
+├── clients/               # 厂商协议实现（Modbus/MC/FINS/S7/FOCAS/...），一个协议一个目录
+├── plugins/               # 厂商适配器：一个 .c 一个适配器，编成可动态装载的模块
 ├── tests/                 # 单元测试 + 协议黄金样本
-└── adapters/              # 厂商协议适配器（宿主程序 + 可装载的适配器模块）
-    ├── include/nclink_adapter/  # 驱动接口、地址模型、响应信封、模块 ABI
-    ├── src/core/                # 与协议无关的驱动骨架 + 模块装载器
-    ├── src/registry/            # 驱动配置加载 + 点位表 + 路径分派
-    ├── src/app/                 # 宿主主体（模型、操作注册、轮询、MQTT、采样）
-    ├── src/main.c               # ncl_adapter 可执行文件（配置 → 一台 NC-Link 设备）
-    ├── drivers/<协议>/          # 每协议一个目录：帧构造/解析 + 会话（默认编成模块）
-    └── tests/                   # 报文字节级黄金样本 + mock 靶机
+└── tools/                 # 许可头检查、broker 互操作、文档生成与发布打包脚本
 ```
 
 ## 构建与测试
@@ -187,6 +189,8 @@ docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh
 | 选项 | 默认 | 说明 |
 |------|------|------|
 | `NCLINK_BUILD_TESTS` | `ON` | 构建单元测试 |
+| `NCLINK_BUILD_CLIENTS` | `ON` | 构建协议客户端库（clients/：Modbus / MC / FINS / S7 / FOCAS …） |
+| `NCLINK_BUILD_PLUGINS` | `ON` | 把 plugins/*.c 编成可装载的适配器模块 |
 | `NCLINK_WITH_ZLIB` | `OFF` | 启用 zlib 压缩编解码（CompressEncoder/Decoder） |
 | `NCLINK_WITH_MQTT` | `ON` | 构建 MQTT 传输层（关掉后只剩纯协议层，便于嵌入式裁剪） |
 | `NCLINK_STATIC_MEM` | `OFF` | 库内所有分配走静态池，不调用 `malloc`（无堆设备；见手册 4.9） |

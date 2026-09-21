@@ -34,10 +34,10 @@ option(NCLINK_WITH_ZLIB "Enable zlib based compress codec" OFF)
 option(NCLINK_WITH_MQTT "Build the MQTT 5.0 transport layer" ON)
 option(NCLINK_WITH_TLS "Enable TLS (OpenSSL) for MQTT over ssl://" OFF)
 option(NCLINK_BUILD_CPP "Build the C++ wrapper sample/test (C++17)" ON)
-option(NCLINK_BUILD_ADAPTERS
-        "Build the vendor protocol drivers and the adapter daemon" ON)
+option(NCLINK_BUILD_CLIENTS
+        "Build the vendor protocol clients (Modbus / MC / FINS / S7 / ...)" ON)
 option(NCLINK_BUILD_PLUGINS
-        "Build the protocol clients as loadable modules" ON)
+        "Build plugins/*.c as loadable adapter modules" ON)
 
 # Static memory: every allocation the library makes is served from one pool
 # inside a static array, so a build with this ON never calls malloc() and can
@@ -67,7 +67,14 @@ file(GLOB_RECURSE NCLINK_CORE_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/config/*.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/ftp/*.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/schema/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/model/*.c")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/model/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/tool/*.c")
+
+# The one program of this library is not part of it: src/tool/main.c is the
+# device program's entry point (ncl_server). A site that would rather compile
+# its adapter in writes its own main() and links the library instead.
+list(REMOVE_ITEM NCLINK_CORE_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/tool/main.c")
 
 add_library(nclink_core STATIC ${NCLINK_CORE_SOURCES})
 add_library(nclink::core ALIAS nclink_core)
@@ -107,6 +114,11 @@ endif()
 
 find_package(Threads REQUIRED)
 target_link_libraries(nclink_core PUBLIC Threads::Threads)
+
+# json.c 的标量取整用 floor/ceil，链接期要 libm（MSVC 自带，不需要）。
+if(NOT WIN32)
+    target_link_libraries(nclink_core PUBLIC m)
+endif()
 
 # ncl_library_* (the dynamic loader a device program picks its adapter modules
 # up with) uses dlopen on Linux/macOS. Windows needs nothing (kernel32).
@@ -160,13 +172,31 @@ if(NCLINK_BUILD_EXAMPLES)
 endif()
 
 # ---------------------------------------------------------------- clients ----
-# 协议客户端库（Modbus / MC / FINS / S7 / FOCAS ...）完全独立于适配器层：
-# 适配器引用它们去跟机床说话，它们自己不认识“适配器”。
-if(NCLINK_BUILD_ADAPTERS)
+# 协议客户端库（Modbus / MC / FINS / S7 / FOCAS ...）：一个协议一个目录，只认
+# 字节和会话，不认识“适配器”也不认识 NC-Link。plugins/ 下的适配器引用它们去跟
+# 机床说话；核心库不依赖这一层（-DNCLINK_BUILD_CLIENTS=OFF 就完全不编）。
+if(NCLINK_BUILD_CLIENTS)
     add_subdirectory(clients)
 endif()
 
-# --------------------------------------------------------------- adapters ----
-if(NCLINK_BUILD_ADAPTERS)
-    add_subdirectory(adapters)
+# --------------------------------------------------------------- plugins ----
+# 厂商适配器：plugins/<协议>.c，一个文件一个适配器，编成可动态装载的模块
+# （<build>/plugins/ncl_driver_<协议>.dll|.so），由 ncl_server 启动时装载。
+if(NCLINK_BUILD_PLUGINS)
+    add_subdirectory(plugins)
+endif()
+
+# ---------------------------------------------------------------- program ----
+# 唯一的设备程序：装载 plugins/，把模块声明好的工具注册到设备上，启动。
+add_executable(ncl_server src/tool/main.c)
+target_link_libraries(ncl_server PRIVATE nclink_core)
+target_include_directories(ncl_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+if(MSVC)
+    target_compile_options(ncl_server PRIVATE /W4 /wd4996 /utf-8)
+    target_compile_definitions(ncl_server PRIVATE
+            _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+else()
+    target_compile_options(ncl_server PRIVATE -Wall -Wextra -Wshadow
+            -Wstrict-prototypes -Wmissing-prototypes)
 endif()

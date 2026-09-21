@@ -172,7 +172,7 @@ static void mock_stop(syntec_mock *mock)
 
 static ncl_driver *syntec_driver(syntec_mock *mock, const char *extra)
 {
-    ncl_driver *driver = ncl_driver_create("syntec");
+    ncl_driver *driver = ncl_syntec_create();
     ncl_strbuf json;
     ncl_json *params;
 

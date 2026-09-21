@@ -2,59 +2,16 @@
 /* Copyright (c) 2026 huienming */
 
 /*
- * NC-Link adapter - FANUC FOCAS / Fwlib32, the PDU layer.
+ * FANUC FOCAS / Fwlib32 - 现场接口。
  *
- * Everything here comes from protocal/docs/01-FANUC-CNC-FOCAS.md §2.1-§2.3:
- * §2.1 is the handshake measured against a fake machine, §2.2 is the frame
- * format and the four acceptance rules read out of `libfwlib32.so`'s
- * `Pdu::send` / `Pdu::receive`, and §2.3 is the reply body - which is what
- * finally made `cnc_allclibhndl3` answer `rc=0` without a real machine.
+ * 这一个头就是接一台 FANUC 机床要读的全部：ncl_focas_open() 拿一个会话，然后
+ * ncl_focas_status() / ncl_focas_part_count() / ncl_focas_axis_position() … 这些
+ * 名字就是它们读回来的东西。"哪个 item、哪一块、怎么由位域推成三态"这类知识都写在
+ * client 里（clients/focas/focas_values.c），适配器（plugins/focas.c）只把函数绑到
+ * 模型路径上。
  *
- *   frame = 10 byte header + body, all fields big endian u16:
- *
- *     [0..4)   A0 A0 A0 A0            magic
- *     [4..6)   type                   request always 0001; on a reply it picks
- *                                     the body size class (<=2 / 3 / >3)
- *     [6]      func                   the command's function code
- *     [7]      dir                    request 1; a reply must be 1..4
- *     [8..10)  body length in bytes
- *     [10..)   body
- *
- * The body of a *request* is a command list: `count u2` followed by `count`
- * command blocks, each 28 bytes (§2.3):
- *
- *     [0..2)   block size in bytes (28)      [2..4)   first      (1)
- *     [4..6)   index                         [6..8)   code
- *     [8..12)  arg0                          [12..16) arg1
- *     [16..20) arg2                          [20..24) arg3
- *     [24..26) tag0                          [26..28) tag1
- *
- * The body of a *reply* has the same shape, and `Pdu::getRbPos` walks it with
- * the block's own size field (§2.3):
- *
- *     [0..2)   block count N                       i must be < N
- *     [2..)    N blocks back to back:
- *                [0..2)   block size in bytes
- *                [2..4)   ecode                [8..10)  return code (see below)
- *                [10..12) detail1              [12..14) detail2
- *                [14..16) payload byte count   [16..)   payload
- *
- * `Pdu::getRb(i)` throws when the block's return code is not zero, so a reply
- * is only usable when every block a caller touches has `[8..10) == 0`.
- *
- * Two things the SDK does that a client has to copy:
- *
- *   1. **the reply to `func 1` is a different layout** - 16 bytes of header
- *      followed by n eight byte records, and the body length must be exactly
- *      `16 + 8n` with `n = be16(body[8..10))` (§2.2 rule 5). It is not a
- *      command list.
- *   2. **the reply block count must equal the request's block count** - one
- *      block short and the SDK's own `getRb(last)` walks past the end and the
- *      call comes back as `-17 (EW_PROTOCOL)`. That was the last thing that
- *      kept this protocol dark; see NCL_FOCAS_ERR_RB_MISSING.
- *
- * The item names and codes in ncl_focas_item() are the twelve SDK calls whose
- * request frames were captured (§2.3).
+ * 协议层（PDU 帧、命令块、回复块、item 码表、raw 逃逸口）在
+ * clients/focas/ncl_focas_pdu.h —— 写 client 的人、查抓包的人才需要读它。
  */
 #ifndef NCL_FOCAS_H
 #define NCL_FOCAS_H
@@ -63,186 +20,118 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "nclink_adapter/ncl_driver.h"
+#include "nclink/ncl_driver.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ============================================================== framing == */
+/* ====================================================== 现场接口（语义）== */
 
-#define NCL_FOCAS_HEADER   10u /**< bytes in front of every body   */
-#define NCL_FOCAS_CB_SIZE  28u /**< one command block              */
-#define NCL_FOCAS_MAGIC0   0xA0u
-#define NCL_FOCAS_DIR_REQ  0x01u /**< the direction a request carries */
-#define NCL_FOCAS_DIR_RESP 0x02u /**< what the SDK expects on a reply */
-#define NCL_FOCAS_TYPE_V1  0x0001u
-
-/** Function codes seen on the wire (§2.1, §2.3). */
-#define NCL_FOCAS_FUNC_HELLO 0x01u /**< the 12 byte session hello        */
-#define NCL_FOCAS_FUNC_CMD 0x21u   /**< "here is a command list"         */
-#define NCL_FOCAS_FUNC_BYE 0x02u   /**< session end (the SDK sends two)  */
-
-/** The 10 byte header, values in host order. */
-typedef struct {
-    uint16_t type;   /**< [4..6) */
-    uint8_t  func;   /**< [6]    */
-    uint8_t  dir;    /**< [7]    */
-    uint16_t length; /**< [8..10) body bytes, magic excluded */
-} ncl_focas_pdu;
-
-/** A magic value that is not A0 A0 A0 A0 was seen. */
-#define NCL_FOCAS_ERR_MAGIC NCL_DRV_ERR_PROTOCOL(0xB0)
-/** `[7]` outside 1..4, or a func that is not the expected one. */
-#define NCL_FOCAS_ERR_HEADER NCL_DRV_ERR_PROTOCOL(0xB1)
-/** The body length is neither `16 + 8n` nor a count plus whole blocks. */
-#define NCL_FOCAS_ERR_LENGTH NCL_DRV_ERR_PROTOCOL(0xB2)
-/** A block index past the end of the reply body. */
-#define NCL_FOCAS_ERR_RB_MISSING NCL_DRV_ERR_PROTOCOL(0xB3)
-/** A block says the machine refused the command (`[8..10)` non zero). */
-#define NCL_FOCAS_ERR_RB_CODE NCL_DRV_ERR_PROTOCOL(0xB4)
-/** A reply carried no command blocks where at least one is required. */
-#define NCL_FOCAS_ERR_RB_COUNT NCL_DRV_ERR_PROTOCOL(0xB5)
-
-/**
- * Build one frame: magic, type 0001, @p func, @p dir, big endian body length.
- * Returns the frame length, or 0 when it does not fit @p cap.
- */
-size_t ncl_focas_build(uint8_t *out, size_t cap, uint8_t func, uint8_t dir,
-                       const void *body, size_t body_len);
-
-/**
- * Check and split a frame. Answers NCL_ERR_RANGE while it is still arriving.
- * @p frame_len receives the frame's total length when the header is readable,
- * so a caller can read the rest in one more call.
- */
-ncl_err ncl_focas_split(const uint8_t *frame, size_t len, ncl_focas_pdu *out,
-                        size_t *frame_len);
-
-/**
- * The reply to `func 1` (§2.2 rule 5): 16 bytes of header, then n eight byte
- * records, body length exactly `16 + 8n`.
- * @p records receives n on success. NCL_FOCAS_ERR_LENGTH when it does not fit
- * that shape.
- */
-ncl_err ncl_focas_hello_reply(const uint8_t *body, size_t body_len,
-                              size_t *records);
-
-/**
- * Big endian u16 of the `func 1` reply at byte @p offset. The body is
- * `16 + 8n` bytes, so offsets past 16 address the records.
- */
-uint16_t ncl_focas_hello_field(const uint8_t *body, size_t body_len,
-                               size_t offset);
-
-/* ========================================================= command block == */
-
-/** One command block, values in host order. */
-typedef struct {
-    uint16_t first; /**< [2..4), the SDK writes 1            */
-    uint16_t index; /**< [4..6), the SDK writes 1 or the item index */
-    uint16_t code;  /**< [6..8), the command / data code     */
-    uint32_t arg0;  /**< [8..12)   */
-    uint32_t arg1;  /**< [12..16)  */
-    uint32_t arg2;  /**< [16..20)  */
-    uint32_t arg3;  /**< [20..24)  */
-    uint16_t tag0;  /**< [24..26)  */
-    uint16_t tag1;  /**< [26..28)  */
-} ncl_focas_cb;
-
-/** `first = 1, index = 1`, everything else zero: the shape the SDK sends. */
-void ncl_focas_cb_init(ncl_focas_cb *cb, uint16_t code);
-
-/**
- * The three helpers a caller builds a request body with. Start with
- * ncl_focas_body_begin(), then call ncl_focas_body_add() per block; each add
- * rewrites the leading count and the returned body length.
+/*
+ *      ncl_focas_config config;
+ *      ncl_focas_config_default(&config);
+ *      config.host = "192.168.1.100";
  *
- *   size_t used = ncl_focas_body_begin(body, sizeof(body));
- *   used = ncl_focas_body_add(body, sizeof(body), used, &cb);
+ *      char *err = NULL;
+ *      ncl_focas *focas = ncl_focas_open(&config, &err);
+ *      if (focas == NULL) { ... err ... }
+ *
+ *      char state[32];
+ *      if (ncl_focas_status(focas, state, sizeof(state)) == NCL_OK) { ... }
+ *
+ * 约定：
+ *   - open() 不连机床：会话在第一次读时建立，所以机床没开机不影响设备程序启动；
+ *   - 这些函数可以并发调用（内部串行化），采样通道与 REST 请求会同时用它们；
+ *   - 失败返回 ncl_err，原因用 ncl_focas_last_error() 取（一句话，可以直接当
+ *     NC-Link 应答里的 reason）；
+ *   - 文本出参自己截断并保证 NUL 结尾。
  */
-size_t ncl_focas_body_begin(uint8_t *out, size_t cap);
-size_t ncl_focas_body_add(uint8_t *out, size_t cap, size_t used,
-                          const ncl_focas_cb *cb);
+typedef struct ncl_focas ncl_focas;
 
-/** Serialise one block on its own (28 bytes), for tests and golden samples. */
-size_t ncl_focas_cb_write(uint8_t *out, size_t cap, const ncl_focas_cb *cb);
-
-/* ========================================================= reply blocks == */
-
-/** Block count in a reply body (`[0..2)`), 0 when the body is too short. */
-size_t ncl_focas_block_count(const uint8_t *body, size_t body_len);
-
-/**
- * Point @p block at reply block @p index (0 based) and give its byte length.
- * Answers NCL_FOCAS_ERR_RB_MISSING when @p index is not in the body - which is
- * the check that has to match the request's block count (§2.3 rule 1).
- */
-ncl_err ncl_focas_block_at(const uint8_t *body, size_t body_len, size_t index,
-                           const uint8_t **block, size_t *block_len);
-
-/** The block's return code `[8..10)`, sign extended. 0 means "the machine said OK". */
-int ncl_focas_block_code(const uint8_t *block, size_t block_len);
-
-/** The block's declared payload byte count `[14..16)`. */
-uint16_t ncl_focas_block_payload_len(const uint8_t *block, size_t block_len);
-
-/**
- * The block's payload (everything after byte 16) and how much of it is really
- * there. The caller reads `min(*len, ncl_focas_block_payload_len())` bytes.
- */
-const uint8_t *ncl_focas_block_payload(const uint8_t *block, size_t block_len,
-                                       size_t *len);
-
-/**
- * Walk every block of a reply and fail on the first non zero return code,
- * which is what `Pdu::getRb` does. @p index_out receives the offending block.
- */
-ncl_err ncl_focas_check_blocks(const uint8_t *body, size_t body_len,
-                               size_t *index_out);
-
-/* ================================================================ items == */
-
-/** One data item: a name, the blocks a request carries, and how to read them. */
+/** 连接参数，和配置里的 "parameters" 一一对应；host 必填，其余有默认值。 */
 typedef struct {
-    const char *name;    /**< "ACTF", "STATINFO", ...                       */
-    uint16_t    cbs[3];  /**< command codes the request carries             */
-    uint32_t    arg0[3]; /**< arg0 of each block (the SDK leaves them 0 or 1) */
-    uint32_t    arg1[3]; /**< arg1 of each block                            */
-    uint8_t     cb_count;/**< 1 or 2 or 3                                   */
-    bool        scalar;  /**< true: block k holds a scalar at payload 0;
-                              false: block 0's payload is the whole array  */
-} ncl_focas_item;
+    const char *host;
+    unsigned    port;               /**< 默认 8193（FOCAS over Ethernet）    */
+    unsigned    timeout_ms;         /**< 一次请求的超时                       */
+    unsigned    connect_timeout_ms;
+    unsigned    retries;
+    bool        negotiate;          /**< 先走 hello 再进命令模式（默认开）    */
+} ncl_focas_config;
+
+/** 轴序：与模型里 /MACHINE/AXIS@<轴>/... 的顺序一致。 */
+typedef enum {
+    NCL_FOCAS_AXIS_X = 0,
+    NCL_FOCAS_AXIS_Y,
+    NCL_FOCAS_AXIS_Z,
+    NCL_FOCAS_AXIS_A,
+    NCL_FOCAS_AXIS_C,
+    NCL_FOCAS_AXIS_COUNT
+} ncl_focas_axis;
+
+/** 填上默认值（host 留空，其余是驱动自己的默认）。 */
+void ncl_focas_config_default(ncl_focas_config *config);
+
+ncl_focas *ncl_focas_open(const ncl_focas_config *config, char **err);
+void       ncl_focas_close(ncl_focas *focas);
+
+/** 会话现在是通着的吗（读过一次之后才有意义）。 */
+bool       ncl_focas_connected(const ncl_focas *focas);
+/** 上一次失败的一句话原因；没失败过就是空串。 */
+const char *ncl_focas_last_error(const ncl_focas *focas);
+
+/* 语义：名字就是读回来的东西 ------------------------------------------------- */
+
+/** 设备状态，标准的三态："running" / "free" / "holding"（由 ODBST 位域推出）。 */
+ncl_err ncl_focas_status(ncl_focas *focas, char *out, size_t cap);
+/** 加工件数（RDCOUNT，int32；表 7 的 PART_COUNT 是数值）。 */
+ncl_err ncl_focas_part_count(ncl_focas *focas, long long *value);
+/** 当前主程序名。 */
+ncl_err ncl_focas_program_name(ncl_focas *focas, char *out, size_t cap);
+/** 轴的实际位置（mm / deg）。 @p axis 见 ncl_focas_axis。 */
+ncl_err ncl_focas_axis_position(ncl_focas *focas, ncl_focas_axis axis,
+                                double *value);
+/** 轴的转速/进给速度。 */
+ncl_err ncl_focas_axis_speed(ncl_focas *focas, ncl_focas_axis axis,
+                             double *value);
+
+/*
+ * 下面三条的协议调用还没抓帧（有的在 01 册 §2.3 的码表里就没有，有的是 32 册 §5
+ * 列在"待核"里的）。函数照样摆在这里、照样能绑到模型路径上：在帧补上之前它们回
+ * **NCL_ERR_UNAVAILABLE**，也就是"这一份 client 还没有它要的协议调用" —— 模型里
+ * 有这条路径、客户端问它有明确答复、轮询与 §6 审计都不碰它、自检把它算成"待抓包"
+ * 而不是失败（见 ncl_common.h 里这个码）。抓包补上之后**改的就是这三个函数的函数
+ * 体**：适配器那张点位表一行都不用动。
+ *
+ * 要哪一帧，写在各自的注释里（ncl_focas_last_error() 里也带一句，排障时看得到）。
+ */
+
+/** 报警（表 6 的 WARNING）：cnc_rdalmmsg2 还没抓到帧，所以现在回 NCL_ERR_UNAVAILABLE。 */
+ncl_err ncl_focas_alarm(ncl_focas *focas, ncl_json **value);
+/** 轴的目标位置：cnc_rdposition 还没抓到帧，所以现在回 NCL_ERR_UNAVAILABLE。 */
+ncl_err ncl_focas_axis_position_cmd(ncl_focas *focas, ncl_focas_axis axis,
+                                    double *value);
+/** 刀具表（表 7 的 TOOL，list）：帧待核对，所以现在回 NCL_ERR_UNAVAILABLE。 */
+ncl_err ncl_focas_tool_list(ncl_focas *focas, ncl_json **value);
+
+/* 底层：给"覆盖"和排障用 --------------------------------------------------- */
 
 /**
- * Look an item up by name (case insensitive). Returns NULL for a name the
- * table does not know - a caller then falls back to ncl_focas_parse_code() and
- * builds the single block item itself, which is how an undocumented code is
- * tried.
+ * 读一个 item 的某一块。绑定时一般用不到；需要自己的解释（把两个 item 凑成一个
+ * 量、把位域推成三态、算单位换算）时，覆盖档里就用它。
  */
-const ncl_focas_item *ncl_focas_item_lookup(const char *name);
+ncl_err ncl_focas_read_item(ncl_focas *focas, const char *item, long long block,
+                            int length, ncl_dtype dtype, ncl_json **value);
+/** 调一个驱动自己的操作（诊断用，例如 "session" / "items"）。 */
+ncl_err ncl_focas_call(ncl_focas *focas, const char *operation,
+                       const ncl_json *params, ncl_json **result);
+/** 最近一次交换的原始报文，给 §6 的审计轨迹用。 */
+void    ncl_focas_last_raw(ncl_focas *focas, ncl_driver_raw *out);
 
-/**
- * Parse a command code written as a bare number: `"36"`, `"0x24"`, `"0x8b"`.
- * The `CB:` prefix is accepted too (`"CB:0x24"`), mostly so a configuration can
- * say "this is a raw block, not an item name".
- */
-bool ncl_focas_parse_code(const char *text, uint16_t *code);
-
-/** Name of a command code, or NULL. Several items share a code (`0x8b`). */
-const char *ncl_focas_code_name(uint16_t code);
-
-/* =============================================================== values == */
-
-/**
- * Decode @p count elements of @p dtype out of @p data (big endian, as every
- * field on this wire is). *values receives a scalar, or an array when
- * @p count > 1. Unknown types answer NCL_ERR_INVALID_DATA_TYPE.
- */
-ncl_err ncl_focas_decode(const uint8_t *data, size_t len, ncl_dtype dtype,
-                         size_t count, ncl_json **values);
-
-#ifdef __cplusplus
+/*
+ * 协议层不在这里：PDU 帧格式、命令/回复块、item 码表、以及驱动构造函数与 raw 逃逸口
+ * 都在 clients/focas/ncl_focas_pdu.h（-Iclients 才到得了，现场不需要）。
+ */#ifdef __cplusplus
 }
 #endif
 

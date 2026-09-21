@@ -5,6 +5,159 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 重构：删掉"待抓包"的声明形状 —— 能不能读由 client 的函数返回值说
+
+`NCL_DATAITEM_PENDING[_SAMPLED]` / `NCL_CONFIG_PENDING` 这种宏只表达一件事：**这条路径还
+没有实现**。它让点位表替 client 说话，而且抓包补上时要改两处（点位表 + client）。现在只剩
+一个机制：**点位照常声明、照常绑函数，函数回 `NCL_ERR_UNAVAILABLE`**。
+
+- **新增错误码 `NCL_ERR_UNAVAILABLE`（-15，`ncl_err_name()` → `UnavailableException`）**：
+  点位声明了、在模型里，但这一份构建还没有它要的协议调用（通常是帧还没抓到）。它不是"读
+  失败"（根本没问过机器），也不是 `NCL_ERR_NOT_SUPPORTED`（那表示操作没声明）。
+- 声明层：删掉三个 `*_PENDING` 宏，以及 `ncl_tool_point` 的 `available` / `summary` 两个
+  字段（`summary` 原来兼作模型里数据项的 `description`，跟着删；描述性的东西不进这条链路）。
+  每个点位都必须有函数（校验器照旧拒 `fn == NULL`）。**模块 ABI 2 → 3**：点位结构体变了，
+  老模块会被装载器明确拒收，不会按错位的偏移读。
+- 工具层（`src/tool/tool.c`）：点位函数回 `NCL_ERR_UNAVAILABLE` 时，这条点位答
+  `<路径>：还读不了（UnavailableException）`（作者自己用 `ncl_tool_fail()` 带了理由就原样
+  用作者的），**不写 §6 审计** —— 没问过机器，就没有"发生过的请求"。这个状态**学出来就记住**
+  （"这一份构建没有那个调用"不会自己变），新增 `ncl_tool_point_unavailable()` 供宿主查询。
+- 宿主（`src/tool/host.c`）：`ncl_host_point_available()` / `ncl_host_point_summary()` 换成
+  `ncl_host_point_unavailable()`；轮询第一次读到"还读不了"就学下来，之后不再把周期浪费在它
+  身上；`ncl_host_poll_one()` 对它直接回 `NCL_ERR_UNAVAILABLE`（不去找机器）；`--once` 自检
+  把它列成 `<待抓包>`、**不计失败**（退出码照旧 0），真读失败才计失败。
+- 新增取值形状 **`NCL_DATAITEM_JSON[_SAMPLED]` / `NCL_CONFIG_JSON`**（+ `ncl_tool_value_json()`）：
+  值不是标量时（报警的 `{"number","text"}`、刀具表这类表），client 直接把 JSON 交出来。
+- client（`clients/focas`）：新增 `ncl_focas_alarm()` / `ncl_focas_axis_position_cmd()` /
+  `ncl_focas_tool_list()` —— 帧还没抓到的那三条调用现在**有名字、有位置、有一句话理由**
+  （`ncl_focas_last_error()`；"要抓哪一帧"写在函数注释里）。`plugins/focas.c` 那 7 个点位
+  改用普通绑定，一行都没多写。
+- 测试：`tests/test_tool.c` 的 pending 用例改成"还没实现的帧"（模型、采样通道占位、
+  `code=NG` + "还读不了"、作者自带理由原样出去、不进审计、状态是学出来的）；
+  `tests/test_host_tool.c` / `tests/module_tool_basic.c` 同步；MSVC **42/42** 通过。
+- 文档：`plugins/README.md`（2.5 节：`NCL_ERR_UNAVAILABLE`；形状表加 `_JSON`；ABI 3）、
+  `plugins/FANUC-ADAPTER.md`（自检与 `--probe` 输出、点位表、"待抓包"一节、ABI 3）、
+  `MANUAL.md`（错误码表 + 声明一节的"还没实现的点位"）。
+
+### 重构：适配器层并回核心 —— tool 层（`src/tool/`）+ 唯一设备程序 `ncl_server`
+
+写一台 NC-Link 设备原来要维护一棵与核心平行的树（`adapters/`：2500 行宿主 + 自己的
+头文件目录 + 自己的驱动注册表 + 自己的测试）。这与本项目的初衷相反：**引用核心、
+写一个声明式的 tool 文件、启动**就够了。现在适配器层的全部实现都在核心旁边：
+
+- `src/tool/`（与 `src/server/` 同级）＝ tool 层：`tool.c`（声明 → 模型/绑定，原
+  `src/core/tool.c`）、`driver.c`（驱动骨架：地址模型、错误分级、会话规则）、
+  `module.c`（模块装载器）、`audit.c`（§6 审计）、`host.c`（宿主：声明 + 配置 → 设备）、
+  `main.c`（唯一的程序入口）。
+- 公共头：`include/nclink_adapter/{ncl_driver,ncl_audit,ncl_module}.h` 并入
+  `include/nclink/`；`ncl_adapter.h` 变成 `include/nclink/ncl_host.h`（API 由
+  `ncl_adapter_*` 更名为 `ncl_host_*`）。`include/nclink_adapter/` 与 `adapters/`
+  两个目录删除。
+- 厂商适配器：`adapters/plugins/focas.c` → `plugins/focas.c`，一个文件一个适配器，
+  由 `plugins/CMakeLists.txt` 编成 `<build>/plugins/ncl_driver_<工具名>.dll|.so`。
+  程序 `ncl_adapter` 更名为 `ncl_server`：装载 `<root>/plugins` → 注册模块声明的
+  工具 → 跑 MQTT/REST/轮询。默认配置路径改为 `<root>/conf/device.json`。
+- 测试：`adapters/tests/*` 并入 `tests/`（`test_adapter_tool.c` → `test_host_tool.c`，
+  套件名 `adapter_tool` → `host_tool`，`test_driver.c` / `test_audit.c` 照旧）。
+
+**按“没有消费者就不留”删掉的死代码**：
+
+- 协议工厂注册表整块：`ncl_driver_register_protocol()`、`ncl_driver_register_builtin()`、
+  `ncl_driver_create()`、`ncl_driver_protocol_count()`、`ncl_driver_protocol_known()`，
+  以及 `driver.c` 里 12 条内置协议注册和随之而来的 `clients/**` 头文件依赖（只保留
+  `ncl_driver_factory` 这个类型）。适配器现在直接 `ncl_focas_create()`、
+  `ncl_modbus_tcp_create()`，协议名不再出现在配置里。
+- 一代模块 ABI（模块交驱动工厂）在装载层本来就拒收，注释里"老式驱动模块"的提示保留。
+- 由此核心库不再依赖协议客户端：`nclink_core`（含 tool 层）与 `nclink_clients` 彻底
+  分开，适配器模块两个都连；CMake 选项 `NCLINK_BUILD_ADAPTERS` 换成
+  `NCLINK_BUILD_CLIENTS`，`nclink_drivers` 静态库与 `nclink::drivers` 目标消失。
+- 测试侧同步：`tests/test_driver.c` 删掉 registry 套件、mock 直接用
+  `ncl_mock_driver_create()`；`tests/test_point_map.h` 去掉"按 type 查表"分支（驱动
+  必须由工厂传进来）；`clients/tests/*` 各套件改为直接构造它测的那个客户端。
+
+构建脚本同步：`build-linux.sh`（核心库排除 `src/tool/main.c`、产出
+`libnclink_clients.a`、`bin/ncl_server`、`plugins/*` 适配器模块与测试夹具模块，
+clients 套件改连客户端库）、`.vscode` 的 includePath 换成 `clients` / `clients/include`。
+
+验证：Windows/MSVC `build.ps1` **41/41 通过**（含新的 `host_tool` 端到端套件；
+`driver` / `audit` 曾被 CMake 顺序问题静默跳过，已修正并纳入）；`sh -n build-linux.sh`
+语法通过（Linux 全量本轮未在本机执行，需在 Linux 容器里复跑一次）。
+
+尚未完成（后续提交）：运行期目录方案（`conf/device/<id>.json`、模型 `conf/model/<id>.json`、
+`data/` 下的本机文件目录、两个 `ftp.txt` 改名为 `conf/ftp-server.json` /
+`conf/ftp-client.json`）、MQTT 监护线程、HTTP 配置面扩展、`plugins/README.md` 与
+`plugins/FANUC-ADAPTER.md` 的改写、README/MANUAL 其余章节的措辞。
+
+### 新增：声明式适配器的"绑定档" + client 的语义层（FOCAS 是样板）
+
+写一台设备原来要写"一个 dispatch 函数 + 每个点位挂它"，点位表里还得把协议地址摆出来。
+现在常见点位**一行绑定**就够：client 给出有名字的语义函数，适配器把函数绑到模型路径上。
+
+- **绑定宏族**：`NCL_DATAITEM_I64 / F64 / BOOL / STR`（+ `_SAMPLED` / `_RW`），
+  `NCL_CONFIG_*` 同形但没 `_SAMPLED`（配置不许采样）；方法用 `NCL_METHOD_CALL`。
+  **实例就是 `open()` 返回的那个指针**，所以绑定宏里不写实例名 —— "必须有一个 client
+  实例"是结构上的，不是纪律。语义函数签名按族固定（出参类型就是宏名里的类型）；
+  给现场参数（轴号、子项）时同一个宏名加第三个参数即可，不用记第二个名字。
+  失败 → 应答 `code=NG` + "路径 + 动作 + 错误名"的一句话理由。
+- **FOCAS 语义层**：`clients/focas/focas_values.c` 把"哪个 item、哪一块、怎么由 ODBST
+  位域推三态"固定进 client，公开头新增一节"现场接口（语义）"：
+  `ncl_focas_open/close/connected/last_error` + `status / part_count / program_name /
+  axis_position / axis_speed`，再加给覆盖档用的 `read_item / call / last_raw`。
+- **`plugins/focas.c` 重写**：328 → 147 行，20 个点位里 18 条是绑定，2 个方法（会话/项表
+  诊断）是覆盖 —— 绑定与覆盖混用一张表。协议细节（PDU 帧、item 码、回复块）从这个文件里
+  彻底消失。
+- **文件收敛**：删 `clients/focas/ncl_focas_driver.h`（内容就是过时的地址模型说明 + 一个
+  构造函数声明），帧层与构造函数进新的内部头 `clients/focas/ncl_focas_pdu.h`；公开头
+  `nclink/clients/focas.h` 从 344 行缩到 107 行，只剩现场接口。删掉 `focas_write_batch`
+  这个只回 `NOT_SUPPORTED` 的桩（FOCAS 只读；骨架对空缺位本来就回同一个答案），
+  `focas_raw`（逆向用的 raw 逃逸口）保留，但只在内部头里说明。
+- **PART_COUNT 改成整型**：`ncl_focas_part_count(ncl_focas *, long long *)`，插件用
+  `NCL_DATAITEM_I64_SAMPLED` 绑定。32 册表 7 与 FANUC 附录原来记成 string，是记错了
+  （示例模型一直按数值用），两处文档一并改回 number。
+- 测试：新增 `tests/test_bind.c`（四种取值、带现场参数、读写、只读点被拒、语义函数报错
+  → NG 带错误名、配置型绑定落进 `configs`、方法与覆盖档拿到同一个实例）。
+  Windows/MSVC 与 Linux/gcc 13.5 均 **42/42**。
+
+### 变更：点位路径相对设备节点（设备类型只写一次）
+
+点位路径原来要求每条都写设备段（`/MACHINE/STATUS`），而设备类型配置里已经有一份 —— 两处
+必须一致，改机型要动整张表。现在：
+
+```c
+NCL_TOOL_BEGIN("focas", "FANUC 数控机床", "MACHINE", 1000, 1000, open, close)
+    NCL_DATAITEM_STR_SAMPLED("/STATUS",             ncl_focas_status)
+    NCL_DATAITEM_STR_SAMPLED("/CONTROLLER/PROGRAM", ncl_focas_program_name)
+    NCL_DATAITEM_F64("/AXIS@X/POSITION@REAL", ncl_focas_axis_position, NCL_FOCAS_AXIS_X)
+NCL_TOOL_END()
+```
+
+- **设备类型在 `NCL_TOOL_BEGIN` 的第三个参数里定义一次**（表 1 的设备对象类型）；
+  配置里的 `device.type` 可以不写，写了就必须一致（不一致启动即报错，不再有"两处必须
+  同步"的负担）。
+- **路径相对设备节点，且可以任意深**：最后一段是数据/配置对象，前面每一段都是组件
+  （组件可以嵌套）；每一段都能用 `type@number` 区分（`AXIS@X`、`SUB@1`、
+  `POSITION@REAL`）。模型写出器据此逐段建组件、父子嵌套。
+- **对外的路径不变**：模型里的路径、采样通道、REST 地址、`ncl_host_point_path()` 仍是
+  绝对路径 `/MACHINE/...`（由设备段拼出来）；登记时把相对路径拼成绝对路径存进
+  registration，绑定键与 §6 审计轨迹都用绝对路径。点位**名字**（方法名/schema）仍从相对
+  路径推：`/AXIS@X/POSITION@REAL` → `AXIS_X.POSITION_REAL`，`focas/AXIS_X.POSITION_REAL`。
+- 新增 `ncl_tool_model_path()`（相对 → 绝对，宿主拼轮询路径用它）；`tests/test_tool.c` 新增
+  "路径任意深：中间每段是组件，子组件的 number 也照写"用例（顺带抓出模型写出器按"点数"
+  分配组件槽位的越界写：深层路径下一个点位会建多个组件，槽位改成按路径斜杠数上界分配）。
+
+### 文档：适配器作者指南重写、新增协议实现笔记、FANUC 现场手册改口径
+
+- `plugins/README.md` 从 530 行重写为 203 行：三种写法（绑定 / 覆盖 / 写协议）、声明语法
+  速查（路径规则、两族宏与形状表、操作位、PENDING、参数三条通道）、模块装载与 ABI、配置
+  文件（只剩参数/设备/采样/broker）、命令行与自检审计、构建测试、排错表、例子索引。
+- 新增 `clients/README.md`：协议一览（client 构造函数、端口、现场地址写法）+ 各协议笔记
+  （原适配器文档里的协议知识，配置样例换成"现场怎么用"）+ 加一个新协议（最小面、错误分级、
+  按批分配、测试要求）+ 语义层怎么补（FOCAS 是样板）。
+- `plugins/FANUC-ADAPTER.md`：程序名 `ncl_adapter` → `ncl_server`，第 5 节改成"绑定 + 覆盖"
+  的点位表（含 `PART_COUNT` 数值、刀具列表进 `configs`、7 个待抓包/待核对），第 6 节改成
+  "换模块就是换机型"的三步。
+- `MANUAL.md` / `README.md` / `RELEASE.md` / 32 册：目录结构、构建选项（`NCLINK_BUILD_CLIENTS`
+  与 `NCLINK_BUILD_PLUGINS`）、套件口径（42 套 = 31 套核心与工具层 + 11 套协议客户端）。
 ### 变更：模型写 `dataType`（跟字典走）+ 刀具列表 `/MACHINE/CONTROLLER/TOOL`
 
 声明式工具生成的模型原来一项 `dataType` 都没有，而 `FILE`（dict）、刀具列表（list）这类

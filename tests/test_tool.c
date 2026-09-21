@@ -119,13 +119,13 @@ static ncl_err fixture_dispatch(void *ctx, const ncl_tool_point *self,
                          "unsupported operation on %s", self->path);
 }
 
-NCL_TOOL_BEGIN("cnc", "FANUC 数控机床（夹具）", 1000, 2000,
+NCL_TOOL_BEGIN("cnc", "FANUC 数控机床（夹具）", "MACHINE", 1000, 2000,
                fixture_open, fixture_close)
-    NCL_DATAITEM_SAMPLED("/MACHINE/STATUS@RUN", fixture_dispatch, &k_run_item)
+    NCL_DATAITEM_SAMPLED("/STATUS@RUN", fixture_dispatch, &k_run_item)
     /* 表 6 的 NAME 属"不常变"的元信息：进模型的 configs，不进采样通道。 */
-    NCL_CONFIG("/MACHINE/NAME", fixture_dispatch, NULL)
-    NCL_DATAITEM_RW("/MACHINE/MODE", fixture_dispatch, NULL)
-    NCL_METHOD("/MACHINE/RESET", fixture_dispatch, NULL)
+    NCL_CONFIG("/NAME", fixture_dispatch, NULL)
+    NCL_DATAITEM_RW("/MODE", fixture_dispatch, NULL)
+    NCL_METHOD("/RESET", fixture_dispatch, NULL)
 NCL_TOOL_END_WITH_RAW(fixture_last_raw)
 
 /** The declaration the macros above built, by value. */
@@ -250,13 +250,19 @@ static void test_validate(void)
     NCL_TEST_CASE("point names have to be unique and usable as method names");
     points[0] = decl.points[0];
     points[1] = decl.points[0];
-    points[1].path = "/PLC/STATUS@RUN";
     broken.points = points;
     broken.point_count = 2;
-    /* 同一个名字、同一种操作：方法名会撞车，直接拒 */
+    /* 同一条路径声明两次：绑定键与方法名都会撞，直接拒 */
     expect_refused(&broken, "both declare");
+    /* 两条不同路径也可能推出同一个名字：'@' 换成 '_'，所以 /AXIS@X/POSITION 与
+     * /AXIS_X/POSITION 都叫 AXIS_X.POSITION —— 一样拒。 */
+    points[1].path = "/AXIS_X/POSITION";
+    points[0] = decl.points[2];
+    points[0].path = "/AXIS@X/POSITION";
+    expect_refused(&broken, "both declare");
+    points[0] = decl.points[0];
     points[1] = decl.points[0];
-    points[1].path = "/MACHINE/MODE.read";
+    points[1].path = "/MODE.read";
     expect_refused(&broken, ".read/.write");
 
     NCL_TEST_CASE("a missing sample period is not an error, it means no channel");
@@ -283,9 +289,9 @@ static void test_validate(void)
         char name[256];
 
         named[0] = decl.points[0];
-        named[0].path = "/TEST/AXIS@0/POSITION";
+        named[0].path = "/AXIS@0/POSITION";
         named[1] = decl.points[1];
-        named[1].path = "/TEST/AXIS@1/POSITION";
+        named[1].path = "/AXIS@1/POSITION";
         nested.points = named;
         nested.point_count = 2;
         ncl_strbuf_init(&err);
@@ -296,7 +302,7 @@ static void test_validate(void)
                          "AXIS_1.POSITION");
         /* 两条路径推不出同一个名字，所以尾段重名不再是问题；真撞了（比如分段里
          * 有点号）还是会被拒。 */
-        named[1].path = "/TEST/AXIS@0/POSITION"; /* 同一条路径，声明两次 */
+        named[1].path = "/AXIS@0/POSITION"; /* 同一条路径，声明两次 */
         ncl_strbuf_reset(&err);
         NCL_CHECK_EQ_INT(ncl_tool_validate(&nested, &err), NCL_ERR_INVALID_ARG);
         NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "both declare") != NULL);
@@ -407,9 +413,9 @@ static void test_model(void)
         ncl_json *direct_item;
 
         nested[0] = decl.points[0];
-        nested[0].path = "/MACHINE/CONTROLLER/PROGRAM";
+        nested[0].path = "/CONTROLLER/PROGRAM";
         nested[1] = decl.points[2]; /* a data item (points[1] 是 config) */
-        nested[1].path = "/MACHINE/STATUS";
+        nested[1].path = "/STATUS";
         nested_decl.points = nested;
         nested_decl.point_count = 2;
         ncl_strbuf_reset(&err);
@@ -495,34 +501,115 @@ static void test_model_paths_match_declaration(void)
             ncl_node_map_init(&paths);
             NCL_CHECK_EQ_INT(ncl_root_node_path_map(root, &paths), NCL_OK);
             for (i = 0; i < decl.point_count; i++) {
+                char absolute[NCL_PATH_MAX_BUF];
                 char id[32];
                 ncl_node *node;
 
                 if (ncl_tool_point_is_method(&decl.points[i])) {
                     continue; /* a method: it is not a data item */
                 }
+                (void)ncl_tool_model_path(&decl, decl.points[i].path, absolute,
+                                          sizeof(absolute));
                 snprintf(id, sizeof(id), "p%u", (unsigned)i);
                 node = ncl_node_find_by_id(root, id);
                 NCL_CHECK(node != NULL);
                 if (node != NULL) {
-                    NCL_CHECK_EQ_STR(ncl_node_path(node), decl.points[i].path);
+                    /* 模型里的路径是绝对路径：声明的相对路径 + 设备段 */
+                    NCL_CHECK_EQ_STR(ncl_node_path(node), absolute);
                 }
-                /* 反向也要能查到：拿声明的路径去模型里找节点。 */
-                NCL_CHECK(ncl_node_map_get(&paths, decl.points[i].path) != NULL);
+                /* 反向也要能查到：拿模型路径去模型里找节点。 */
+                NCL_CHECK(ncl_node_map_get(&paths, absolute) != NULL);
             }
             ncl_node_map_free(&paths);
             ncl_node_free(root);
         }
     }
 
-    NCL_TEST_CASE("配置里的设备类型和点位路径的设备段必须是同一个名字");
+    NCL_TEST_CASE("设备类型在声明里定义一次：配置里写了就必须一致");
     device = ncl_json_new_object();
     (void)ncl_json_obj_set_string(device, "type", "ROBOT");
     ncl_strbuf_reset(&err);
     model = ncl_tool_model(&decl, device, &err);
     NCL_CHECK(model == NULL);
-    NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "设备段") != NULL);
+    NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "不一致") != NULL);
     ncl_json_free(device);
+    device = ncl_json_new_object();
+    (void)ncl_json_obj_set_string(device, "type", "MACHINE");
+    ncl_strbuf_reset(&err);
+    model = ncl_tool_model(&decl, device, &err); /* 同名的就在 */
+    NCL_CHECK(model != NULL);
+    ncl_json_free(model);
+    ncl_json_free(device);
+    ncl_strbuf_free(&err);
+}
+
+/*
+ * 声明路径有多深，模型树就有多深：除了最后一段（数据对象），前面每一段都是一个
+ * 组件；子组件也能用 "type@number" 区分（这里是两个 SUB，number 1 和 2）。
+ */
+static void test_nested_components(void)
+{
+    ncl_tool_decl decl = fixture_decl();
+    ncl_tool_point points[2];
+    ncl_json *model;
+    ncl_strbuf err;
+
+    NCL_TEST_CASE("路径任意深：中间每段是组件，子组件的 number 也照写");
+    points[0] = decl.points[1]; /* 一个 config（/NAME）换条深路径 */
+    points[0].path = "/CONTROLLER/SUB@1/PARAM";
+    points[1] = decl.points[1];
+    points[1].path = "/CONTROLLER/SUB@2/PARAM";
+    decl.points = points;
+    decl.point_count = 2;
+    ncl_strbuf_init(&err);
+    model = ncl_tool_model(&decl, NULL, &err);
+    NCL_CHECK(model != NULL);
+    if (model != NULL) {
+        ncl_json *device =
+            ncl_json_arr_get(ncl_json_obj_get(model, "devices"), 0);
+        ncl_json *components =
+            device != NULL ? ncl_json_obj_get(device, "components") : NULL;
+        ncl_json *controller;
+        ncl_json *subs;
+
+        NCL_CHECK(components != NULL);
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(components), 1);
+        controller = ncl_json_arr_get(components, 0);
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(controller, "type"),
+                         "CONTROLLER");
+        /* 两层组件挂在 CONTROLLER 底下，各自带 number */
+        subs = ncl_json_obj_get(controller, "components");
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(subs), 2);
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(subs, 0),
+                                                 "type"),
+                         "SUB");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(subs, 0),
+                                                 "number"),
+                         "1");
+        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(subs, 1),
+                                                 "number"),
+                         "2");
+        NCL_CHECK_EQ_INT(
+            ncl_json_arr_len(
+                ncl_json_obj_get(ncl_json_arr_get(subs, 0), "configs")),
+            1);
+
+        /* 树的路径 = 设备段 + 整条声明路径（最后一段是数据对象） */
+        {
+            char *text = ncl_json_write_string(model);
+            ncl_node *root = text != NULL ? ncl_root_node_parse(text) : NULL;
+            ncl_node *node = root != NULL ? ncl_node_find_by_id(root, "p1") : NULL;
+
+            NCL_CHECK(node != NULL);
+            if (node != NULL) {
+                NCL_CHECK_EQ_STR(ncl_node_path(node),
+                                 "/MACHINE/CONTROLLER/SUB@2/PARAM");
+            }
+            ncl_node_free(root);
+            ncl_free_safe(text);
+        }
+        ncl_json_free(model);
+    }
     ncl_strbuf_free(&err);
 }
 
@@ -747,15 +834,15 @@ static ncl_err collection_dispatch(void *ctx, const ncl_tool_point *self,
 
 /** dict 的操作集 = 读、写、取属性、新建、删除；刀具列表（list）只要读那几种。 */
 static const ncl_tool_point k_collection_points[] = {
-    NCL_CONFIG_OPS("/MACHINE/CONTROLLER/FILE", collection_dispatch, NULL,
+    NCL_CONFIG_OPS("/CONTROLLER/FILE", collection_dispatch, NULL,
                    NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) |
                        NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES) |
                        NCL_OP_BIT(NCL_OP_ADD) | NCL_OP_BIT(NCL_OP_DELETE))
-    NCL_CONFIG_OPS("/MACHINE/CONTROLLER/TOOL", collection_dispatch, NULL,
+    NCL_CONFIG_OPS("/CONTROLLER/TOOL", collection_dispatch, NULL,
                    NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
                        NCL_OP_BIT(NCL_OP_GET_KEYS))
     /* COORDINATE 与刀具表一样是一张表（LIST）。 */
-    NCL_CONFIG_OPS("/MACHINE/CONTROLLER/COORDINATE", collection_dispatch, NULL,
+    NCL_CONFIG_OPS("/CONTROLLER/COORDINATE", collection_dispatch, NULL,
                    NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
                        NCL_OP_BIT(NCL_OP_GET_KEYS))
 };
@@ -772,37 +859,71 @@ static ncl_tool_decl file_decl(void)
     return decl;
 }
 
-/* ---------------------------------------------------------------- pending -- */
+/* -------------------------------------------------------- 还没实现的帧 -- */
 
 /*
- * 待抓包的点位：协议调用还没抓到帧，但架构上已经定下来了。它和普通点位的差别只有一条
- * —— 没有函数可调。模型里有它、客户端问它有明确答复、采样通道里可能占着位置，唯独轮询
- * 不碰它。
+ * 协议调用还没实现的点位：声明得和别的点位一模一样（有函数、有操作），差别只在
+ * 函数回什么 —— NCL_ERR_UNAVAILABLE（见 ncl_common.h）："这一份 client 还没有它
+ * 要的协议调用"。模型里有它、客户端问它有明确答复、采样通道里占着位置、轮询不碰
+ * 它、§6 审计里也没有它 —— 全是这一个码说了算，点位表上没有任何"待抓包"的形状。
  *
  * 自己的声明表，夹具那张表不动，别的用例不受影响。
  */
-static const ncl_tool_point k_pending_points[] = {
-    NCL_DATAITEM_SAMPLED("/MACHINE/STATUS", fixture_dispatch, &k_run_item)
-    NCL_DATAITEM_PENDING_SAMPLED("/MACHINE/WARNING", "报警：待抓包（cnc_rdalmmsg2）")
-    NCL_DATAITEM_PENDING("/MACHINE/AXIS@X/POSITION@CMD",
-                         "目标位置：待抓包（cnc_rdposition）")
-    NCL_DATAITEM_PENDING("/MACHINE/AXIS@Y/POSITION@CMD",
-                         "目标位置：待抓包（cnc_rdposition）")
+
+/** 装成 client 的语义函数：帧还没抓到，只报"还没有"，不编值。 */
+static ncl_err unreadable_f64(void *instance, long long arg, double *value)
+{
+    (void)instance;
+    (void)arg;
+    (void)value;
+    return NCL_ERR_UNAVAILABLE;
+}
+
+/** 同上，结构化出参那一支（报警是 {"number","text"}）。 */
+static ncl_err unreadable_json(void *instance, ncl_json **value)
+{
+    (void)instance;
+    if (value != NULL) {
+        *value = NULL;
+    }
+    return NCL_ERR_UNAVAILABLE;
+}
+
+/** 自己带理由的那一种：照常 ncl_tool_fail()，理由原样进应答（工具层只看码）。 */
+static ncl_err unreadable_told(void *ctx, const ncl_tool_point *self,
+                               ncl_operation op, const ncl_json *params,
+                               ncl_json **result, char **reason)
+{
+    (void)ctx;
+    (void)self;
+    (void)op;
+    (void)params;
+    (void)result;
+    return ncl_tool_fail(reason, NCL_ERR_UNAVAILABLE, "报警：帧待抓包（%s）",
+                         "cnc_rdalmmsg2");
+}
+
+static const ncl_tool_point k_unreadable_points[] = {
+    NCL_DATAITEM_SAMPLED("/STATUS", fixture_dispatch, &k_run_item)
+    NCL_DATAITEM_JSON_SAMPLED("/WARNING", unreadable_json)
+    NCL_DATAITEM_F64("/AXIS@X/POSITION@CMD", unreadable_f64, 0)
+    NCL_DATAITEM_F64("/AXIS@Y/POSITION@CMD", unreadable_f64, 0)
+    NCL_DATAITEM("/ALARM", unreadable_told, NULL)
 };
 
-static ncl_tool_decl pending_decl(void)
+static ncl_tool_decl unreadable_decl(void)
 {
     ncl_tool_decl decl = fixture_decl();
 
-    decl.points = k_pending_points;
+    decl.points = k_unreadable_points;
     decl.point_count =
-        sizeof(k_pending_points) / sizeof(k_pending_points[0]);
+        sizeof(k_unreadable_points) / sizeof(k_unreadable_points[0]);
     return decl;
 }
 
-static void test_pending(void)
+static void test_unreadable(void)
 {
-    ncl_tool_decl decl = pending_decl();
+    ncl_tool_decl decl = unreadable_decl();
     ncl_strbuf err;
     ncl_json *model;
     char *model_json;
@@ -810,14 +931,15 @@ static void test_pending(void)
     ncl_server *server;
     ncl_tool_registration *registration = NULL;
 
-    NCL_TEST_CASE("a pending point is still a point: no function, but a reason");
+    NCL_TEST_CASE("a point whose protocol call is not implemented is a point "
+                  "like any other");
     ncl_strbuf_init(&err);
     NCL_CHECK_EQ_INT(ncl_tool_validate(&decl, &err), NCL_OK);
     NCL_CHECK_EQ_INT((int)err.len, 0);
     NCL_CHECK(ncl_tool_point_handles(&decl.points[1], NCL_OP_GET_VALUE));
     NCL_CHECK(decl.points[1].sampled);
-    NCL_CHECK(!decl.points[1].available);
-    NCL_CHECK(decl.points[1].fn == NULL);
+    /* 有函数 —— "还没有"这件事就写在 client 的那个函数里，不在点位表上。 */
+    NCL_CHECK(decl.points[1].fn != NULL);
     {
         char name[256];
 
@@ -828,23 +950,20 @@ static void test_pending(void)
                          "AXIS_X.POSITION_CMD");
     }
 
-    NCL_TEST_CASE("a pending point has to say why it cannot be read yet");
+    NCL_TEST_CASE("a point with no function is refused, whatever it answers");
     {
         ncl_tool_point points[2];
         ncl_tool_decl broken = decl;
 
         points[0] = decl.points[0];
         points[1] = decl.points[1];
-        points[1].summary = NULL;
+        points[1].fn = NULL;
         broken.points = points;
         broken.point_count = 2;
-        expect_refused(&broken, "needs a summary");
-        points[1].summary = "   ";
-        expect_refused(&broken, "needs a summary");
+        expect_refused(&broken, "has no function");
     }
 
-    NCL_TEST_CASE("the model carries it with its reason, and the channel keeps "
-                  "its place");
+    NCL_TEST_CASE("the model carries them, and the channel keeps their place");
     ncl_strbuf_reset(&err);
     model = ncl_tool_model(&decl, NULL, &err);
     NCL_CHECK(model != NULL);
@@ -859,12 +978,10 @@ static void test_pending(void)
         ncl_json *ids = ncl_json_obj_get(channel, "ids");
         ncl_json *warning = ncl_json_arr_get(items, 1);
 
-        NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 2);
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(items), 3); /* STATUS, WARNING, ALARM */
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(warning, "name"),
                          "报警信息");
-        NCL_CHECK_EQ_STR(ncl_json_obj_get_string(warning, "description"),
-                         "报警：待抓包（cnc_rdalmmsg2）");
-        /* 默认采样通道：抽样的待抓包点位占着位置（现场要求报警进通道），
+        /* 默认采样通道：抽样的那个占着位置（现场要求报警进通道），
          * 没抽样的目标位置不在通道里。 */
         NCL_CHECK_EQ_INT(ncl_json_arr_len(ids), 2);
         NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(ids, 1), "id"),
@@ -891,19 +1008,44 @@ static void test_pending(void)
         NCL_CHECK_EQ_INT(ncl_tool_register(server, &decl, NULL, &k_sink,
                                            &registration, &err),
                          NCL_OK);
-        request = query("/MACHINE/WARNING");
-        response = ncl_server_invoke_query(server, request);
-        ncl_message_free(request);
-        NCL_CHECK(response != NULL);
-        if (response != NULL) {
-            item = (ncl_query_response_item *)ncl_message_item_at(response, 0);
-            NCL_CHECK(item != NULL);
-            if (item != NULL) {
-                NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_NG);
-                NCL_CHECK(item->reason != NULL &&
-                          strstr(item->reason, "待抓包") != NULL);
+        if (registration != NULL) {
+            /* 学之前谁也不知道：读一次，答"还读不了"，理由说清是哪条路径。 */
+            NCL_CHECK(!ncl_tool_point_unavailable(registration, 1));
+            request = query("/MACHINE/WARNING");
+            response = ncl_server_invoke_query(server, request);
+            ncl_message_free(request);
+            NCL_CHECK(response != NULL);
+            if (response != NULL) {
+                item = (ncl_query_response_item *)ncl_message_item_at(response, 0);
+                NCL_CHECK(item != NULL);
+                if (item != NULL) {
+                    NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_NG);
+                    NCL_CHECK(item->reason != NULL &&
+                              strstr(item->reason, "还读不了") != NULL);
+                    NCL_CHECK(item->reason != NULL &&
+                              strstr(item->reason, "/MACHINE/WARNING") != NULL);
+                }
+                ncl_message_free(response);
             }
-            ncl_message_free(response);
+            /* 学过就记住了：宿主据此不再轮询它（ncl_host_point_unavailable）。 */
+            NCL_CHECK(ncl_tool_point_unavailable(registration, 1));
+            NCL_CHECK(!ncl_tool_point_unavailable(registration, 0));
+
+            /* 作者自己带了理由的那种：原样出去，工具层不重写。 */
+            request = query("/MACHINE/ALARM");
+            response = ncl_server_invoke_query(server, request);
+            ncl_message_free(request);
+            NCL_CHECK(response != NULL);
+            if (response != NULL) {
+                item = (ncl_query_response_item *)ncl_message_item_at(response, 0);
+                NCL_CHECK(item != NULL);
+                if (item != NULL) {
+                    NCL_CHECK_EQ_STR(item->code, NCL_KW_CODE_NG);
+                    NCL_CHECK(item->reason != NULL &&
+                              strstr(item->reason, "cnc_rdalmmsg2") != NULL);
+                }
+                ncl_message_free(response);
+            }
         }
         /* Nothing went over the wire, so the trail has no entry: a request
          * that never happened is not a request. */
@@ -1146,7 +1288,7 @@ static void test_collection_ops(void)
 
     NCL_TEST_CASE("声明里写不出来的操作名不许出现在点位名里");
     point = k_collection_points[0];
-    point.path = "/MACHINE/CONTROLLER/FILE.add";
+    point.path = "/CONTROLLER/FILE.add";
     broken.points = &point;
     broken.point_count = 1;
     expect_refused(&broken, ".add");
@@ -1350,19 +1492,21 @@ static void test_several_tools(void)
                          "COORDINATE");
     }
 
-    NCL_TEST_CASE("设备段不一样的声明合不进来");
+    NCL_TEST_CASE("不是同一台设备的声明合不进来");
     {
         ncl_tool_decl foreign = second;
-        ncl_tool_point point = k_collection_points[0];
+        ncl_json *other_device = ncl_json_new_object();
         ncl_strbuf probe;
 
-        point.path = "/PLC1/CONTROLLER/FILE";
-        foreign.points = &point;
-        foreign.point_count = 1;
+        /* 设备段只在 device.type 里写一次，所以"另一台设备"就是这个对象不一样 */
+        NCL_CHECK(other_device != NULL);
+        (void)ncl_json_obj_set_string(other_device, "type", "PLC1");
         ncl_strbuf_init(&probe);
-        NCL_CHECK(ncl_tool_model_add(model, &foreign, NULL, &probe) == NULL);
+        NCL_CHECK(ncl_tool_model_add(model, &foreign, other_device, &probe) ==
+                  NULL);
         NCL_CHECK(probe.len > 0);
         ncl_strbuf_free(&probe);
+        ncl_json_free(other_device);
     }
 
     ncl_json_free(model);
@@ -1374,9 +1518,10 @@ NCL_TEST_MAIN_BEGIN()
     test_validate();
     test_model();
     test_model_paths_match_declaration();
+    test_nested_components();
     test_helpers();
     test_register_and_invoke();
-    test_pending();
+    test_unreadable();
     test_collection_ops();
     test_several_tools();
 NCL_TEST_MAIN_END()

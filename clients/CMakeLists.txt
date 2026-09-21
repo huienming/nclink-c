@@ -7,17 +7,17 @@
 #                    share.
 #
 # A client is the reusable half: it speaks bytes and sessions (Modbus frames,
-# FOCAS blocks, ...). An *adapter* is the device-specific program in
-# ../adapters: it decides which points exist and what they mean, and is what
-# the host (ncl_adapter) loads. Keeping the two apart is what lets the same
-# FOCAS/Modbus/... code serve every site with a different point map.
+# FOCAS blocks, ...). An *adapter* is the device-specific file in ../plugins: it
+# declares which points exist and what they mean, and it is what the one device
+# program (ncl_server) loads. Keeping the two apart is what lets the same
+# FOCAS/Modbus/... code serve every site with a different point table.
 #
 # Headers are public under include/nclink/clients/<protocol>.h; the internal
 # ones stay next to their sources and are reached with -Iclients.
 #
-# The FOCAS client is additionally built as a loadable module
-# (plugins/ncl_driver_focas.dll|.so) while the adapter-as-module story is still
-# being built out; see NCLINK_BUILD_PLUGINS.
+# Nothing here is registered under a protocol name: an adapter constructs the
+# client it talks through (ncl_focas_create(), ncl_modbus_tcp_create(), ...).
+# The FOCAS adapter is built as a loadable module from ../plugins/focas.c.
 
 file(GLOB_RECURSE NCLINK_CLIENT_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/*/*.c")

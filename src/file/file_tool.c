@@ -815,9 +815,9 @@ static void file_tool_close(void *ctx)
     file_state_destroy(ctx);
 }
 
-NCL_TOOL_BEGIN("file", "文件传输（NC-Link 文件通道，字节走 FTP）", 0, 0,
+NCL_TOOL_BEGIN("file", "文件传输（NC-Link 文件通道，字节走 FTP）", "MACHINE", 0, 0,
                file_tool_open, file_tool_close)
-    NCL_CONFIG_OPS("/MACHINE/CONTROLLER/FILE", file_point_fn, NULL,
+    NCL_CONFIG_OPS("/CONTROLLER/FILE", file_point_fn, NULL,
                    NCL_OP_BIT(NCL_OP_GET_VALUE) |
                        NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES) |
                        NCL_OP_BIT(NCL_OP_ADD) | NCL_OP_BIT(NCL_OP_DELETE) |

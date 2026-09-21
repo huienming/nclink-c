@@ -494,7 +494,7 @@ static void slave_stop(slave *s)
 
 static ncl_driver *tcp_driver(slave *s, int retries)
 {
-    ncl_driver *driver = ncl_driver_create("modbus_tcp");
+    ncl_driver *driver = ncl_modbus_tcp_create();
     ncl_strbuf json;
     ncl_json *params;
 
@@ -765,7 +765,7 @@ static void test_silent_device(void)
 
 static void test_rtu_needs_a_port(void)
 {
-    ncl_driver *driver = ncl_driver_create("modbus_rtu");
+    ncl_driver *driver = ncl_modbus_rtu_create();
     ncl_json *params;
 
     NCL_TEST_CASE("RTU without a serial port is a configuration error");

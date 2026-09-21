@@ -147,7 +147,7 @@ if ($WithSource) {
     Copy-Tree "tests" "tests" @("*.c", "*.h", "*.json", "*.txt")
     Copy-Tree "tools" "tools" @("*.py", "*.mjs", "*.ps1")
     Copy-Tree "clients" "clients" @("*.c", "*.h", "*.md", "*.txt")
-    Copy-Tree "adapters" "adapters" @("*.c", "*.h", "*.md", "*.txt")
+    Copy-Tree "plugins" "plugins" @("*.c", "*.md", "*.txt")
 }
 
 # Language bindings: sources only, they link the packaged static libraries

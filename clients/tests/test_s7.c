@@ -486,7 +486,7 @@ static void s7_slave_stop(s7_slave *s)
 
 static ncl_driver *s7_driver(s7_slave *s, const char *extra)
 {
-    ncl_driver *driver = ncl_driver_create("s7_tcp");
+    ncl_driver *driver = ncl_s7_tcp_create();
     ncl_strbuf json;
     ncl_json *params;
 

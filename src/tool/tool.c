@@ -243,15 +243,13 @@ char *ncl_tool_point_name(const ncl_tool_point *point, char *buf, size_t cap)
     if (point == NULL || point->path == NULL) {
         return buf;
     }
-    /* 名字 = 路径去掉设备段，'@' 换 '_'、'/' 换 '.'：
-     *   /MACHINE/STATUS             -> STATUS
-     *   /MACHINE/AXIS@X/POSITION@REAL -> AXIS_X.POSITION_REAL
+    /* 名字 = 路径（相对设备节点），'@' 换 '_'、'/' 换 '.'：
+     *   /STATUS                -> STATUS
+     *   /AXIS@X/POSITION@REAL  -> AXIS_X.POSITION_REAL
      * 路径唯一，名字就唯一，所以不用手写名字。 */
     p = point->path;
     if (p[0] == '/') {
-        const char *slash = strchr(p + 1, '/');
-
-        p = slash != NULL ? slash + 1 : p + 1;
+        p++;
     }
     for (; *p != '\0' && used + 1 < cap; p++) {
         buf[used++] = *p == '@' ? '_' : (*p == '/' ? '.' : *p);
@@ -285,18 +283,20 @@ static const char *point_op_suffix(ncl_operation op)
  * operations are suffixed, because they are addressed by model path rather
  * than by name and the suffix keeps every name unique.
  */
-static void point_method_name(const ncl_tool_point *point, ncl_operation op,
+/**
+ * 方法名（schema 里那个 "<点位名>" 或 "<点位名>.read"）从**声明里的路径**推，
+ * 不是从绝对路径 —— 现场写的 "/AXIS@X/POSITION@REAL" 就该叫
+ * AXIS_X.POSITION_REAL，设备段不参与命名。
+ */
+static void point_method_name(const char *point_name, ncl_operation op,
                               char *buffer, size_t size)
 {
-    char name[256];
-    const char *suffix;
+    const char *suffix = point_op_suffix(op);
 
-    (void)ncl_tool_point_name(point, name, sizeof(name));
-    suffix = point_op_suffix(op);
     if (suffix == NULL) {
-        (void)snprintf(buffer, size, "%s", name);
+        (void)snprintf(buffer, size, "%s", point_name);
     } else {
-        (void)snprintf(buffer, size, "%s.%s", name, suffix);
+        (void)snprintf(buffer, size, "%s.%s", point_name, suffix);
     }
 }
 
@@ -341,16 +341,12 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
                         point->path);
             return NCL_ERR_INVALID_ARG;
         }
-        if (!point->available) {
-            /* Declared but not readable yet: there is no function and there may
-             * be nothing to call, so the only thing it has to carry is the
-             * reason the site will be shown ("frame not captured yet"). */
-            if (ncl_str_is_blank(point->summary)) {
-                err_append1(err, "the pending point %s needs a summary",
-                            point->path);
-                return NCL_ERR_INVALID_ARG;
-            }
-        } else if (point->fn == NULL) {
+
+        /* Every point has a function, including one whose protocol call has not
+         * been implemented yet: that one answers NCL_ERR_UNAVAILABLE from its
+         * function (see ncl_tool_point::fn), which keeps "what is declared" and
+         * "what can be read" in one place. */
+        if (point->fn == NULL) {
             err_append1(err, "the point %s has no function", point->path);
             return NCL_ERR_INVALID_ARG;
         }
@@ -388,7 +384,7 @@ ncl_err ncl_tool_validate(const ncl_tool_decl *decl, ncl_strbuf *err)
                         point->path);
             return NCL_ERR_INVALID_ARG;
         }
-        if (point->ops == 0 && point->available) {
+        if (point->ops == 0) {
             err_append1(err, "the point %s declares no operation", point->path);
             return NCL_ERR_INVALID_ARG;
         }
@@ -661,16 +657,78 @@ static char *tool_component_label(const char *type, const char *number)
  * tree is the standard's device -> component -> data object instead of a flat
  * list, and the device node answers on the segment its points live under.
  */
-/** One component of the model: the middle segment of a declared path. */
+/**
+ * One component of the model. A declared path may be any depth, so a component is
+ * identified by its whole chain ("/CONTROLLER", "/CONTROLLER/SUB") and its node
+ * lives in its parent's "components" array (the device's for the first level).
+ */
 typedef struct {
-    const char *segment; /**< borrowed from the path: "CONTROLLER", "AXIS@X" */
-    size_t      length;
+    const char *path;    /**< borrowed: the chain, "/CONTROLLER/SUB" */
+    size_t      path_len;
+    const char *segment; /**< the last segment: "SUB" (type@number lives here) */
+    size_t      segment_len;
     char        id[32];
-    ncl_json   *node;    /**< owned by the device's components array */
+    ncl_json   *node;    /**< owned by the parent's components array */
     ncl_json   *items;   /**< dataItems: handed to the node when filled */
     ncl_json   *configs; /**< configs: the same for the slow changing ones */
 } tool_group;
 
+/** 设备段：声明里 NCL_TOOL_BEGIN 的第三个参数，缺省 "MACHINE"。只此一处。 */
+static const char *tool_device_prefix(const ncl_tool_decl *decl, char *buf,
+                                      size_t cap)
+{
+    if (buf == NULL || cap == 0) {
+        return "MACHINE";
+    }
+    if (decl != NULL && !ncl_str_is_blank(decl->device_type) &&
+        strlen(decl->device_type) + 1 <= cap) {
+        memcpy(buf, decl->device_type, strlen(decl->device_type) + 1);
+        return buf;
+    }
+    snprintf(buf, cap, "%s", "MACHINE");
+    return buf;
+}
+
+const char *ncl_tool_model_path(const ncl_tool_decl *decl,
+                                const char *relative_path, char *buf,
+                                size_t cap)
+{
+    char prefix[64];
+
+    if (buf == NULL || cap == 0) {
+        return relative_path;
+    }
+    buf[0] = '\0';
+    if (ncl_str_is_blank(relative_path)) {
+        return buf;
+    }
+    (void)tool_device_prefix(decl, prefix, sizeof(prefix));
+    if (relative_path[0] == '/') {
+        snprintf(buf, cap, "/%s%s", prefix, relative_path);
+    } else {
+        snprintf(buf, cap, "/%s/%s", prefix, relative_path);
+    }
+    return buf;
+}
+
+/** 一个组件的 components 数组（父节点是设备时用设备自己的那个）。 */
+static ncl_json *group_components(ncl_json *device_components,
+                                  ncl_json *parent_node)
+{
+    ncl_json *array;
+
+    if (parent_node == NULL) {
+        return device_components;
+    }
+    array = ncl_json_obj_get(parent_node, "components");
+    if (array == NULL) {
+        array = ncl_json_new_array();
+        if (array != NULL) {
+            (void)ncl_json_obj_set(parent_node, "components", array);
+        }
+    }
+    return array;
+}
 ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                          ncl_strbuf *err)
 {
@@ -690,25 +748,25 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
     ncl_json *ids = NULL;
     tool_group *groups = NULL;
     size_t group_count = 0;
-    const char *prefix = NULL; /**< the device segment, e.g. "MACHINE" */
-    size_t prefix_len = 0;
+    size_t group_capacity = 0;
+    char prefix_buf[64];       /**< the device segment, e.g. "MACHINE" */
+    const char *prefix = NULL;
     size_t i;
 
     if (ncl_tool_validate(decl, err) != NCL_OK) {
         return NULL;
     }
-    for (i = 0; i < decl->point_count; i++) {
-        const ncl_tool_point *point = &decl->points[i];
-        const char *slash;
-
-        if (ncl_tool_point_is_method(point)) {
-            continue; /* a method: it belongs in the schema, not here */
-        }
-        slash = strchr(point->path + 1, '/');
-        prefix = point->path + 1;
-        prefix_len = slash != NULL ? (size_t)(slash - (point->path + 1))
-                                   : strlen(point->path + 1);
-        break;
+    /* 设备段只有一个来源：配置里的 device.type，缺省 "MACHINE"。声明里的路径相对
+     * 它，所以这里算一次，模型树、组件判断、绝对路径拼接都用同一个名字。 */
+    prefix = tool_device_prefix(decl, prefix_buf, sizeof(prefix_buf));
+    /* 配置里的 device.type 是同一件事的重复确认：写了就得和声明一致（不写也行）。 */
+    if (!ncl_str_is_blank(device_type) && strcmp(device_type, prefix) != 0) {
+        err_appendf(err,
+                    "配置里的 device.type（%s）与声明里的设备类型（%s）不一致："
+                    "设备类型定义在 NCL_TOOL_BEGIN 里，配置里要么不写，"
+                    "要么写成同一个",
+                    device_type, prefix);
+        return NULL;
     }
 
     root = ncl_json_new_object();
@@ -719,7 +777,26 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
     configs = ncl_json_new_array();
     channel = ncl_json_new_object();
     ids = ncl_json_new_array();
-    groups = (tool_group *)ncl_mem_calloc(decl->point_count, sizeof(*groups));
+    /*
+     * 一个组件一个槽。路径可以任意深，所以一个点位可能创建好几个组件，槽位按
+     * "所有路径的斜杠数"这个上界给（每个斜杠最多对应一个组件）。
+     */
+    {
+        size_t slots = 0;
+
+        for (i = 0; i < decl->point_count; i++) {
+            const char *p;
+
+            for (p = decl->points[i].path; p != NULL && *p != '\0'; p++) {
+                if (*p == '/') {
+                    slots++;
+                }
+            }
+        }
+        group_capacity = slots;
+    }
+    groups = (tool_group *)ncl_mem_calloc(group_capacity > 0 ? group_capacity : 1,
+                                         sizeof(*groups));
     if (root == NULL || devices == NULL || node == NULL || items == NULL ||
         components == NULL || configs == NULL || channel == NULL ||
         ids == NULL || groups == NULL) {
@@ -730,35 +807,9 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
     (void)ncl_json_obj_set_string(root, "name", "适配器设备模型");
     (void)ncl_json_obj_set_string(root, "version", "1.1.0");
 
-    /* The device node's type is the first segment of every declared path, so
-     * the model tree walks to exactly the path the declaration wrote. A device
-     * type that disagrees with that segment would give two different paths for
-     * one point (the tree says one thing, source/config another), so it is
-     * refused by name instead of being papered over with a "source". */
-    if (prefix != NULL && !ncl_str_is_blank(device_type) &&
-        (strlen(device_type) != prefix_len ||
-         strncmp(device_type, prefix, prefix_len) != 0)) {
-        err_appendf(err,
-                    "点位路径的设备段 /%.*s 与配置里的 device.type（%s）不一致："
-                    "两者必须是同一个名字，否则模型里的路径和点位路径对不上",
-                    (int)prefix_len, prefix, device_type);
-        goto fail;
-    }
-    {
-        char type_buf[128];
-
-        if (!ncl_str_is_blank(device_type)) {
-            (void)ncl_json_obj_set_string(node, "type", device_type);
-        } else if (prefix != NULL && prefix_len < sizeof(type_buf)) {
-            /* No device type in the configuration: the declaration's first
-             * segment is what the points are already addressed by. */
-            memcpy(type_buf, prefix, prefix_len);
-            type_buf[prefix_len] = '\0';
-            (void)ncl_json_obj_set_string(node, "type", type_buf);
-        } else {
-            (void)ncl_json_obj_set_string(node, "type", "MACHINE");
-        }
-    }
+    /* 声明里的路径相对设备节点，设备段就是配置里的 device.type —— 只此一处，
+     * 所以没有"两处必须一致"这回事，也没有第二个地方要改。 */
+    (void)ncl_json_obj_set_string(node, "type", prefix);
     (void)ncl_json_obj_set_string(node, "id",
                                   ncl_str_is_blank(device_id) ? "01"
                                                               : device_id);
@@ -792,15 +843,12 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         if (item == NULL) {
             goto fail;
         }
-        /* "/MACHINE/AXIS@X/POSITION@REAL": the slash after the device segment is
-         * not the last one, so what sits between them is a component. */
-        if (prefix != NULL && last != NULL) {
-            const char *after = point->path + 1 + prefix_len;
-
-            if (*after == '/' && after != last) {
-                component = after + 1;
-                component_len = (size_t)(last - component);
-            }
+        /* "/AXIS@X/POSITION@REAL": 首个斜杠与最后一个斜杠之间是组件。 */
+        if (last != NULL && last != point->path) {
+            /* "/AXIS@X/POSITION@REAL"：首个斜杠与最后一个斜杠之间是组件；
+             * "/STATUS" 只有一个斜杠，没有组件。 */
+            component = point->path + 1;
+            component_len = (size_t)(last - component);
         }
         split_type_number(tail, &type, &number);
         config_kind = point->config;
@@ -832,9 +880,6 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         if (number != NULL) {
             (void)ncl_json_obj_set_string(item, "number", number);
         }
-        if (point->summary != NULL) {
-            (void)ncl_json_obj_set_string(item, "description", point->summary);
-        }
         /* 取值形状跟着字典的 type 走（FILE → HASH、TOOL → LIST…）：标量不写，
          * 手写的那份模型也是这样。`number` 在它前面（第 4 部分的字段顺序）。 */
         {
@@ -851,36 +896,59 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
         ncl_free_safe(number);
 
         if (component != NULL) {
-            size_t g;
+            /*
+             * 组件链："…/CONTROLLER/SUB/PARAM" 里 "/CONTROLLER" 与
+             * "/CONTROLLER/SUB" 是两层组件（册 3 表 2：组件可以嵌套），最后一段
+             * 才是这个数据对象。声明路径有多深，模型树就有多深。
+             */
+            const char *cursor = point->path;
+            ncl_json *parent_node = NULL; /* NULL = 直接挂设备 */
+            size_t deepest = 0;
 
-            for (g = 0; g < group_count; g++) {
-                if (groups[g].length == component_len &&
-                    strncmp(groups[g].segment, component, component_len) == 0) {
-                    break;
-                }
-            }
-            if (g == group_count) {
-                char *name = ncl_strndup(component, component_len);
-                char *ctype = NULL;
-                char *cnumber = NULL;
-                const char *at = (const char *)memchr(component, '@',
-                                                      component_len);
+            while (cursor < component + component_len) {
+                const char *scan = cursor + 1;
+                size_t g;
 
-                if (name == NULL) {
-                    ncl_json_free(item);
-                    goto fail;
+                while (scan < component + component_len && *scan != '/') {
+                    scan++;
                 }
-                if (at != NULL) {
-                    ctype = ncl_strndup(component,
-                                        (size_t)(at - component));
-                    cnumber = ncl_strndup(at + 1,
-                                          component_len -
-                                              (size_t)(at - component) - 1);
-                } else {
-                    ctype = ncl_strndup(component, component_len);
+                for (g = 0; g < group_count; g++) {
+                    if (groups[g].path_len == (size_t)(scan - point->path) &&
+                        strncmp(groups[g].path, point->path,
+                                groups[g].path_len) == 0) {
+                        break;
+                    }
                 }
-                groups[g].segment = component;
-                groups[g].length = component_len;
+                if (g == group_count) {
+                    const char *segment = cursor + 1;
+
+                    if (group_count >= group_capacity) {
+                        ncl_json_free(item);
+                        goto fail; /* 上界算错才会到这里 */
+                    }
+                    size_t segment_len = (size_t)(scan - segment);
+                    char *name = ncl_strndup(segment, segment_len);
+                    char *ctype = NULL;
+                    char *cnumber = NULL;
+                    const char *at = (const char *)memchr(segment, '@',
+                                                          segment_len);
+
+                    if (name == NULL) {
+                        ncl_json_free(item);
+                        goto fail;
+                    }
+                    if (at != NULL) {
+                        ctype = ncl_strndup(segment, (size_t)(at - segment));
+                        cnumber = ncl_strndup(at + 1,
+                                              segment_len -
+                                                  (size_t)(at - segment) - 1);
+                    } else {
+                        ctype = ncl_strndup(segment, segment_len);
+                    }
+                    groups[g].path = point->path;
+                    groups[g].path_len = (size_t)(scan - point->path);
+                    groups[g].segment = segment;
+                    groups[g].segment_len = segment_len;
                 groups[g].node = ncl_json_new_object();
                 groups[g].items = ncl_json_new_array();
                 groups[g].configs = ncl_json_new_array();
@@ -912,14 +980,23 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
                     (void)ncl_json_obj_set_string(groups[g].node, "number",
                                                   cnumber);
                 }
-                (void)ncl_json_arr_push(components, groups[g].node);
+                /* 挂进父组件的 components（第一层挂设备）——组件可以嵌套，所以
+                 * 每一层都要有自己的数组。 */
+                (void)ncl_json_arr_push(
+                    group_components(components, parent_node),
+                    groups[g].node);
                 ncl_free_safe(name);
                 ncl_free_safe(ctype);
                 ncl_free_safe(cnumber);
                 group_count++;
+                }
+                parent_node = groups[g].node;
+                deepest = g;
+                cursor += groups[g].segment_len + 1;
             }
             /* 组件下的数据对象同样分两类（第 3 部分是"组件也各有 configs"）。 */
-            target = config_kind ? groups[g].configs : groups[g].items;
+            target = config_kind ? groups[deepest].configs
+                                 : groups[deepest].items;
         }
         (void)ncl_json_arr_push(target, item);
 
@@ -1242,6 +1319,13 @@ typedef struct {
     /** Where the §6 trail goes (borrowed from the caller; may be NULL). */
     const ncl_tool_audit  *audit;
     const ncl_tool_decl   *decl;
+    /**
+     * 学出来的一条状态，不是声明出来的：这个点位的函数回过 NCL_ERR_UNAVAILABLE，
+     * 也就是这份 client 还没实现那个协议调用（见 ncl_common.h）。它是"这一份
+     * 构建"的属性，进程活着的期间不会变，所以回一次就记下来 —— 宿主据此不再
+     * 把轮询浪费在一个读不了的节点位上（ncl_tool_point_unavailable()）。
+     */
+    bool                   unreadable;
 } ncl_tool_shim;
 
 struct ncl_tool_registration {
@@ -1249,6 +1333,13 @@ struct ncl_tool_registration {
     void                *ctx;
     ncl_tool_shim       *shims;
     size_t               shim_count;
+    /**
+     * 点位的一份绝对路径副本（声明里写的是相对路径）：服务器按模型路径寻址，
+     * 审计轨迹也要显示客户端看到的那个路径，所以登记时把设备段拼上，之后所有对外
+     * 的路径都用这一份 —— 声明保持相对，两侧不会漂。
+     */
+    ncl_tool_point      *points;
+    char               (*paths)[NCL_PATH_MAX_BUF];
 };
 
 /** The frames of the last exchange, when the trail wants them (§6). */
@@ -1294,26 +1385,37 @@ static void shim_read_old_value(const ncl_tool_shim *shim, ncl_json **old_value)
 }
 
 /**
- * The answer a point that is declared but not readable yet gives (see
- * NCL_DATAITEM_PENDING / NCL_CONFIG_PENDING): the declaration's own summary is the reason. Nothing went
- * over the wire, so the §6 trail stays empty - a request that never happened is
- * not a request.
+ * The answer of a point that cannot be read yet: its function answered
+ * NCL_ERR_UNAVAILABLE, which means this build has no protocol call for it - the
+ * frame has not been captured. The point stays in the model (the site sees what
+ * is coming) and this is what asking for it says.
+ *
+ * A function that wants the client's own words in the answer sets @p reason
+ * itself (ncl_tool_fail(), exactly like any other failure); otherwise the
+ * standard sentence names the point and the state. Either way the state is
+ * remembered in @p shim, so a host leaves the point out of its rounds from here
+ * on (ncl_tool_point_unavailable()).
  */
-static ncl_err shim_unavailable(const ncl_tool_shim *shim, char **reason)
+static ncl_err shim_not_readable(ncl_tool_shim *shim, char **reason)
 {
-    return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED, "%s：%s",
-                         shim->point->path,
-                         shim->point->summary != NULL
-                             ? shim->point->summary
-                             : "还读不了（待抓包）");
+    shim->unreadable = true;
+    if (reason != NULL && *reason != NULL) {
+        return NCL_ERR_UNAVAILABLE;
+    }
+    return ncl_tool_fail(reason, NCL_ERR_UNAVAILABLE, "%s：还读不了（%s）",
+                         shim->point->path, ncl_err_name(NCL_ERR_UNAVAILABLE));
 }
 
 /**
- * What every operation goes through: the availability check, the old value a
- * write replaces, the call itself, the trail. Only the writing operations
- * (NCL_OP_WRITE_MASK) read the old value - a read has nothing to replace.
+ * What every operation goes through: the old value a write replaces, the call
+ * itself, the trail. Only the writing operations (NCL_OP_WRITE_MASK) read the
+ * old value - a read has nothing to replace.
+ *
+ * A point whose function answers NCL_ERR_UNAVAILABLE never reaches the trail:
+ * nothing was asked of the machine, and a request that never happened is not a
+ * request (§6 wants the frames of the exchanges that did happen).
  */
-static ncl_err shim_run(const ncl_tool_shim *shim, ncl_operation op,
+static ncl_err shim_run(ncl_tool_shim *shim, ncl_operation op,
                         const ncl_json *params, ncl_json **result, char **reason)
 {
     int64_t started = ncl_time_monotonic_millis();
@@ -1321,13 +1423,21 @@ static ncl_err shim_run(const ncl_tool_shim *shim, ncl_operation op,
     ncl_json *old_value = NULL;
     ncl_err rc;
 
-    if (!shim->point->available) {
-        return shim_unavailable(shim, reason);
+    if (shim->unreadable) {
+        return shim_not_readable(shim, reason); /* learned earlier */
     }
     if (writes) {
         shim_read_old_value(shim, &old_value);
     }
     rc = shim->point->fn(shim->ctx, shim->point, op, params, result, reason);
+    if (rc == NCL_ERR_UNAVAILABLE) {
+        if (result != NULL) {
+            ncl_json_free(*result); /* 读不了就不该有值 */
+            *result = NULL;
+        }
+        ncl_json_free(old_value);
+        return shim_not_readable(shim, reason);
+    }
     if (writes && shim->audit != NULL && shim->audit->write != NULL) {
         shim->audit->write(shim->audit->user, shim->decl->name, shim->point,
                            old_value, ncl_tool_param_value(params), rc);
@@ -1346,7 +1456,7 @@ static ncl_err shim_run(const ncl_tool_shim *shim, ncl_operation op,
     static ncl_err shim_name(void *instance, const ncl_json *params,           \
                              ncl_json **result, char **reason)                 \
     {                                                                          \
-        return shim_run((const ncl_tool_shim *)instance, (op_value), params,   \
+        return shim_run((ncl_tool_shim *)instance, (op_value), params,          \
                         result, reason);                                       \
     }
 
@@ -1446,6 +1556,24 @@ ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
     }
     registration->shim_count = operations;
     registration->decl = decl;
+    /* 相对路径 → 绝对路径：一份点位副本 + 一份路径缓冲，登记期间一直活着。 */
+    registration->points = (ncl_tool_point *)ncl_mem_calloc(
+        decl->point_count, sizeof(ncl_tool_point));
+    registration->paths = (char (*)[NCL_PATH_MAX_BUF])ncl_mem_calloc(
+        decl->point_count, NCL_PATH_MAX_BUF);
+    if (registration->points == NULL || registration->paths == NULL) {
+        ncl_mem_free(registration->points);
+        ncl_mem_free(registration->paths);
+        ncl_mem_free(registration->shims);
+        ncl_mem_free(registration);
+        return NCL_ERR_NOMEM;
+    }
+    for (i = 0; i < decl->point_count; i++) {
+        registration->points[i] = decl->points[i];
+        registration->points[i].path = ncl_tool_model_path(
+            decl, decl->points[i].path, registration->paths[i],
+            NCL_PATH_MAX_BUF);
+    }
 
     /* Once for the whole tool: every point shares this connection. */
     registration->ctx = decl->open(params, NULL);
@@ -1461,13 +1589,17 @@ ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
      * The tool name is the declaration's, so a call is addressed
      * "<tool>/<point name>" whichever point it lands on. */
     for (i = 0; i < decl->point_count; i++) {
-        const ncl_tool_point *point = &decl->points[i];
+        const ncl_tool_point *point = &registration->points[i];
         ncl_tool_method methods[NCL_OP_COUNT];
         ncl_tool_binding bindings[NCL_OP_COUNT];
         char names[NCL_OP_COUNT][256];
+        char point_name[256];
         ncl_tool_shim *shim = &registration->shims[at];
         size_t count = 0;
         size_t op;
+
+        (void)ncl_tool_point_name(&decl->points[i], point_name,
+                                  sizeof(point_name));
 
         shim->ctx = registration->ctx;
         shim->point = point;
@@ -1479,7 +1611,7 @@ ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
             if (!ncl_tool_point_handles(point, candidate)) {
                 continue;
             }
-            point_method_name(point, candidate, names[count],
+            point_method_name(point_name, candidate, names[count],
                               sizeof(names[count]));
             methods[count].name = names[count];
             methods[count].fn = shim_for(candidate);
@@ -1511,6 +1643,18 @@ void ncl_tool_unregister(const ncl_tool_decl *decl,
     if (decl != NULL && decl->close != NULL) {
         decl->close(registration->ctx);
     }
+    ncl_mem_free(registration->paths);
+    ncl_mem_free(registration->points);
     ncl_mem_free(registration->shims);
     ncl_mem_free(registration);
+}
+
+bool ncl_tool_point_unavailable(const ncl_tool_registration *registration,
+                                size_t index)
+{
+    /* 一个点位一个 shim，顺序就是声明的顺序（见 ncl_tool_register）。 */
+    if (registration == NULL || index >= registration->decl->point_count) {
+        return false;
+    }
+    return registration->shims[index].unreadable;
 }

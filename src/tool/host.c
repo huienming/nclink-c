@@ -2,65 +2,67 @@
 /* Copyright (c) 2026 huienming */
 
 /*
- * NC-Link adapter - configuration to live device.
+ * NC-Link tool layer - the host: a tool declaration plus a configuration in, a
+ * live NC-Link device out.
  *
- * Bring up order: the MQTT session (when the configuration asks for one), the
- * drivers, then the NC-Link model (loaded from a file or generated from the
- * point map), then one operation per point, then the sample channel that
- * publishes them.
+ * What it owns, in bring-up order:
  *
- * One tool per point is what makes the framework's single-instance-per-tool
- * rule work for a generic driver: the instance carries the point's path, so a
- * method stays a plain function and no C code is generated per point.
+ *   1. the broker session, when the configuration (or <root>/conf/mqtt.cfg)
+ *      names one - first, because the server takes the MQTT client at creation
+ *      and needs the session before it can subscribe;
+ *   2. the model: generated from the declaration (one data item per point, one
+ *      sample channel over the sampled ones) or loaded from the file the
+ *      configuration names, for a site that tunes sampling itself;
+ *   3. the server, the declared tool's bindings and the built in file tool;
+ *   4. the point list, resolved against the model, for polling and the self
+ *      check.
  *
- * The broker session lives here rather than in the host so that "a point map
- * in, a device on the bus out" holds for every host: ncl_adapter and the
- * vendor collectors both hand the configuration over and get a device that
- * answers on its MQTT topics. A broker that is not up yet is not fatal - the
- * host's loop calls ncl_adapter_broker_poll(), which retries with a backoff.
+ * A broker that is not up is not fatal: the device program's run loop calls
+ * ncl_host_broker_poll(), which retries with a backoff, so a collector comes up
+ * on a machine whose broker boots later. The host has no thread of its own,
+ * which is what lets a device program stay a plain run loop.
  */
 
-#include "nclink_adapter/ncl_adapter.h"
+#include "nclink/ncl_host.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #include "nclink/ncl_env.h"
 #include "nclink/ncl_file.h"
-#include "nclink_adapter/ncl_driver.h"
-#include "nclink_adapter/ncl_audit.h"
+#include "nclink/ncl_driver.h"
+#include "nclink/ncl_audit.h"
 #include "nclink/ncl_config.h"
 #include "nclink/ncl_logger.h"
 #include "nclink/ncl_mqtt.h"
 #include "nclink/ncl_platform.h"
 
-#include "core/adapter_text.h"
+#include "tool/text.h"
 
 typedef struct {
     char     *path;     /**< owned, the point's model path */
     bool      sampled;
-    /** False for a point that is declared but not readable yet (a pending
-     *  point, see ncl_link's NCL_DATAITEM_PENDING / NCL_CONFIG_PENDING): it stays in the list so the
-     *  self check can name it, but no round ever reads it - it cannot succeed,
-     *  and a round is not the place to learn that again every second. */
-    bool      available;
-    /** Borrowed from the declaration: why it is not readable yet. */
-    const char *summary;
+    /**
+     * Which point of the declaration this is - methods are not in this list, so
+     * the two orders differ. It is what lets the host ask the tool layer about
+     * the point (who answered "还读不了", see ncl_tool_point_unavailable()).
+     */
+    size_t    decl_index;
     ncl_node *node;     /**< borrowed, resolved after the model is up */
-} adapter_point;
+} host_point;
 
-struct ncl_adapter {
+struct ncl_host {
     ncl_server         *server;
     /** The host's loaded modules (borrowed), and the declaration one of them
      *  brought: with @p decl set, the points, the model and the bindings come
      *  from the module and the configuration only carries parameters. */
     const ncl_module_set  *modules;
     const ncl_tool_decl   *decl;
-    /** Owned: what ncl_tool_register() opened, released in ncl_adapter_free(). */
+    /** Owned: what ncl_tool_register() opened, released in ncl_host_free(). */
     ncl_tool_registration *registration;
     /**
      * The file tool is a tool of its own (ncl_file_tool_declaration()), so an
-     * adapter is two tools: the module's and this one. Owned the same way; NULL
+     * host is two tools: the module's and this one. Owned the same way; NULL
      * when the configuration turned it off ("file": false).
      */
     ncl_tool_registration *file_registration;
@@ -69,7 +71,7 @@ struct ncl_adapter {
      *  declaration, or the file the configuration named. Kept after the server
      *  takes its own copy so a host can show or save it (`--model`). */
     ncl_json           *model;
-    adapter_point      *points;
+    host_point      *points;
     size_t              point_count;
     /* MQTT session, owned: NULL when the configuration says offline. */
     ncl_mqtt_client    *mqtt;
@@ -125,7 +127,7 @@ static void err_appendf(ncl_strbuf *err, const char *fmt, ...)
 
 /* ---------------------------------------------------------- declared tool -- */
 
-/* §6: the trail for a declared tool is the host's business, so an adapter
+/* §6: the trail for a declared tool is the host's business, so an host
  * author never writes audit code. The core's shim reports every point call
  * here; what only the module knows - the frames - arrives through the optional
  * last_raw callback, and the address column carries the point's name because
@@ -217,7 +219,7 @@ static const ncl_tool_decl *pick_tool(const ncl_module_set *modules,
  *
  * The second one is what a configuration already holds when the module used to
  * be a driver, so a site does not have to rewrite its connection settings while
- * an adapter moves over to a declaration.
+ * an host moves over to a declaration.
  */
 static const ncl_json *tool_parameters(const ncl_json *config, const char *name);
 
@@ -285,9 +287,9 @@ static const ncl_json *tool_parameters(const ncl_json *config, const char *name)
 }
 
 /** Every point of the declaration is a model path of this device. */
-static ncl_err load_declared_points(ncl_adapter *adapter)
+static ncl_err load_declared_points(ncl_host *host)
 {
-    size_t declared_count = adapter->decl->point_count;
+    size_t declared_count = host->decl->point_count;
     size_t at = 0;
     size_t i;
 
@@ -295,32 +297,39 @@ static ncl_err load_declared_points(ncl_adapter *adapter)
      * it stays out of the point list (and out of the model) - the host reaches
      * it through its binding, exactly like a configuration's "methods". */
     for (i = 0; i < declared_count; i++) {
-        const ncl_tool_point *declared = &adapter->decl->points[i];
+        const ncl_tool_point *declared = &host->decl->points[i];
 
         if (!ncl_tool_point_is_method(declared)) {
-            adapter->point_count++;
+            host->point_count++;
         }
     }
-    if (adapter->point_count == 0) {
+    if (host->point_count == 0) {
         return NCL_OK;
     }
-    adapter->points = (adapter_point *)ncl_mem_calloc(adapter->point_count,
-                                                      sizeof(adapter_point));
-    if (adapter->points == NULL) {
+    host->points = (host_point *)ncl_mem_calloc(host->point_count,
+                                                      sizeof(host_point));
+    if (host->points == NULL) {
         return NCL_ERR_NOMEM;
     }
     for (i = 0; i < declared_count; i++) {
-        const ncl_tool_point *declared = &adapter->decl->points[i];
-        adapter_point *point;
+        const ncl_tool_point *declared = &host->decl->points[i];
+        host_point *point;
 
         if (ncl_tool_point_is_method(declared)) {
             continue;
         }
-        point = &adapter->points[at++];
-        point->path = ncl_strdup(declared->path);
+        point = &host->points[at];
+        point->decl_index = i;
+        at++;
+        {
+            /* 声明里的路径相对设备节点；宿主这一侧要的是客户端能寻址的模型路径
+             * （轮询就是拿着它发 Query），所以在这里拼上设备段。 */
+            char model_path[NCL_PATH_MAX_BUF];
+
+            point->path = ncl_strdup(ncl_tool_model_path(
+                host->decl, declared->path, model_path, sizeof(model_path)));
+        }
         point->sampled = declared->sampled;
-        point->available = declared->available;
-        point->summary = declared->summary;
         if (point->path == NULL) {
             return NCL_ERR_NOMEM;
         }
@@ -335,11 +344,15 @@ static ncl_err load_declared_points(ncl_adapter *adapter)
  *
  * The numeric code of the failure does not survive the response (it carries OK
  * or NG plus the message), so a failed read is reported as NCL_ERR_IO: that is
- * tier 1, which makes ncl_adapter_poll_round() stop instead of paying one
- * connect timeout per point when the machine is down.
+ * tier 1, which makes ncl_host_poll_round() stop instead of paying one
+ * connect timeout per point when the machine is down. The module's own words
+ * arrive through @p reason (owned by the caller; may be NULL), and a point that
+ * answered "还读不了" is told from a failure by asking the tool layer
+ * (ncl_tool_point_unavailable()) - that state is a property of the client, not
+ * of this exchange, so the host reads it, not the response code.
  */
-static ncl_err read_declared_point(ncl_adapter *adapter, const char *path,
-                                   ncl_json **value, ncl_strbuf *err)
+static ncl_err read_declared_point(ncl_host *host, const char *path,
+                                   ncl_json **value, char **reason)
 {
     ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
     ncl_query_request_item *item;
@@ -358,18 +371,16 @@ static ncl_err read_declared_point(ncl_adapter *adapter, const char *path,
     (void)ncl_params_set_string(&item->params, "operation", "get_value");
     (void)ncl_message_set_message_id(request, "poll");
     (void)ncl_message_add_query_request_item(request, item);
-    response = ncl_server_invoke_query(adapter->server, request);
+    response = ncl_server_invoke_query(host->server, request);
     ncl_message_free(request);
     if (response == NULL) {
-        err_append1(err, "cannot read %s", path);
         return NCL_ERR_STATE;
     }
     answer = (ncl_query_response_item *)ncl_message_item_at(response, 0);
     if (answer == NULL || answer->code == NULL ||
         strcmp(answer->code, NCL_KW_CODE_OK) != 0) {
-        err_append1(err, "cannot read %s", path);
-        if (answer != NULL && answer->reason != NULL) {
-            err_append(err, answer->reason);
+        if (reason != NULL && answer != NULL && answer->reason != NULL) {
+            *reason = ncl_strdup(answer->reason);
         }
         result = NCL_ERR_IO;
     } else {
@@ -388,10 +399,10 @@ static ncl_err read_declared_point(ncl_adapter *adapter, const char *path,
  *  tool on the shared pool, so the reader thread does not block). */
 static void broker_on_message(void *user, const ncl_mqtt_publish *publish)
 {
-    ncl_adapter *adapter = (ncl_adapter *)user;
+    ncl_host *host = (ncl_host *)user;
     ncl_message *request;
 
-    if (publish->topic == NULL || adapter->server == NULL) {
+    if (publish->topic == NULL || host->server == NULL) {
         return;
     }
     request = ncl_message_parse(publish->topic,
@@ -401,28 +412,28 @@ static void broker_on_message(void *user, const ncl_mqtt_publish *publish)
         ncl_log_warn("无法解析来自 %s 的报文", publish->topic);
         return;
     }
-    ncl_server_on_message(adapter->server, publish->topic, request);
+    ncl_server_on_message(host->server, publish->topic, request);
 }
 
 static void broker_on_connect(void *user, bool reconnect,
                               const ncl_mqtt_connack *connack)
 {
-    ncl_adapter *adapter = (ncl_adapter *)user;
+    ncl_host *host = (ncl_host *)user;
 
     (void)connack;
     if (reconnect) {
-        ncl_log_info("MQTT 已重连: %s", ncl_adapter_broker_url(adapter));
+        ncl_log_info("MQTT 已重连: %s", ncl_host_broker_url(host));
     }
 }
 
 static void broker_on_disconnect(void *user, uint8_t reason_code,
                                  bool will_reconnect)
 {
-    ncl_adapter *adapter = (ncl_adapter *)user;
+    ncl_host *host = (ncl_host *)user;
 
     ncl_log_warn("MQTT 断开（%s，原因码 %u%s）",
-                 ncl_adapter_broker_url(adapter) != NULL
-                     ? ncl_adapter_broker_url(adapter)
+                 ncl_host_broker_url(host) != NULL
+                     ? ncl_host_broker_url(host)
                      : "?",
                  (unsigned)reason_code,
                  will_reconnect ? "，库会在后台重连" : "");
@@ -433,7 +444,7 @@ static void broker_on_disconnect(void *user, uint8_t reason_code,
  * cannot reach the broker yet is kept (with a backoff) so the poll can retry -
  * a collector must come up on a machine whose broker is still booting.
  */
-static ncl_err broker_open(ncl_adapter *adapter, const ncl_json *config,
+static ncl_err broker_open(ncl_host *host, const ncl_json *config,
                            ncl_strbuf *err)
 {
     ncl_mqtt_client_options options;
@@ -455,25 +466,25 @@ static ncl_err broker_open(ncl_adapter *adapter, const ncl_json *config,
         err_append(err, "mqtt.url is empty (\"offline\": true means offline)");
         return NCL_ERR_INVALID_ARG;
     }
-    adapter->broker_url = ncl_strdup(url);
-    if (adapter->broker_url == NULL) {
+    host->broker_url = ncl_strdup(url);
+    if (host->broker_url == NULL) {
         return NCL_ERR_NOMEM;
     }
-    adapter->broker_delay_ms =
+    host->broker_delay_ms =
         (unsigned)ncl_json_obj_get_int(config, "reconnectDelayMs", 1000);
-    if (adapter->broker_delay_ms < 200u) {
-        adapter->broker_delay_ms = 200u;
+    if (host->broker_delay_ms < 200u) {
+        host->broker_delay_ms = 200u;
     }
-    adapter->broker_delay_max_ms =
+    host->broker_delay_max_ms =
         (unsigned)ncl_json_obj_get_int(config, "reconnectMaxDelayMs", 30000);
-    if (adapter->broker_delay_max_ms < adapter->broker_delay_ms) {
-        adapter->broker_delay_max_ms = adapter->broker_delay_ms;
+    if (host->broker_delay_max_ms < host->broker_delay_ms) {
+        host->broker_delay_max_ms = host->broker_delay_ms;
     }
 
     ncl_mqtt_client_options_default(&options);
-    options.url = adapter->broker_url;
+    options.url = host->broker_url;
     text = ncl_json_obj_get_string(config, "clientId");
-    options.client_id = !ncl_str_is_blank(text) ? text : adapter->sn;
+    options.client_id = !ncl_str_is_blank(text) ? text : host->sn;
     text = ncl_json_obj_get_string(config, "username");
     options.username = !ncl_str_is_blank(text) ? text : NULL;
     text = ncl_json_obj_get_string(config, "password");
@@ -484,55 +495,55 @@ static ncl_err broker_open(ncl_adapter *adapter, const ncl_json *config,
         (unsigned)ncl_json_obj_get_int(config, "connectTimeoutMs", 10000);
     options.automatic_reconnect =
         ncl_json_obj_get_bool(config, "automaticReconnect", true);
-    options.reconnect_delay_ms = adapter->broker_delay_ms;
-    options.reconnect_max_delay_ms = adapter->broker_delay_max_ms;
+    options.reconnect_delay_ms = host->broker_delay_ms;
+    options.reconnect_max_delay_ms = host->broker_delay_max_ms;
     options.on_connect = broker_on_connect;
     options.on_disconnect = broker_on_disconnect;
     options.on_message = broker_on_message;
-    options.user = adapter;
+    options.user = host;
 
-    adapter->mqtt = ncl_mqtt_client_create(&options);
-    if (adapter->mqtt == NULL) {
+    host->mqtt = ncl_mqtt_client_create(&options);
+    if (host->mqtt == NULL) {
         err_append(err, "MQTT 客户端创建失败");
         return NCL_ERR_NOMEM;
     }
-    result = ncl_mqtt_client_connect(adapter->mqtt);
+    result = ncl_mqtt_client_connect(host->mqtt);
     if (result != NCL_OK) {
-        /* Not fatal: the host loop retries (see ncl_adapter_broker_poll). */
-        ncl_log_warn("MQTT 暂未连上 %s：%s（稍后自动重试）", adapter->broker_url,
-                     ncl_mqtt_client_last_error(adapter->mqtt));
-        adapter->broker_retry_at =
-            ncl_time_monotonic_millis() + adapter->broker_delay_ms;
+        /* Not fatal: the host loop retries (see ncl_host_broker_poll). */
+        ncl_log_warn("MQTT 暂未连上 %s：%s（稍后自动重试）", host->broker_url,
+                     ncl_mqtt_client_last_error(host->mqtt));
+        host->broker_retry_at =
+            ncl_time_monotonic_millis() + host->broker_delay_ms;
     } else {
-        adapter->broker_ever_connected = true;
-        ncl_log_info("MQTT 已连接: %s（clientId %s）", adapter->broker_url,
+        host->broker_ever_connected = true;
+        ncl_log_info("MQTT 已连接: %s（clientId %s）", host->broker_url,
                      options.client_id != NULL ? options.client_id : "");
     }
     return NCL_OK;
 }
 
 /** Subscribe the request topics once the session is up. */
-static void broker_subscribe(ncl_adapter *adapter)
+static void broker_subscribe(ncl_host *host)
 {
-    if (adapter->subscribed || adapter->server == NULL) {
+    if (host->subscribed || host->server == NULL) {
         return;
     }
-    if (ncl_server_subscribe(adapter->server) == NCL_OK) {
-        adapter->subscribed = true;
-        ncl_log_info("已订阅 %s 的请求主题", adapter->sn);
+    if (ncl_server_subscribe(host->server) == NCL_OK) {
+        host->subscribed = true;
+        ncl_log_info("已订阅 %s 的请求主题", host->sn);
     } else {
         ncl_log_warn("MQTT 订阅失败，稍后重试");
     }
 }
 
-ncl_err ncl_adapter_config_set_broker(ncl_json *config, const char *broker,
+ncl_err ncl_host_config_set_broker(ncl_json *config, const char *broker,
                                       bool offline, ncl_strbuf *err)
 {
     ncl_json *mqtt;
     ncl_err result = NCL_OK;
 
     if (config == NULL || ncl_json_type_of(config) != NCL_JSON_OBJECT) {
-        err_append(err, "the adapter configuration must be an object");
+        err_append(err, "the host configuration must be an object");
         return NCL_ERR_INVALID_ARG;
     }
     if (broker == NULL && !offline &&
@@ -586,19 +597,19 @@ ncl_err ncl_adapter_config_set_broker(ncl_json *config, const char *broker,
 
 /* ---------------------------------------------------------------- create -- */
 
-static void resolve_nodes(ncl_adapter *adapter)
+static void resolve_nodes(ncl_host *host)
 {
     ncl_node_map map;
     size_t i;
 
     ncl_node_map_init(&map);
-    if (ncl_root_node_path_map(ncl_server_model(adapter->server), &map) !=
+    if (ncl_root_node_path_map(ncl_server_model(host->server), &map) !=
         NCL_OK) {
         ncl_node_map_free(&map);
         return;
     }
-    for (i = 0; i < adapter->point_count; i++) {
-        adapter->points[i].node = ncl_node_map_get(&map, adapter->points[i].path);
+    for (i = 0; i < host->point_count; i++) {
+        host->points[i].node = ncl_node_map_get(&map, host->points[i].path);
     }
     ncl_node_map_free(&map);
 }
@@ -610,39 +621,39 @@ static ncl_json *load_model_document(const ncl_json *config, ncl_strbuf *err)
     if (ncl_str_is_blank(file)) {
         return NULL;
     }
-    return ncl_adapter_json_from_file(file, err);
+    return ncl_tool_json_from_file(file, err);
 }
 
-ncl_adapter *ncl_adapter_create(const ncl_json *config, ncl_strbuf *err)
+ncl_host *ncl_host_create(const ncl_json *config, ncl_strbuf *err)
 {
-    return ncl_adapter_create_with_modules(config, NULL, err);
+    return ncl_host_create_with_modules(config, NULL, err);
 }
 
-ncl_adapter *ncl_adapter_create_with_modules(const ncl_json *config,
+ncl_host *ncl_host_create_with_modules(const ncl_json *config,
                                              const ncl_module_set *modules,
                                              ncl_strbuf *err)
 {
-    ncl_adapter *adapter;
+    ncl_host *host;
     const ncl_json *device;
     ncl_server_options options;
     ncl_json *model = NULL;
     bool tool_conflict = false;
 
     if (ncl_json_type_of(config) != NCL_JSON_OBJECT) {
-        err_append(err, "the adapter configuration must be an object");
+        err_append(err, "the host configuration must be an object");
         return NULL;
     }
-    adapter = (ncl_adapter *)ncl_mem_calloc(1, sizeof(*adapter));
-    if (adapter == NULL) {
+    host = (ncl_host *)ncl_mem_calloc(1, sizeof(*host));
+    if (host == NULL) {
         return NULL;
     }
-    adapter->modules = modules;
-    adapter->decl = pick_tool(modules, &tool_conflict, err);
+    host->modules = modules;
+    host->decl = pick_tool(modules, &tool_conflict, err);
     if (tool_conflict) {
-        ncl_adapter_free(adapter);
+        ncl_host_free(host);
         return NULL;
     }
-    if (adapter->decl == NULL) {
+    if (host->decl == NULL) {
         /* The points live in the module now. A configuration that still carries
          * the old point map is told so by name, because "no driver" would send a
          * site looking in the wrong place. */
@@ -655,35 +666,35 @@ ncl_adapter *ncl_adapter_create_with_modules(const ncl_json *config,
             err_append(err,
                        "配置里的 drivers[]/methods[] 是老写法：点位和方法已经声明在"
                        "适配器模块里，配置只写 tools[].parameters"
-                       "（见 adapters/FANUC-ADAPTER.md 第 5 节）");
+                       "（见 plugins/FANUC-host.md 第 5 节）");
         } else {
             err_append(err, "没有声明式适配器模块：把模块放进 plugins/，"
                             "并在配置里用 tools[].name 指名");
         }
-        ncl_adapter_free(adapter);
+        ncl_host_free(host);
         return NULL;
     }
 
-    adapter->sn = ncl_json_obj_get_string(config, "sn") != NULL
+    host->sn = ncl_json_obj_get_string(config, "sn") != NULL
                       ? ncl_strdup(ncl_json_obj_get_string(config, "sn"))
                       : ncl_sn_read();
-    if (adapter->sn == NULL) {
+    if (host->sn == NULL) {
         err_append(err, "no serial number (\"sn\" or bin/sn.txt)");
-        ncl_adapter_free(adapter);
+        ncl_host_free(host);
         return NULL;
     }
 
     device = ncl_json_obj_get(config, "device");
 
-    if (load_declared_points(adapter) != NCL_OK) {
+    if (load_declared_points(host) != NCL_OK) {
         err_append(err, "out of memory while reading the declaration");
-        ncl_adapter_free(adapter);
+        ncl_host_free(host);
         return NULL;
     }
 
     model = load_model_document(config, err);
     if (model == NULL && ncl_json_obj_get_string(config, "model") != NULL) {
-        ncl_adapter_free(adapter);
+        ncl_host_free(host);
         return NULL;
     }
     if (model == NULL) {
@@ -691,10 +702,10 @@ ncl_adapter *ncl_adapter_create_with_modules(const ncl_json *config,
          * one sample channel over the sampled ones, periods from the
          * declaration. A configuration that names a "model" file wins above -
          * that is where a site tunes sampling. */
-        model = ncl_tool_model(adapter->decl, device, err);
+        model = ncl_tool_model(host->decl, device, err);
         if (model == NULL) {
             err_append(err, "cannot build the model");
-            ncl_adapter_free(adapter);
+            ncl_host_free(host);
             return NULL;
         }
         /* The file tool is a tool of its own: its FILE point joins the model.
@@ -703,302 +714,328 @@ ncl_adapter *ncl_adapter_create_with_modules(const ncl_json *config,
             ncl_tool_model_add(model, ncl_file_tool_declaration(), device,
                                err) == NULL) {
             err_append(err, "cannot add the file tool to the model");
-            ncl_adapter_free(adapter);
+            ncl_host_free(host);
             return NULL;
         }
     }
 
     /* The broker first: the server takes the client at creation and needs the
      * session up before it can subscribe. */
-    if (broker_open(adapter, ncl_json_obj_get(config, "mqtt"), err) != NCL_OK) {
-        ncl_adapter_free(adapter);
+    if (broker_open(host, ncl_json_obj_get(config, "mqtt"), err) != NCL_OK) {
+        ncl_host_free(host);
         return NULL;
     }
 
     /* A copy stays here: the server owns its own, and a host that wants to look
      * at (or hand out) the model it is running should not have to guess it. */
-    adapter->model = ncl_json_clone(model);
-    if (adapter->model == NULL) {
+    host->model = ncl_json_clone(model);
+    if (host->model == NULL) {
         ncl_json_free(model);
-        ncl_adapter_free(adapter);
+        ncl_host_free(host);
         return NULL;
     }
 
     memset(&options, 0, sizeof(options));
-    options.sn = adapter->sn;
-    options.mqtt = adapter->mqtt;
+    options.sn = host->sn;
+    options.mqtt = host->mqtt;
     options.model_json = ncl_json_write_string(model);
     ncl_json_free(model);
     if (options.model_json == NULL) {
-        ncl_adapter_free(adapter);
+        ncl_host_free(host);
         return NULL;
     }
-    adapter->server = ncl_server_create(&options);
+    host->server = ncl_server_create(&options);
     ncl_free_safe((void *)options.model_json);
-    if (adapter->server == NULL) {
+    if (host->server == NULL) {
         err_append(err, "cannot bring up the NC-Link server");
-        ncl_adapter_free(adapter);
+        ncl_host_free(host);
         return NULL;
     }
     /* The callback is unregistered until the server exists; from here on the
      * request topics can be answered. */
-    if (adapter->mqtt != NULL && ncl_mqtt_client_is_connected(adapter->mqtt)) {
-        broker_subscribe(adapter);
+    if (host->mqtt != NULL && ncl_mqtt_client_is_connected(host->mqtt)) {
+        broker_subscribe(host);
     }
-    resolve_nodes(adapter);
-    if (adapter->decl != NULL) {
+    resolve_nodes(host);
+    if (host->decl != NULL) {
         /* The module opens its own connection and binds its own points; the
          * configuration only supplies its "parameters". */
         const ncl_json *parameters =
-            tool_parameters(config, adapter->decl->name);
+            tool_parameters(config, host->decl->name);
 
-        if (ncl_tool_register(adapter->server, adapter->decl, parameters,
-                              &k_tool_audit, &adapter->registration,
+        if (ncl_tool_register(host->server, host->decl, parameters,
+                              &k_tool_audit, &host->registration,
                               err) != NCL_OK) {
-            ncl_adapter_free(adapter);
+            ncl_host_free(host);
             return NULL;
         }
-        ncl_audit_session(adapter->decl->name, "open", NULL);
+        ncl_audit_session(host->decl->name, "open", NULL);
     }
     /* The file tool: a real tool of its own (declaration included), so it lands
      * in the model above and binds its own point here. Its parameters are the
      * configuration's "tools" entry named "file", with the device's SN in it -
      * the peer keeps files under /<sn>/. */
     if (file_tool_wanted(config)) {
-        ncl_json *file_params = file_tool_parameters(config, adapter->sn);
-        ncl_err rc = ncl_file_tool_register(adapter->server, file_params,
+        ncl_json *file_params = file_tool_parameters(config, host->sn);
+        ncl_err rc = ncl_file_tool_register(host->server, file_params,
                                            &k_tool_audit,
-                                           &adapter->file_registration, err);
+                                           &host->file_registration, err);
 
         ncl_json_free(file_params);
         if (rc != NCL_OK) {
-            ncl_adapter_free(adapter);
+            ncl_host_free(host);
             return NULL;
         }
         ncl_log_info("工具 %s 已注册（%u 个点位）", "file",
                      (unsigned)ncl_file_tool_declaration()->point_count);
     }
-    return adapter;
+    return host;
 }
 
-ncl_adapter *ncl_adapter_create_from_file(const char *path, ncl_strbuf *err)
+ncl_host *ncl_host_create_from_file(const char *path, ncl_strbuf *err)
 {
     ncl_json *config;
-    ncl_adapter *adapter;
+    ncl_host *host;
 
-    config = ncl_adapter_json_from_file(path, err);
+    config = ncl_tool_json_from_file(path, err);
     if (config == NULL) {
         return NULL;
     }
-    adapter = ncl_adapter_create(config, err);
+    host = ncl_host_create(config, err);
     ncl_json_free(config);
-    return adapter;
+    return host;
 }
 
-void ncl_adapter_free(ncl_adapter *adapter)
+void ncl_host_free(ncl_host *host)
 {
     size_t i;
 
-    if (adapter == NULL) {
+    if (host == NULL) {
         return;
     }
     /* The server first: it stops the sample threads that publish through the
-     * MQTT client this adapter owns. */
-    ncl_server_free(adapter->server);
+     * MQTT client this host owns. */
+    ncl_server_free(host->server);
     /* Then the declared tool: the server is gone, so nothing can call into it
      * any more and close() runs exactly once. */
-    if (adapter->decl != NULL) {
-        ncl_audit_session(adapter->decl->name, "close", NULL);
+    if (host->decl != NULL) {
+        ncl_audit_session(host->decl->name, "close", NULL);
     }
-    ncl_tool_unregister(adapter->decl, adapter->registration);
-    ncl_tool_unregister(ncl_file_tool_declaration(), adapter->file_registration);
-    if (adapter->mqtt != NULL) {
-        ncl_mqtt_client_disconnect(adapter->mqtt);
-        ncl_mqtt_client_destroy(adapter->mqtt);
+    ncl_tool_unregister(host->decl, host->registration);
+    ncl_tool_unregister(ncl_file_tool_declaration(), host->file_registration);
+    if (host->mqtt != NULL) {
+        ncl_mqtt_client_disconnect(host->mqtt);
+        ncl_mqtt_client_destroy(host->mqtt);
     }
-    ncl_free_safe(adapter->broker_url);
-    for (i = 0; i < adapter->point_count; i++) {
-        ncl_free_safe(adapter->points[i].path);
+    ncl_free_safe(host->broker_url);
+    for (i = 0; i < host->point_count; i++) {
+        ncl_free_safe(host->points[i].path);
     }
-    ncl_free_safe(adapter->points);
-    ncl_json_free(adapter->model);
-    ncl_free_safe(adapter->sn);
-    ncl_free_safe(adapter);
+    ncl_free_safe(host->points);
+    ncl_json_free(host->model);
+    ncl_free_safe(host->sn);
+    ncl_free_safe(host);
 }
 
 /* -------------------------------------------------------------- accessors -- */
 
-ncl_server *ncl_adapter_server(ncl_adapter *adapter)
+ncl_server *ncl_host_server(ncl_host *host)
 {
-    return adapter != NULL ? adapter->server : NULL;
+    return host != NULL ? host->server : NULL;
 }
 
 
-const ncl_tool_decl *ncl_adapter_tool(const ncl_adapter *adapter)
+const ncl_tool_decl *ncl_host_tool(const ncl_host *host)
 {
-    return adapter != NULL ? adapter->decl : NULL;
+    return host != NULL ? host->decl : NULL;
 }
 
-const ncl_json *ncl_adapter_model(const ncl_adapter *adapter)
+const ncl_json *ncl_host_model(const ncl_host *host)
 {
-    return adapter != NULL ? adapter->model : NULL;
+    return host != NULL ? host->model : NULL;
 }
 
-const char *ncl_adapter_sn(const ncl_adapter *adapter)
+const char *ncl_host_sn(const ncl_host *host)
 {
-    return adapter != NULL ? adapter->sn : NULL;
+    return host != NULL ? host->sn : NULL;
 }
 
-size_t ncl_adapter_point_count(const ncl_adapter *adapter)
+size_t ncl_host_point_count(const ncl_host *host)
 {
-    return adapter != NULL ? adapter->point_count : 0;
+    return host != NULL ? host->point_count : 0;
 }
 
-const char *ncl_adapter_point_path(const ncl_adapter *adapter, size_t index)
+const char *ncl_host_point_path(const ncl_host *host, size_t index)
 {
-    if (adapter == NULL || index >= adapter->point_count) {
+    if (host == NULL || index >= host->point_count) {
         return NULL;
     }
-    return adapter->points[index].path;
+    return host->points[index].path;
 }
 
-const ncl_json *ncl_adapter_point_value(const ncl_adapter *adapter,
+const ncl_json *ncl_host_point_value(const ncl_host *host,
                                         size_t index)
 {
-    if (adapter == NULL || index >= adapter->point_count) {
+    if (host == NULL || index >= host->point_count) {
         return NULL;
     }
-    return adapter->points[index].node != NULL
-               ? adapter->points[index].node->value
+    return host->points[index].node != NULL
+               ? host->points[index].node->value
                : NULL;
 }
 
-bool ncl_adapter_point_available(const ncl_adapter *adapter, size_t index)
+bool ncl_host_point_unavailable(const ncl_host *host, size_t index)
 {
-    if (adapter == NULL || index >= adapter->point_count) {
+    if (host == NULL || index >= host->point_count) {
         return false;
     }
-    return adapter->points[index].available;
+    return ncl_tool_point_unavailable(host->registration,
+                                      host->points[index].decl_index);
 }
 
-const char *ncl_adapter_point_summary(const ncl_adapter *adapter, size_t index)
+const char *ncl_host_broker_url(const ncl_host *host)
 {
-    if (adapter == NULL || index >= adapter->point_count) {
-        return NULL;
-    }
-    return adapter->points[index].summary;
+    return host != NULL ? host->broker_url : NULL;
 }
 
-
-const char *ncl_adapter_broker_url(const ncl_adapter *adapter)
+bool ncl_host_online(const ncl_host *host)
 {
-    return adapter != NULL ? adapter->broker_url : NULL;
+    return host != NULL && host->mqtt != NULL &&
+           ncl_mqtt_client_is_connected((ncl_mqtt_client *)host->mqtt);
 }
 
-bool ncl_adapter_online(const ncl_adapter *adapter)
-{
-    return adapter != NULL && adapter->mqtt != NULL &&
-           ncl_mqtt_client_is_connected((ncl_mqtt_client *)adapter->mqtt);
-}
-
-ncl_err ncl_adapter_broker_poll(ncl_adapter *adapter, ncl_strbuf *err)
+ncl_err ncl_host_broker_poll(ncl_host *host, ncl_strbuf *err)
 {
     ncl_err result;
 
-    if (adapter == NULL) {
+    if (host == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    if (adapter->mqtt == NULL) {
+    if (host->mqtt == NULL) {
         return NCL_OK; /* offline by configuration */
     }
-    if (ncl_mqtt_client_is_connected(adapter->mqtt)) {
-        if (!adapter->subscribed) {
-            broker_subscribe(adapter);
+    if (ncl_mqtt_client_is_connected(host->mqtt)) {
+        if (!host->subscribed) {
+            broker_subscribe(host);
         }
         return NCL_OK;
     }
-    if (adapter->broker_ever_connected) {
+    if (host->broker_ever_connected) {
         /* The library owns this one: automatic reconnect restores the session
          * and the subscriptions, so a second connect here would only race. */
-        if (adapter->subscribed) {
-            adapter->subscribed = false; /* a later poll re-subscribes */
+        if (host->subscribed) {
+            host->subscribed = false; /* a later poll re-subscribes */
         }
         if (err != NULL) {
             (void)ncl_strbuf_printf(err, "MQTT 会话断开中（%s）",
-                                    adapter->broker_url);
+                                    host->broker_url);
         }
         return NCL_ERR_CLOSED;
     }
-    if (ncl_time_monotonic_millis() < adapter->broker_retry_at) {
+    if (ncl_time_monotonic_millis() < host->broker_retry_at) {
         if (err != NULL) {
-            (void)ncl_strbuf_printf(err, "MQTT 未连上（%s）", adapter->broker_url);
+            (void)ncl_strbuf_printf(err, "MQTT 未连上（%s）", host->broker_url);
         }
         return NCL_ERR_CLOSED;
     }
-    result = ncl_mqtt_client_connect(adapter->mqtt);
+    result = ncl_mqtt_client_connect(host->mqtt);
     if (result != NCL_OK) {
-        adapter->broker_delay_ms = adapter->broker_delay_ms <
-                                           adapter->broker_delay_max_ms / 2u
-                                       ? adapter->broker_delay_ms * 2u
-                                       : adapter->broker_delay_max_ms;
-        adapter->broker_retry_at =
-            ncl_time_monotonic_millis() + adapter->broker_delay_ms;
+        host->broker_delay_ms = host->broker_delay_ms <
+                                           host->broker_delay_max_ms / 2u
+                                       ? host->broker_delay_ms * 2u
+                                       : host->broker_delay_max_ms;
+        host->broker_retry_at =
+            ncl_time_monotonic_millis() + host->broker_delay_ms;
         if (err != NULL) {
             (void)ncl_strbuf_printf(err, "MQTT 重连失败（%s）：%s",
-                                    adapter->broker_url,
-                                    ncl_mqtt_client_last_error(adapter->mqtt));
+                                    host->broker_url,
+                                    ncl_mqtt_client_last_error(host->mqtt));
         }
         return result;
     }
-    adapter->broker_ever_connected = true;
-    ncl_log_info("MQTT 已连接: %s", adapter->broker_url);
-    broker_subscribe(adapter);
+    host->broker_ever_connected = true;
+    ncl_log_info("MQTT 已连接: %s", host->broker_url);
+    broker_subscribe(host);
     return NCL_OK;
 }
 
 /* ------------------------------------------------------------------ poll -- */
 
 /** The point with this model path, or NULL. */
-static adapter_point *find_point(ncl_adapter *adapter, const char *path)
+static host_point *find_point(ncl_host *host, const char *path)
 {
     size_t i;
 
-    for (i = 0; i < adapter->point_count; i++) {
-        if (strcmp(adapter->points[i].path, path) == 0) {
-            return &adapter->points[i];
+    for (i = 0; i < host->point_count; i++) {
+        if (strcmp(host->points[i].path, path) == 0) {
+            return &host->points[i];
         }
     }
     return NULL;
 }
 
-ncl_err ncl_adapter_poll_one(ncl_adapter *adapter, const char *path,
+/**
+ * The note a point that cannot be read yet leaves: not a failure, not a machine
+ * problem, just this build having no protocol call for it. @p why is the
+ * module's own answer when the read that discovered the state produced one, and
+ * NULL when the state was already known; either way the line names the point and
+ * the state, so a self check reads the same sentence a client would get.
+ */
+static void note_unreadable(ncl_strbuf *err, const char *path, const char *why)
+{
+    if (err == NULL) {
+        return;
+    }
+    if (err->len > 0) {
+        (void)ncl_strbuf_puts(err, "; ");
+    }
+    if (why != NULL && why[0] != '\0') {
+        (void)ncl_strbuf_puts(err, why);
+        return;
+    }
+    (void)ncl_strbuf_printf(err, "%s：还读不了（%s）", path,
+                            ncl_err_name(NCL_ERR_UNAVAILABLE));
+}
+
+ncl_err ncl_host_poll_one(ncl_host *host, const char *path,
                              ncl_strbuf *err)
 {
-    adapter_point *point;
+    host_point *point;
     ncl_json *value = NULL;
+    char *why = NULL;
     ncl_err result;
 
-    if (adapter == NULL || path == NULL) {
+    if (host == NULL || path == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    point = find_point(adapter, path);
+    point = find_point(host, path);
     if (point == NULL) {
         err_append1(err, "no such point", path);
         return NCL_ERR_NOT_FOUND;
     }
-    if (!point->available) {
-        /* Declared, in the model, but the frame it needs is not captured yet:
-         * there is nothing to read, and saying so is the whole answer. */
-        err_appendf(err, "%s 还读不了（%s）", point->path,
-                    point->summary != NULL ? point->summary : "待抓包");
-        return NCL_ERR_NOT_SUPPORTED;
+    if (ncl_host_point_unavailable(host, (size_t)(point - host->points))) {
+        note_unreadable(err, point->path, NULL);
+        return NCL_ERR_UNAVAILABLE;
     }
-    result = read_declared_point(adapter, point->path, &value, err);
+    result = read_declared_point(host, point->path, &value, &why);
     if (result != NCL_OK) {
-        err_append1(err, "cannot read %s", point->path);
         ncl_json_free(value);
+        if (ncl_host_point_unavailable(host, (size_t)(point - host->points))) {
+            /* 第一次读才知道：它的函数回的是 NCL_ERR_UNAVAILABLE（这一份 client
+             * 还没有那个协议调用）。这不是读失败，也不是机床的问题，所以不写成
+             * 失败，也不计进轮询失败数 - 只说"还读不了"，下一轮起就不再问它。 */
+            note_unreadable(err, point->path, why);
+            ncl_free_safe(why);
+            return NCL_ERR_UNAVAILABLE;
+        }
+        err_append1(err, "cannot read %s", point->path);
+        if (why != NULL) {
+            err_append(err, why);
+        }
+        ncl_free_safe(why);
         return result;
     }
+    ncl_free_safe(why);
     if (point->node != NULL) {
         ncl_json_free(point->node->value);
         point->node->value = value; /* the model takes it over */
@@ -1008,22 +1045,25 @@ ncl_err ncl_adapter_poll_one(ncl_adapter *adapter, const char *path,
     return NCL_OK;
 }
 
-ncl_err ncl_adapter_poll(ncl_adapter *adapter, ncl_strbuf *err)
+ncl_err ncl_host_poll(ncl_host *host, ncl_strbuf *err)
 {
     ncl_err first = NCL_OK;
     size_t i;
 
-    if (adapter == NULL) {
+    if (host == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    for (i = 0; i < adapter->point_count; i++) {
+    for (i = 0; i < host->point_count; i++) {
         ncl_err result;
 
-        if (!adapter->points[i].available) {
-            continue; /* nothing to read yet: not a failure, just not there */
+        if (ncl_host_point_unavailable(host, i)) {
+            continue; /* 读不了：不占轮询（自检会单独列出来） */
         }
-        result = ncl_adapter_poll_one(adapter, adapter->points[i].path, err);
+        result = ncl_host_poll_one(host, host->points[i].path, err);
 
+        if (result == NCL_ERR_UNAVAILABLE) {
+            continue; /* 刚学到"还读不了"：不是失败，只是还没有 */
+        }
         if (result != NCL_OK && first == NCL_OK) {
             first = result;
         }
@@ -1031,23 +1071,26 @@ ncl_err ncl_adapter_poll(ncl_adapter *adapter, ncl_strbuf *err)
     return first;
 }
 
-ncl_err ncl_adapter_poll_round(ncl_adapter *adapter, size_t *failed,
+ncl_err ncl_host_poll_round(ncl_host *host, size_t *failed,
                                ncl_strbuf *err)
 {
     ncl_err first = NCL_OK;
     size_t failures = 0;
     size_t i;
 
-    if (adapter == NULL) {
+    if (host == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    for (i = 0; i < adapter->point_count; i++) {
+    for (i = 0; i < host->point_count; i++) {
         ncl_err result;
 
-        if (!adapter->points[i].available) {
-            continue; /* 待抓包的点位不进轮询，也不计失败（自检会单独列出来） */
+        if (ncl_host_point_unavailable(host, i)) {
+            continue; /* 读不了的点位不进轮询，也不计失败（自检会单独列出来） */
         }
-        result = ncl_adapter_poll_one(adapter, adapter->points[i].path, err);
+        result = ncl_host_poll_one(host, host->points[i].path, err);
+        if (result == NCL_ERR_UNAVAILABLE) {
+            continue; /* 待抓包：不是失败，也不计进失败数 */
+        }
         if (result == NCL_OK) {
             continue;
         }
@@ -1058,7 +1101,7 @@ ncl_err ncl_adapter_poll_round(ncl_adapter *adapter, size_t *failed,
         if (ncl_driver_error_tier(result) == 1) {
             /* The link is down: every remaining point would only pay the same
              * connect timeout again, so the round ends here. */
-            failures += adapter->point_count - i - 1u;
+            failures += host->point_count - i - 1u;
             break;
         }
     }

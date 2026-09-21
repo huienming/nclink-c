@@ -11,8 +11,8 @@
  * (nclink/ncl_tool.h), so "add a brand" is "drop a module into plugins/ and
  * name it in the configuration":
  *
- *     ncl_adapter -c conf/fanuc.json            # plugins/ + "plugins": ["focas"]
- *     ncl_adapter -c conf/fanuc.json --plugin-dir plugins --plugins
+ *     ncl_host -c conf/fanuc.json            # plugins/ + "plugins": ["focas"]
+ *     ncl_host -c conf/fanuc.json --plugin-dir plugins --plugins
  *
  * What a module exports (this is the whole ABI):
  *

@@ -5,7 +5,7 @@
  * NC-Link adapter - text file helpers (see adapter_text.h).
  */
 
-#include "core/adapter_text.h"
+#include "tool/text.h"
 
 #include <string.h>
 
@@ -14,7 +14,7 @@
 /** Byte order mark, as it appears in a UTF-8 file. */
 static const unsigned char kBom[] = {0xEF, 0xBB, 0xBF};
 
-ncl_json *ncl_adapter_json_from_file(const char *path, ncl_strbuf *err)
+ncl_json *ncl_tool_json_from_file(const char *path, ncl_strbuf *err)
 {
     char *text = NULL;
     const char *body;

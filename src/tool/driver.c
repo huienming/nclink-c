@@ -2,19 +2,24 @@
 /* Copyright (c) 2026 huienming */
 
 /*
- * NC-Link adapter - the protocol independent half of the driver interface.
+ * NC-Link tool layer - the protocol independent half of the driver interface.
  *
  * Everything in ncl_driver.h that does not depend on a wire format lives
  * here: the unified type names, the tiered error codes, the response
- * envelope, the on-demand session rule behind read_one()/write_one(), the
- * "D100.3" address parser and the protocol registry.
+ * envelope, the on-demand session rule behind read_one()/write_one() and the
+ * "D100.3" address parser.
  *
  * A protocol driver only fills in ncl_driver_ops. Keeping the shared rules in
  * one place is what makes a new driver a single file of frame building and
  * parsing (see protocal/docs/00-通用-实现约定.md §1 and §2).
+ *
+ * There is no protocol registry: an adapter's tool file constructs the driver
+ * it talks through itself (ncl_focas_create(), ncl_modbus_tcp_create(), ...),
+ * so "which protocol" is a line of C next to the points that use it instead of
+ * a name looked up in a table.
  */
 
-#include "nclink_adapter/ncl_driver.h"
+#include "nclink/ncl_driver.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -22,21 +27,8 @@
 
 #include "nclink/ncl_platform.h"
 
-/* The drivers built into this library; more join in P1. */
-#include "mock/ncl_mock_driver.h"
-#include "fins/ncl_fins_driver.h"
-#include "focas/ncl_focas_driver.h"
-#include "knd/ncl_knd_driver.h"
-#include "mc/ncl_mc_driver.h"
-#include "lsv2/ncl_lsv2_driver.h"
-#include "meldas/ncl_meldas_driver.h"
-#include "mtconnect/ncl_mtconnect_driver.h"
-#include "modbus/ncl_modbus_driver.h"
-#include "s7/ncl_s7_driver.h"
-#include "syntec/ncl_syntec_driver.h"
-
 #define NCL_ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
-#define NCL_DRIVER_MAX_PROTOCOLS 64
+
 
 /* ============================================================ data types == */
 
@@ -553,145 +545,3 @@ ncl_err ncl_driver_write_one(ncl_driver *driver, const ncl_address *address,
     return err;
 }
 
-/* ============================================================= factories == */
-
-typedef struct {
-    char              *name;
-    ncl_driver_factory factory;
-} protocol_slot;
-
-static protocol_slot g_protocols[NCL_DRIVER_MAX_PROTOCOLS];
-static size_t       g_protocol_count;
-/* Lazily created, like the shared thread pool: registration is a startup
- * activity, so this only has to protect against a late concurrent caller. */
-static ncl_mutex   *g_registry_mutex;
-static bool         g_builtin_done;
-
-static ncl_mutex *registry_lock(void)
-{
-    if (g_registry_mutex == NULL) {
-        g_registry_mutex = ncl_mutex_create();
-    }
-    return g_registry_mutex;
-}
-
-static size_t registry_find(const char *protocol)
-{
-    size_t i;
-
-    for (i = 0; i < g_protocol_count; i++) {
-        if (ncl_streq_ignore_case(g_protocols[i].name, protocol)) {
-            return i;
-        }
-    }
-    return NCL_DRIVER_MAX_PROTOCOLS;
-}
-
-ncl_err ncl_driver_register_protocol(const char *protocol,
-                                     ncl_driver_factory factory)
-{
-    ncl_mutex *lock;
-    ncl_err err = NCL_OK;
-
-    if (ncl_str_is_blank(protocol) || factory == NULL) {
-        return NCL_ERR_INVALID_ARG;
-    }
-    lock = registry_lock();
-    ncl_mutex_lock(lock);
-    if (registry_find(protocol) != NCL_DRIVER_MAX_PROTOCOLS) {
-        err = NCL_ERR_EXISTS;
-    } else if (g_protocol_count >= NCL_DRIVER_MAX_PROTOCOLS) {
-        err = NCL_ERR_RANGE;
-    } else {
-        char *name = ncl_strdup(protocol);
-
-        if (name == NULL) {
-            err = NCL_ERR_NOMEM;
-        } else {
-            g_protocols[g_protocol_count].name = name;
-            g_protocols[g_protocol_count].factory = factory;
-            g_protocol_count++;
-        }
-    }
-    ncl_mutex_unlock(lock);
-    return err;
-}
-
-void ncl_driver_register_builtin(void)
-{
-    ncl_mutex *lock = registry_lock();
-
-    ncl_mutex_lock(lock);
-    if (g_builtin_done) {
-        ncl_mutex_unlock(lock);
-        return;
-    }
-    g_builtin_done = true;
-    ncl_mutex_unlock(lock);
-
-    /* Idempotent: NCL_ERR_EXISTS means an embedder registered its own. */
-    (void)ncl_driver_register_protocol("mock", ncl_mock_driver_create);
-    (void)ncl_driver_register_protocol("modbus_tcp", ncl_modbus_tcp_create);
-    (void)ncl_driver_register_protocol("modbus_rtu", ncl_modbus_rtu_create);
-    (void)ncl_driver_register_protocol("modbus_rtu_tcp",
-                                       ncl_modbus_rtu_tcp_create);
-    (void)ncl_driver_register_protocol("mc_tcp", ncl_mc_tcp_create);
-    (void)ncl_driver_register_protocol("fins_tcp", ncl_fins_tcp_create);
-    (void)ncl_driver_register_protocol("s7_tcp", ncl_s7_tcp_create);
-    (void)ncl_driver_register_protocol("mtconnect", ncl_mtconnect_create);
-    (void)ncl_driver_register_protocol("meldas", ncl_meldas_create);
-    (void)ncl_driver_register_protocol("lsv2", ncl_lsv2_create);
-    (void)ncl_driver_register_protocol("syntec", ncl_syntec_create);
-    (void)ncl_driver_register_protocol("knd", ncl_knd_create);
-    /* focas is not here: the FANUC adapter declares its points and talks to the
-     * FOCAS client itself (adapters/plugins/focas.c), so there is no protocol
-     * factory to register. */
-}
-
-ncl_driver *ncl_driver_create(const char *protocol)
-{
-    ncl_driver_factory factory = NULL;
-    ncl_mutex *lock;
-    size_t index;
-
-    if (ncl_str_is_blank(protocol)) {
-        return NULL;
-    }
-    ncl_driver_register_builtin(); /* the built-ins are always available */
-    lock = registry_lock();
-    ncl_mutex_lock(lock);
-    index = registry_find(protocol);
-    if (index != NCL_DRIVER_MAX_PROTOCOLS) {
-        factory = g_protocols[index].factory;
-    }
-    ncl_mutex_unlock(lock);
-    /* Created outside the lock: a factory is free to touch the registry. */
-    return factory != NULL ? factory() : NULL;
-}
-
-size_t ncl_driver_protocol_count(void)
-{
-    size_t count;
-    ncl_mutex *lock = registry_lock();
-
-    ncl_mutex_lock(lock);
-    count = g_protocol_count;
-    ncl_mutex_unlock(lock);
-    return count;
-}
-
-bool ncl_driver_protocol_known(const char *protocol)
-{
-    bool known;
-    ncl_mutex *lock;
-
-    if (ncl_str_is_blank(protocol)) {
-        return false;
-    }
-    ncl_driver_register_builtin();
-    lock = registry_lock();
-    ncl_mutex_lock(lock);
-    known = registry_find(protocol) != NCL_DRIVER_MAX_PROTOCOLS;
-    ncl_mutex_unlock(lock);
-    return known;
-}

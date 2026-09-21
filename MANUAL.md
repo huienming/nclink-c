@@ -57,17 +57,25 @@
 include/nclink/     公共头文件（-I 只需要指向 include）
 lib/<平台>/         预编译静态库（发布包：windows-x64-msvc / linux-x86_64-gcc，另有 -staticmem 静态内存版）
 examples/           两个可运行示例：设备端 / 客户端
-adapters/           厂商协议驱动 + 设备程序 ncl_adapter（宿主：一台 NC-Link 设备）+ 可装载的适配器模块（plugins/ncl_driver_<协议>.*）
+clients/            协议实现：一个协议一个目录（报文与会话），外加现场用的语义函数
+plugins/            厂商适配器源码：一个 .c 一个适配器，编成 <build>/plugins/ncl_driver_<工具名>.dll|.so
 MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 
-src/<模块>/         实现，共 13 个模块目录        ← 以下仅源码仓库有
-tests/              26 个核心测试套件（含 mem 分配器不变量、mem_mc 蒙特卡洛、mem_mt 并发压测，
-                    以及可选的 broker 互操作与 TLS 套件）+ 协议黄金样本；
-adapters/tests/     16 个适配器测试套件（驱动接口、配置分派、宿主/模块装载、各协议黄金报文与靶机）
+src/<模块>/         实现，共 15 个模块目录        ← 以下仅源码仓库有
+src/tool/           tool 层：声明 → 模型/绑定、驱动骨架、模块装载、审计、宿主；
+                    src/tool/main.c 是唯一的设备程序 ncl_server 的入口
+tests/              31 套核心与工具层测试（含 mem 分配器不变量、mem_mc 蒙特卡洛、mem_mt 并发压测，
+                    以及可选的 broker 互操作与 TLS 套件）+ 协议黄金样本
+clients/tests/      11 套协议客户端测试（各协议黄金报文与靶机）
 tools/              许可头检查、broker 互操作、文档生成与发布打包脚本
 build.ps1           Windows 一键：配置 + 编译 + ctest
 build-linux.sh      Linux 免 cmake 构建
 ```
+
+> 接一台机床（写一个适配器）看 [`plugins/README.md`](plugins/README.md)：三条命令跑起来、
+> 三种写法（绑定 client 的语义函数 / 自己写函数覆盖 / 写一个协议客户端）、声明语法速查。
+> 各协议"实机前必看"与怎么加一个新协议看 [`clients/README.md`](clients/README.md)。
+> FANUC 现场手册（随发行包发布）看 [`plugins/FANUC-ADAPTER.md`](plugins/FANUC-ADAPTER.md)。
 
 > **发布包含头文件、两个平台的静态库、文档与示例程序**；实现源码与测试套件在
 > 工程仓库里（需要自行重编时获取，见 2.5）。
@@ -101,8 +109,9 @@ ctest --test-dir build --output-on-failure
 套件 + 14 个适配器套件），`mem_mc` 的统计与 Windows/MSVC 逐位一致（确定性序列）。
 适配器进来后全量是 **42 个套件**（26 核心 + 16 适配器，多的是 `library`：
 `ncl_library_*` 的装载接口），3.4.0 的 `ncl_fanuc_collector` 已改为
-`ncl_adapter`（宿主）+ `plugins/ncl_driver_focas.dll`（模块）+ `conf/fanuc.json`
-（连接参数与采样）这一组合方式（19 个点位在 `adapters/plugins/focas.c` 里声明）：
+`ncl_server`（唯一设备程序）+ `plugins/ncl_driver_focas.dll`（模块）+ `conf/fanuc.json`
+（连接参数与采样）这一组合方式（20 个点位在 `plugins/focas.c` 里声明，18 条是绑定
+`client` 的语义函数、2 个方法是覆盖）：
 **默认堆版**已在 Windows/MSVC 与 MinGW/gcc 16.2 上复测 **42/42**，Linux 容器里跑同一条
 命令即可；静态池版的尺寸边界见 4.9（那组数字是 39 套口径，未随这套重跑）：64 KiB 池
 **38/39**（只剩 `file` 一套，它读回比较时要 1 MiB 连续块），1.5 MiB 池 **39/39**。
@@ -365,6 +374,8 @@ P/Invoke、Java 走 JNI（`nclink_jni` 把垫片一起编进去）、Python 走 
 | 选项 | 默认 | 作用 |
 |------|------|------|
 | `NCLINK_BUILD_TESTS` | ON | 编译并注册测试套件 |
+| `NCLINK_BUILD_CLIENTS` | ON | 编译协议客户端库（clients/） |
+| `NCLINK_BUILD_PLUGINS` | ON | 把 plugins/*.c 编成可装载的适配器模块 |
 | `NCLINK_BUILD_EXAMPLES` | ON | 编译 `examples/` 下的两个示例 |
 | `NCLINK_WITH_MQTT` | ON | 编译 MQTT 传输层、客户端、服务端、文件与 FTP |
 | `NCLINK_WITH_ZLIB` | OFF | 启用 zlib 压缩编解码 |
@@ -885,6 +896,12 @@ ncl_message *msg = ncl_message_parse(topic, payload, payload_len);
 不是数据对象，用 `NCL_METHOD` 声明成方法。
 数据对象的**取值形状（`dataType`）跟着字典走**：dict / JSON 对象 → `"HASH"`（`FILE`、
 `PARAMETER`），list → `"LIST"`（刀具列表 `TOOL`、坐标系 `COORDINATE`），标量不写这一项。
+
+**协议调用还没实现的点位照样这么声明**：函数先绑上（client 里先摆一个），它在帧抓到之前
+回 `NCL_ERR_UNAVAILABLE`（`UnavailableException`）。模型里照样有这条路径、客户端问它有明确
+答复（"还读不了"）、自检把它算成"待抓包"而不是失败、轮询与 §6 审计都不碰它。抓包补上时
+**只改 client 里那个函数体**，点位表一行都不用动 —— "还没实现"是 client 的属性，不在点位
+表上另立一种形状。
 
 客户端拿到模型后可以路径 ↔ id 互查：
 
@@ -3489,6 +3506,7 @@ Copyright (c) 2026 huienming
 | `NCL_ERR_CONNECT` | (-12) | MqttException / 连接失败 |
 | `NCL_ERR_CLOSED` | (-13) | 对象已关闭 |
 | `NCL_ERR_NO_CHANNEL` | (-14) | NoFileChannelException / 设备还没有文件通道 |
+| `NCL_ERR_UNAVAILABLE` | (-15) | UnavailableException / 点位在模型里，但这一份 client 还没有它要的协议调用（"还读不了"） |
 | `NCL_ERR_INVALID_CODE` | (-100) | InvalidCodeException |
 | `NCL_ERR_INVALID_DATA_NAME` | (-101) | InvalidDataNameException |
 | `NCL_ERR_INVALID_DATA_TYPE` | (-102) | InvalidDataTypException |

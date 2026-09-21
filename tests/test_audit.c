@@ -11,7 +11,8 @@
 #include "ncl_test.h"
 
 #include "nclink/ncl_logger.h"
-#include "nclink_adapter/ncl_audit.h"
+#include "nclink/ncl_audit.h"
+#include "mock/ncl_mock_driver.h"
 #include "test_point_map.h"
 
 #define RAW_LOG_DIR "ncl_audit_log_test"
@@ -35,7 +36,7 @@ static const char kConfig[] =
 
 static test_point_map *make_map(void)
 {
-    test_point_map *manager = test_point_map_create(NULL);
+    test_point_map *manager = test_point_map_create(ncl_mock_driver_create);
     ncl_json *document = ncl_json_parse_cstr(kConfig, NULL);
     ncl_strbuf err;
 
@@ -80,8 +81,8 @@ static void test_counters(void)
     }
     /* two good reads, one miss, one good write, one write to a path that has
      * no point at all: a write is audited whether or not it happened. The
-     * "a point must be marked writable" rule of §7 is the daemon's job, not the
-     * manager's - test_adapter.c covers it where the device model lives. */
+ * "a point must be marked writable" rule of §7 is the host's job, not the
+ * manager's - test_host_tool.c covers it where the device model lives. */
     NCL_CHECK_EQ_INT(test_point_map_read(manager, "/PLC1/STATUS", &value),
                      NCL_OK);
     ncl_json_free(value);
@@ -246,14 +247,13 @@ static void test_raw_frames(void)
     NCL_CHECK(ncl_log_init(RAW_LOG_DIR));
     ncl_log_set_console(false); /* keep the test output readable */
     ncl_log_set_level(NCL_LOG_DEBUG);
-    NCL_CHECK_EQ_INT(ncl_driver_register_protocol("rawmock", raw_factory), NCL_OK);
 
     ncl_audit_options_default(&options);
     options.raw = true; /* the switch of §6: off unless someone asks for it */
     ncl_audit_init(&options);
     NCL_CHECK(ncl_audit_wants_raw());
 
-    manager = test_point_map_create(NULL);
+    manager = test_point_map_create(raw_factory);
     NCL_CHECK(manager != NULL);
     if (manager != NULL) {
         config = ncl_json_parse_cstr(
@@ -296,7 +296,7 @@ static void test_tiers(void)
     NCL_TEST_CASE("a failing driver lands in its own tier and code bucket");
     ncl_audit_init(NULL);
     ncl_audit_reset_stats();
-    manager = test_point_map_create(NULL);
+    manager = test_point_map_create(ncl_mock_driver_create);
     NCL_CHECK(manager != NULL);
     if (manager == NULL) {
         return;

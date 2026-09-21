@@ -260,7 +260,7 @@ static void mock_stop(knd_mock *mock)
 /** A driver pointed at the mock. */
 static ncl_driver *knd_driver(knd_mock *mock)
 {
-    ncl_driver *driver = ncl_driver_create("knd");
+    ncl_driver *driver = ncl_knd_create();
     ncl_strbuf json;
     ncl_json *parameters;
 

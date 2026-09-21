@@ -16,7 +16,7 @@
 #include <stddef.h>
 
 #include "nclink/ncl_common.h"
-#include "nclink_adapter/ncl_driver.h" /* the tiered transport/protocol codes */
+#include "nclink/ncl_driver.h" /* the tiered transport/protocol codes */
 
 #ifdef __cplusplus
 extern "C" {

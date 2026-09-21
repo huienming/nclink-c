@@ -15,7 +15,7 @@
  * instead of a silent "no driver for protocol focas".
  */
 
-#include "nclink_adapter/ncl_module.h"
+#include "nclink/ncl_module.h"
 
 #include <stdio.h>
 #include <string.h>

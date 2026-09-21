@@ -288,7 +288,7 @@ static void control_stop(lsv2_control *control)
 
 static ncl_driver *lsv2_driver(lsv2_control *control, const char *extra)
 {
-    ncl_driver *driver = ncl_driver_create("lsv2");
+    ncl_driver *driver = ncl_lsv2_create();
     ncl_strbuf json;
     ncl_json *params;
 
@@ -470,7 +470,7 @@ static void test_login(void)
 
     NCL_TEST_CASE("a login name outside §4.1 is refused by the configuration");
     {
-        ncl_driver *other = ncl_driver_create("lsv2");
+        ncl_driver *other = ncl_lsv2_create();
         ncl_json *params = ncl_json_parse_cstr(
             "{\"host\":\"127.0.0.1\",\"user\":\"ROOT\"}", NULL);
 

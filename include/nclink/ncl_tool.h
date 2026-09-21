@@ -154,19 +154,18 @@ struct ncl_tool_point {
     unsigned    ops;
     /** Ask the host to sample this path (the point has to be readable). */
     bool        sampled;
-    /** The function serving this point. Required. */
-    ncl_point_fn fn;
     /**
-     * False when the point is declared but cannot be read yet - the protocol
-     * call it needs has not been captured, or the machine has not been seen.
-     * Such a point is still a point: it is in the model (the site sees what is
-     * coming) and asking for it answers a clear "not available yet" instead of
-     * "no such point". What the host never does is call @p fn - it cannot, the
-     * function is NULL - and a self check reports it as "not available"
-     * instead of "failed". Use a *_PENDING() macro to declare one; every other
-     * macro leaves it true.
+     * The function serving this point. Required.
+     *
+     * A point whose protocol call has not been implemented yet is declared like
+     * any other: this function is there, and it answers NCL_ERR_UNAVAILABLE
+     * (nclink/ncl_common.h) until the frame is captured. The tool layer turns
+     * that into the standard "还读不了" answer, keeps the point out of the
+     * polling rounds and out of the trail, and the self check reports it as
+     * "待抓包" instead of "failed". Implementing the call later changes this one
+     * function in the client - 点位表一行都不用动。
      */
-    bool available;
+    ncl_point_fn fn;
     /**
      * True for the second kind of data object (册 3 §5.4/§5.5): a **config** -
      * a parameter, a coordinate system, a tool table, the object's own meta
@@ -189,8 +188,6 @@ struct ncl_tool_point {
      * back in its own handler.
      */
     const void *arg;
-    /** Optional one line description, for the schema. */
-    const char *summary;
 };
 
 /**
@@ -227,6 +224,12 @@ typedef struct {
     /** One line description, for `--plugins` and the schema. */
     const char           *description;
     /**
+     * 设备节点的 type（表 1 的设备对象类型：MACHINE / ROBOT / …），也是每条点位
+     * 路径隐含的第一段。**只在这里定义一次**：点位路径相对设备节点写（"/STATUS"），
+     * 模型里的绝对路径 "/MACHINE/STATUS" 由它拼出来（ncl_tool_model_path()）。
+     */
+    const char           *device_type;
+    /**
      * Sample channel period in ms; 0 means "no sample channel from this
      * declaration" (a site can still add one to the model file, which is where
      * the running period ends up being tuned).
@@ -245,7 +248,15 @@ typedef struct {
 /*
  * The declaration macros. One tool per file - that is the whole point - so the
  * generated names can be file scope and the author never sees them.
-/*
+ *
+ * **路径是相对设备节点的**：写 "/STATUS"、"/AXIS@X/POSITION@REAL"，不写设备段。
+ * 设备段在 NCL_TOOL_BEGIN 的第三个参数里定义一次（这台设备在模型里是什么：表 1 的
+ * MACHINE / ROBOT / …），换机型只改那一处，点位表不动；也不可能出现"路径说
+ * MACHINE、配置说 ROBOT"这种两处打架。路径可以任意深：中间每一段都是模型里的一个
+ * 组件（可以嵌套），最后一段是这个数据对象。
+ * 运行时（模型里的路径、采样通道、REST 地址）仍是绝对路径 "/MACHINE/STATUS"，
+ * 由设备段在生成模型时拼上（ncl_tool_model_path()）。
+ *
  * 声明宏：一个点位一行，先写**哪一类数据对象**（册 3 §5.4/§5.5），再写它能被
  * 怎么访问 —— 访问就是标准第 5 部分那些操作：Query（get_value / get_length /
  * get_keys / get_attributes）、Set（set_value / add / delete）和方法调用（call）。
@@ -263,8 +274,6 @@ typedef struct {
  *                   get_keys、get_attributes、add、delete（册 5 表 11 / 表 13），
  *                   就把要的操作按位写全，例如
  *                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_ADD)
- *   _PENDING        协议调用还没抓到帧：把"函数, 数据"换成"理由"，理由必填
- *   _PENDING_SAMPLED  同上，并且占着采样通道（只有 dataItem 有）
  *
  * 两条校验兜底（手写这张表也拦得住）：**可写必然可读**（set_value / add / delete
  * 都要求 get_value —— 审计要记写之前的旧值，读不回来的写也没法确认，真只写的
@@ -273,65 +282,359 @@ typedef struct {
  * 点位自己的数据（寄存器地址、协议项名、映射表条目）写在第三个参数上；点位没有自己的
  * 数据就写 NULL。一个 dispatch 服务整张表时，靠 self->arg 分辨自己落在哪一行。
  *
- *   NCL_DATAITEM_SAMPLED("/MACHINE/STATUS", dispatch, &k_status)
- *   NCL_DATAITEM_RW("/MACHINE/MODE", dispatch, &k_mode)
- *   NCL_CONFIG_RW("/MACHINE/CONTROLLER/PARAMETER", dispatch, &k_param)
- *   NCL_DATAITEM_PENDING("/MACHINE/WARNING", "报警：帧待抓包（cnc_rdalmmsg2）")
- *   NCL_METHOD("/MACHINE/RESET", dispatch, NULL)
+ *   NCL_DATAITEM_SAMPLED("/STATUS", dispatch, &k_status)
+ *   NCL_DATAITEM_RW("/MODE", dispatch, &k_mode)
+ *   NCL_CONFIG_RW("/CONTROLLER/PARAMETER", dispatch, &k_param)
+ *   NCL_METHOD("/RESET", dispatch, NULL)
  *
- * **点位名字从路径自动推**：去掉设备段、'@' 换 '_'、'/' 换 '.' ——
- * /MACHINE/AXIS@X/POSITION@REAL -> AXIS_X.POSITION_REAL；方法调用地址是
+ * **协议调用还没实现的点位照样这么写** —— 它和别的点位没有第二种形状。函数先绑
+ * 上，client 那边（clients/ 里的语义函数）在帧抓到之前回 **NCL_ERR_UNAVAILABLE**
+ * （见 ncl_common.h）：模型里有这条路径（现场看得见它要来）、问它答"还读不了"、
+ * 轮询与 §6 审计都不碰它、自检把它算成"待抓包"而不是失败。等抓包补上，**只改
+ * client 里那个函数**，这张表一行都不用动。
+ *
+ *   NCL_DATAITEM_STR_SAMPLED("/WARNING", ncl_focas_alarm)
+ *   NCL_DATAITEM_F64("/AXIS@X/POSITION@CMD", ncl_focas_axis_position_cmd,
+ *                    NCL_FOCAS_AXIS_X)
+ *
+ * **点位名字从路径自动推**：'@' 换 '_'、'/' 换 '.' ——
+ * /AXIS@X/POSITION@REAL -> AXIS_X.POSITION_REAL；方法调用地址是
  * "<工具名>/<点位名>"（focas/AXIS_X.POSITION_REAL），绑定键是 "<操作>#<路径>"。
  * 路径唯一，推出来的名字就唯一，所以不用手写名字。
  */
 #define NCL_DATAITEM(path_literal, fn, arg)                                    \
-    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), false, fn, true, false,      \
-      arg, NULL },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), false, fn, false, arg },
 
 #define NCL_DATAITEM_SAMPLED(path_literal, fn, arg)                            \
-    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), true, fn, true, false,       \
-      arg, NULL },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), true, fn, false, arg },
 
 #define NCL_DATAITEM_RW(path_literal, fn, arg)                                 \
     { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE), \
-      false, fn, true, false, arg, NULL },
+      false, fn, false, arg },
 
 /** 自报操作集：集合类数据对象用它写清 get_length / get_keys / add / delete 这些。 */
 #define NCL_DATAITEM_OPS(path_literal, fn, arg, ops_value)                     \
-    { path_literal, (ops_value), false, fn, true, false, arg, NULL },
-
-#define NCL_DATAITEM_PENDING(path_literal, summary_literal)                    \
-    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), false, NULL, false,          \
-      false, NULL, summary_literal },
-
-#define NCL_DATAITEM_PENDING_SAMPLED(path_literal, summary_literal)            \
-    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), true, NULL, false,           \
-      false, NULL, summary_literal },
+    { path_literal, (ops_value), false, fn, false, arg },
 
 #define NCL_CONFIG(path_literal, fn, arg)                                      \
-    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), false, fn, true, true,       \
-      arg, NULL },
+    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), false, fn, true, arg },
 
 #define NCL_CONFIG_RW(path_literal, fn, arg)                                   \
     { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE) |                             \
-          NCL_OP_BIT(NCL_OP_SET_VALUE), false, fn, true, true, arg, NULL },
+          NCL_OP_BIT(NCL_OP_SET_VALUE), false, fn, true, arg },
 
 /** 同上，操作集自己写：文件（dict）、刀具表（list）这类集合就是用它。 */
 #define NCL_CONFIG_OPS(path_literal, fn, arg, ops_value)                       \
-    { path_literal, (ops_value), false, fn, true, true, arg, NULL },
-
-#define NCL_CONFIG_PENDING(path_literal, summary_literal)                      \
-    { path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), false, NULL, false,          \
-      true, NULL, summary_literal },
+    { path_literal, (ops_value), false, fn, true, arg },
 
 #define NCL_METHOD(path_literal, fn, arg)                                      \
-    { path_literal, NCL_OP_BIT(NCL_OP_FUNC_CALL), false, fn, true, false,      \
-      arg, NULL },
+    { path_literal, NCL_OP_BIT(NCL_OP_FUNC_CALL), false, fn, false, arg },
 
-#define NCL_TOOL_BEGIN(name_literal, description_literal, sample_ms_value,     \
-                       upload_ms_value, open_fn, close_fn)                     \
+/* ==================================== 同一族的另一种形状：绑取值/置值函数 ==== */
+
+/*
+ * 上面那些形状是"自己写 dispatch"。同一族的第二种形状是**绑 client 的语义函数**：
+ * 现场不写函数，只写"这条路径绑哪个函数"。
+ *
+ *     NCL_DATAITEM_STR_SAMPLED("/MACHINE/STATUS",           ncl_focas_status)
+ *     NCL_DATAITEM_I64_SAMPLED("/MACHINE/PART_COUNT",       ncl_focas_part_count)
+ *     NCL_DATAITEM_F64("/MACHINE/AXIS@X/POSITION@REAL",     ncl_focas_axis_position,
+ *                      NCL_FOCAS_AXIS_X)
+ *     NCL_CONFIG_I64_RW("/MACHINE/CONTROLLER/PARAMETER@1",  limit_get, limit_set)
+ *
+ * 名字就是把两个轴拼起来，没有第三套词汇：
+ *
+ *   族      NCL_DATAITEM_*（进 dataItems，可采样）/ NCL_CONFIG_*（进 configs，不许采样）
+ *   类型    I64 / F64 / BOOL / STR / JSON（JSON 给的不是标量：报警的
+ *           {"number","text"}、刀具表这样的表，整个值就是 client 交出来的那个 JSON）
+ *           —— 宏名里的类型就是取值函数的出参类型
+ *   访问    裸（只读）/ _SAMPLED（并进默认采样通道）/ _RW（可读可写）
+ *   现场参数 给了第三个参数就自动走带参数那支（轴号、子项…），不用记第二个名字
+ *
+ * 三条约定，都是为了"少想"：
+ *
+ *   1. 实例就是 open() 返回的那个指针，所以这些宏里不写实例名 —— 也就不可能绑到
+ *      一个没有实例的函数上。"必须有一个 client 实例"是结构上的，不是纪律。
+ *   2. 函数名即语义：ncl_focas_part_count() 读回来的就是加工件数，没有人需要解释
+ *      "RDCOUNT" 是什么。
+ *   3. 要自己的解释（状态推导、单位换算、把两个量凑成一个）就用上面那些形状自己写
+ *      函数，里面照样能调 client 的底层函数；两种写法可以混在同一张表里。
+ *
+ * 取值/置值函数的签名固定（_SAMPLED 只存在于 dataItem 族：配置不许采样）：
+ *
+ *     ncl_err get(void *instance, long long *value);        NCL_DATAITEM_I64
+ *     ncl_err get(void *instance, double    *value);        NCL_DATAITEM_F64
+ *     ncl_err get(void *instance, bool      *value);        NCL_DATAITEM_BOOL
+ *     ncl_err get(void *instance, char *out, size_t cap);   NCL_DATAITEM_STR
+ *     ncl_err set(void *instance, 同类型的值);               *_RW 的第二个函数
+ *     ncl_err get(void *instance, long long arg, 出参);      给了现场参数时的形状
+ *     ncl_err get(void *instance, ncl_json **value);        *_JSON
+ *     ncl_err fn(void *instance, const ncl_json *params,
+ *                ncl_json **result, char **reason);        NCL_METHOD_CALL
+ *
+ * 读/写失败 → 应答 code=NG，理由里带路径与错误码；要给出协议自己的原因（例如
+ * "EW_PROTOCOL -17"）就在 client 里留一个 xxx_last_error()，再自己写函数用
+ * ncl_tool_fail() 把它带上。
+ */
+typedef ncl_err (*ncl_tool_get_i64_fn)(void *instance, long long *value);
+typedef ncl_err (*ncl_tool_set_i64_fn)(void *instance, long long value);
+typedef ncl_err (*ncl_tool_get_i64_arg_fn)(void *instance, long long arg,
+                                           long long *value);
+typedef ncl_err (*ncl_tool_get_f64_fn)(void *instance, double *value);
+typedef ncl_err (*ncl_tool_set_f64_fn)(void *instance, double value);
+typedef ncl_err (*ncl_tool_get_f64_arg_fn)(void *instance, long long arg,
+                                           double *value);
+typedef ncl_err (*ncl_tool_get_bool_fn)(void *instance, bool *value);
+typedef ncl_err (*ncl_tool_get_bool_arg_fn)(void *instance, long long arg,
+                                            bool *value);
+/** 文本出参：@p out 至少 @p cap 字节；实现要自己截断并保证 NUL 结尾。 */
+typedef ncl_err (*ncl_tool_get_str_fn)(void *instance, char *out, size_t cap);
+typedef ncl_err (*ncl_tool_set_str_fn)(void *instance, const char *value);
+typedef ncl_err (*ncl_tool_get_str_arg_fn)(void *instance, long long arg,
+                                           char *out, size_t cap);
+/**
+ * 结构化出参：值本身就是一个 JSON（list / dict），实现把所有权交给宿主，失败时
+ * 不留下东西。值不是标量的点位用它：报警（NCL_DATAITEM_JSON）与表型的配置
+ * （刀具表、坐标系…，NCL_CONFIG_JSON）。
+ */
+typedef ncl_err (*ncl_tool_get_json_fn)(void *instance, ncl_json **value);
+/** 方法：和 ncl_point_fn 同一个形状，少了 self（method 自己就是那条路径）。 */
+typedef ncl_err (*ncl_tool_method_fn)(void *instance, const ncl_json *params,
+                                      ncl_json **result, char **reason);
+
+/**
+ * 一个绑定带了什么：取值/置值函数 + 一个现场概念的参数（轴号、子项号…）。宏负责
+ * 填对字段，作者不直接写这个结构；绑定函数按族的签名解释指针（和 ncl_library_*
+ * 从 dlsym 拿符号是同一类转换）。
+ */
+typedef struct {
+    const void *get; /**< 按族解释的取值函数，可为 NULL（点位答"不支持"）   */
+    const void *set; /**< 按族解释的置值函数，可为 NULL（点位只读）        */
+    long long   arg; /**< 传给 *_ARG 族取值函数的现场参数；其它族忽略     */
+} ncl_tool_value_spec;
+
+/* 语义函数的实现（src/tool/simple.c）：每个族一个，把出参转成 JSON 应答；带现场
+ * 参数的那一族（*_ARG）用各自的包装，因为函数签名不同。 */
+ncl_err ncl_tool_value_i64(void *ctx, const ncl_tool_point *self,
+                          ncl_operation op, const ncl_json *params,
+                          ncl_json **result, char **reason);
+ncl_err ncl_tool_value_i64_arg(void *ctx, const ncl_tool_point *self,
+                              ncl_operation op, const ncl_json *params,
+                              ncl_json **result, char **reason);
+ncl_err ncl_tool_value_f64(void *ctx, const ncl_tool_point *self,
+                          ncl_operation op, const ncl_json *params,
+                          ncl_json **result, char **reason);
+ncl_err ncl_tool_value_f64_arg(void *ctx, const ncl_tool_point *self,
+                              ncl_operation op, const ncl_json *params,
+                              ncl_json **result, char **reason);
+ncl_err ncl_tool_value_bool(void *ctx, const ncl_tool_point *self,
+                           ncl_operation op, const ncl_json *params,
+                           ncl_json **result, char **reason);
+ncl_err ncl_tool_value_bool_arg(void *ctx, const ncl_tool_point *self,
+                               ncl_operation op, const ncl_json *params,
+                               ncl_json **result, char **reason);
+ncl_err ncl_tool_value_str(void *ctx, const ncl_tool_point *self,
+                          ncl_operation op, const ncl_json *params,
+                          ncl_json **result, char **reason);
+ncl_err ncl_tool_value_str_arg(void *ctx, const ncl_tool_point *self,
+                              ncl_operation op, const ncl_json *params,
+                              ncl_json **result, char **reason);
+ncl_err ncl_tool_value_json(void *ctx, const ncl_tool_point *self,
+                            ncl_operation op, const ncl_json *params,
+                            ncl_json **result, char **reason);
+ncl_err ncl_tool_value_method(void *ctx, const ncl_tool_point *self,
+                             ncl_operation op, const ncl_json *params,
+                             ncl_json **result, char **reason);
+
+/** 一行 = 一个绑定点位（ops / sampled / 包装函数 / 绑定内容）。 */
+#define NCL_POINT_ROW(path_literal, ops_value, sampled_value, bind_fn, spec_expr) \
+    { path_literal, (ops_value), (sampled_value), (bind_fn), false,              \
+      (spec_expr) },
+
+/** 同上，但这一行是**配置型数据对象**（config，见下）。 */
+#define NCL_POINT_CONFIG_ROW(path_literal, ops_value, bind_fn, spec_expr)         \
+    { path_literal, (ops_value), false, (bind_fn), true, (spec_expr) },
+
+#define NCL_POINT_READ(path_literal, sampled_value, bind_fn, getter, arg_value)   \
+    NCL_POINT_ROW(path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), sampled_value,      \
+                 bind_fn,                                                        \
+                 (&(const ncl_tool_value_spec){(const void *)(getter), NULL,      \
+                                              (long long)(arg_value)}))
+
+#define NCL_POINT_WRITE(path_literal, sampled_value, bind_fn, getter, setter)     \
+    NCL_POINT_ROW(path_literal,                                                   \
+                 NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE),    \
+                 sampled_value, bind_fn,                                         \
+                 (&(const ncl_tool_value_spec){(const void *)(getter),            \
+                                              (const void *)(setter), 0}))
+
+#define NCL_POINT_CONFIG_READ(path_literal, bind_fn, getter, arg_value)           \
+    NCL_POINT_CONFIG_ROW(path_literal, NCL_OP_BIT(NCL_OP_GET_VALUE), bind_fn,     \
+                        (&(const ncl_tool_value_spec){(const void *)(getter),     \
+                                                      NULL,                      \
+                                                      (long long)(arg_value)}))
+
+#define NCL_POINT_CONFIG_WRITE(path_literal, bind_fn, getter, setter)             \
+    NCL_POINT_CONFIG_ROW(                                                         \
+        path_literal,                                                            \
+        NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE), bind_fn,    \
+        (&(const ncl_tool_value_spec){(const void *)(getter),                     \
+                                      (const void *)(setter), 0}))
+
+/*
+ * 一个概念一个名字：给了现场参数（轴号、子项）就用带参数那支实现，没给就用普通那支。
+ * 现场只记 NCL_<族>_<类型>[_SAMPLED|_RW]，不需要记两套名字。
+ */
+#define NCL_POINT_SHAPE(_1, _2, _3, NAME, ...) NAME
+
+/* 整数 --------------------------------------------------------------------- */
+#define NCL_DATAITEM_I64(...)                                                      \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_DATAITEM_I64_AT_, NCL_DATAITEM_I64_PLAIN_)          \
+    (__VA_ARGS__)
+#define NCL_DATAITEM_I64_PLAIN_(path_literal, getter)                              \
+    NCL_POINT_READ(path_literal, false, ncl_tool_value_i64, getter, 0)
+#define NCL_DATAITEM_I64_AT_(path_literal, getter, arg_value)                      \
+    NCL_POINT_READ(path_literal, false, ncl_tool_value_i64_arg, getter, arg_value)
+
+#define NCL_DATAITEM_I64_SAMPLED(...)                                              \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_DATAITEM_I64_SAMPLED_AT_,                       \
+                  NCL_DATAITEM_I64_SAMPLED_PLAIN_)(__VA_ARGS__)
+#define NCL_DATAITEM_I64_SAMPLED_PLAIN_(path_literal, getter)                      \
+    NCL_POINT_READ(path_literal, true, ncl_tool_value_i64, getter, 0)
+#define NCL_DATAITEM_I64_SAMPLED_AT_(path_literal, getter, arg_value)              \
+    NCL_POINT_READ(path_literal, true, ncl_tool_value_i64_arg, getter, arg_value)
+
+#define NCL_DATAITEM_I64_RW(path_literal, getter, setter)                          \
+    NCL_POINT_WRITE(path_literal, false, ncl_tool_value_i64, getter, setter)
+
+/* 浮点 --------------------------------------------------------------------- */
+#define NCL_DATAITEM_F64(...)                                                      \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_DATAITEM_F64_AT_, NCL_DATAITEM_F64_PLAIN_)          \
+    (__VA_ARGS__)
+#define NCL_DATAITEM_F64_PLAIN_(path_literal, getter)                              \
+    NCL_POINT_READ(path_literal, false, ncl_tool_value_f64, getter, 0)
+#define NCL_DATAITEM_F64_AT_(path_literal, getter, arg_value)                      \
+    NCL_POINT_READ(path_literal, false, ncl_tool_value_f64_arg, getter, arg_value)
+
+#define NCL_DATAITEM_F64_SAMPLED(...)                                              \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_DATAITEM_F64_SAMPLED_AT_,                       \
+                  NCL_DATAITEM_F64_SAMPLED_PLAIN_)(__VA_ARGS__)
+#define NCL_DATAITEM_F64_SAMPLED_PLAIN_(path_literal, getter)                      \
+    NCL_POINT_READ(path_literal, true, ncl_tool_value_f64, getter, 0)
+#define NCL_DATAITEM_F64_SAMPLED_AT_(path_literal, getter, arg_value)              \
+    NCL_POINT_READ(path_literal, true, ncl_tool_value_f64_arg, getter, arg_value)
+
+#define NCL_DATAITEM_F64_RW(path_literal, getter, setter)                          \
+    NCL_POINT_WRITE(path_literal, false, ncl_tool_value_f64, getter, setter)
+
+/* 布尔 --------------------------------------------------------------------- */
+#define NCL_DATAITEM_BOOL(...)                                                     \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_DATAITEM_BOOL_AT_, NCL_DATAITEM_BOOL_PLAIN_)        \
+    (__VA_ARGS__)
+#define NCL_DATAITEM_BOOL_PLAIN_(path_literal, getter)                             \
+    NCL_POINT_READ(path_literal, false, ncl_tool_value_bool, getter, 0)
+#define NCL_DATAITEM_BOOL_AT_(path_literal, getter, arg_value)                     \
+    NCL_POINT_READ(path_literal, false, ncl_tool_value_bool_arg, getter, arg_value)
+
+#define NCL_DATAITEM_BOOL_SAMPLED(...)                                             \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_DATAITEM_BOOL_SAMPLED_AT_,                      \
+                  NCL_DATAITEM_BOOL_SAMPLED_PLAIN_)(__VA_ARGS__)
+#define NCL_DATAITEM_BOOL_SAMPLED_PLAIN_(path_literal, getter)                     \
+    NCL_POINT_READ(path_literal, true, ncl_tool_value_bool, getter, 0)
+#define NCL_DATAITEM_BOOL_SAMPLED_AT_(path_literal, getter, arg_value)             \
+    NCL_POINT_READ(path_literal, true, ncl_tool_value_bool_arg, getter, arg_value)
+
+/* 文本 --------------------------------------------------------------------- */
+#define NCL_DATAITEM_STR(...)                                                      \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_DATAITEM_STR_AT_, NCL_DATAITEM_STR_PLAIN_)          \
+    (__VA_ARGS__)
+#define NCL_DATAITEM_STR_PLAIN_(path_literal, getter)                              \
+    NCL_POINT_READ(path_literal, false, ncl_tool_value_str, getter, 0)
+#define NCL_DATAITEM_STR_AT_(path_literal, getter, arg_value)                      \
+    NCL_POINT_READ(path_literal, false, ncl_tool_value_str_arg, getter, arg_value)
+
+#define NCL_DATAITEM_STR_SAMPLED(...)                                              \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_DATAITEM_STR_SAMPLED_AT_,                       \
+                  NCL_DATAITEM_STR_SAMPLED_PLAIN_)(__VA_ARGS__)
+#define NCL_DATAITEM_STR_SAMPLED_PLAIN_(path_literal, getter)                      \
+    NCL_POINT_READ(path_literal, true, ncl_tool_value_str, getter, 0)
+#define NCL_DATAITEM_STR_SAMPLED_AT_(path_literal, getter, arg_value)              \
+    NCL_POINT_READ(path_literal, true, ncl_tool_value_str_arg, getter, arg_value)
+
+#define NCL_DATAITEM_STR_RW(path_literal, getter, setter)                          \
+    NCL_POINT_WRITE(path_literal, false, ncl_tool_value_str, getter, setter)
+
+/* 结构化 --------------------------------------------------------------- */
+
+/* 值不是标量，是 client 交出来的一个 JSON（报警的 {"number","text"}、表…）。
+ * 没有 _RW 形状：client 侧还没有 JSON 的置值函数。 */
+#define NCL_DATAITEM_JSON(path_literal, getter)                                    \
+    NCL_POINT_READ(path_literal, false, ncl_tool_value_json, getter, 0)
+#define NCL_DATAITEM_JSON_SAMPLED(path_literal, getter)                            \
+    NCL_POINT_READ(path_literal, true, ncl_tool_value_json, getter, 0)
+
+/* 方法 --------------------------------------------------------------------- */
+#define NCL_METHOD_CALL(path_literal, fn)                                      \
+    NCL_POINT_ROW(path_literal, NCL_OP_BIT(NCL_OP_FUNC_CALL), false,             \
+                 ncl_tool_value_method,                                          \
+                 (&(const ncl_tool_value_spec){(const void *)(fn), NULL, 0}))
+
+/*
+ * 配置型数据对象（config：参数、坐标系、刀具表、对象自己的元信息）的绑定。
+ *
+ * 和上面那几个是同一件事，只差"这一条进模型的 configs 而不是 dataItems"：
+ * 册 3 §5.4/§5.5 把数据对象分成两类，config 按表 1 注 b **不得作为采样数据源**，
+ * 所以这一族故意没有 _SAMPLED 形状（声明档的校验器也会拒收采样配置）。
+ * 形状与上面一致：给了现场参数就走带参数那支。
+ */
+#define NCL_CONFIG_I64(...)                                               \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_CONFIG_I64_AT_,                        \
+                  NCL_CONFIG_I64_PLAIN_)(__VA_ARGS__)
+#define NCL_CONFIG_I64_PLAIN_(path_literal, getter)                       \
+    NCL_POINT_CONFIG_READ(path_literal, ncl_tool_value_i64, getter, 0)
+#define NCL_CONFIG_I64_AT_(path_literal, getter, arg_value)               \
+    NCL_POINT_CONFIG_READ(path_literal, ncl_tool_value_i64_arg, getter, arg_value)
+
+#define NCL_CONFIG_F64(...)                                               \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_CONFIG_F64_AT_,                        \
+                  NCL_CONFIG_F64_PLAIN_)(__VA_ARGS__)
+#define NCL_CONFIG_F64_PLAIN_(path_literal, getter)                       \
+    NCL_POINT_CONFIG_READ(path_literal, ncl_tool_value_f64, getter, 0)
+#define NCL_CONFIG_F64_AT_(path_literal, getter, arg_value)               \
+    NCL_POINT_CONFIG_READ(path_literal, ncl_tool_value_f64_arg, getter, arg_value)
+
+#define NCL_CONFIG_BOOL(...)                                              \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_CONFIG_BOOL_AT_,                       \
+                  NCL_CONFIG_BOOL_PLAIN_)(__VA_ARGS__)
+#define NCL_CONFIG_BOOL_PLAIN_(path_literal, getter)                      \
+    NCL_POINT_CONFIG_READ(path_literal, ncl_tool_value_bool, getter, 0)
+#define NCL_CONFIG_BOOL_AT_(path_literal, getter, arg_value)              \
+    NCL_POINT_CONFIG_READ(path_literal, ncl_tool_value_bool_arg, getter, arg_value)
+
+#define NCL_CONFIG_STR(...)                                               \
+    NCL_POINT_SHAPE(__VA_ARGS__, NCL_CONFIG_STR_AT_,                        \
+                  NCL_CONFIG_STR_PLAIN_)(__VA_ARGS__)
+#define NCL_CONFIG_STR_PLAIN_(path_literal, getter)                       \
+    NCL_POINT_CONFIG_READ(path_literal, ncl_tool_value_str, getter, 0)
+#define NCL_CONFIG_STR_AT_(path_literal, getter, arg_value)               \
+    NCL_POINT_CONFIG_READ(path_literal, ncl_tool_value_str_arg, getter, arg_value)
+
+/* 可读可写的配置（参数、坐标系…）：读回来能改回去，审计里才有旧值。 */
+#define NCL_CONFIG_I64_RW(path_literal, getter, setter)                   \
+    NCL_POINT_CONFIG_WRITE(path_literal, ncl_tool_value_i64, getter, setter)
+#define NCL_CONFIG_F64_RW(path_literal, getter, setter)                   \
+    NCL_POINT_CONFIG_WRITE(path_literal, ncl_tool_value_f64, getter, setter)
+#define NCL_CONFIG_STR_RW(path_literal, getter, setter)                   \
+    NCL_POINT_CONFIG_WRITE(path_literal, ncl_tool_value_str, getter, setter)
+/* 表型的配置（刀具表、坐标系…）：整个值是 client 交出来的一个 JSON（list/dict）。 */
+#define NCL_CONFIG_JSON(path_literal, getter)                            \
+    NCL_POINT_CONFIG_READ(path_literal, ncl_tool_value_json, getter, 0)
+
+#define NCL_TOOL_BEGIN(name_literal, description_literal, device_type_literal, \
+                       sample_ms_value, upload_ms_value, open_fn, close_fn)    \
     static const char ncl_tool_name_[] = name_literal;                         \
     static const char ncl_tool_description_[] = description_literal;           \
+    static const char ncl_tool_device_type_[] = device_type_literal;           \
     static const long long ncl_tool_sample_ms_ = (sample_ms_value);            \
     static const long long ncl_tool_upload_ms_ = (upload_ms_value);            \
     static ncl_tool_open_fn const ncl_tool_open_ = (open_fn);                  \
@@ -356,6 +659,7 @@ typedef struct {
                                                                                \
         decl.name = ncl_tool_name_;                                            \
         decl.description = ncl_tool_description_;                              \
+        decl.device_type = ncl_tool_device_type_;                              \
         decl.sample_ms = ncl_tool_sample_ms_;                                  \
         decl.upload_ms = ncl_tool_upload_ms_;                                  \
         decl.open = ncl_tool_open_;                                            \
@@ -408,7 +712,7 @@ ncl_err ncl_tool_fail(char **reason, ncl_err code, const char *fmt, ...);
  * request with its bytes, every write with its old and new value).
  *
  * The core only knows this shape - the implementation lives where the audit
- * does (nclink_adapter/ncl_audit.h), so a host without one passes NULL and the
+ * does (nclink/ncl_audit.h), so a host without one passes NULL and the
  * shim records nothing. An adapter author never sees this: the accounting is
  * done for them.
  */
@@ -442,6 +746,17 @@ typedef struct {
  * @return @p buf ("" when there is nothing to name).
  */
 char *ncl_tool_point_name(const ncl_tool_point *point, char *buf, size_t cap);
+
+/**
+ * 声明里的相对路径 → 模型里的绝对路径："/STATUS" → "/MACHINE/STATUS"。
+ *
+ * 设备段取自 @p decl（NCL_TOOL_BEGIN 里定义的那个）。返回值是
+ * @p buf；@p relative_path 为空时 buf 是空串。宿主就是用它把点位路径拼成客户端
+ * 能寻址的模型路径（轮询、自检、REST 都走这一条）。@p buf 留够相对路径 + 64 字节。
+ */
+const char *ncl_tool_model_path(const ncl_tool_decl *decl,
+                                const char *relative_path, char *buf,
+                                size_t cap);
 
 /**
  * Check a declaration before anything is built from it: a name, at least one
@@ -498,6 +813,21 @@ ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
 void ncl_tool_unregister(const ncl_tool_decl *decl,
                          ncl_tool_registration *registration);
 
+/**
+ * True when the point at @p index turned out to be unreadable in this build: its
+ * function answered NCL_ERR_UNAVAILABLE (nclink/ncl_common.h), which means the
+ * protocol call behind it has not been implemented yet - 帧还没抓到。
+ *
+ * Learned from the point's own answer and remembered for the life of the
+ * process, so it is false until the point has been called once. It is not a
+ * declaration flag: what a point can be read with lives in the client, and this
+ * is only the host's memory of what the client said. A host that polls asks here
+ * before it spends a round on a point; the point stays in the model either way,
+ * because the site wants to see what is coming.
+ */
+bool ncl_tool_point_unavailable(const ncl_tool_registration *registration,
+                                size_t index);
+
 /* The module side ------------------------------------------------------- */
 
 /**
@@ -505,7 +835,14 @@ void ncl_tool_unregister(const ncl_tool_decl *decl,
  * older shape - a module that hands over a driver factory - so the two can be
  * told apart from the descriptor's first field.
  */
-#define NCL_TOOL_MODULE_ABI 2u
+/*
+ * Generation 2 added the "points live in the module" shape. Generation 3 drops
+ * the pending declaration (ncl_tool_point lost `available` / `summary`; a point
+ * that cannot be read yet says so from its function, with NCL_ERR_UNAVAILABLE),
+ * so a module built against generation 2 has a point struct this host would
+ * read at the wrong offsets - hence the bump rather than a silent mismatch.
+ */
+#define NCL_TOOL_MODULE_ABI 3u
 
 /** Entry point symbol a module exports (same name for both generations). */
 #define NCL_TOOL_MODULE_ENTRY "ncl_adapter_module"

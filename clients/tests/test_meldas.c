@@ -421,7 +421,7 @@ static void machine_stop(meldas_machine *machine)
 
 static ncl_driver *meldas_driver(meldas_machine *machine, const char *extra)
 {
-    ncl_driver *driver = ncl_driver_create("meldas");
+    ncl_driver *driver = ncl_meldas_create();
     ncl_strbuf json;
     ncl_json *params;
 
@@ -633,7 +633,7 @@ static void test_axis_modes(void)
     NCL_TEST_CASE("an unknown axisMode is a configuration error");
     machine = machine_start();
     if (machine != NULL) {
-        ncl_driver *other = ncl_driver_create("meldas");
+        ncl_driver *other = ncl_meldas_create();
         ncl_json *params = ncl_json_parse_cstr(
             "{\"host\":\"127.0.0.1\",\"axisMode\":\"sideways\"}", NULL);
 

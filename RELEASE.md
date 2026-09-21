@@ -125,7 +125,7 @@ client、server、http、rest、config、ftp、file、schema、event、license�
 tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认跳过）。
 
 > 注：本节与 3.1.x 里写的"25/25"是 3.4.0 / 3.3.0 **发布当时**的口径——那时仓库里只有
-> 核心库的这 25 个套件。`adapters/`（厂商协议驱动 + `ncl_adapter` 宿主 + 可装载的
+> 核心库的这 31 个套件。`plugins/`（厂商适配器 + 可装载的
 > 适配器模块，未发布）进来后仓库全量是 **42 个套件**（26 核心 + 16 适配器，核心多的是
 > `ncl_library_*` 的装载接口），两个平台的 **默认堆版**都已复测 **42/42**
 > （Windows/MSVC 与 MinGW/gcc 16.2）；静态池那几组仍是改造之前的 39 套口径

@@ -29,7 +29,7 @@
 #include <stdint.h>
 
 #include "nclink/ncl_json.h"
-#include "nclink_adapter/ncl_driver.h" /* the tiered error codes it counts */
+#include "nclink/ncl_driver.h" /* the tiered error codes it counts */
 
 #ifdef __cplusplus
 extern "C" {

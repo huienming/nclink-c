@@ -15,7 +15,7 @@
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_socket.h"
 #include "nclink/clients/focas.h"
-#include "focas/ncl_focas_driver.h"
+#include "focas/ncl_focas_pdu.h"
 
 /* ---------------------------------------------------------------- helpers -- */
 
@@ -548,11 +548,8 @@ static ncl_driver *focas_driver(focas_mock *mock, const char *extra)
     ncl_strbuf json;
     ncl_json *params;
 
-    /* The driver ships as a module when NCLINK_BUILD_PLUGINS is on, so it is
-     * not in the built-in registry: registering it here is exactly what the
-     * host does with the factory a module hands over. */
-    (void)ncl_driver_register_protocol("focas", ncl_focas_create);
-    driver = ncl_driver_create("focas");
+    /* 和适配器一样：驱动直接造出来（没有按名字查的注册表）。 */
+    driver = ncl_focas_create();
     if (driver == NULL) {
         return NULL;
     }
@@ -693,7 +690,9 @@ static void test_driver(void)
 
         NCL_CHECK(node != NULL);
         NCL_CHECK(ncl_address_from_json(node, &address) == NCL_OK);
-        NCL_CHECK_EQ_INT(driver->ops->write_batch(driver, &address, scalar, 1),
+        /* 驱动没有 write_batch（FOCAS 只读，没抓到写帧）：骨架对空缺的位回
+         * NOT_SUPPORTED，所以行为还是"写被拒"。 */
+        NCL_CHECK_EQ_INT(ncl_driver_write_one(driver, &address, scalar),
                          NCL_ERR_NOT_SUPPORTED);
         ncl_address_clear(&address);
         ncl_json_free(scalar);
@@ -863,6 +862,50 @@ static void test_driver_no_negotiate(void)
     mock_stop(mock);
 }
 
+/*
+ * 语义层里"帧还没抓到"的那三条：它们现在回 NCL_ERR_UNAVAILABLE，理由里带一句"要抓
+ * 哪一帧"（排障时从 ncl_focas_last_error() 看）。会话不用连机床 —— open() 本来就不
+ * 连（第一次读才连），所以这一段是离线的。
+ */
+static void test_not_yet(void)
+{
+    ncl_focas_config config;
+    ncl_focas *focas;
+    char *err = NULL;
+    ncl_json *value = NULL;
+    double position = 0.0;
+
+    ncl_focas_config_default(&config);
+    config.host = "127.0.0.1";
+    focas = ncl_focas_open(&config, &err);
+    NCL_CHECK(focas != NULL);
+    if (focas == NULL) {
+        printf("    %s\n", err != NULL ? err : "?");
+        ncl_free_safe(err);
+        return;
+    }
+
+    NCL_TEST_CASE("还没抓到帧的三条调用回 NCL_ERR_UNAVAILABLE，并说清要抓哪一帧");
+    NCL_CHECK_EQ_INT(ncl_focas_alarm(focas, &value), NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(value == NULL); /* 宁可没有值，也不编一个 */
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdalmmsg2") != NULL);
+
+    NCL_CHECK_EQ_INT(ncl_focas_axis_position_cmd(focas, NCL_FOCAS_AXIS_X,
+                                                 &position),
+                     NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdposition") != NULL);
+    /* 轴号越界仍旧是参数错，不是"还没有" */
+    NCL_CHECK_EQ_INT(ncl_focas_axis_position_cmd(focas, (ncl_focas_axis)77,
+                                                 &position),
+                     NCL_ERR_RANGE);
+
+    NCL_CHECK_EQ_INT(ncl_focas_tool_list(focas, &value), NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(value == NULL);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdtooldata") != NULL);
+
+    ncl_focas_close(focas);
+}
+
 NCL_TEST_MAIN_BEGIN()
     test_golden_frames();
     test_hello_reply();
@@ -873,4 +916,5 @@ NCL_TEST_MAIN_BEGIN()
     test_driver_short_reply();
     test_driver_payload_offset();
     test_driver_no_negotiate();
+    test_not_yet();
 NCL_TEST_MAIN_END()

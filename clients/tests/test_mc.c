@@ -441,7 +441,7 @@ static void mc_slave_stop(mc_slave *s)
 
 static ncl_driver *mc_driver(mc_slave *s, const char *extra)
 {
-    ncl_driver *driver = ncl_driver_create("mc_tcp");
+    ncl_driver *driver = ncl_mc_tcp_create();
     ncl_strbuf json;
     ncl_json *params;
 

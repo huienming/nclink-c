@@ -28,7 +28,7 @@
 #ifndef NCL_MODBUS_DRIVER_H
 #define NCL_MODBUS_DRIVER_H
 
-#include "nclink_adapter/ncl_driver.h"
+#include "nclink/ncl_driver.h"
 
 #ifdef __cplusplus
 extern "C" {

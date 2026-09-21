@@ -505,7 +505,7 @@ static void fins_slave_stop(fins_slave *s)
 
 static ncl_driver *fins_driver(fins_slave *s, const char *extra)
 {
-    ncl_driver *driver = ncl_driver_create("fins_tcp");
+    ncl_driver *driver = ncl_fins_tcp_create();
     ncl_strbuf json;
     ncl_json *params;
 

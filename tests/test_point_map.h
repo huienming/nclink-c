@@ -14,9 +14,11 @@
  * ("D32", "M3", {"area":..,"offset":..}) stays the driver's business:
  * ncl_address_from_json() is what parses it.
  *
- * The driver comes either from a factory the test passes, or - when it passes
- * NULL - from the configuration's "type" through the driver registry, which is
- * what a test that registers its own protocol needs.
+ * The driver comes from the factory the test passes: a protocol test names the
+ * client it exercises (ncl_modbus_tcp_create, ncl_focas_create, ...) right here,
+ * so the test reads as "these addresses, this protocol". There is no registry to
+ * look a name up in any more, and the "type" field a configuration carries is
+ * therefore ignored.
  */
 #ifndef NCL_TEST_POINT_MAP_H
 #define NCL_TEST_POINT_MAP_H
@@ -26,8 +28,8 @@
 
 #include "nclink/ncl_common.h"
 #include "nclink/ncl_json.h"
-#include "nclink_adapter/ncl_audit.h"
-#include "nclink_adapter/ncl_driver.h"
+#include "nclink/ncl_audit.h"
+#include "nclink/ncl_driver.h"
 
 typedef struct {
     char        *key; /**< the model path the test asks for */
@@ -43,25 +45,21 @@ typedef struct {
     size_t       capacity;
 } test_point_map;
 
-/**
- * Make the map. With @p factory the driver is built from it; with NULL the
- * driver is built later, from the configuration's "type" (the registry).
- */
+/** Make the map: @p factory builds the driver every point of it goes through. */
 static test_point_map *test_point_map_create(ncl_driver_factory factory)
 {
-    test_point_map *map = (test_point_map *)ncl_mem_calloc(1, sizeof(*map));
+  test_point_map *map = (test_point_map *)ncl_mem_calloc(1, sizeof(*map));
 
-    if (map == NULL) {
-        return NULL;
-    }
-    if (factory != NULL) {
-        map->driver = factory();
-        if (map->driver == NULL) {
-            ncl_mem_free(map);
-            return NULL;
-        }
-    }
-    return map;
+  if (map == NULL || factory == NULL) {
+      ncl_mem_free(map);
+      return NULL;
+  }
+  map->driver = factory();
+  if (map->driver == NULL) {
+      ncl_mem_free(map);
+      return NULL;
+  }
+  return map;
 }
 
 static void test_point_map_free(test_point_map *map)
@@ -142,18 +140,12 @@ static ncl_err test_point_map_add_json(test_point_map *map,
     ncl_err rc;
 
     if (map->driver == NULL) {
-        const char *protocol = ncl_json_obj_get_string(config, "type");
-
-        /* The built-in protocols (mock and friends) are always available. */
-        ncl_driver_register_builtin();
-        map->driver = protocol != NULL ? ncl_driver_create(protocol) : NULL;
-        if (map->driver == NULL) {
-            if (err != NULL) {
-                (void)ncl_strbuf_printf(err, "no driver for \"%s\"",
-                                        protocol != NULL ? protocol : "?");
-            }
-            return NCL_ERR_NOT_FOUND;
+        if (err != NULL) {
+            (void)ncl_strbuf_puts(
+                err, "the point map has no driver: pass a factory to "
+                     "test_point_map_create()");
         }
+        return NCL_ERR_NOT_FOUND;
     }
     ops = ncl_driver_ops_of(map->driver);
     if (ops == NULL) {

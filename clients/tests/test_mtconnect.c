@@ -395,7 +395,7 @@ static void agent_stop(mt_agent *agent)
 
 static ncl_driver *mt_driver(mt_agent *agent)
 {
-    ncl_driver *driver = ncl_driver_create("mtconnect");
+    ncl_driver *driver = ncl_mtconnect_create();
     ncl_strbuf json;
     ncl_json *params;
 

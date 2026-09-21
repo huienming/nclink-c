@@ -9,7 +9,7 @@
  * cable or the protocol" without reading the log.
  */
 
-#include "nclink_adapter/ncl_audit.h"
+#include "nclink/ncl_audit.h"
 
 #include <stdio.h>
 #include <string.h>

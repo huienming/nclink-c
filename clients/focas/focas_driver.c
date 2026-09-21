@@ -20,7 +20,7 @@
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_socket.h"
 #include "nclink/clients/focas.h"
-#include "focas/ncl_focas_driver.h"
+#include "focas/ncl_focas_pdu.h"
 
 /** The body size class of §2.2 rule 4 keeps a reply under 3470 bytes. */
 #define FOCAS_MAX_BODY 4096
@@ -585,17 +585,6 @@ static ncl_err focas_read_batch(ncl_driver *self, const ncl_address *addresses,
 
 /* --------------------------------------------------------------- the rest -- */
 
-static ncl_err focas_write_batch(ncl_driver *self, const ncl_address *addresses,
-                                 const ncl_json *values, size_t count)
-{
-    (void)self;
-    (void)addresses;
-    (void)values;
-    (void)count;
-    /* No write request was captured (§2.3 lists read calls only). */
-    return NCL_ERR_NOT_SUPPORTED;
-}
-
 static ncl_err focas_raw(ncl_driver *self, const void *frame, size_t frame_len,
                          ncl_driver_result *out)
 {
@@ -802,7 +791,7 @@ static const ncl_driver_ops kFocasOps = {
     "focas",                focas_create,
     focas_open,             focas_close,
     focas_is_connected,     focas_read_batch,
-    focas_write_batch,      focas_raw,
+    NULL,                   focas_raw, /* 写：没抓到写帧；骨架对 NULL 回 NOT_SUPPORTED */
     focas_raw,              focas_call,
     focas_attach_event,     focas_destroy,
     focas_last_raw,

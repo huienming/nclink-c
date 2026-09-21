@@ -2,7 +2,7 @@
 /* Copyright (c) 2026 huienming */
 
 /*
- * NC-Link adapter - the vendor protocol driver interface.
+ * NC-Link tool layer - the vendor protocol driver interface.
  *
  * Every driver speaks one machine/PLC protocol (Modbus, MC, FINS, S7, LSV2,
  * FOCAS, ...) and exposes it through this interface, which is the C shape of
@@ -219,7 +219,7 @@ void ncl_driver_last_raw(const ncl_driver *driver, ncl_driver_raw *out);
 
 /**
  * Read one address as a JSON scalar, opening the session on demand. Helper for
- * drivers and for the adapter's point map.
+ * drivers and for the tool file that maps its points onto addresses.
  */
 ncl_err ncl_driver_read_one(ncl_driver *driver, const ncl_address *address,
                             ncl_json **value);
@@ -239,32 +239,14 @@ ncl_err ncl_dtype_from_object(const ncl_json *object, const char *key,
 
 /* ============================================================= factories == */
 
-/** A protocol driver factory (registered per protocol name). */
+/**
+ * A protocol driver factory: a function that builds one driver, e.g.
+ * ncl_focas_create() or ncl_modbus_tcp_create(). A driver is constructed
+ * directly by the code that uses it - there is no name based registry, because
+ * the protocol a site speaks is a line of its tool file, not a string in a
+ * configuration.
+ */
 typedef ncl_driver *(*ncl_driver_factory)(void);
-
-/**
- * Register @p factory under @p protocol (the built in set is registered by
- * ncl_driver_register_builtin()). Returns NCL_ERR_EXISTS when taken.
- */
-ncl_err ncl_driver_register_protocol(const char *protocol,
-                                     ncl_driver_factory factory);
-/** Register the drivers built into this library (mock today, more in P1). */
-void ncl_driver_register_builtin(void);
-/**
- * Create a driver for @p protocol (NULL when unknown or out of memory). The
- * driver comes up with its defaults; hand it its "parameters" object with
- * ops->create() before the first read.
- */
-ncl_driver *ncl_driver_create(const char *protocol);
-/** Number of registered protocols. */
-size_t ncl_driver_protocol_count(void);
-/**
- * True when @p protocol is registered (a built-in or one a module handed
- * over). A host checks this before building a device so that "the module is
- * not in the plugin directory" is said out loud instead of surfacing as
- * "unknown protocol".
- */
-bool ncl_driver_protocol_known(const char *protocol);
 
 #ifdef __cplusplus
 }
