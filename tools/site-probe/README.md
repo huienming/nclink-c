@@ -167,6 +167,43 @@ focas_sdk_probe32.exe --dll Fwlib32.dll --hssb 127.0.0.1 8193 cnc_statinfo
 - 想看它到底发了什么：SDK 自己的日志在 `C:\ProgramData\FANUC\Fwlib\FWLIBETH.LOG`
   （一行一条：建 socket / 建 circuit / 收应答失败的原因）。
 
+### 真 FOCAS2 假机床（`focas_machine.py`，2026-09）—— 拿它把 client 端到端跑起来
+
+`focas_sdk_mock.py` 是"载荷随便铺、看 SDK 怎么解"的**取证**工具；`focas_machine.py`
+是**按核出来的口径发正确字节**的假机床，我们自己的 client（`ncl_server` + focas 插件）
+能直接连它：
+
+```powershell
+# 1) 起假机床（值随便给；跟踪误差可以给负数）
+python tools/site-probe/focas_machine.py 8193 --pos 12.345,67.89,-3.5,0,0 `
+    --feed 500.5 --spindle 3000 --count 952 --prog O1234 --srv-delay 1.234 `
+    --status running --mode auto
+# 2) 用我们自己的 client 读一遍（--offline = 不接 broker；conf 里 host 指向 127.0.0.1:8193）
+build\Release\ncl_server.exe -c <conf> -P build\plugins\Release --offline --once
+```
+
+实测：`STATUS`、`WORK_MODE`（auto/manual 都对）、`PART_COUNT`、`PROGRAM` /
+`PROGRAM_NUMBER`、`LINE_NUMBER`、`POSITION@REAL`、`SPEED` 全部按给的值出来；
+**`POSITION@CMD` = 实际 − 跟踪误差**（`--srv-delay 1.234` → 11.111，`-2.5` → 12.5）。
+还没接的那 17 条照旧报"还读不了"。
+
+**每个字节的来源**（也是它的边界，文件头写了同样一段）：帧与块结构 = 参考实现反汇编；
+每条 item 的 Cb 码 = 官方 SDK 实测；字段位置 = 官方 SDK 填它自己的结构体（`STATINFO`
+的 ODBST 就这么钉的：块 1 → dummy、块 2 → aut、块 0 载荷 → manual/run/edit/…）；
+数值形状 = NCGuide 实测（`POSELM` 12 字节、`ODBAXIS` 一族…）。**没有证据的 item 回错块，
+不编字节。**
+
+调试开关：`-v` 打每帧 hexdump + Cb 表；`--srv-shape rec8|bare4|hdr4` 换 `ODBAXIS` 那一族
+的候选形状；`--hello-records` / `--rec-a` / `--rec18` / `--hello-hex` / `--cap-hex`
+是"试驱动到底在哪一格读轴数"用的。
+
+> 还没钉死的一格：官方 SDK 对 `ODBAXIS` 那一族（`cnc_srvdelay` / `cnc_absolute`）的
+> 单轴调用**在本地**就回 `EW_ATTRIB`（轴号越界）——它从不把 `data[]` 填出来，说明驱动
+> 眼里的"受控轴数"还是 0。已排除：握手 `func 01` 的 16 字节头、握手记录（A/B/C/D 与
+> 每条的 `0x18` 详情）、能力块 `0x0e/0x26f0` 的载荷（照 NCGuide 的 `ODBSYS` 铺过）。
+> 剩下最可能是 `0x18` 载荷里"记录类型/轴号"那格的取值；桥里开关都留好了，试出来就能把
+> "8 字节还是 4 字节"一次定死。
+
 ## 已经拿到什么
 
 1. **FOCAS2 握手字节**（🟢 实测，`focas_run.sh`）。`cnc_allclibhndl3()` 对假机床

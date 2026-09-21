@@ -96,10 +96,14 @@ class Machine:
             self.axes.append(0.0)
         self.axis_count = int(args.axes_count)
         self.max_axes = int(args.max_axes)
+        self.cap_hex = args.cap_hex
         self.srv_shape = args.srv_shape
         self.hello_records = int(args.hello_records)
         self.hello_hex = args.hello_hex
         self.rec18 = bytes.fromhex(args.rec18) if args.rec18 else b"\x00" * 16
+        self.rec_a = int(args.rec_a)
+        self.rec_c = int(args.rec_c)
+        self.rec_d = int(args.rec_d)
         self.machine = [float(v) for v in args.machine.split(",")] \
             if args.machine else list(self.axes)
         while len(self.machine) < len(AXIS_NAMES):
@@ -168,6 +172,9 @@ class Machine:
         `42 06 | 20 00 | ' ' | '0' | ' ' | 'M' | "D4G2-49.0" | '0' | '3'`，
         其中 `[2..4)` = 最大轴数。
         """
+        if self.cap_hex:
+            # 直接用给的那串（试"驱动到底在哪一格读轴数"时最省事）
+            return bytes.fromhex(self.cap_hex).ljust(40, b"\x00")
         out = bytearray(struct.pack(">HH", 0x4206, self.max_axes))
         out += b" 0 M"                  # cnc_type / mt_type / series
         out += b"D4G2-49.0"             # version
@@ -310,6 +317,10 @@ def handle(conn, machine, verbose):
                 print("== req func=0x%02x dir=%d body=%d" %
                       (func, data[7], len(body)), flush=True)
                 print(hexdump(data), flush=True)
+                if func == FUNC_CMD:
+                    for code, d, e in cbs_of(body):
+                        print("   Cb code=0x%02x (%d) d=%d e=%d" %
+                              (code, code, d, e), flush=True)
             if func == FUNC_HELLO:
                 # 体 = 16 + 8n；§2.3 的判据 5 要求长度正好这么多。这 n 条记录就是
                 # 驱动眼里的"受控轴"，轴数（ODBAXIS 的长度规则 4 + 4×轴数）由它来。
@@ -319,7 +330,11 @@ def handle(conn, machine, verbose):
                     hello[0:16] = bytes.fromhex(machine.hello_hex)
                 hello[8:10] = struct.pack(">H", n)
                 for i in range(n):
-                    struct.pack_into(">HHHH", hello, 16 + 8 * i, 1, i + 1, 0, 0)
+                    # 每条记录 4 个 BE16（§2.3）：A / B / C / D。A 当"记录类型"试值
+                    # （--rec-a），B 当序号。
+                    struct.pack_into(">HHHH", hello, 16 + 8 * i,
+                                     machine.rec_a, i + 1,
+                                     machine.rec_c, machine.rec_d)
                 reply = frame(func, bytes(hello))
             elif func == FUNC_CMD:
                 machine.refresh()
@@ -381,10 +396,15 @@ def main(argv):
                     help="应答里报几根轴（默认 5）")
     ap.add_argument("--max-axes", default="32", type=int,
                     help="能力块 ODBSYS 里的最大轴数（驱动用它算 ODBAXIS 长度；默认 32）")
+    ap.add_argument("--cap-hex", default="",
+                    help="能力块（Cb 0x0e d=e=0x26f0）载荷的 hex，给了就用它")
     ap.add_argument("--hello-records", default="0", type=int,
                     help="握手 func 01 报几条记录（驱动把这当受控轴数；默认 0）")
     ap.add_argument("--rec18", default="",
                     help="握手记录详情（Cb 码 0x18）的载荷 hex，默认 16 个 0")
+    ap.add_argument("--rec-a", default="1", type=int, help="握手记录的 A 字段（类型）")
+    ap.add_argument("--rec-c", default="0", type=int, help="握手记录的 C 字段")
+    ap.add_argument("--rec-d", default="0", type=int, help="握手记录的 D 字段")
     ap.add_argument("--hello-hex", default="",
                     help="握手 func 01 应答头 16 字节的 hex（试「轴数在哪一格」用）")
     ap.add_argument("--count", default="952", help="件数")

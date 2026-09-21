@@ -23,8 +23,13 @@ client 原来按"整个 ODBST 都在块 0"读，于是有三处错：
 - `ncl_focas_emergency()` 跟着改成读下标 5（原来是按"字节偏移 10"算的）。
 - 三处读的长度也收到够用为止（6 / 1 个 int16），不再要求机床把块 0 铺满 20 字节。
 
+`ncl_focas_mode()` 的 manual 那条还踩了一个坑：读 **1 个** int16 时驱动给的是**标量**
+（不是数组），原来按 `arr_get(json, 0)` 取，永远取到 0 → `manual` 报成 `other`。
+这个是新加的那条 manual golden 用例抓出来的（`ncl_json_as_int(json, &manual)` 才对，
+和 `per_unit_float` 一个约定）。
+
 golden 用例同步改成实测布局（含 `holding` 那条）→ `ncl_test_focas` **231 checks /
-0 failures**，全量 `ctest` **42/42**，编译零 warning。
+0 failures**（加 manual 那条后 235 checks），全量 `ctest` **42/42**，编译零 warning。
 
 顺带入库 `tools/site-probe/focas_machine.py`：**真 FOCAS2 假机床**（命令行给
 XYZ / 进给 / 主轴 / 件数 / 程序号 / 报警 / 跟踪误差，字节按"证据表"铺，没证据的 item

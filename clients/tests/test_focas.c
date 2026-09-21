@@ -1090,6 +1090,15 @@ static void test_semantics(void)
     put_u16be(mock->payload[2], 1);      /* aut = 1 */
     NCL_CHECK_EQ_INT(ncl_focas_mode(focas, text, sizeof(text)), NCL_OK);
     NCL_CHECK_EQ_STR(text, "auto");
+    /* aut 撤掉、manual 拉起来 → manual（manual 在块 0 载荷的下标 0） */
+    put_u16be(mock->payload[2], 0);
+    put_u16be(mock->payload[0], 1);
+    NCL_CHECK_EQ_INT(ncl_focas_mode(focas, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "manual");
+    put_u16be(mock->payload[2], 1);
+    put_u16be(mock->payload[0], 0);
+    NCL_CHECK_EQ_INT(ncl_focas_mode(focas, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "auto");
     NCL_CHECK_EQ_INT(ncl_focas_status(focas, text, sizeof(text)), NCL_OK);
     NCL_CHECK_EQ_STR(text, "holding"); /* 急停优先于 run */
     {

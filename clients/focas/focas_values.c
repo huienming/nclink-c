@@ -353,7 +353,8 @@ ncl_err ncl_focas_mode(ncl_focas *focas, char *out, size_t cap)
     if (rc != NCL_OK) {
         return rc;
     }
-    (void)ncl_json_as_int(ncl_json_arr_get(bits, 0), &manual);  /* manual */
+    /* 读 1 个 int16 时拿到的是**标量**（不是数组）—— 和 per_unit_float 一个约定。 */
+    (void)ncl_json_as_int(bits, &manual);                       /* manual */
     ncl_json_free(bits);
     snprintf(out, cap, "%s",
              aut != 0 ? "auto" : manual != 0 ? "manual" : "other");
