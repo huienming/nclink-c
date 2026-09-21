@@ -61,26 +61,45 @@ D:\fanuc\              <- <root>
 
 1. 把本包解开放到 `<root>`（例如 `D:\fanuc\`）。**`plugins\` 必须跟 `bin\` 一起放**：
    程序默认从 `<root>\plugins` 装载模块：找不到模块时装载器会说清楚是哪个文件、平台报的什么原因。
-2. 改 `conf/fanuc.json` —— 现场**只有两行要动**，出厂就这么大：
+2. 改 `conf/fanuc.json` —— **只有 `host` 一定要改**，其余是协议自己的旋钮（都写着默认值，
+   不动也行）：
 
    ```json
    {
-     "tools": [ { "name": "focas", "parameters": { "host": "192.168.1.100" } } ],
-     "device": { "name": "FANUC 数控机床" }
+     "tools": [
+       {
+         "name": "focas",
+         "parameters": {
+           "host": "192.168.1.100",
+           "port": 8193,
+           "timeoutMs": 3000,
+           "connectTimeoutMs": 3000,
+           "retries": 0,
+           "negotiate": true
+         }
+       }
+     ]
    }
    ```
 
-   `host` 填机床 IP；`device.name` 是上位机看到的名字（`type`/`id` 省略就是 `MACHINE`/`01`）。
-   **其余全部有默认值**，要改才加，加了就生效：
+   `parameters` 这几个键的含义：`host`/`port` 是机床地址（FOCAS 以太网默认 **8193**）；
+   `timeoutMs`/`connectTimeoutMs` 是单次请求与建连的超时（毫秒）；`retries` 是传输层失败
+   重试次数（默认 0 —— 断线重连由下一次轮询负责）；`negotiate` 是否在 hello 之后发那条
+   会话探针（默认开；**关掉不省事**，ODBSYS 就没了，型号/版本会读不到）。
 
-   | 可加在哪 | 键 | 默认 |
+   顶层**还可以加**这些，不加就是默认：
+
+   | 顶层键 | 作用 | 默认 |
    |---|---|---|
-   | `tools[0].parameters` | `port` / `timeoutMs` / `connectTimeoutMs` / `retries` / `negotiate` | `8193` / `3000` / `3000` / `0` / `true` |
-   | 顶层 | `sample.intervalMs` / `sample.uploadMs` | `1000` / `1000`（也可以不写配置、直接改模型文件，见第 4 节） |
-   | 顶层 | `plugins.load` | 不写 = 装载 `plugins\` 里**全部**模块（本包只有一个） |
-   | 顶层 | `device.type` / `device.id` | `MACHINE` / `01` |
-   | 顶层 | `sn` | 不写就用 `bin\sn.txt` |
-   | 顶层 | `model` | 不写 = 由模块声明生成（见第 4 节） |
+   | `sample.intervalMs` / `sample.uploadMs` | 采样与上报周期 | `1000` / `1000`（也可以不写配置、直接改模型文件，见第 4 节） |
+   | `plugins.load` | 装载哪些模块 | 不写 = 装载 `plugins\` 里**全部**模块（本包只有一个） |
+   | `sn` | 设备序列号（MQTT 主题用它） | 不写就用 `bin\sn.txt`（不存在时自动生成，见第 3 步） |
+   | `model` | 用一份自己的模型文件 | 不写 = 由模块声明生成（见第 4 节） |
+   | `device.id` / `device.name` | 模型里那台设备的 **ID 与显示名** | `01` / `适配器设备` |
+   | `device.type` | **一般别写**：设备类型由模块声明定（本模块是 `MACHINE`），写了就必须一模一样，不一致直接拒绝启动 | 由声明给 |
+
+   `device` 一段只影响**模型里那台设备的标签**（上位机看到的 ID 与名字），不影响连接、
+   不影响设备身份 —— 设备身份是 SN。出厂配置里不写它，就是上面那个默认名。
 
 3. 改 `conf/mqtt.cfg` 里的 `url` 为 broker 地址（**配置里不用写 `mqtt`**：不写就读这个文件；
    命令行 `-b` 优先级更高）。`--once` / `--stats` 是自检，按设计**不接 broker**。
