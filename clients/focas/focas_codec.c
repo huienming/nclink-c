@@ -369,6 +369,20 @@ static const ncl_focas_item kItems[] = {
     /* the capability block the session negotiation sends (§2.3) */
     { "VERSION",    { 0x0e, 0, 0 },      { 0x26f0, 0, 0 }, { 0x26f0, 0, 0 }, 1, false },
     { "RDBLKCOUNT", { 0x35, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    /*
+     * 操作面板信号（`cnc_rdopnlsgnl`，官方文档 Misc/cnc_rdopnlsgnl.xml）：Cb 码
+     * **0x5d**，`d` 是"读哪几路信号"的位掩码（bit 5 = 进给倍率、bit 3 = 快移倍率、
+     * bit 6 = 主轴倍率但**只有 15i 有**、bit 7..12 = 单段/机床锁/空运行/记忆保护/
+     * 暂停…），`e` = 0。应答载荷就是从 **@0 开始的一串 BE16**，顺序与 `IODBSGNL`
+     * 一致（`mode`@0、`hndl_ax`@2、`hndl_mv`@4、`rpd_ovrd`@6、`jog_ovrd`@8、
+     * **`feed_ovrd`@0xa**、`spdl_ovrd`@0xc、`blck_del`@0xe、…）。
+     *
+     * 这里 `d` 给 `0xffff`（"全都要"）：位掩码只决定机床回哪几路，回来的仍是整个
+     * 结构体，偏移才站得住（官方 SDK 自己发的是 0）。倍率的**码值→百分比**换算在
+     * 文档里写死了：`feed_ovrd` 的 0..20 就是 0%..200%，每级 10%（见 focas_values.c
+     * 里的 `ncl_focas_feed_override`）。
+     */
+    { "RDSGNL",     { 0x5d, 0, 0 },      { 0xffff, 0, 0 }, { 0, 0, 0 },      1, false },
     /* 下面这些**码已核、应答布局还没核**（要么值不在载荷 0 处，要么是结构体数组）：
      * 表里先记着码，语义层暂时按 NCL_ERR_UNAVAILABLE 回，等真机抓一次再启用。
      *   ABSOLUTE/MACHINE/RELATIVE/DISTANCE  0x26，d = 位置类型，e = ALL_AXES

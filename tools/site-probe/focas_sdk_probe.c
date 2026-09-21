@@ -154,6 +154,12 @@ static const struct {
     { "cnc_rdgcode", "s2_n_n", 0 }, { "cnc_rdwkcdshft", "s2", 0 },
     /* 动态数据（速度/倍率一条全有）与主轴负载 */
     { "cnc_rddynamic2", "s2", 4 }, { "cnc_loadtorq", "s3", 12 },
+    /*
+     * 操作面板信号（IODBSGNL）：进给倍率 `feed_ovrd` / 主轴倍率 `spdl_ovrd` 就在这
+     * 里面 —— `cnc_rddynamic2` 的 ODBDY2 **没有倍率字段**（官方头里查过），
+     * client 早先那两条 not_yet 的注记写错了地方。
+     */
+    { "cnc_rdopnlsgnl", "s1", 0 },
     /* 程序上下行（三件套，探针里连着跑） */
     { "cnc_dwnstart4", "dwn4", 0 }, { "cnc_upstart4", "up4", 0 },
     { "cnc_download4", "dwn4", 0 }, { "cnc_upload4", "up4", 0 },

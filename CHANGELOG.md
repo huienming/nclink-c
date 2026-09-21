@@ -5,6 +5,46 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 进给倍率接上 `cnc_rdopnlsgnl`（顺手更正两条 not_yet 的注记）
+
+标准表 7 的 `FEED_OVERRIDE` / `SPINDLE_OVERRIDE` 一直挂在"待抓包"，client 里的注记
+写的是 `cnc_rddynamic2` 的 `ODBDY2.feed_override` / `.spindle_override` —— 这两个
+字段在官方头里**根本不存在**（`ODBDY2` 只有 dummy/axis/alarm/prgnum/prgmnum/seqnum/
+actf/acts 加位置联合体）。倍率在**操作面板信号** `IODBSGNL` 里，走 `cnc_rdopnlsgnl`。
+
+用上一节那套反查工具把它核了出来（`cnc_rdopnlsgnl` 加进了 `focas_sdk_probe.c` 的
+调用表）：**Cb 码 0x5d**，`d` 是"读哪几路"的位掩码（doc: bit 5 = 进给倍率、bit 3 =
+快移倍率、bit 6 = 主轴倍率但**只有 15i**），应答载荷就是 **@0 起的一串 BE16**：
+
+```
+@0x00 mode      @0x02 hndl_ax   @0x04 hndl_mv   @0x06 rpd_ovrd
+@0x08 jog_ovrd  @0x0a feed_ovrd @0x0c spdl_ovrd @0x0e blck_del …
+```
+
+（反查结果：出参 `IODBSGNL` 的 `mode` 起逐格对上载荷 @0/@2/@4…，每格一个 BE16。）
+值是**信号码**，官方文档把换算写死了：`feed_ovrd` 的 0..20 就是 0%..200%，每级 10%
+（`jog_ovrd` 那张表另有 24 级，快移倍率是 100/50/25/F0）。所以 client 里
+`ncl_focas_feed_override()` = 读 `RDSGNL@10` 的 BE16 × 10，出门就是标准要的百分比；
+码超出 0..20 回 `NCL_ERR_RANGE`。
+
+**主轴倍率**这一条改成"换路子"：`IODBSGNL.spdl_ovrd` 在 16/18/21、16i/18i/21i、0i、
+30i、PMi-A 上是 **(Not used)**（文档明说只有 Series 15i 有），所以它不是"还没抓包"，
+而是这一格读不到 —— 要拿主轴倍率得走 `cnc_rdspdata` 或相关参数，两者都还没核。
+
+顺带把 `ncl_focas_feed_speed` 的注记改对：`cnc_rddynamic2` 的字段叫 `actf`（不叫
+`feedrate`），而且它的 `length` 必须给 `sizeof(ODBDY2)`（随轴数变）；单轴进给速度
+已经能走 `cnc_actf`。
+
+新增 item `RDSGNL`（`d = 0xffff`，全都要 —— 位掩码只决定机床回哪几路，回来的仍是整个
+结构体，偏移才站得住）；假机床 `focas_machine.py` 加 `--feed-override`（百分比，按
+文档每级 10% 折算成码）；golden 用例新增"进给倍率 @0xa 码 × 10 = %"（并把 @0xe 的
+`blck_del` 填成干扰值，确认没被当倍率读走）。
+
+验证：`ncl_test_focas` **241 checks / 0 failures**；全量 `ctest` **42/42**；假机床 +
+`ncl_server --offline --once` 端到端：`/MACHINE/FEED_OVERRIDE = 130.0`（假机床给
+`--feed-override 130`）、`/MACHINE/PART_COUNT = 952`，自检从"26 可读 / 17 待抓包"
+变成 **27 可读 / 16 待抓包、0 个读取失败**。
+
 ### 反查工具：把"应答载荷第几字节是哪一格"变成机器算出来的（顺手抓到一件数读错位置）
 
 核 FOCAS item 一直是"铺斜坡载荷 + 人眼看结构体"，对 `ODBST` 那种十来个 short 的结构还

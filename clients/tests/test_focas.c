@@ -351,6 +351,9 @@ static void test_items(void)
     NCL_CHECK(item != NULL && item->cbs[0] == 0x120 && item->arg0[0] == 2);
     item = ncl_focas_item_lookup("RDBLKCOUNT");
     NCL_CHECK(item != NULL && item->cbs[0] == 0x35);
+    /* 操作面板信号（进给倍率就在里面）：Cb 0x5d，d 是"读哪几路"的位掩码 */
+    item = ncl_focas_item_lookup("RDSGNL");
+    NCL_CHECK(item != NULL && item->cbs[0] == 0x5d && item->arg0[0] == 0xffff);
     /* 伺服延迟量（= 跟踪误差）：0x26 的 d = 9，e = ALL_AXES（假机床实测的请求帧） */
     item = ncl_focas_item_lookup("SV_DELAY");
     NCL_CHECK(item != NULL && item->cbs[0] == 0x26 && item->arg0[0] == 9 &&
@@ -1013,6 +1016,22 @@ static void test_semantics(void)
     NCL_CHECK_EQ_INT(ncl_focas_timer(focas, NCL_FOCAS_TIMER_CUTTING, &number),
                      NCL_OK);
     NCL_CHECK_EQ_INT(number, 90 * 60);
+
+    /*
+     * 进给倍率：走 `cnc_rdopnlsgnl`（Cb 0x5d）的 `IODBSGNL.feed_ovrd`，载荷 @0xa 的
+     * BE16 是**信号码**；官方文档把它换算成百分比写死了（码 × 10 = %，0..20）。
+     * 这里把 @0xa 填成 13 = 130%，并给 @0xe（blck_del 那一格）一个干扰值。
+     */
+    NCL_TEST_CASE("进给倍率：操作面板信号 feed_ovrd@0xa，码 × 10 = %");
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_count = 1;
+    mock->payload_len[0] = 26;
+    put_u16be(mock->payload[0] + 0x0a, 13); /* 13 → 130% */
+    put_u16be(mock->payload[0] + 0x0e, 1);  /* blck_del，不该被当倍率读走 */
+    NCL_CHECK_EQ_INT(ncl_focas_feed_override(focas, &real), NCL_OK);
+    NCL_CHECK(real > 129.9 && real < 130.1);
+    put_u16be(mock->payload[0] + 0x0a, 25); /* 文档只定义 0..20 */
+    NCL_CHECK_EQ_INT(ncl_focas_feed_override(focas, &real), NCL_ERR_RANGE);
 
     NCL_TEST_CASE("进给速度：ACTF 每轴一个 float（第 2 根轴在载荷 @4）");
     mock->payload_len[0] = 8;

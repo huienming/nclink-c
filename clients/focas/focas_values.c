@@ -900,30 +900,68 @@ ncl_err ncl_focas_axis_type(ncl_focas *focas, ncl_focas_axis axis, char *out,
     return not_yet(focas, "轴类型", "cnc_rdaxisname / cnc_rdaxisdata 的轴属性");
 }
 
-/* 合成进给速度与两个倍率：cnc_rddynamic2 一条应答里全都有（ODBDY2）。 */
+/*
+ * 合成进给速度：`cnc_rddynamic2` 的 `ODBDY2.actf`（官方头里这条叫 `actf`，
+ * 不叫 `feedrate`；而且 `length` 必须给 **sizeof(ODBDY2)**，它随轴数变）。
+ * 单轴的进给速度已经能从 `cnc_actf` 拿到（见 ncl_focas_axis_feedrate）。
+ */
 ncl_err ncl_focas_feed_speed(ncl_focas *focas, double *value)
 {
     if (value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    return not_yet(focas, "合成进给速度", "cnc_rddynamic2（ODBDY2.feedrate）");
+    return not_yet(focas, "合成进给速度", "cnc_rddynamic2（ODBDY2.actf，长度=sizeof(ODBDY2)）");
 }
 
+/*
+ * 进给倍率：**不在** `cnc_rddynamic2` 里（`ODBDY2` 没有倍率字段），在操作面板信号
+ * `IODBSGNL.feed_ovrd` 里 —— 走 `cnc_rdopnlsgnl`（Cb 0x5d，见 focas_codec.c 的
+ * `RDSGNL` 那条）。载荷 @0xa 的 BE16 是**信号码**，官方文档把它换算成百分比写死了：
+ *
+ *     0 : 0%    5 : 50%    10 : 100%   15 : 150%   20 : 200%
+ *     1 : 10%   6 : 60%    11 : 110%   16 : 160%
+ *     ... 每级 10%（0..20 正好 0%..200%）
+ *
+ * 所以这里是 `码 × 10`，出门就是标准里的百分比。
+ */
 ncl_err ncl_focas_feed_override(ncl_focas *focas, double *value)
 {
+    ncl_json *json = NULL;
+    long long code = 0;
+    ncl_err rc;
+
     if (value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    return not_yet(focas, "进给倍率", "cnc_rddynamic2（ODBDY2.feed_override）");
+    rc = ncl_focas_read_item(focas, "RDSGNL@10", 0, 1, NCL_DTYPE_INT16, &json);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    if (!ncl_json_as_int(json, &code)) {
+        ncl_json_free(json);
+        return note(focas, "RDSGNL", NCL_ERR_PARSE);
+    }
+    ncl_json_free(json);
+    if (code < 0 || code > 20) {
+        return note(focas, "RDSGNL", NCL_ERR_RANGE); /* 文档只定义 0..20 */
+    }
+    *value = (double)code * 10.0;
+    return NCL_OK;
 }
 
+/*
+ * 主轴倍率：`IODBSGNL.spdl_ovrd` 在**现代系列上是 "(Not used)"**（官方文档：只有
+ * Series 15i 有这一格），16/18/21、16i/18i/21i、0i、30i、PMi-A 都没有。所以这条路
+ * 不是"还没抓包"，是**这一格读不到**；要拿主轴倍率得走主轴数据那一族
+ * （`cnc_rdspdata`）或读相关参数 —— 两者都还没核，先如实回"待抓包"。
+ */
 ncl_err ncl_focas_spindle_override(ncl_focas *focas, double *value)
 {
     if (value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     return not_yet(focas, "主轴倍率",
-                   "cnc_rddynamic2（ODBDY2.spindle_override）");
+                   "IODBSGNL.spdl_ovrd 现代系列没有（cnc_rdspdata 或参数待核）");
 }
 
 /* 正在执行的程序段（cnc_rdexecprog）：应答里是"程序行文本"。 */

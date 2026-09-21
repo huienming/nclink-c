@@ -328,6 +328,7 @@ python tools/site-probe/fwlib_proto.py  <SpecE 目录> cnc_rdtofsinfo       # �
 | `cnc_rdblkcount` | 0x35 | 就是**载荷 @0 的 BE32**（前一版写的"不是 @0"反了） |
 | `cnc_rdparam` / `cnc_rdtofs` | 0x0e / 0x08 | `datano`@2、`type`@4、`ldata`@8 / `data`@0 |
 | `cnc_rdprgnum`@2+@6、`cnc_rdseqnum`@0、`cnc_rdalarm2`@0、`cnc_rdngrp`@0、`cnc_rdtimer`@0+@4 | — | 复核：client 原来的读法**都对** |
+| `cnc_rdopnlsgnl` | **0x5d** | 操作面板信号，载荷 = **@0 起的 BE16 数组**（`mode`@0、…、`feed_ovrd`@0xa、`spdl_ovrd`@0xc…）；`feed_ovrd` 的**码 × 10 = %**（文档写死的 0..20 → 0..200%）→ 标准里的 `FEED_OVERRIDE` 走它（`cnc_rddynamic2` 的 `ODBDY2` **没有**倍率字段，早先的注记写错了地方） |
 
 假机床（`focas_machine.py`）跟着改了两处：`0x8b` 那块按 `ODBTLIFE3` 的真实位置铺
 （`--count` 落到 @20、新增 `--life` 落到 @12）。

@@ -117,6 +117,7 @@ class Machine:
         self.srv_delay = float(args.srv_delay)
         self.count = int(args.count)
         self.life = int(args.life)
+        self.feed_override = float(args.feed_override)
         self.prog = args.prog
         self.main_prog = args.main_prog
         self.line = int(args.line)
@@ -275,6 +276,16 @@ class Machine:
         table[(0xfc, 0)] = self.prog.encode()[:36].ljust(36, b"\x00")
         table[(0x35, 0)] = self.scalar(self.blkcount)          # RDBLKCOUNT
         table[(0x18, 0)] = self.rec18                          # 握手记录详情
+        # 操作面板信号（Cb 0x5d，cnc_rdopnlsgnl）：载荷就是 `IODBSGNL` 的 BE16 数组，
+        # 从 @0 起（mode@0、hndl_ax@2、hndl_mv@4、rpd_ovrd@6、jog_ovrd@8、
+        # **feed_ovrd@0xa**、spdl_ovrd@0xc、blck_del@0xe…）。官方文档把
+        # feed_ovrd 的码值换算写死成"每级 10%"（0..20 → 0%..200%），所以这里把百分比
+        # 除 10 变成码。
+        sgnl = bytearray(26)
+        feed_code = max(0, min(20, int(round(self.feed_override / 10.0))))
+        sgnl[0x0a:0x0c] = struct.pack(">H", feed_code)
+        table[(0x5d, 0xffff)] = bytes(sgnl)
+        table[(0x5d, 0)] = bytes(sgnl)
         return table
 
     @staticmethod
@@ -526,6 +537,8 @@ def main(argv):
                     help="握手 func 01 应答头 16 字节的 hex（试「轴数在哪一格」用）")
     ap.add_argument("--count", default="952", help="件数")
     ap.add_argument("--life", default="0", help="刀具寿命计数（RDLIFE，d=e=1）")
+    ap.add_argument("--feed-override", default="100",
+                    help="进给倍率（%，Cb 0x5d 的 feed_ovrd；按文档每级 10%）")
     ap.add_argument("--prog", default="O1234", help="执行中的程序名")
     ap.add_argument("--run-prog", default="1234", type=int, help="运行中的程序号")
     ap.add_argument("--main-prog", default="1234", type=int, help="主程序号")

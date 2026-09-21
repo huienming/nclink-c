@@ -282,6 +282,7 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 | `cnc_rdgcode` | **0x96** | d = 类型、e = 段号 | `ODBGCD` 数组 | 🟡 码新核出来 |
 | `cnc_rdwkcdshft` | **0x63** | d = 轴号、e = 长度 | `IODBWCSF` | 🟡 码新核出来 |
 | `cnc_loadtorq` | **0xfd** | d = motor、e = 轴号 | `ODBLOAD`（长度要给对，给 12 回 `EW_LENGTH`） | 🟡 码新核出来 |
+| `cnc_rdopnlsgnl` | **0x5d** | d = 读哪几路的位掩码（bit 5 = 进给倍率、bit 3 = 快移倍率、bit 6 = 主轴倍率但**只有 15i**） | `IODBSGNL`：载荷就是 **@0 起的 BE16 数组**（`mode`@0、`hndl_ax`@2、`hndl_mv`@4、`rpd_ovrd`@6、`jog_ovrd`@8、**`feed_ovrd`@0xa**、`spdl_ovrd`@0xc、`blck_del`@0xe…）；`feed_ovrd` 的**码 × 10 = %**（0..20 → 0..200%） | 🟢 已进 client（进给倍率） |
 
 > 表里的"🟡 码已核"= **请求帧已经确定**（照着发就行），差的是**应答怎么切**（值不在
 > 载荷 0 处，或是结构体数组）。真机抓一次就能把 🟡 变 🟢；client 里这些函数的
@@ -459,6 +460,7 @@ python tools/site-probe/fwlib_proto.py  <SpecE 目录> cnc_rdtofsinfo        # �
 | `cnc_rdexecprog` 的 Cb 码是 **0x20**、文本从载荷 @4 起（原样字节，不是 BE16） | SDK 反查 |
 | `cnc_rdgcode` = **0x96**、`cnc_rdwkcdshft` = **0x63**、`cnc_loadtorq` = **0xfd** | SDK 反查（后两条还差长度） |
 | `cnc_rdblkcount` 就是**载荷 @0 的 BE32**（上一版写"不是 @0"，反了） | SDK 反查 |
+| 进给倍率不在 `cnc_rddynamic2` 里（`ODBDY2` 没有倍率字段），在 `cnc_rdopnlsgnl` 的 `IODBSGNL.feed_ovrd`；主轴倍率那一格现代系列 "(Not used)" | 官方头 + 官方文档的反查 |
 | `cnc_rdparam` = `datano`@2、`type`@4、`ldata`@8；`cnc_rdtofs` = `data`@0 | SDK 反查 |
 | `cnc_rdprgnum`@2/@6、`cnc_rdseqnum`@0、`cnc_alarm2`@0、`cnc_rdngrp`@0、`cnc_rdtimer`@0+@4 **都对**（client 原来的读法没问题） | SDK 反查（顺带把已进 client 的几条复核了一遍） |
 
