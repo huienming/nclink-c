@@ -42,13 +42,13 @@ def function_body(pe, addr, limit=0x600):
         if sym.address == addr and getattr(sym, "forwarder", None) is None:
             pass
     data = pe.get_memory_mapped_image()
-    base = pe.OPTIONAL_HEADER.ImageBase
     off = addr
     return data[off:off + limit]
 
 
-def scan(bytes_, base_va):
-    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+def scan(bytes_, base_va, mode64):
+    md = capstone.Cs(capstone.CS_ARCH_X86,
+                     capstone.CS_MODE_64 if mode64 else capstone.CS_MODE_32)
     md.detail = False
     immediates = []
     for insn in md.disasm(bytes_, base_va):
@@ -77,6 +77,7 @@ def main(argv):
     path = argv[0]
     want = [w.lower() for w in argv[1:]]
     pe = pefile.PE(path, fast_load=True)
+    mode64 = pe.FILE_HEADER.Machine == 0x8664  # AMD64
     pe.parse_data_directories(
         directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"]])
     if not hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
@@ -90,7 +91,7 @@ def main(argv):
     for name in names:
         addr = exports[name]
         body = function_body(pe, addr)
-        imm = scan(body, addr)
+        imm = scan(body, addr, mode64)
         cand = candidates(imm)
         print("%-28s %s" % (name, " ".join("0x%02x" % c for c in cand[:8])))
     pe.close()
