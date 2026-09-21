@@ -6,6 +6,11 @@ add_executable(ncl_test_common test_common.c)
 target_link_libraries(ncl_test_common PRIVATE nclink_core)
 add_test(NAME common COMMAND ncl_test_common)
 
+# 字符集：GB2312 → UTF-8（FANUC 的中文报警消息就是 GB2312，见 ncl_charset.h）。
+add_executable(ncl_test_charset test_charset.c)
+target_link_libraries(ncl_test_charset PRIVATE nclink_core)
+add_test(NAME charset COMMAND ncl_test_charset)
+
 # Allocation seam: the same binary passes with the runtime allocator and with
 # the NCL_STATIC_MEM pool (the pooling specific checks need NCL_STATIC_MEM).
 add_executable(ncl_test_mem test_mem.c)

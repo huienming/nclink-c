@@ -1666,6 +1666,28 @@ ncl_ptrvec_push(&v, attribute);          /* 所有权转移 */
 ncl_ptrvec_free(&v);
 ```
 
+#### ncl_charset.h —— GB2312 → UTF-8（机床文本量）
+
+机床的文本量是**机床自己的字符集**：FANUC 的中文报警消息就是 GB2312（一条报警记录里
+4 个字节 `B1 A3 BB A4` = "保护"），而 NC-Link 的 JSON 是 UTF-8。这一步转换在库里
+（纯查表，7445 个码位，**无第三方依赖、无 locale 依赖**，Windows/Linux 一个行为）：
+
+```c
+char *utf8 = NULL;
+
+if (ncl_gb2312_to_utf8(raw, raw_len, &utf8, NULL) == NCL_OK) {
+    /* utf8 是 NUL 结尾的 UTF-8，直接塞进 JSON / 日志 */
+    ncl_json_obj_set_string(object, "text", utf8);
+    ncl_mem_free(utf8);
+}
+
+uint32_t cp = ncl_gb2312_codepoint(0xB1, 0xA3);   /* 0x4FDD = "保"；不是合法 GB2312 回 0 */
+```
+
+约定：ASCII（< 0x80）原样过去（GB2312 的 ASCII 段与 UTF-8 一致）；不合法字节变成
+**U+FFFD（替换字符）**，不报错 —— 半截汉字不该让整条报警读不出来。转换走
+`ncl_mem_alloc`，静态内存版（无堆）照样能用。FOCAS 的报警文本已经接上这一道。
+
 #### ncl_platform.h —— 时间、随机数、线程、互斥、条件变量
 
 ```c

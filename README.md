@@ -18,6 +18,7 @@ nclink-c/
 ├── build.ps1              # Windows 一键配置+编译+测试
 ├── include/nclink/        # 公共头文件（对外 API）
 │   ├── ncl_common.h       # 错误码、字符串、缓冲区、容器
+│   ├── ncl_charset.h      # GB2312 → UTF-8（机床的中文文本量）
 │   ├── ncl_platform.h     # 平台抽象（时间、线程、互斥量、条件变量）
 │   ├── ncl_json.h         # JSON DOM（解析/序列化/访问器）
 │   ├── ncl_general.h      # 常量、Code/Operation 枚举、校验工具
