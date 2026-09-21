@@ -1033,6 +1033,31 @@ static void test_semantics(void)
     put_u16be(mock->payload[0] + 0x0a, 25); /* 文档只定义 0..20 */
     NCL_CHECK_EQ_INT(ncl_focas_feed_override(focas, &real), NCL_ERR_RANGE);
 
+    /*
+     * 型号 / 版本：来源是连接期那条能力块（Cb 0x0e d=e=0x26f0）里的 ODBSYS。
+     * 这里铺的是 NCGuide 上实测那一串（01 册 §2.5）：
+     *   addinfo=0x4206、max_axis=32、cnc_type=" 0"、mt_type=" M"、
+     *   series="D4G2"、version="49.0"、axes="03"
+     * 所以 MODEL = "0M D4G2"（cnc_type + mt_type 去空格 + " " + series）、
+     * VERSION = "49.0"。两格都是**空格补齐**的 ASCII，读的时候要两头去空格。
+     */
+    NCL_TEST_CASE("型号与版本：ODBSYS（能力块）里的 ASCII 格");
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_count = 1;
+    mock->payload_len[0] = 18;
+    {
+        static const char kOdbsys[18] = {'\x42', '\x06', '\x00', '\x20',
+                                         ' ',    '0',    ' ',    'M',
+                                         'D',    '4',    'G',    '2',
+                                         '4',    '9',    '.',    '0',
+                                         '0',    '3'};
+        memcpy(mock->payload[0], kOdbsys, sizeof(kOdbsys));
+    }
+    NCL_CHECK_EQ_INT(ncl_focas_model(focas, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "0M D4G2");
+    NCL_CHECK_EQ_INT(ncl_focas_version(focas, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "49.0");
+
     NCL_TEST_CASE("进给速度：ACTF 每轴一个 float（第 2 根轴在载荷 @4）");
     mock->payload_len[0] = 8;
     put_float_be(mock->payload[0], 1000.0f);

@@ -60,10 +60,14 @@ def find(value, size, payload):
 
 def run_one(call, args, extra, timeout=25):
     log = os.path.join(WORK, "layout-mock.log")
+    mock_args = [sys.executable, "-u", MOCK, str(PORT), "--size", "0x300"]
+    if extra.get("mock"):
+        mock_args += extra["mock"]
+    else:
+        mock_args += ["--payload", extra["payload"]]
     with open(log, "wb") as fp:
         mock = subprocess.Popen(
-            [sys.executable, "-u", MOCK, str(PORT), "--size", "0x300",
-             "--payload", extra["payload"]],
+            mock_args,
             stdout=fp, stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     time.sleep(1.2)
@@ -127,6 +131,12 @@ def main(argv):
         elif a == "--payload":
             i += 1
             extra["payload"] = argv[i]
+        elif a == "--mock":
+            # 把后面剩下的参数原样交给假机床（**必须放最后**）。多块调用要用它，例如
+            # `--mock --axis-table 5 --poselm`（0x89 那块得回轴表、0x0e 那块得回
+            # ODBSYS，否则 SDK 直接 -17）。
+            extra["mock"] = argv[i + 1:]
+            break
         elif a == "--count":
             i += 1
             extra["count"] = argv[i]

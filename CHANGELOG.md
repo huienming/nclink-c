@@ -5,6 +5,54 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 型号/版本接上（`ODBSYS`），并把"多块那几条"卡在哪钉出来
+
+**型号与版本**（标准表 6 的 `MODEL` / `VERSION`）原来挂在"待抓包"，来源写的是
+`cnc_rdmodel`/`cnc_sysinfo`。这轮查清楚了：FOCAS **没有**单独的"型号"调用（`cnc_rdmodel`
+在官方文档包里根本没有），型号信息就在 `ODBSYS` 里 —— 也就是**连接期那条能力块**
+（Cb `0x0e`，`d = e = 0x26f0`），跟 `cnc_sysinfo` 是同一个结构，官方文档
+`SpecE/Misc/cnc_sysinfo.xml` 把每一格都写明了：
+
+```
+[0..2)  addinfo   (BE16：bit0 上料器 / bit1 i 系列 / bit8..15 MODEL A..F)
+[2..4)  max_axis  (BE16，最大控制轴数)
+[4..6)  cnc_type  (ASCII，如 " 0" = Series 0i)
+[6..8)  mt_type   (ASCII，如 " M" = 加工中心 / " T" = 车床)
+[8..12) series    (ASCII)       [12..16) version (ASCII)      [16..18) axes (ASCII)
+```
+
+client 跟着实现两处（口径写在 `focas_values.c` 里）：`MODEL` = `cnc_type` +
+`mt_type` 去空格再拼 `series`（例 `"0M D4G2"`）、`VERSION` = `version`（例 `"49.0"`）；
+这两格都是**空格补齐**的 ASCII，两头都要去空格。想换拼法的站点直接读 item `VERSION`
+的 `@4`/`@6`/`@8`/`@12`（名字叫 `VERSION` 是因为它本来就是那条 `0x0e` 能力块）。
+
+**"一条请求带多个块"那几条**（`cnc_rdsvmeter` / `cnc_rdspmeter` / `cnc_rdaxisdata`）这轮
+也往前推了一格，并且**把卡点钉死了**：
+
+1. 假机床 `focas_sdk_mock.py` 加了"按块看请求"的能力 —— `--axis-table N` 让 Cb `0x89`
+   那一块回**像样的轴表**、`0x0e/0x26f0` 那一块回 **ODBSYS**。于是 `cnc_rdsvmeter`
+   （`0x56` + `0x89`）从 `rc = -17 EW_PROTOCOL` 变成 **`rc = 0`** —— 之前"伺服负载
+   核不出来"就是 `0x89` 那块回了填充字节。
+2. 再往下撞到官方库自带的闸门：**`cnc_rdaxisdata` 对假机床一律 `rc = 1 (EW_FUNC)`，
+   一个字节都不发**（连接正常、能力块也答了）。反汇编 `fwlib30i64.dll` 看出
+   `cnc_rdsvmeter`/`cnc_rdspmeter` 都是薄壳，内部 **`call cnc_rdaxisdata`**
+   （RVA `0x18d60`）—— 这一族（伺服/主轴负载、电流、速度）在官方库实现里是同一条。
+   所以"拿 SDK 当裁判"这条路要先把扩展功能的闸门喂对（和单轴那条 `EW_ATTRIB` 同一族）。
+3. 写 client 需要的东西官方文档已经给全了：
+   `cnc_rdaxisdata(h, cls, short *type, short num, short *len, ODBAXDT*)`，
+   `cls` = 1 位置 / 2 伺服 / 3 主轴 / 4 选中的主轴 / 5 速度，
+   `ODBAXDT = {char name[4]; long data; short dec; short unit; short flag; short reserve;}`
+   （16 字节）。下一轮照这个写，SDK 那边等闸门。
+
+新增工具能力：`focas_sdk_layout.py --mock ...`（把剩下的参数原样交给假机床，多块调用
+要它）。
+
+验证：`ncl_test_focas` **245 checks / 0 failures**（新增"型号与版本 = ODBSYS 的 ASCII 格"
+一条，铺的就是 NCGuide 实测那串字节）；全量 `ctest` **42/42**；假机床 +
+`ncl_server --offline --once`：`/MACHINE/MODEL = "0M D4G2"`、`/MACHINE/VERSION = "49.0"`、
+`MANUFACTURER = "FANUC"`、`PART_COUNT = 952`、`FEED_OVERRIDE = 130.0`，
+自检 **29 可读 / 14 待抓包、0 个读取失败**。
+
 ### 进给倍率接上 `cnc_rdopnlsgnl`（顺手更正两条 not_yet 的注记）
 
 标准表 7 的 `FEED_OVERRIDE` / `SPINDLE_OVERRIDE` 一直挂在"待抓包"，client 里的注记

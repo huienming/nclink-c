@@ -29,6 +29,10 @@
                    `alm_no`@0、文本 `alm_msg[64]`@0x10），用来核这条的应答切法
                    （斜坡载荷会被 SDK 判无效清成 0）。ALMMSG2_MARK=1 时每个字段
                    给可辨识的值，用来找字段偏移。
+  --axis-table N  **按块看请求**：Cb `0x89` 那一块回一份像样的轴表（N 根轴，每轴
+                   16 字节、前 4 字节轴名），其余块照 `--payload`/斜坡铺。
+                   有些调用是"一条请求两个块"（`cnc_rdsvmeter` = `0x56` + `0x89`），
+                   `0x89` 回填充字节会被 SDK 判 `-17 EW_PROTOCOL`。
 
 握手（01 册 §2.2/§2.3 解出来的那套）：
   func 01（hello）→ 16 字节体（[2..4)=0、[8..10)=记录数 0）
@@ -39,6 +43,7 @@
 直接读日志就有。
 """
 import socket
+import struct
 import sys
 import threading
 import os
@@ -133,6 +138,51 @@ def almmsg2(block, size):
             2, "big")
         body[k + 0x10:k + 0x10 + len(text)] = text
     return bytes(body)
+
+
+def axis_table(axis_count):
+    """轴表（Cb `0x89`）：每轴 16 字节，前 4 字节是轴名，后面 12 字节补 0。
+
+    形状与 `focas_machine.py` 里那份一致（官方库的 `cnc_rdaxisname` 就是把
+    `[载荷 + i*16]` 处的 4 字节当轴名 memcpy 出去）。**有些调用（例如
+    `cnc_rdsvmeter` = `0x56` + `0x89`）必须两块都答对**，只答 `0x56` 那一条、
+    `0x89` 回填充字节的话，SDK 会判 `-17 EW_PROTOCOL` —— 这就是"伺服负载一直没核
+    出来"的原因。
+    """
+    names = "XYZAC"
+    out = bytearray()
+    for i in range(axis_count):
+        name = names[i] if i < len(names) else '?'
+        out += name.encode().ljust(4, b"\x00") + b"\x00" * 12
+    return bytes(out)
+
+
+def shaped(base, axis_count):
+    """把 `base(i)`（每块铺什么）包一层：**`0x89` 那一块换成像样的轴表**。
+
+    有些调用是"一条请求两个块"，两块都得答对：`cnc_rdsvmeter` 发 `0x56`（伺服负载）
+    + `0x89`（轴表），`cnc_rdspmeter` 发 `0x40`×2 + `0x8a`，`cnc_rdposition` 更是
+    9 块。只答其中一块、别的回填充字节，SDK 就判 `-17 EW_PROTOCOL` —— 这就是
+    "伺服负载/主轴负载一直没核出来"的原因。
+    """
+    def adapt(index, request):
+        table = cbs(request)
+        codes = [c[0] for c in table]
+        if index >= len(table):
+            return base(index)
+        code, arg0 = table[index][0], table[index][1]
+        if code == 0x0e and arg0 == 0x26F0:
+            # 能力块（连接期第 3 条）—— "这台机床几根轴"就在里面（ODBSYS 的
+            # `max_axis` @2 + 末尾的 ASCII 轴数），跟 focas_machine.py 铺的一致。
+            # 有些调用（cnc_rdsvmeter 就是）按这个数决定回几条记录：这里回填充字节
+            # 的话，出参 `data_num` 会一直是 0。
+            out = bytearray(struct.pack(">HH", 0x4206, 32))
+            out += b" 0 " + b"MD4G249.0" + ("%02d" % axis_count).encode() + b"\x00"
+            return bytes(out)
+        if index < len(codes) and codes[index] == 0x89:
+            return axis_table(axis_count)
+        return base(index)
+    return adapt
 
 
 def cbrep(request, size, payload, adapt, force_blocks):
@@ -237,6 +287,7 @@ def main(argv):
     silent = set()
     shape = None
     reply_func = None
+    axis_count = None
     args = list(argv)
 
     if args and args[0].isdigit():
@@ -261,18 +312,24 @@ def main(argv):
             shape = "poselm"
         elif key == "--almmsg2":
             shape = "almmsg2"
+        elif key == "--axis-table":
+            axis_count = int(args.pop(0), 0)
         else:
             raise SystemExit(__doc__)
     if size < 0x22:
         raise SystemExit("块长至少 0x22（SDK 要读块 [16..34)）")
+    # 每块铺什么：先定"兜底形状"，再（可选）把 0x89 那一块换成轴表。轴表要按**请求**
+    # 判断是哪一块，所以走 adapt，而不是 serve 的 shape 参数（那个拿不到请求）。
     if shape == "poselm":
-        serve(port, size, None, None, blocks, body, silent, reply_func,
-              poselm)
+        base = lambda i: poselm(i, size)  # noqa: E731
     elif shape == "almmsg2":
-        serve(port, size, None, None, blocks, body, silent, reply_func,
-              almmsg2)
+        base = lambda i: almmsg2(i, size)  # noqa: E731
+    elif payload is not None:
+        base = lambda i: payload  # noqa: E731
     else:
-        serve(port, size, payload, None, blocks, body, silent, reply_func)
+        base = lambda i: ramp(i, size)  # noqa: E731
+    adapt = shaped(base, axis_count) if axis_count is not None else None
+    serve(port, size, payload, adapt, blocks, body, silent, reply_func)
 
 
 if __name__ == "__main__":

@@ -337,6 +337,26 @@ python tools/site-probe/fwlib_proto.py  <SpecE 目录> cnc_rdtofsinfo       # �
 `cnc_rdmacro` 的 `--len`（给 12 仍回 `EW_LENGTH`）、`cnc_rdsvmeter`/`cnc_rdspmeter`/
 `cnc_rdposition` 那几条**一条请求带多个块**的逐块形状。
 
+**多块那几条：先看这一段的结论。** 这轮给假机床加了"按块看请求"的能力
+（`--axis-table N`：Cb `0x89` 那一块回像样的轴表、`0x0e/0x26f0` 那一块回 `ODBSYS`），
+于是 `cnc_rdsvmeter`（`0x56` + `0x89`）从 **`rc = -17 EW_PROTOCOL` 变成 `rc = 0`**
+—— 之前"伺服负载核不出来"就是 `0x89` 那块回了填充字节。
+
+但再往下就撞到官方库自带的闸门了：**`cnc_rdaxisdata` 对假机床一律 `rc = 1
+(EW_FUNC)`，一个字节都不发**（连接正常、`0x0e` 能力块也答了，就是本地拒）。反汇编
+`fwlib30i64.dll` 还看出：`cnc_rdsvmeter` / `cnc_rdspmeter` 是薄壳，内部
+**`call cnc_rdaxisdata`**（`sub_18001bd90` / `sub_18001bfb0` → RVA `0x18d60`），
+也就是说这一族（轴负载/电流/主轴负载/速度）在官方库里都走 `cnc_rdaxisdata`：
+
+```
+cnc_rdaxisdata(h, cls, short *type, short num, short *len, ODBAXDT *axdata)
+  cls = 1 位置 / 2 伺服 / 3 主轴 / 4 选中的主轴 / 5 速度
+  ODBAXDT = { char name[4]; long data; short dec; short unit; short flag; short reserve; }  // 16 字节
+```
+
+（结构体与 `cls`/`type` 取值表来自官方文档 `SpecE/Position/cnc_rdaxisdata.xml`，
+已经够写 client 了；差的是**拿 SDK 当裁判**去核那几格 —— 闸门没开就只能先按文档写。）
+
 `cnc_rdalmmsg2` 这一条本轮往前推了一格（`focas_sdk_mock.py --almmsg2`）：**每条记录
 80 字节**、`alm_no` 在记录 +0（BE32）、文本 `alm_msg[64]` 在 +0x10 —— 三处都对上了
 （Linux `libfwlib32.so` 里是 `条数 = 载荷长度 / 80` 并把 +0 与 +0x10 那两格拷进出参；

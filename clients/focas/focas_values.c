@@ -1225,14 +1225,90 @@ ncl_err ncl_focas_work_offsets(ncl_focas *focas, ncl_json **value)
     return not_yet(focas, "工件坐标系", "cnc_rdwkcdshft 一族（G54…）");
 }
 
-/* 机床型号 / 系统版本：这两条的来源是会话握手那段记录（cnc_sysinfo）。 */
+/*
+ * 机床型号 / 系统版本：FOCAS **没有**单独的"型号"调用（`cnc_rdmodel` 连官方文档包
+ * 里都没有），型号信息在 `ODBSYS` 里 —— 也就是连接期那条能力块（Cb `0x0e`，
+ * `d = e = 0x26f0`），跟 `cnc_sysinfo` 是同一个结构（官方头 / 文档 SpecE Misc/
+ * cnc_sysinfo.xml）：
+ *
+ *     [0..2)  addinfo   (BE16：bit0 有上料器 / bit1 是 i 系列 / bit8..15 MODEL A..F)
+ *     [2..4)  max_axis  (BE16，最大控制轴数)
+ *     [4..6)  cnc_type  (ASCII，如 " 0" = Series 0i、'30' = 30i)
+ *     [6..8)  mt_type   (ASCII，如 " M" = 加工中心、" T" = 车床)
+ *     [8..12) series    (ASCII)
+ *     [12..16) version  (ASCII，如 "49.0")
+ *     [16..18) axes     (ASCII，当前控制轴数，如 "03")
+ *
+ * 这里的口径（本实现的约定，站点可以自己换）：
+ *   `MODEL`   = `cnc_type` + `mt_type` 去掉补齐的空格，再接 " " + `series`
+ *   `VERSION` = `version`
+ * 想换拼法的直接读 item `VERSION` 的 `@4`/`@6`/`@8`/`@12` 那几格（名字保留 `VERSION`
+ * 是因为它就是连接期那条 0x0e 能力块）。
+ */
+static ncl_err odbsys_field(ncl_focas *focas, size_t at, size_t len, char *out,
+                            size_t cap, const char *what)
+{
+    ncl_json *value = NULL;
+    const char *text;
+    char item[32];
+    size_t used = 0;
+    size_t skip = 0;
+    ncl_err rc;
+
+    if (len + 1u > cap) {
+        return note(focas, what, NCL_ERR_RANGE);
+    }
+    /* 载荷里的位置写在 item 名字里（"VERSION@4"），第 3 个参数是**块号**。 */
+    snprintf(item, sizeof(item), "VERSION@%u", (unsigned)at);
+    rc = ncl_focas_read_item(focas, item, 0, (int)len, NCL_DTYPE_STRING,
+                             &value);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    text = ncl_json_as_string(value);
+    /* 这几格是**空格补齐**的 ASCII（" 0"、" M"、"D4G2"），两头都要去掉空格。 */
+    while (skip < len && text != NULL &&
+           (text[skip] == ' ' || text[skip] == '\0')) {
+        skip++;
+    }
+    while (skip + used < len && text != NULL && text[skip + used] != '\0' &&
+           text[skip + used] != ' ') {
+        out[used] = text[skip + used];
+        used++;
+    }
+    out[used] = '\0';
+    ncl_json_free(value);
+    if (used == 0) {
+        return note(focas, what, NCL_ERR_PARSE); /* 机床没报这一格 */
+    }
+    return NCL_OK;
+}
+
 ncl_err ncl_focas_model(ncl_focas *focas, char *out, size_t cap)
 {
+    char kind[3];
+    char mt[3];
+    char series[5];
+    ncl_err rc;
+
     if (out == NULL || cap == 0) {
         return NCL_ERR_INVALID_ARG;
     }
     out[0] = '\0';
-    return not_yet(focas, "机床型号", "cnc_rdmodel / cnc_sysinfo（握手记录）");
+    rc = odbsys_field(focas, 4, 2, kind, sizeof(kind), "型号");
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    rc = odbsys_field(focas, 6, 2, mt, sizeof(mt), "型号");
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    rc = odbsys_field(focas, 8, 4, series, sizeof(series), "型号");
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    snprintf(out, cap, "%s%s %s", kind, mt, series);
+    return NCL_OK;
 }
 
 ncl_err ncl_focas_version(ncl_focas *focas, char *out, size_t cap)
@@ -1241,7 +1317,7 @@ ncl_err ncl_focas_version(ncl_focas *focas, char *out, size_t cap)
         return NCL_ERR_INVALID_ARG;
     }
     out[0] = '\0';
-    return not_yet(focas, "系统版本", "cnc_sysinfo（series / version）");
+    return odbsys_field(focas, 12, 4, out, cap, "版本");
 }
 
 /* 厂商：这一份 client 接的就是 FANUC，不用问机床（表 6 的 MANUFACTURER）。 */

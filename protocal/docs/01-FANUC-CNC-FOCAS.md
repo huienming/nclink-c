@@ -283,6 +283,8 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 | `cnc_rdwkcdshft` | **0x63** | d = 轴号、e = 长度 | `IODBWCSF` | 🟡 码新核出来 |
 | `cnc_loadtorq` | **0xfd** | d = motor、e = 轴号 | `ODBLOAD`（长度要给对，给 12 回 `EW_LENGTH`） | 🟡 码新核出来 |
 | `cnc_rdopnlsgnl` | **0x5d** | d = 读哪几路的位掩码（bit 5 = 进给倍率、bit 3 = 快移倍率、bit 6 = 主轴倍率但**只有 15i**） | `IODBSGNL`：载荷就是 **@0 起的 BE16 数组**（`mode`@0、`hndl_ax`@2、`hndl_mv`@4、`rpd_ovrd`@6、`jog_ovrd`@8、**`feed_ovrd`@0xa**、`spdl_ovrd`@0xc、`blck_del`@0xe…）；`feed_ovrd` 的**码 × 10 = %**（0..20 → 0..200%） | 🟢 已进 client（进给倍率） |
+| `cnc_sysinfo`（= 连接期能力块，Cb `0x0e` d=e=`0x26f0`） | (0x0e) | 0x26f0 | `ODBSYS`，全 ASCII/大端：`addinfo`@0（BE16，bit0 上料器 / bit1 i 系列 / bit8..15 MODEL A..F）、`max_axis`@2（BE16 二进制）、`cnc_type`@4、`mt_type`@6（" M" 加工中心 / " T" 车床）、`series`@8、`version`@12、`axes`@16（都是**空格补齐**的 ASCII） | 🟢 已进 client（型号 = `cnc_type`+`mt_type`+`series`、版本 = `version`） |
+| `cnc_rdaxisdata` | — | — | **本地就拒**：对假机床/我们的假机床一律 `rc = 1 (EW_FUNC)`、一个字节都不发（见下面那段） | 🔴 官方库自带的闸门 |
 
 > 表里的"🟡 码已核"= **请求帧已经确定**（照着发就行），差的是**应答怎么切**（值不在
 > 载荷 0 处，或是结构体数组）。真机抓一次就能把 🟡 变 🟢；client 里这些函数的
