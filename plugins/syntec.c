@@ -93,6 +93,62 @@ static ncl_err syntec_spindle_speed(void *ctx, double *out)
     return NCL_OK;
 }
 
+/* ---------------------------------------------------------------- 位置 ---- */
+
+/*
+ * 位置是**状态区**（10 册 §11.3.1）：机械 101 / 相对 141 / 绝对 181 / 剩余 221。
+ * 值 = 每轴一个 int16 ÷ 10^小数位（小数位本身是区 261，21A 车床答 3，与画面
+ * `0.000` 一致）。路径按 iNC-BOX 的格子：**机械坐标就是实际位置**，落
+ * `/AXIS@<轴>/MOTOR/POSITION`；另外三组落在同一层的 `MOTOR/VARIABLE@*`。
+ *
+ * 轴按**轴号**寻址（`arg`）：本车床 X=0、Z=1（声明里按现场机型写死的顺序）。
+ * 轴的使能/名称在控制器里是另一族属性（`get_EnableAxes` / `get_PrAxisName`），
+ * 这一版按声明顺序读前 N 轴，读不到的轴位自然恒 0。
+ */
+#define NCL_SYNTEC_ADAPTER_AXES 2
+
+static ncl_err syntec_axis_zone(void *ctx, long long arg, unsigned zone,
+                                double *out)
+{
+    double values[NCL_SYNTEC_POSITION_MAX_AXES];
+    ncl_syntec *syntec = (ncl_syntec *)ctx;
+    ncl_err rc;
+
+    if (arg < 0 || arg >= NCL_SYNTEC_ADAPTER_AXES) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    rc = ncl_syntec_position(syntec, zone, NCL_SYNTEC_ADAPTER_AXES, values);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    *out = values[arg];
+    return NCL_OK;
+}
+
+/** 机械坐标 = **实际位置**（区 101）。 */
+static ncl_err syntec_machine_position(void *ctx, long long arg, double *out)
+{
+    return syntec_axis_zone(ctx, arg, NCL_SYNTEC_ZONE_MACHINE, out);
+}
+
+/** 绝对坐标（区 181）。 */
+static ncl_err syntec_absolute_position(void *ctx, long long arg, double *out)
+{
+    return syntec_axis_zone(ctx, arg, NCL_SYNTEC_ZONE_ABSOLUTE, out);
+}
+
+/** 相对坐标（区 141）。 */
+static ncl_err syntec_relative_position(void *ctx, long long arg, double *out)
+{
+    return syntec_axis_zone(ctx, arg, NCL_SYNTEC_ZONE_RELATIVE, out);
+}
+
+/** 剩余距离（区 221）。 */
+static ncl_err syntec_distance_position(void *ctx, long long arg, double *out)
+{
+    return syntec_axis_zone(ctx, arg, NCL_SYNTEC_ZONE_DISTANCE, out);
+}
+
 /* ------------------------------------------------------------ 现场调试 ---- */
 
 /**
@@ -152,6 +208,16 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
 
     /* 主轴转速：按 iNC-BOX 的字典 `/SPINDLE_SPEED`（rpm），设备级。 */
     NCL_DATAITEM_F64("/SPINDLE_SPEED", syntec_spindle_speed)
+
+    /* 位置：机械（= 实际位置）/ 绝对 / 相对 / 剩余，各轴一点。轴号 0 = X、1 = Z。 */
+    NCL_DATAITEM_F64("/AXIS@X/MOTOR/POSITION", syntec_machine_position, 0)
+    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/POSITION", syntec_machine_position, 1)
+    NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 0)
+    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 1)
+    NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 0)
+    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 1)
+    NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 0)
+    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 1)
 
     NCL_METHOD_CALL("/SESSION", syntec_session)
 

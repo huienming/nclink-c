@@ -905,6 +905,89 @@ ncl_err ncl_syntec_warning(ncl_syntec *syntec, ncl_json **list)
     return NCL_OK;
 }
 
+/* ============================================================= state zones == */
+
+ncl_err ncl_syntec_read_zone(ncl_syntec *syntec, unsigned zone, size_t count,
+                             int16_t *out)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    ncl_err err;
+    size_t i;
+
+    if (syntec == NULL || out == NULL || count == 0 || zone > 0xFFFFu) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_zone_frame(frame, sizeof(frame), zone, count, serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "状态区");
+    }
+    for (i = 0; i < count; i++) {
+        if (!ncl_syntec_item_i16(syntec->rx, syntec->last_rx_len, i, &out[i])) {
+            return syntec_note(syntec, NCL_ERR_RANGE, "状态区");
+        }
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_decimals(ncl_syntec *syntec, int *decimals)
+{
+    int16_t value = 0;
+    ncl_err err;
+
+    if (decimals == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    err = ncl_syntec_read_zone(syntec, NCL_SYNTEC_ZONE_DECIMALS, 1, &value);
+    if (err != NCL_OK) {
+        return err;
+    }
+    *decimals = value < 0 ? 0 : (int)value;
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_position(ncl_syntec *syntec, unsigned zone, size_t count,
+                            double *out)
+{
+    int16_t raw[NCL_SYNTEC_POSITION_MAX_AXES];
+    int decimals = 0;
+    double scale = 1.0;
+    ncl_err err;
+    size_t i;
+
+    if (out == NULL || count == 0 || count > NCL_SYNTEC_POSITION_MAX_AXES) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    err = ncl_syntec_read_zone(syntec, zone, count, raw);
+    if (err != NCL_OK) {
+        return err;
+    }
+    err = ncl_syntec_decimals(syntec, &decimals);
+    if (err != NCL_OK) {
+        return err;
+    }
+    for (i = 0; i < (size_t)decimals; i++) {
+        scale *= 10.0;
+    }
+    for (i = 0; i < count; i++) {
+        out[i] = (double)raw[i] / scale;
+    }
+    return NCL_OK;
+}
+
 void ncl_syntec_last_raw(const ncl_syntec *syntec, const uint8_t **request,
                          size_t *request_len, const uint8_t **reply,
                          size_t *reply_len)

@@ -74,6 +74,13 @@ typedef struct {
     size_t   item_log_count;
     uint16_t last_item_code;
     uint32_t last_item_b;
+    /* 状态区：区号 -> 一串 int16（判 int16 + 10^-dec 缩放用） */
+    struct {
+        uint16_t zone;
+        int16_t  values[8];
+        size_t   count;
+    } zones[4];
+    size_t zone_count;
 } syntec_mock;
 
 /** The value the mock answers for one register / state number (0 when unset). */
@@ -105,6 +112,24 @@ static void mock_set_value(syntec_mock *mock, uint32_t key, uint16_t value)
         mock->items[mock->item_count].value = value;
         mock->item_count++;
     }
+}
+
+/** Script one state zone: "this zone answers these int16 values". */
+static void mock_set_zone(syntec_mock *mock, uint16_t zone,
+                          const int16_t *values, size_t count)
+{
+    size_t i;
+
+    if (mock->zone_count >= sizeof(mock->zones) / sizeof(mock->zones[0]) ||
+        count > 8) {
+        return;
+    }
+    mock->zones[mock->zone_count].zone = zone;
+    mock->zones[mock->zone_count].count = count;
+    for (i = 0; i < count; i++) {
+        mock->zones[mock->zone_count].values[i] = values[i];
+    }
+    mock->zone_count++;
 }
 
 static void mock_main(void *arg)
@@ -156,8 +181,47 @@ static void mock_main(void *arg)
                 view.body_len >= NCL_SYNTEC_ITEM_BODY) {
                 /* §3.1: type | param A | param B | flag at [20..35]. */
                 uint32_t param_b = get_u32(view.body + 8);
+                uint32_t param_a = get_u32(view.body + 4);
+                uint32_t request = get_u32(frame + 16);
                 uint16_t code = get_u16(frame + 10);
                 size_t item_body = 0;
+                size_t z;
+                bool zone_handled = false;
+                bool send_failed = false;
+
+                /* 状态区读（位置）：A = 4 + 2*count、B = 区号；答案是 count 个 int16。 */
+                for (z = 0; z < mock->zone_count; z++) {
+                    size_t want;
+                    size_t n;
+                    size_t k;
+
+                    if (request != 0x0407u ||
+                        mock->zones[z].zone != (uint16_t)param_b) {
+                        continue;
+                    }
+                    want = param_a >= 4u ? (size_t)(param_a - 4u) / 2u : 0u;
+                    n = want < mock->zones[z].count ? want : mock->zones[z].count;
+                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    for (k = 0; k < n; k++) {
+                        reply[NCL_SYNTEC_REPLY_BODY + k * 2u] =
+                            (uint8_t)((uint16_t)mock->zones[z].values[k] & 0xFF);
+                        reply[NCL_SYNTEC_REPLY_BODY + k * 2u + 1u] =
+                            (uint8_t)(((uint16_t)mock->zones[z].values[k] >> 8) & 0xFF);
+                    }
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + n * 2u));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_BODY + n * 2u) != NCL_OK) {
+                        send_failed = true;
+                    }
+                    zone_handled = true;
+                    break;
+                }
+                if (zone_handled) {
+                    if (send_failed) {
+                        break;
+                    }
+                    continue;
+                }
 
                 mock->last_item_b = param_b;
                 mock->last_item_code = code;
@@ -735,7 +799,14 @@ static void test_adapter(void)
         "/MACHINE/CONTROLLER/PROGRAM", "/MACHINE/CONTROLLER/WARNING",
         "/MACHINE/CONTROLLER/LINE_NUMBER", "/MACHINE/FEED_OVERRIDE",
         "/MACHINE/SPINDLE_OVERRIDE", "/MACHINE/FEED_SPEED",
-        "/MACHINE/SPINDLE_SPEED"};
+        "/MACHINE/SPINDLE_SPEED",
+        "/MACHINE/AXIS@X/MOTOR/POSITION", "/MACHINE/AXIS@Z/MOTOR/POSITION",
+        "/MACHINE/AXIS@X/MOTOR/VARIABLE@ABSOLUTE",
+        "/MACHINE/AXIS@Z/MOTOR/VARIABLE@ABSOLUTE",
+        "/MACHINE/AXIS@X/MOTOR/VARIABLE@RELATIVE",
+        "/MACHINE/AXIS@Z/MOTOR/VARIABLE@RELATIVE",
+        "/MACHINE/AXIS@X/MOTOR/VARIABLE@DISTANCE",
+        "/MACHINE/AXIS@Z/MOTOR/VARIABLE@DISTANCE"};
     syntec_mock *mock;
     ncl_module_set *modules;
     ncl_strbuf err;
@@ -806,7 +877,7 @@ static void test_adapter(void)
     }
 
     NCL_TEST_CASE("the nine points are the model the device publishes");
-    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 9);
+    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 17);
     for (i = 0; i < sizeof(kPaths) / sizeof(kPaths[0]); i++) {
         NCL_CHECK(host_point_index(host, kPaths[i]) != (size_t)-1);
     }
@@ -885,6 +956,44 @@ static void test_adapter(void)
     NCL_CHECK(value != NULL && ncl_json_as_double(value, &real));
     NCL_CHECK_EQ_INT((long long)real, 4321);
     NCL_CHECK_EQ_INT(mock->item_log_count, 3);
+
+    NCL_TEST_CASE("位置走状态区：int16 + 10^-小数位");
+    {
+        /* 房把 X 摆到 1.234、Z 摆到 -0.5（int16 原值），小数位 3。 */
+        static const int16_t kMachine[2] = {1234, -500};
+        static const int16_t kDecimals[1] = {3};
+        static const int16_t kAbsolute[2] = {2000, -1};
+
+        mock_set_zone(mock, NCL_SYNTEC_ZONE_MACHINE, kMachine, 2);
+        mock_set_zone(mock, NCL_SYNTEC_ZONE_DECIMALS, kDecimals, 1);
+        mock_set_zone(mock, NCL_SYNTEC_ZONE_ABSOLUTE, kAbsolute, 2);
+
+        value = NULL;
+        NCL_CHECK_EQ_INT(
+            ncl_host_poll_one(host, "/MACHINE/AXIS@X/MOTOR/POSITION", &err),
+            NCL_OK);
+        value = ncl_host_point_value(
+            host, host_point_index(host, "/MACHINE/AXIS@X/MOTOR/POSITION"));
+        NCL_CHECK(value != NULL && ncl_json_as_double(value, &real));
+        NCL_CHECK_EQ_INT((long long)(real * 1000.0 + 0.5), 1234);
+
+        NCL_CHECK_EQ_INT(
+            ncl_host_poll_one(host, "/MACHINE/AXIS@Z/MOTOR/POSITION", &err),
+            NCL_OK);
+        value = ncl_host_point_value(
+            host, host_point_index(host, "/MACHINE/AXIS@Z/MOTOR/POSITION"));
+        NCL_CHECK(value != NULL && ncl_json_as_double(value, &real));
+        NCL_CHECK_EQ_INT((long long)(real * 1000.0 - 0.5), (long long)-500);
+
+        NCL_CHECK_EQ_INT(ncl_host_poll_one(
+                             host, "/MACHINE/AXIS@X/MOTOR/VARIABLE@ABSOLUTE", &err),
+                         NCL_OK);
+        value = ncl_host_point_value(
+            host,
+            host_point_index(host, "/MACHINE/AXIS@X/MOTOR/VARIABLE@ABSOLUTE"));
+        NCL_CHECK(value != NULL && ncl_json_as_double(value, &real));
+        NCL_CHECK_EQ_INT((long long)(real * 1000.0 + 0.5), 2000);
+    }
 
     ncl_host_free(host);
     ncl_strbuf_free(&err);

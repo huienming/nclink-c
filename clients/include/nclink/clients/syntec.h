@@ -211,11 +211,47 @@ size_t ncl_syntec_item_frame(uint8_t *out, size_t cap,
 
 /** The u16 a numeric item answers with ([20..21], little endian). */
 bool ncl_syntec_item_u16(const uint8_t *frame, size_t len, uint16_t *value);
+/** The @p index'th i16 of a **state zone** answer ([20 + 2*index]). */
+bool ncl_syntec_item_i16(const uint8_t *frame, size_t len, size_t index,
+                         int16_t *value);
 /** Copy the answer's body (PROGRAM) into @p out, NUL terminated and trimmed. */
 bool ncl_syntec_item_text(const uint8_t *frame, size_t len, char *out,
                           size_t cap);
 /** True when the answer carries no body at all (WARNING with no alarm). */
 bool ncl_syntec_item_empty(const uint8_t *frame, size_t len);
+
+/**
+ * Build a **state zone** request: the §3.1 frame shape with `param A` carrying
+ * `4 + 2 * count` (the answer's byte count including its 4 byte word) and
+ * `param B` the zone number. `ncl_syntec_read_zone()` uses this.
+ */
+size_t ncl_syntec_zone_frame(uint8_t *out, size_t cap, unsigned zone,
+                             size_t count, uint8_t serial);
+
+/* ============================================================ state zones == */
+
+/*
+ * Positions are **state zones** in the controller (read out of the controller
+ * side assembly `Syntec.RemoteCNC.Win32.dll`, v10.116.54):
+ *
+ *   float[] get_MachineCoordinate() {
+ *       float[] r = new float[EnableAxes];
+ *       if (!RemoteCnc.State.TCPClientLink.Dump(101, MaxUsedAxisID + 1)) ...
+ *       for (i...) r[i] = (float)data[EnableAxisMappingID[i]];  // i2 → i4 → r4
+ *   }
+ *
+ * A zone is read with the zone number in `param B` and `4 + 2 * count` in
+ * `param A`; the answer is `count` **int16** values, scaled by 10^DecPoint
+ * (zone 261 answers the decimal places - the 21A lathe says 3, and its screen
+ * shows `0.000`).
+ */
+#define NCL_SYNTEC_ZONE_MACHINE 101u  /**< 机械坐标 - the actual position      */
+#define NCL_SYNTEC_ZONE_RELATIVE 141u /**< 相对坐标                            */
+#define NCL_SYNTEC_ZONE_ABSOLUTE 181u /**< 绝对坐标                            */
+#define NCL_SYNTEC_ZONE_DISTANCE 221u /**< 剩余距离                            */
+#define NCL_SYNTEC_ZONE_DECIMALS 261u /**< 轴小数位（缩放用 10^dec）           */
+/** Most axes one position read handles (the frame's A is 4 + 2*count). */
+#define NCL_SYNTEC_POSITION_MAX_AXES 8u
 
 /* ============================================================== session == */
 
@@ -242,6 +278,21 @@ void        ncl_syntec_close(ncl_syntec *syntec);
 bool        ncl_syntec_is_open(const ncl_syntec *syntec);
 /** One line about the last failure; "" when the last call succeeded. */
 const char *ncl_syntec_last_error(const ncl_syntec *syntec);
+
+/* State zones (positions) - see the NCL_SYNTEC_ZONE_* numbers above. */
+
+/** Read @p count int16 values of a state zone. */
+ncl_err ncl_syntec_read_zone(ncl_syntec *syntec, unsigned zone, size_t count,
+                             int16_t *out);
+/** The axis decimal places (state zone 261). */
+ncl_err ncl_syntec_decimals(ncl_syntec *syntec, int *decimals);
+/**
+ * One coordinate group, per axis: @p count values as real numbers
+ * (`raw / 10^decimals`). A stationary machine reads 0.0 - which is exactly what
+ * the 21A lathe answers on all four groups.
+ */
+ncl_err ncl_syntec_position(ncl_syntec *syntec, unsigned zone, size_t count,
+                            double *out);
 
 /* The nine items, each one named after what it reads (§3.2). A call that the
  * captured material does not cover answers NCL_ERR_UNAVAILABLE - "还读不了" -

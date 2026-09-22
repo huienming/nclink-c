@@ -886,3 +886,32 @@ iNC-BOX 的格子是**按轴 × 驱动链**分层的（`/AXIS@<轴>/MOTOR/POSITI
 | 相对坐标 | `/AXIS@X/MOTOR/VARIABLE@RELATIVE` |
 | 剩余距离 | `/AXIS@X/MOTOR/VARIABLE@DISTANCE` |
 | 跟随误差（zone 待找） | `/AXIS@X/SERVO_DRIVER/VARIABLE@<名>`（伺服变量口径；FANUC 那条也是 `/AXIS@n/SERVO_DRIVER/VARIABLE@RSHORT`） |
+
+#### 11.3.3 落地：位置四组已实现（2026-09-22）
+
+**跟随误差与指令位置不做**（用户口径：跟随误差不要，指令位置随之也不需要）——
+所以只落四组坐标。编码在 21A 上试出来并定死：
+
+```
+读一个状态区：request 0x0407，A = 4 + 2×轴数，B = 区号，flag = 1
+应答正文    ：轴数个 int16（小端）；真实值 = 原始值 ÷ 10^小数位（小数位 = 区 261）
+```
+
+* 实测：`B=261` 答 **3**（±0.000 的三位小数 ✓ 与画面一致）；`101/141/181/221` 在静止时
+  答案是一串 0（0.000 ✓）；`A=6/8/12/20` 的应答正文字节数恰好是 `A-4` ✓（这条定死了
+  "A = 4 + 2×轴数"）。
+* 代码：client 侧 `ncl_syntec_read_zone()` / `ncl_syntec_decimals()` /
+  `ncl_syntec_position()`（`clients/include/nclink/clients/syntec.h` +
+  `clients/syntec/`），适配器侧 8 个点位（4 组 × X/Z，轴号 0=X、1=Z，声明顺序即轴序）：
+
+| 点位 | 状态区 |
+|---|---|
+| `/AXIS@X|Z/MOTOR/POSITION` | 101（**机械坐标 = 实际位置**） |
+| `/AXIS@X|Z/MOTOR/VARIABLE@ABSOLUTE` | 181 |
+| `/AXIS@X|Z/MOTOR/VARIABLE@RELATIVE` | 141 |
+| `/AXIS@X|Z/MOTOR/VARIABLE@DISTANCE` | 221（剩余距离） |
+
+**实测（21A 模拟器，`--once`）**：**17 个点位 17 个可读、0 失败** —— 九个原有项照旧，
+八个位置点位全 0.0（画面 X/Z `0.000` ✓）。mock 侧另加了一条断言：脚本把 X 摆
+`1234`、Z 摆 `-500`、小数位 3 → 读到 **1.234 / -0.5** ✓，证明"int16 + 10^-dec"这条解码
+（不是只跟 0 对得上）。

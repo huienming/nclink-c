@@ -525,6 +525,40 @@ bool ncl_syntec_item_u16(const uint8_t *frame, size_t len, uint16_t *value)
     return true;
 }
 
+bool ncl_syntec_item_i16(const uint8_t *frame, size_t len, size_t index,
+                         int16_t *value)
+{
+    size_t at = NCL_SYNTEC_REPLY_BODY + index * 2u;
+
+    if (frame == NULL || value == NULL || len < at + 2u) {
+        return false;
+    }
+    *value = (int16_t)get_u16(frame + at);
+    return true;
+}
+
+size_t ncl_syntec_zone_frame(uint8_t *out, size_t cap, unsigned zone,
+                             size_t count, uint8_t serial)
+{
+    size_t bytes = 4u + count * 2u; /* the answer's word + count int16 */
+    ncl_syntec_item item;
+
+    if (out == NULL || cap < NCL_SYNTEC_ITEM_FRAME || bytes > 0xFFFFFFFFu) {
+        return 0;
+    }
+    /* The zone read is the §3.1 frame shape with A/B doing the work:
+     * A = 4 + 2*count (the answer's byte count), B = the zone number. */
+    memset(&item, 0, sizeof(item));
+    item.name = "ZONE";
+    item.flags = 0x0000u;
+    item.code = 0x0700u;
+    item.request = 0x0407u;
+    item.param_a = (uint32_t)bytes;
+    item.param_b = (uint32_t)zone;
+    item.flag = 1u;
+    return ncl_syntec_item_frame(out, cap, &item, (uint32_t)zone, serial);
+}
+
 bool ncl_syntec_item_empty(const uint8_t *frame, size_t len)
 {
     return frame != NULL && len <= NCL_SYNTEC_REPLY_BODY;
