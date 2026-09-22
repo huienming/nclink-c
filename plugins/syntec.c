@@ -429,16 +429,30 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
     /* 主轴转速：按 iNC-BOX 的字典 `/SPINDLE_SPEED`（rpm），设备级。 */
     NCL_DATAITEM_F64("/SPINDLE_SPEED", syntec_spindle_speed)
 
-    /* 位置：机械（= 实际位置）/ 绝对 / 相对 / 剩余，各轴一点。轴号 0 = X、1 = Z。 */
-    /* arg 就是路径里的轴字母：轴号在读值的时候现查（§11.4），下面两行只是路径。 */
+    /* 位置：机械（= 实际位置）、绝对 / 相对 / 剩余，**五轴**各一点
+     * （X/Y/Z/A/C，与 FANUC 适配器同一套格子，这样一个模型就能套各种机型）。
+     * 路径写死、轴号现查（§11.4）：控制器没配这个轴（表里没这个
+     * 名字）就照实报 NCL_ERR_NOT_FOUND，不会读到别的轴上去。 */
     NCL_DATAITEM_F64("/AXIS@X/MOTOR/POSITION", syntec_machine_position, 'X')
+    NCL_DATAITEM_F64("/AXIS@Y/MOTOR/POSITION", syntec_machine_position, 'Y')
     NCL_DATAITEM_F64("/AXIS@Z/MOTOR/POSITION", syntec_machine_position, 'Z')
+    NCL_DATAITEM_F64("/AXIS@A/MOTOR/POSITION", syntec_machine_position, 'A')
+    NCL_DATAITEM_F64("/AXIS@C/MOTOR/POSITION", syntec_machine_position, 'C')
     NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'X')
+    NCL_DATAITEM_F64("/AXIS@Y/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'Y')
     NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'Z')
+    NCL_DATAITEM_F64("/AXIS@A/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'A')
+    NCL_DATAITEM_F64("/AXIS@C/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'C')
     NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'X')
+    NCL_DATAITEM_F64("/AXIS@Y/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'Y')
     NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'Z')
+    NCL_DATAITEM_F64("/AXIS@A/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'A')
+    NCL_DATAITEM_F64("/AXIS@C/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'C')
     NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'X')
+    NCL_DATAITEM_F64("/AXIS@Y/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'Y')
     NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'Z')
+    NCL_DATAITEM_F64("/AXIS@A/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'A')
+    NCL_DATAITEM_F64("/AXIS@C/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'C')
 
     NCL_METHOD_CALL("/SESSION", syntec_session)
     /* 轴表的元数据：名字与槽号都从控制器读（§11.4），客户端照着建路径。 */

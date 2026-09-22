@@ -904,16 +904,24 @@ iNC-BOX 的格子是**按轴 × 驱动链**分层的（`/AXIS@<轴>/MOTOR/POSITI
   `ncl_syntec_position()`（`clients/include/nclink/clients/syntec.h` +
   `clients/syntec/`），适配器侧 8 个点位（4 组 × X/Z，轴号 0=X、1=Z，声明顺序即轴序）：
 
-| 点位 | 状态区 |
+| 点位（每轴一条） | 状态区 |
 |---|---|
-| `/AXIS@X|Z/MOTOR/POSITION` | 101（**机械坐标 = 实际位置**） |
-| `/AXIS@X|Z/MOTOR/VARIABLE@ABSOLUTE` | 181 |
-| `/AXIS@X|Z/MOTOR/VARIABLE@RELATIVE` | 141 |
-| `/AXIS@X|Z/MOTOR/VARIABLE@DISTANCE` | 221（剩余距离） |
+| `/AXIS@<轴>/MOTOR/POSITION` | 101（**机械坐标 = 实际位置**） |
+| `/AXIS@<轴>/MOTOR/VARIABLE@ABSOLUTE` | 181 |
+| `/AXIS@<轴>/MOTOR/VARIABLE@RELATIVE` | 141 |
+| `/AXIS@<轴>/MOTOR/VARIABLE@DISTANCE` | 221（剩余距离） |
 
-**实测（21A 模拟器，`--once`）**：**17 个点位 17 个可读、0 失败** —— 九个原有项照旧，
-八个位置点位全 0.0（画面 X/Z `0.000` ✓）。mock 侧另加了一条断言：脚本把 X 摆
-`1234`、Z 摆 `-500`、小数位 3 → 读到 **1.234 / -0.5** ✓，证明"int16 + 10^-dec"这条解码
+**轴按五轴声明**（`X/Y/Z/A/C`，与 FANUC 适配器同一套格子——
+一个模型就能套各种机型）：4 组 × 5 轴 = **20 个位置点位**。路径写死、
+**轴号在取值时现查**（§11.4）；这台机器没配的轴（控制器轴表里没这个
+名字）照实报错，不会给个数、也不会读到别的轴上。
+
+**实测（21A 模拟器，`--once`）**：**29 个点位**（9 项 + 20 个位置），
+其中 **25 个读得到**（这台模拟器配了 X/Y/Z/C：控制器轴表 port>0 的槽是
+0/1/2/5），**4 个报错**——`/AXIS@A/...` 四组全部 `NotFoundException`（A 没配），
+正是“没有的轴就返回错误”。mock 侧另有断言：状态区摆 `{1234, 777, -500}`，
+`/AXIS@Z/...` 必须落在下标 2 才读到 `-500` ✓（证明轴号是现查的，不是声明顺序）；
+`/AXIS@Y|A|C/...` 在没配的机器上全部报错 ✓。
 （不是只跟 0 对得上）。
 
 ### 11.4 轴名：在参数区（ 2026-09-22，21A 实测，**已实现**）
@@ -976,10 +984,14 @@ KrnlAPI：帧形状与状态区一模一样（§3.1），只有请求号不同�
 * **代码**：client 侧 `ncl_syntec_param()` / `ncl_syntec_axis_index()` /
   `ncl_syntec_axis_name()` / `ncl_syntec_axis_name_decode()` / `ncl_syntec_axes()`；
   适配器侧多一个方法 `/AXES`（REST：`POST /api/syntec/AXES`）。
-* **实测**：21A `--once` 仍 **17/17 可读、0 失败**——`/MACHINE/AXIS@Z/...` 是现查槽 2
-  读出来的（按声明顺序读下标 1 就是另一个轴）。mock 把状态区摆成 `{1234, 777, -500}`
-  （下标 1 故意放陷阱值），Z 必须落在下标 2 才读到 -500 ✓；轴表用例覆盖“只挑大小写、
-  没启用的槽回 NOT_FOUND、TTL 内不重问、控制器什么都不说时回 UNAVAILABLE”。
+**实测**：21A `--once` 下 **29 个点位里 25 个读得到**——`/MACHINE/AXIS@Z/...`
+是现查槽 2 读出来的（按声明顺序读下标 1 就是另一个轴），`/AXIS@A/...` 四组因为
+这台机器没配 A 全部报 `NotFoundException`（“没有的轴就返回错误”）。
+点位级的报错只带码名（`NotFoundException`），原话在 `/SESSION` 的 `lastError` 里（“轴名 A：
+控制器说在用的是 X/Y/Z/C”），在用的轴名单在 `/AXES` 里。mock 把状态区摆成
+`{1234, 777, -500}`（下标 1 故意放陷阱值），Z 必须落在下标 2 才读到 -500 ✓；轴表用例
+覆盖“只挑大小写、没启用的槽回 NOT_FOUND、TTL 内不重问、控制器什么都不说时回
+UNAVAILABLE”。
 * **参数表本身也能读**：`0x0401` 答容量（21A 答 3784），`0x0402` 按
   `A = 4 + nLength * 268` 整表 dump（一条 `TParamSpec` = `u16 No` + `u16 留白` +
   `wchar Title[128]` + `u32` + `u32 默认值`）；21A 上整表读回 1,014,112 字节，标题全对得上。
