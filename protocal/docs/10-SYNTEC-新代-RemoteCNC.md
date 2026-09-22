@@ -828,3 +828,61 @@ FANUC 那条我们是"指令 = 实际 − `cnc_srvdelay`"推出来的；**Syntec
 2. **定命名**（按 iNC-BOX 优先的口径）：位置 = `/AXIS@n/MOTOR/POSITION`（轴号 + MOTOR
    组件，i-BOX 式）还是字典式 `/AXIS@X/POSITION@REAL`？跟随误差 =
    `/AXIS@n/SERVO_DRIVER/VARIABLE@RSHORT`？
+
+#### 11.3.1 进展：位置 = 按**状态区号**读一串 float（2026-09-22，dnfile 反解）
+
+用 dnfile 反解**模拟器自带**的 `OpenCNC/Bin/Syntec.RemoteCNC.Win32.dll`（版本与
+模拟器同为 10.116.54），四个坐标 getter 的实现一目了然：
+
+```csharp
+float[] get_MachineCoordinate() {
+    float[] r = new float[EnableAxes];
+    if (!RemoteCnc.State.TCPClientLink.Dump(101, MaxUsedAxisID + 1)) return r;
+    for (i...) r[i] = (float)data[ EnableAxisMappingID[i] ];   // ldelem.i2 → i4 → conv.r4
+    return r;
+}
+```
+
+**zone 号表**（同一次反解里取到的，都是 `TStateZone::Dump(zone, MaxUsedAxisID+1)`）：
+
+| 语义 | zone | 说明 |
+|---|---|---|
+| **机械坐标 `Mach`** | **101** | `get_MachineCoordinate` |
+| **绝对坐标 `Abs`** | **181** | `get_AbsoluteCoordinate` |
+| **相对坐标 `Rel`** | **141** | `get_RelativeCoordinate` |
+| **剩余距离 `Dist`** | **221** | `get_DistanceCoordinate` |
+| 工件坐标数据 | 1881 | `GetWorkPieceData` |
+| 轴小数位 | 261 | `get_AxisDecPoint` |
+
+两条结论：
+
+1. **位置值是一串 float**（按 `EnableAxisMappingID` 索引、长度 `EnableAxes`），
+   轴名/使能轴/小数位/单位都是**另外的属性**（`get_PrAxisName` / `get_EnableAxes` /
+   `get_AxisDecPoint` / `get_Unit`）；
+2. 线上就是"**读一个状态区**"这种调用（zone + 轴数），所以一次 `READ_position` 会
+   连发多次（四个 zone 各一次）——与 §3.2"每项自己建一条连接"同源。
+
+**还差一步**：zone 号怎么进帧。已抓到的那一帧（`request 0x041e / code 0x050b`，
+`A=36`、`B=4`）看着不是 zone 101 的直接编码 —— 因为**对着"不答话的 tap"，官方客户端
+每条子读只发出第一帧就超时收摊了**（这也是 tap 里 6 条连接对 5 次调用的原因）。
+要把"读 zone Z"的帧形状定下来，两条路：
+
+* 用"**回放 + 默认应答**"的 tap 迭代：给未知帧回一个"20 字节回声 + N 个 float 0.0"，
+   官方客户端收到能解析的应答就会**继续发下一条子读**，从而把整个序列（含 zone 号）
+   抓全；
+* 或反解原生 `OCApi.dll` / `OCKrnl.dll`（wire 解析在原生侧）。
+
+#### 11.3.2 命名（按 iNC-BOX 目录，`iNC-BOX-200-API目录.json`）
+
+iNC-BOX 的格子是**按轴 × 驱动链**分层的（`/AXIS@<轴>/MOTOR/POSITION`、
+`/AXIS@<轴>/SCREW/POSITION`、`/AXIS@<轴>/MOTOR/VARIABLE@<名>`、
+`/AXIS@<轴>/SERVO_DRIVER/VARIABLE@RSHORT`；轴名**字母与数字都用**，如
+`/AXIS@0/SCREW/POSITION`、`/AXIS@X2/MOTOR/VARIABLE@POSITION`）。位置四组就按这套落：
+
+| 语义 | 建议路径 |
+|---|---|
+| 机械坐标 | `/AXIS@X/MOTOR/POSITION`、`/AXIS@Z/MOTOR/POSITION` |
+| 绝对坐标 | `/AXIS@X/MOTOR/VARIABLE@ABSOLUTE`（i-BOX 里 `MOTOR/VARIABLE@XXX` 是既有形状，如 `/AXIS@C5/MOTOR/VARIABLE@LOAD`） |
+| 相对坐标 | `/AXIS@X/MOTOR/VARIABLE@RELATIVE` |
+| 剩余距离 | `/AXIS@X/MOTOR/VARIABLE@DISTANCE` |
+| 跟随误差（zone 待找） | `/AXIS@X/SERVO_DRIVER/VARIABLE@<名>`（伺服变量口径；FANUC 那条也是 `/AXIS@n/SERVO_DRIVER/VARIABLE@RSHORT`） |
