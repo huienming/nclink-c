@@ -1402,3 +1402,85 @@ ncl_err ncl_gb2312_to_utf8(const char *in, size_t len, char **out,
     }
     return NCL_OK;
 }
+
+/** 第 @p index 个 UTF-16LE 单元（调用者保证 index 在范围内）。 */
+static uint16_t utf16le_unit(const uint8_t *in, size_t index)
+{
+    return (uint16_t)((uint16_t)in[index * 2u] |
+                      ((uint16_t)in[index * 2u + 1u] << 8));
+}
+
+/**
+ * 一个 UTF-16 单元（可能带一个低代理项）写成 UTF-8 要几个字节。落单的代理项按
+ * U+FFFD 算，和 GB2312 那条路的"不明字节"一个处理方式。
+ */
+static size_t utf16_unit_width(uint16_t unit, uint16_t next, bool has_next)
+{
+    if (unit >= 0xD800u && unit < 0xDC00u && has_next && next >= 0xDC00u &&
+        next < 0xE000u) {
+        return utf8_width(0x10000u + (((uint32_t)unit - 0xD800u) << 10) +
+                          ((uint32_t)next - 0xDC00u));
+    }
+    if (unit >= 0xD800u && unit < 0xE000u) {
+        return utf8_width(NCL_UTF8_REPLACEMENT);
+    }
+    return utf8_width(unit);
+}
+
+ncl_err ncl_utf16le_to_utf8(const uint8_t *in, size_t len, char **out,
+                            size_t *out_len)
+{
+    size_t units = len / 2u;
+    size_t needed = 1u; /* 结尾 NUL */
+    size_t used = 0;
+    size_t i;
+    char *text;
+
+    if (in == NULL || out == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *out = NULL;
+    for (i = 0; i < units; i++) {
+        uint16_t unit = utf16le_unit(in, i);
+
+        if (unit == 0u) {
+            break; /* 定长字段的 NUL 填充 = 文本结束 */
+        }
+        needed += utf16_unit_width(unit, i + 1u < units ? utf16le_unit(in, i + 1u)
+                                                        : 0u,
+                                   i + 1u < units);
+    }
+    text = (char *)ncl_mem_alloc(needed);
+    if (text == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    for (i = 0; i < units; i++) {
+        uint16_t unit = utf16le_unit(in, i);
+        uint16_t next;
+        bool has_next = i + 1u < units;
+
+        if (unit == 0u) {
+            break;
+        }
+        next = has_next ? utf16le_unit(in, i + 1u) : 0u;
+        if (unit >= 0xD800u && unit < 0xDC00u && has_next && next >= 0xDC00u &&
+            next < 0xE000u) {
+            used += utf8_write(0x10000u + (((uint32_t)unit - 0xD800u) << 10) +
+                                   ((uint32_t)next - 0xDC00u),
+                               text + used);
+            i++; /* 低代理项已经用掉了 */
+            continue;
+        }
+        if (unit >= 0xD800u && unit < 0xE000u) {
+            used += utf8_write(NCL_UTF8_REPLACEMENT, text + used);
+            continue;
+        }
+        used += utf8_write(unit, text + used);
+    }
+    text[used] = '\0';
+    *out = text;
+    if (out_len != NULL) {
+        *out_len = used;
+    }
+    return NCL_OK;
+}

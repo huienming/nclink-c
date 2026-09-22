@@ -101,7 +101,61 @@ static void test_convert(void)
                      NCL_ERR_INVALID_ARG);
 }
 
+/**
+ * UTF-16LE -> UTF-8：新代的参数标题是 `wchar_t[128]`（一个 UTF-16 单元 2 字节），
+ * 定长字段里剩下的都是 NUL 填充。
+ */
+static void test_utf16le(void)
+{
+    char *text = NULL;
+
+    NCL_TEST_CASE("UTF-16LE\uff1aASCII \u4e0e\u4e2d\u6587\u90fd\u8f6c\u5f97\u5bf9");
+    {
+        static const uint8_t kAscii[] = {'A', 0, 'B', 0, 0, 0};
+        /* "A" + 保(4FDD) 护(62A4) = 41 00 DD 4F A4 62 00 00 */
+        static const uint8_t kHan[] = {0x41, 0x00, 0xDD, 0x4F, 0xA4, 0x62,
+                                       0x00, 0x00};
+
+        NCL_CHECK_EQ_INT(ncl_utf16le_to_utf8(kAscii, sizeof(kAscii), &text, NULL),
+                         NCL_OK);
+        NCL_CHECK_EQ_STR(text, "AB"); /* NUL \u5c31\u662f\u7ed3\u5c3e */
+        ncl_mem_free(text);
+
+        NCL_CHECK_EQ_INT(ncl_utf16le_to_utf8(kHan, sizeof(kHan), &text, NULL),
+                         NCL_OK);
+        NCL_CHECK_EQ_STR(text, "A\xE4\xBF\x9D\xE6\x8A\xA4");
+        ncl_mem_free(text);
+    }
+
+    NCL_TEST_CASE("UTF-16LE\uff1a\u4ee3\u7406\u5bf9\u4e0e\u843d\u5355\u4ee3\u7406\u9879");
+    {
+        /* U+1F600 = D83D DE00\uff1b\u843d\u5355\u7684 D83D \u5199 U+FFFD */
+        static const uint8_t kPair[] = {0x3D, 0xD8, 0x00, 0xDE, 0x00, 0x00};
+        static const uint8_t kLone[] = {0x3D, 0xD8, 0x41, 0x00, 0x00, 0x00};
+
+        NCL_CHECK_EQ_INT(ncl_utf16le_to_utf8(kPair, sizeof(kPair), &text, NULL),
+                         NCL_OK);
+        NCL_CHECK_EQ_STR(text, "\xF0\x9F\x98\x80");
+        ncl_mem_free(text);
+
+        NCL_CHECK_EQ_INT(ncl_utf16le_to_utf8(kLone, sizeof(kLone), &text, NULL),
+                         NCL_OK);
+        NCL_CHECK_EQ_STR(text, "\xEF\xBF\xBD" "A");
+        ncl_mem_free(text);
+    }
+
+    NCL_TEST_CASE("UTF-16LE\uff1a\u7a7a\u4e32\u4e0e\u53c2\u6570\u68c0\u67e5");
+    NCL_CHECK_EQ_INT(ncl_utf16le_to_utf8("", 0, &text, NULL), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "");
+    ncl_mem_free(text);
+    NCL_CHECK_EQ_INT(ncl_utf16le_to_utf8(NULL, 2, &text, NULL),
+                     NCL_ERR_INVALID_ARG);
+    NCL_CHECK_EQ_INT(ncl_utf16le_to_utf8("A", 2, NULL, NULL),
+                     NCL_ERR_INVALID_ARG);
+}
+
 NCL_TEST_MAIN_BEGIN()
     test_codepoints();
     test_convert();
+    test_utf16le();
 NCL_TEST_MAIN_END()

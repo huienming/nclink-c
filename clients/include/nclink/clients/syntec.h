@@ -249,6 +249,16 @@ size_t ncl_syntec_zone_frame(uint8_t *out, size_t cap, unsigned zone,
 size_t ncl_syntec_param_frame(uint8_t *out, size_t cap, unsigned param,
                               uint8_t serial);
 
+/** The parameter table's capacity: request 0x0401, In empty, A = 8. */
+size_t ncl_syntec_param_capacity_frame(uint8_t *out, size_t cap,
+                                       uint8_t serial);
+/**
+ * Dump @p count parameter records: request 0x0402, In `{ nLength }` (4 bytes),
+ * so A = 4 + count * NCL_SYNTEC_PARAM_SPEC_SIZE, B = count.
+ */
+size_t ncl_syntec_param_schema_frame(uint8_t *out, size_t cap, size_t count,
+                                     uint8_t serial);
+
 /** The i32 a parameter answer carries ([20..23], little endian). */
 bool ncl_syntec_reply_i32(const uint8_t *frame, size_t len, int32_t *value);
 
@@ -343,6 +353,45 @@ ncl_err ncl_syntec_position(ncl_syntec *syntec, unsigned zone, size_t count,
 
 /** Read one system parameter (KrnlAPI 0x0404, one i32). */
 ncl_err ncl_syntec_param(ncl_syntec *syntec, unsigned param, int32_t *value);
+
+/**
+ * §11.4 的参数表：线上一条 `TParamSpec` **268 字节**——
+ * `u16 No` + `u16 留白` + `wchar Title[128]`（UTF-16LE，定长、NUL 填充）+
+ * `u32 字段 A`（语义未定，像类型/范围位）+ `u32 出厂默认值`。
+ */
+#define NCL_SYNTEC_PARAM_SPEC_SIZE 268u
+/** 标题字段的字节数：一个 UTF-16 单元 2 字节 × 128 个字符。 */
+#define NCL_SYNTEC_PARAM_TITLE_BYTES 256u
+/** 转成 UTF-8 后标题的落点大小（够放 128 字节 ASCII 标题或几十个汉字）。 */
+#define NCL_SYNTEC_PARAM_TITLE_MAX 192u
+
+/** 一条参数表记录，转成 C 的写法。 */
+typedef struct {
+    int32_t no;       /**< 参数号（表里的 `No`）                          */
+    int32_t flags;    /**< 第 4 个字段：含义未定，原样给出                 */
+    int32_t fallback; /**< 第 5 个字段：出厂默认值（轴名这里是 100 = 'X'） */
+    char    title[NCL_SYNTEC_PARAM_TITLE_MAX]; /**< 标题，UTF-8                 */
+} ncl_syntec_param_spec;
+
+/** 参数表的容量（0x0401）：21A 答 3784。 */
+ncl_err ncl_syntec_param_capacity(ncl_syntec *syntec, size_t *count);
+
+/**
+ * 参数表的一段（0x0402，`[first, first + count)`）：标题、参数号、默认值。
+ *
+ * 整表**一次读回来**（21A 3784 条 ≈ 1 MB）并缓存在会话里，所以翻页很便宜——
+ * 线上那条命令没有偏移，只能整表拿，分页由这里做。@p out_count 回填实际条数，
+ * @p total 非空时回填整表条数。@p count 超过剩余条数时就给到末尾。
+ */
+ncl_err ncl_syntec_param_table(ncl_syntec *syntec, size_t first, size_t count,
+                               ncl_syntec_param_spec *out, size_t *out_count,
+                               size_t *total);
+
+/**
+ * 按**参数号**找它在表里的位置（表里的 `No` 列；顺序大致升序，但有跳号，所以
+ * 下标 ≠ 参数号）。找到回 NCL_OK 并写出下标，找不到回 NCL_ERR_NOT_FOUND。
+ */
+ncl_err ncl_syntec_param_find(ncl_syntec *syntec, unsigned no, size_t *index);
 
 /**
  * 一个轴名代号 → 字符串（§11.4）。0 与 ≥ 10000 都是"这一槽没有名字"，回空串；

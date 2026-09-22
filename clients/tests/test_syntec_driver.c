@@ -88,6 +88,14 @@ typedef struct {
     } params[48];
     size_t param_count;
     uint32_t last_param;
+    /* 参数表（§11.4）：0x0401 答条数，0x0402 答这么多条 268 字节的记录 */
+    struct {
+        int32_t no;
+        char    title[64];
+        int32_t flags;
+        int32_t fallback;
+    } schema[4];
+    size_t schema_count;
 } syntec_mock;
 
 /** The value the mock answers for one register / state number (0 when unset). */
@@ -157,6 +165,23 @@ static void mock_set_param(syntec_mock *mock, uint32_t number, int32_t value)
     }
 }
 
+/** Script one parameter table row: the number, the title and the two u32s. */
+static void mock_set_schema(syntec_mock *mock, size_t index, int32_t no,
+                            const char *title, int32_t flags, int32_t fallback)
+{
+    if (index >= sizeof(mock->schema) / sizeof(mock->schema[0])) {
+        return;
+    }
+    mock->schema[index].no = no;
+    mock->schema[index].flags = flags;
+    mock->schema[index].fallback = fallback;
+    snprintf(mock->schema[index].title, sizeof(mock->schema[index].title), "%s",
+             title);
+    if (index + 1u > mock->schema_count) {
+        mock->schema_count = index + 1u;
+    }
+}
+
 static void mock_main(void *arg)
 {
     syntec_mock *mock = (syntec_mock *)arg;
@@ -170,7 +195,8 @@ static void mock_main(void *arg)
         for (;;) {
             uint8_t header[NCL_SYNTEC_PACKET_HEADER];
             uint8_t frame[256];
-            uint8_t reply[256];
+            /* 参数表一页最多 4 条 × 268 字节（§11.4），加 20 字节头。 */
+            uint8_t reply[NCL_SYNTEC_REPLY_BODY + 4 * NCL_SYNTEC_PARAM_SPEC_SIZE];
             ncl_syntec_view view;
             size_t content;
             size_t total;
@@ -268,6 +294,64 @@ static void mock_main(void *arg)
                     put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + 4u));
                     if (ncl_socket_send(peer, reply,
                                         NCL_SYNTEC_REPLY_BODY + 4u) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /* 参数表容量（§11.4）：答条数，正文 4 字节。 */
+                if (request == NCL_SYNTEC_CODE_PARAM_CAPACITY) {
+                    uint32_t raw = (uint32_t)mock->schema_count;
+
+                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    reply[NCL_SYNTEC_REPLY_BODY + 0] = (uint8_t)(raw & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)((raw >> 8) & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 2] = (uint8_t)((raw >> 16) & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 3] = (uint8_t)((raw >> 24) & 0xFFu);
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + 4u));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_BODY + 4u) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /* 参数表 dump（§11.4）：B = 要几条，正文是那么多条 268 字节。 */
+                if (request == NCL_SYNTEC_CODE_PARAM_SCHEMA) {
+                    size_t want = param_b;
+                    size_t n = want < mock->schema_count ? want
+                                                         : mock->schema_count;
+                    size_t k;
+
+                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    for (k = 0; k < n; k++) {
+                        uint8_t *record =
+                            reply + NCL_SYNTEC_REPLY_BODY +
+                            k * NCL_SYNTEC_PARAM_SPEC_SIZE;
+                        uint16_t no = (uint16_t)mock->schema[k].no;
+                        const char *title = mock->schema[k].title;
+                        size_t t;
+
+                        memset(record, 0, NCL_SYNTEC_PARAM_SPEC_SIZE);
+                        record[0] = (uint8_t)(no & 0xFFu);
+                        record[1] = (uint8_t)(no >> 8);
+                        /* titles travel as UTF-16LE, NUL padded */
+                        for (t = 0; t < strlen(title) &&
+                                    t + 1u < NCL_SYNTEC_PARAM_TITLE_BYTES / 2u;
+                             t++) {
+                            record[4u + t * 2u] = (uint8_t)title[t];
+                            record[5u + t * 2u] = 0;
+                        }
+                        put_u32(record + 260u, (uint32_t)mock->schema[k].flags);
+                        put_u32(record + 264u,
+                                (uint32_t)mock->schema[k].fallback);
+                    }
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER +
+                                              n * NCL_SYNTEC_PARAM_SPEC_SIZE));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_BODY +
+                                            n * NCL_SYNTEC_PARAM_SPEC_SIZE) !=
+                        NCL_OK) {
                         break;
                     }
                     continue;
@@ -938,6 +1022,83 @@ static void test_params(void)
     mock_stop(mock);
 }
 
+/**
+ * 11.4: the parameter table. Numbers and titles come off the wire as 268 byte
+ * records (title = UTF-16LE); paging happens here because the command has no
+ * offset, so the whole table is read once and kept in the session.
+ */
+static void test_param_table(void)
+{
+    syntec_mock *mock = mock_start();
+    ncl_syntec_param_spec page[4];
+    ncl_syntec_config config;
+    ncl_syntec *session;
+    char *err = NULL;
+    int32_t value = 0;
+    size_t total = 0;
+    size_t got = 0;
+    size_t index = 0;
+
+    NCL_CHECK(mock != NULL);
+    if (mock == NULL) {
+        return;
+    }
+    mock_set_schema(mock, 0, 321, "*X axis axis name", 10999, 100);
+    mock_set_schema(mock, 1, 323, "*Z axis axis name", 10999, 100);
+    mock_set_schema(mock, 2, 4761, "*Some other parameter", 4, 1);
+
+    ncl_syntec_config_default(&config);
+    config.host = "127.0.0.1";
+    config.port = mock->port;
+    config.timeout_ms = 800;
+    session = ncl_syntec_open(&config, &err);
+    NCL_CHECK(session != NULL);
+    if (session == NULL) {
+        mock_stop(mock);
+        return;
+    }
+
+    NCL_TEST_CASE("11.4: the table's capacity is request 0x0401");
+    NCL_CHECK_EQ_INT(ncl_syntec_param_capacity(session, &total), NCL_OK);
+    NCL_CHECK_EQ_INT(total, 3);
+
+    NCL_TEST_CASE("11.4: the table gives number, title, default");
+    NCL_CHECK_EQ_INT(ncl_syntec_param_table(session, 0, 3, page, &got, &total),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT(got, 3);
+    NCL_CHECK_EQ_INT(total, 3);
+    NCL_CHECK_EQ_INT(page[0].no, 321);
+    NCL_CHECK_EQ_STR(page[0].title, "*X axis axis name");
+    NCL_CHECK_EQ_INT(page[0].flags, 10999);
+    NCL_CHECK_EQ_INT(page[0].fallback, 100); /* 100 = 'X' (§11.4's decoding) */
+    NCL_CHECK_EQ_INT(page[1].no, 323);
+    NCL_CHECK_EQ_STR(page[1].title, "*Z axis axis name");
+    NCL_CHECK_EQ_INT(page[2].no, 4761);
+    NCL_CHECK_EQ_STR(page[2].title, "*Some other parameter");
+
+    NCL_TEST_CASE("11.4: paging clamps at the end of the table");
+    got = 0;
+    NCL_CHECK_EQ_INT(ncl_syntec_param_table(session, 2, 4, page, &got, &total),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT(got, 1); /* only the last one is left */
+    NCL_CHECK_EQ_INT(page[0].no, 4761);
+
+    NCL_TEST_CASE("11.4: lookup is by parameter number, not by position");
+    NCL_CHECK_EQ_INT(ncl_syntec_param_find(session, 323, &index), NCL_OK);
+    NCL_CHECK_EQ_INT(index, 1);
+    NCL_CHECK_EQ_INT(ncl_syntec_param_find(session, 999, &index),
+                     NCL_ERR_NOT_FOUND);
+    NCL_CHECK(strstr(ncl_syntec_last_error(session), "999") != NULL);
+
+    NCL_TEST_CASE("11.4: a parameter value is one i32 (request 0x0404)");
+    mock_set_param(mock, 321u, 100);
+    NCL_CHECK_EQ_INT(ncl_syntec_param(session, 321u, &value), NCL_OK);
+    NCL_CHECK_EQ_INT(value, 100);
+
+    ncl_syntec_close(session);
+    mock_stop(mock);
+}
+
 /** Index of a point by its model path, or (size_t)-1. */
 static size_t host_point_index(const ncl_host *host, const char *path)
 {
@@ -1007,6 +1168,9 @@ static void test_adapter(void)
     mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_NAME + 0u, 100); /* X */
     mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_PORT + 2u, 3);
     mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_NAME + 2u, 300); /* Z */
+    /* 参数表（§11.4）：一条轴名，值也脚本化好。 */
+    mock_set_schema(mock, 0, 321, "*X axis axis name", 10999, 100);
+    mock_set_param(mock, 321u, 100);
     snprintf(mock->program, sizeof(mock->program), "O1000");
 
     modules = ncl_modules_create();
@@ -1171,6 +1335,96 @@ static void test_adapter(void)
         NCL_CHECK_EQ_INT((long long)(real * 1000.0 + 0.5), 2000);
     }
 
+    NCL_TEST_CASE("11.4: /PARAMETER reads a value by parameter number");
+    {
+        ncl_message *request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+        ncl_message *response;
+
+        NCL_CHECK(request != NULL);
+        (void)ncl_message_set_method(request, "syntec/PARAMETER");
+        (void)ncl_message_set_params(
+            request, ncl_json_parse_cstr("{\"no\":321}", NULL));
+        NCL_CHECK_EQ_INT(ncl_message_finalise(request), NCL_OK);
+        response = ncl_server_invoke_method_call(ncl_host_server(host), request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            const ncl_json *data = response->as.method_call_response.data;
+            const ncl_json *values;
+
+            NCL_CHECK(ncl_check_is_code_ok(
+                response->as.method_call_response.code));
+            NCL_CHECK(data != NULL);
+            NCL_CHECK_EQ_INT(ncl_json_obj_get_int(data, "first", -1), 321);
+            NCL_CHECK_EQ_INT(ncl_json_obj_get_int(data, "count", -1), 1);
+            values = ncl_json_obj_get(data, "values");
+            NCL_CHECK(values != NULL && ncl_json_arr_len(values) == 1);
+            if (values != NULL && ncl_json_arr_len(values) == 1) {
+                long long v = 0;
+
+                NCL_CHECK(ncl_json_as_int(ncl_json_arr_get(values, 0), &v));
+                NCL_CHECK_EQ_INT(v, 100); /* the scripted value of 321 */
+            }
+            ncl_message_free(response);
+        }
+    }
+
+    NCL_TEST_CASE("11.4: /PARAMETER_TABLE answers number, title and default");
+    {
+        ncl_message *request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+        ncl_message *response;
+
+        NCL_CHECK(request != NULL);
+        (void)ncl_message_set_method(request, "syntec/PARAMETER_TABLE");
+        (void)ncl_message_set_params(
+            request, ncl_json_parse_cstr("{\"no\":321}", NULL));
+        NCL_CHECK_EQ_INT(ncl_message_finalise(request), NCL_OK);
+        response = ncl_server_invoke_method_call(ncl_host_server(host), request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            const ncl_json *data = response->as.method_call_response.data;
+            const ncl_json *list;
+
+            NCL_CHECK(ncl_check_is_code_ok(
+                response->as.method_call_response.code));
+            NCL_CHECK(data != NULL);
+            NCL_CHECK_EQ_INT(ncl_json_obj_get_int(data, "total", -1), 1);
+            list = ncl_json_obj_get(data, "params");
+            NCL_CHECK(list != NULL && ncl_json_arr_len(list) == 1);
+            if (list != NULL && ncl_json_arr_len(list) == 1) {
+                const ncl_json *row = ncl_json_arr_get(list, 0);
+
+                NCL_CHECK_EQ_INT(ncl_json_obj_get_int(row, "no", -1), 321);
+                NCL_CHECK_EQ_STR(
+                    ncl_json_as_string(ncl_json_obj_get(row, "title")),
+                    "*X axis axis name");
+                NCL_CHECK_EQ_INT(ncl_json_obj_get_int(row, "fallback", -1), 100);
+            }
+            ncl_message_free(response);
+        }
+    }
+
+    NCL_TEST_CASE("11.4: a parameter number that is not there is refused");
+    {
+        ncl_message *request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+        ncl_message *response;
+
+        NCL_CHECK(request != NULL);
+        (void)ncl_message_set_method(request, "syntec/PARAMETER");
+        (void)ncl_message_set_params(
+            request, ncl_json_parse_cstr("{\"no\":0}", NULL));
+        NCL_CHECK_EQ_INT(ncl_message_finalise(request), NCL_OK);
+        response = ncl_server_invoke_method_call(ncl_host_server(host), request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            NCL_CHECK(!ncl_check_is_code_ok(
+                response->as.method_call_response.code));
+            ncl_message_free(response);
+        }
+    }
+
     ncl_host_free(host);
     ncl_strbuf_free(&err);
     ncl_modules_free(modules);
@@ -1182,5 +1436,6 @@ NCL_TEST_MAIN_BEGIN()
     test_through_the_manager();
     test_items();
     test_params();
+    test_param_table();
     test_adapter();
 NCL_TEST_MAIN_END()

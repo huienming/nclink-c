@@ -578,6 +578,25 @@ size_t ncl_syntec_param_frame(uint8_t *out, size_t cap, unsigned param,
                              sizeof(int32_t), serial);
 }
 
+size_t ncl_syntec_param_capacity_frame(uint8_t *out, size_t cap, uint8_t serial)
+{
+    /* In 是空的（0 字节），应答正文是一个 i32：A = 4 + 4 = 8，B 用不上（0）。 */
+    return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_PARAM_CAPACITY, 0u,
+                             sizeof(int32_t), serial);
+}
+
+size_t ncl_syntec_param_schema_frame(uint8_t *out, size_t cap, size_t count,
+                                     uint8_t serial)
+{
+    /* In 是 { nLength }（4 字节），Out 是 count 条 TParamSpec。 */
+    if (count > 0x00FFFFFFu) {
+        return 0;
+    }
+    return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_PARAM_SCHEMA,
+                             (unsigned)count,
+                             count * NCL_SYNTEC_PARAM_SPEC_SIZE, serial);
+}
+
 bool ncl_syntec_reply_i32(const uint8_t *frame, size_t len, int32_t *value)
 {
     if (frame == NULL || value == NULL || len < NCL_SYNTEC_REPLY_BODY + 4u) {

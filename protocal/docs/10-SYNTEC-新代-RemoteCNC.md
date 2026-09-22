@@ -983,3 +983,27 @@ KrnlAPI：帧形状与状态区一模一样（§3.1），只有请求号不同�
 * **参数表本身也能读**：`0x0401` 答容量（21A 答 3784），`0x0402` 按
   `A = 4 + nLength * 268` 整表 dump（一条 `TParamSpec` = `u16 No` + `u16 留白` +
   `wchar Title[128]` + `u32` + `u32 默认值`）；21A 上整表读回 1,014,112 字节，标题全对得上。
+
+### 11.5 参数：值 + 表（ 2026-09-22，21A 实测，**已实现**）
+
+* **读值**：`0x0404`，`B` = 参数号，答一个 **i32**。适配器方法
+  `/PARAMETER`：`{"no":321}` → `{"first":321,"count":1,"values":[100]}`；
+  `{"no":321,"count":4}` → `[100,200,300,400]`（四个轴槽的名字代号 X/Y/Z/A）。
+* **读表**：`0x0401` 答容量（21A = **3784**），`0x0402` 按
+  `A = 4 + nLength × 268` 整表 dump。一条 `TParamSpec` = `u16 No` + `u16 留白` +
+  `wchar Title[128]`（UTF-16LE，NUL 填充）+ `u32 flags` + `u32 fallback`。
+  **线上没有偏移**，只能整表拿：client 一次读回来（≈ 1 MB）缓存在会话里，
+  适配器方法 `/PARAMETER_TABLE` 在上面翻页（`{"first":251,"count":4}`）或按号定位
+  （`{"no":321}` → 位置 251）。
+* **表里有什么**：号 + 标题 + `flags`（语义未定，原样给出）+ `fallback`（出厂默认，
+  轴名那行是 100 = `'X'`）。**表里没有上下限**——“含上下限”这一半兑不了，不编一个出来。
+* **实测**：`POST /api/syntec/PARAMETER {"no":321}` 答 `100`（= `'X'`）；
+  `/PARAMETER {"no":321,"count":4}` 答 `100/200/300/400`；`/PARAMETER_TABLE {"no":321}`
+  答 `total 3784`、位置 `251`、`*X axis axis name`、`flags 10999`、`fallback 100`；
+  `{"first":249,"count":4}` 答 315/316/321/322 四条，标题与 Python 探针逐字一致。
+* **代码**：client 侧 `ncl_syntec_param_capacity()` / `ncl_syntec_param_table()` /
+  `ncl_syntec_param_find()`（加两个帧构造函数）；UTF-16LE 转 UTF-8 落在
+  `ncl_charset` 的 `ncl_utf16le_to_utf8()`（有单测）；适配器侧方法 `/PARAMETER`、
+  `/PARAMETER_TABLE`。
+* **1 MB 的应答**需要自己的缓冲：会话里的 16 KiB 装不下，所以
+  `syntec_exchange_into()` 收进调用者的缓冲（审计里那条大应答不留在会话上）。

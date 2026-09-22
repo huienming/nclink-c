@@ -249,6 +249,151 @@ static ncl_err syntec_axes(void *ctx, const ncl_json *params, ncl_json **result,
 }
 
 /** §6 的审计要原始报文：问 client 一句就够，账由宿主管。 */
+/* ---------------------------------------------------------------- 参数 ---- */
+
+/** 一次读多少条参数（每条一次往返）。 */
+#define SYNTEC_PARAM_BATCH_MAX 64u
+/** 参数表一页多少条。 */
+#define SYNTEC_PARAM_PAGE 16u
+
+/**
+ * `/PARAMETER`：读系统参数的值（§11.4，KrnlAPI 0x0404）。
+ *
+ *   {"no": 321}           -> {"first":321,"count":1,"values":[300]}
+ *   {"no": 321,"count": 8} -> 连着读 8 个号
+ *
+ * 参数号是控制器参数表里的号（`/PARAMETER_TABLE` 能拿到号与标题）。值是一个
+ * **i32**；控制器对没定义的号答 0，所以"这个号有没有"要看表，不看值。
+ */
+static ncl_err syntec_parameter(void *ctx, const ncl_json *params,
+                                ncl_json **result, char **reason)
+{
+    long long no = ncl_tool_param_int(params, "no", -1);
+    long long want = ncl_tool_param_int(params, "count", 1);
+    ncl_syntec *syntec = (ncl_syntec *)ctx;
+    ncl_json *values;
+    ncl_json *reply;
+    long long i;
+
+    if (no < 1 || no > 0xFFFF) {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                             "no 是参数号（1..65535）");
+    }
+    if (want < 1 || want > (long long)SYNTEC_PARAM_BATCH_MAX) {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "count 一次最多 %u 条",
+                             (unsigned)SYNTEC_PARAM_BATCH_MAX);
+    }
+    values = ncl_json_new_array();
+    reply = ncl_json_new_object();
+    if (values == NULL || reply == NULL) {
+        ncl_json_free(values);
+        ncl_json_free(reply);
+        return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+    }
+    for (i = 0; i < want; i++) {
+        ncl_json *item;
+        int32_t value = 0;
+        ncl_err rc = ncl_syntec_param(syntec, (unsigned)(no + i), &value);
+
+        if (rc != NCL_OK) {
+            ncl_json_free(values);
+            ncl_json_free(reply);
+            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
+        }
+        item = ncl_json_new_int((long long)value);
+        if (item == NULL || ncl_json_arr_push(values, item) != NCL_OK) {
+            ncl_json_free(item);
+            ncl_json_free(values);
+            ncl_json_free(reply);
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+    }
+    (void)ncl_json_obj_set_int(reply, "first", no);
+    (void)ncl_json_obj_set_int(reply, "count", want);
+    (void)ncl_json_obj_set(reply, "values", values);
+    *result = reply;
+    return NCL_OK;
+}
+
+/**
+ * `/PARAMETER_TABLE`：参数表的元数据（§11.4，KrnlAPI 0x0402）。
+ *
+ *   {"no": 321}          -> 按参数号定位那一条
+ *   {"first": 0,"count": 32} -> 按表里的位置翻页（整表在 client 里缓存，翻页很便宜）
+ *
+ * 一条给 `no` / `title` / `flags` / `fallback`：标题是控制器原文（`*Nth axis axis
+ * name`），`fallback` 是出厂默认值（轴名那个号默认 100 = `'X'`）。`flags` 那 4 个
+ * 字节的语义还没定，原样给出，不编一个"上下限"出来。
+ */
+static ncl_err syntec_parameter_table(void *ctx, const ncl_json *params,
+                                      ncl_json **result, char **reason)
+{
+    ncl_syntec_param_spec page[SYNTEC_PARAM_PAGE];
+    ncl_syntec *syntec = (ncl_syntec *)ctx;
+    long long first = ncl_tool_param_int(params, "first", 0);
+    long long want = ncl_tool_param_int(params, "count", (long long)SYNTEC_PARAM_PAGE);
+    long long no = ncl_tool_param_int(params, "no", -1);
+    ncl_json *list;
+    ncl_json *reply;
+    size_t total = 0;
+    size_t got = 0;
+    size_t i;
+    ncl_err rc;
+
+    if (want < 1 || want > (long long)SYNTEC_PARAM_PAGE) {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "count 一次最多 %u 条",
+                             (unsigned)SYNTEC_PARAM_PAGE);
+    }
+    if (no > 0) {
+        /* 按参数号：先在表里定位，再按位置取那一条。 */
+        rc = ncl_syntec_param_find(syntec, (unsigned)no, &i);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
+        }
+        first = (long long)i;
+        want = 1;
+    }
+    if (first < 0) {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "first 从 0 起");
+    }
+    rc = ncl_syntec_param_table(syntec, (size_t)first, (size_t)want, page, &got,
+                                &total);
+    if (rc != NCL_OK) {
+        return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
+    }
+    list = ncl_json_new_array();
+    reply = ncl_json_new_object();
+    if (list == NULL || reply == NULL) {
+        ncl_json_free(list);
+        ncl_json_free(reply);
+        return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+    }
+    for (i = 0; i < got; i++) {
+        ncl_json *entry = ncl_json_new_object();
+
+        if (entry == NULL) {
+            ncl_json_free(list);
+            ncl_json_free(reply);
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        (void)ncl_json_obj_set_int(entry, "no", page[i].no);
+        (void)ncl_json_obj_set_string(entry, "title", page[i].title);
+        (void)ncl_json_obj_set_int(entry, "flags", page[i].flags);
+        (void)ncl_json_obj_set_int(entry, "fallback", page[i].fallback);
+        if (ncl_json_arr_push(list, entry) != NCL_OK) {
+            ncl_json_free(list);
+            ncl_json_free(reply);
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+    }
+    (void)ncl_json_obj_set_int(reply, "total", (long long)total);
+    (void)ncl_json_obj_set_int(reply, "first", first);
+    (void)ncl_json_obj_set_int(reply, "count", (long long)got);
+    (void)ncl_json_obj_set(reply, "params", list);
+    *result = reply;
+    return NCL_OK;
+}
+
 static void syntec_last_raw(void *ctx, ncl_tool_frames *out)
 {
     const uint8_t *request = NULL;
@@ -298,6 +443,9 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
     NCL_METHOD_CALL("/SESSION", syntec_session)
     /* 轴表的元数据：名字与槽号都从控制器读（§11.4），客户端照着建路径。 */
     NCL_METHOD_CALL("/AXES", syntec_axes)
+    /* 系统参数（§11.4）：读值、读表。表里只有号/标题/默认值，上下限没有。 */
+    NCL_METHOD_CALL("/PARAMETER", syntec_parameter)
+    NCL_METHOD_CALL("/PARAMETER_TABLE", syntec_parameter_table)
 
 NCL_TOOL_END_WITH_RAW(syntec_last_raw)
 

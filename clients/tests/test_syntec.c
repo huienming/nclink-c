@@ -255,6 +255,26 @@ static void test_param_frame(void)
     /* Too small a buffer is refused, not truncated. */
     NCL_CHECK_EQ_INT(ncl_syntec_param_frame(frame, 8, 321u, 0u), 0);
 
+    NCL_TEST_CASE("11.4: the table's capacity is request 0x0401, In empty");
+    NCL_CHECK_EQ_INT(ncl_syntec_param_capacity_frame(frame, sizeof(frame), 0u),
+                     NCL_SYNTEC_ITEM_FRAME);
+    NCL_CHECK_EQ_INT(frame[16], 0x01); /* 0x0401 */
+    NCL_CHECK_EQ_INT(frame[17], 0x04);
+    NCL_CHECK_EQ_INT(frame[24], 8); /* A = 0 (In) + 8 (hr + nValue) */
+    NCL_CHECK_EQ_INT(frame[28], 0); /* B unused */
+    NCL_CHECK_EQ_INT(frame[32], 1);
+
+    NCL_TEST_CASE("11.4: the table dump asks for n records of 268 bytes");
+    NCL_CHECK_EQ_INT(ncl_syntec_param_schema_frame(frame, sizeof(frame), 3u, 0u),
+                     NCL_SYNTEC_ITEM_FRAME);
+    NCL_CHECK_EQ_INT(frame[16], 0x02); /* 0x0402 */
+    NCL_CHECK_EQ_INT(frame[17], 0x04);
+    NCL_CHECK_EQ_INT(frame[24], 0x28); /* A = 4 + 3*268 = 808 = 0x328 */
+    NCL_CHECK_EQ_INT(frame[25], 0x03);
+    NCL_CHECK_EQ_INT(frame[28], 3); /* B = nLength */
+    NCL_CHECK_EQ_INT(
+        ncl_syntec_param_schema_frame(frame, sizeof(frame), 0x01000000u, 0u), 0);
+
     NCL_TEST_CASE("11.4: a parameter answer is one i32 after the 20 byte header");
     memset(reply, 0, sizeof(reply));
     memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);

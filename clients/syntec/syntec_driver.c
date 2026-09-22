@@ -18,6 +18,7 @@
 
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_socket.h"
+#include "nclink/ncl_charset.h"
 #include "nclink/clients/syntec.h"
 #include "syntec/ncl_syntec_driver.h"
 
@@ -59,6 +60,13 @@ struct ncl_syntec {
     size_t          axes_state_count; /**< = 最后一条的槽号 + 1         */
     int64_t         axes_at;          /**< 上一次刷新（含失败）的时刻   */
     bool            axes_valid;       /**< 手上有一张读成功的表          */
+    /*
+     * 参数表缓存（§11.4）：线上只有"整表 dump"（命令里没有偏移），一条 268 字节、
+     * 21A 一共 3784 条 ≈ 1 MB，所以读回来就存着，翻页在这张原始表上做。
+     */
+    uint8_t *param_schema;
+    size_t   param_schema_len;
+    size_t   params_count;
 };
 
 /** The driver ops carry the session; the old name keeps the diff small. */
@@ -107,44 +115,50 @@ static ncl_err syntec_open_session(syntec_ctx *ctx)
  * request. The frame is copied into the session buffer, which is also what the
  * audit shows.
  */
-static ncl_err syntec_exchange_frame(syntec_ctx *ctx, const uint8_t *frame,
-                                     size_t frame_len, uint8_t serial,
-                                     ncl_syntec_view *view)
+static ncl_err syntec_exchange_into(syntec_ctx *ctx, const uint8_t *frame,
+                                    size_t frame_len, uint8_t serial,
+                                    uint8_t *rx, size_t rx_cap, size_t *rx_len,
+                                    ncl_syntec_view *view)
 {
     size_t content;
     size_t total;
     ncl_err err;
 
-    if (frame == NULL || frame_len == 0 || frame_len > sizeof(ctx->tx)) {
+    if (frame == NULL || frame_len == 0 || frame_len > sizeof(ctx->tx) ||
+        rx == NULL || rx_cap < NCL_SYNTEC_PACKET_HEADER) {
         return NCL_ERR_RANGE;
+    }
+    if (rx_len != NULL) {
+        *rx_len = 0;
     }
     if (frame != ctx->tx) {
         memcpy(ctx->tx, frame, frame_len);
     }
     ctx->last_tx_len = frame_len;
-    ctx->last_rx_len = 0;
     if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
         return NCL_DRV_ERR_TRANSPORT(0x91);
     }
-    if (ncl_socket_recv_exact(ctx->socket, ctx->rx, NCL_SYNTEC_PACKET_HEADER,
+    if (ncl_socket_recv_exact(ctx->socket, rx, NCL_SYNTEC_PACKET_HEADER,
                               ctx->timeout_ms) != NCL_OK) {
         ncl_socket_shutdown(ctx->socket);
         return NCL_DRV_ERR_TRANSPORT(0x92);
     }
-    content = (size_t)ctx->rx[0] | ((size_t)ctx->rx[1] << 8) |
-              ((size_t)ctx->rx[2] << 16) | ((size_t)ctx->rx[3] << 24);
+    content = (size_t)rx[0] | ((size_t)rx[1] << 8) | ((size_t)rx[2] << 16) |
+              ((size_t)rx[3] << 24);
     total = NCL_SYNTEC_PACKET_HEADER + content;
-    if (content < NCL_SYNTEC_FUNCTION_HEADER || total > sizeof(ctx->rx)) {
+    if (content < NCL_SYNTEC_FUNCTION_HEADER || total > rx_cap) {
         ncl_socket_shutdown(ctx->socket);
         return NCL_DRV_ERR_PROTOCOL(0x90);
     }
-    if (ncl_socket_recv_exact(ctx->socket, ctx->rx + NCL_SYNTEC_PACKET_HEADER,
+    if (ncl_socket_recv_exact(ctx->socket, rx + NCL_SYNTEC_PACKET_HEADER,
                               content, ctx->timeout_ms) != NCL_OK) {
         ncl_socket_shutdown(ctx->socket);
         return NCL_DRV_ERR_TRANSPORT(0x93);
     }
-    ctx->last_rx_len = total;
-    err = ncl_syntec_split(ctx->rx, total, view, NULL);
+    if (rx_len != NULL) {
+        *rx_len = total;
+    }
+    err = ncl_syntec_split(rx, total, view, NULL);
     if (err != NCL_OK) {
         return err;
     }
@@ -161,6 +175,18 @@ static ncl_err syntec_exchange_frame(syntec_ctx *ctx, const uint8_t *frame,
         }
     }
     return NCL_OK;
+}
+
+/**
+ * 一问一答，收进会话自己的缓冲。超过缓冲的应答（参数表约 1 MB）走
+ * syntec_exchange_into()，带自己的缓冲。
+ */
+static ncl_err syntec_exchange_frame(syntec_ctx *ctx, const uint8_t *frame,
+                                     size_t frame_len, uint8_t serial,
+                                     ncl_syntec_view *view)
+{
+    return syntec_exchange_into(ctx, frame, frame_len, serial, ctx->rx,
+                                sizeof(ctx->rx), &ctx->last_rx_len, view);
 }
 
 /** Build one packet from its parts and exchange it. */
@@ -665,6 +691,7 @@ void ncl_syntec_close(ncl_syntec *syntec)
     }
     syntec_close_session(syntec);
     ncl_free_safe(syntec->host);
+    ncl_mem_free(syntec->param_schema);
     if (syntec->mutex != NULL) {
         ncl_mutex_destroy(syntec->mutex);
     }
@@ -1004,6 +1031,13 @@ ncl_err ncl_syntec_position(ncl_syntec *syntec, unsigned zone, size_t count,
  * 一次参数读，**调用者已经拿住锁、也已经连上**：读轴表要一口气问 32 个参数，
  * 不能锁 32 次。
  */
+/** 小端 u32：读参数表里那两个 4 字节字段用。 */
+static uint32_t syntec_get_u32(const uint8_t *in)
+{
+    return (uint32_t)in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16) |
+           ((uint32_t)in[3] << 24);
+}
+
 static ncl_err syntec_param_locked(syntec_ctx *syntec, unsigned param,
                                    int32_t *value)
 {
@@ -1237,6 +1271,197 @@ ncl_err ncl_syntec_axis_index(ncl_syntec *syntec, const char *name,
                                      i > 0 ? "/" : "", syntec->axes[i].name);
         }
     }
+    return NCL_ERR_NOT_FOUND;
+}
+
+/** 一条内存里的 TParamSpec -> 结构：标题是 UTF-16LE，转成 UTF-8。 */
+static void syntec_param_spec_decode(const uint8_t *record,
+                                     ncl_syntec_param_spec *out)
+{
+    char *title = NULL;
+
+    memset(out, 0, sizeof(*out));
+    out->no = (int32_t)((uint32_t)record[0] | ((uint32_t)record[1] << 8));
+    out->flags = (int32_t)syntec_get_u32(record + 260u);
+    out->fallback = (int32_t)syntec_get_u32(record + 264u);
+    if (ncl_utf16le_to_utf8(record + 4u, NCL_SYNTEC_PARAM_TITLE_BYTES, &title,
+                            NULL) == NCL_OK &&
+        title != NULL) {
+        snprintf(out->title, sizeof(out->title), "%s", title);
+        ncl_mem_free(title);
+    }
+}
+
+/**
+ * 整表读一遍并换进缓存：先问容量（0x0401），再让控制器 dump 那么多条（0x0402）。
+ * **调用者已经拿住锁、也已经连上**。参数表运行中不会变，成功读一次就够了。
+ */
+static ncl_err syntec_param_table_read_locked(syntec_ctx *syntec)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial = (uint8_t)syntec->serial;
+    uint8_t *raw;
+    ncl_syntec_view view;
+    int32_t capacity = 0;
+    size_t bytes;
+    size_t got = 0;
+    ncl_err err;
+
+    if (ncl_syntec_param_capacity_frame(frame, sizeof(frame), serial) == 0) {
+        return NCL_ERR_RANGE;
+    }
+    err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial, &view);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (!ncl_syntec_reply_i32(syntec->rx, syntec->last_rx_len, &capacity) ||
+        capacity <= 0) {
+        return NCL_ERR_RANGE;
+    }
+    /* 一条乱答的容量别把内存吃光：8192 条 = 2.2 MB，够任何一台 21 系列。 */
+    if ((size_t)capacity > 8192u) {
+        return NCL_ERR_RANGE;
+    }
+    bytes = (size_t)capacity * NCL_SYNTEC_PARAM_SPEC_SIZE;
+    raw = (uint8_t *)ncl_mem_calloc(bytes + NCL_SYNTEC_REPLY_BODY, 1u);
+    if (raw == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    if (ncl_syntec_param_schema_frame(frame, sizeof(frame), (size_t)capacity,
+                                      serial) == 0) {
+        ncl_mem_free(raw);
+        return NCL_ERR_RANGE;
+    }
+    err = syntec_exchange_into(syntec, frame, sizeof(frame), serial, raw,
+                               bytes + NCL_SYNTEC_REPLY_BODY, &got, &view);
+    if (err == NCL_OK && got < NCL_SYNTEC_REPLY_BODY + bytes) {
+        err = NCL_ERR_RANGE;
+    }
+    if (err != NCL_OK) {
+        ncl_mem_free(raw);
+        return err;
+    }
+    memmove(raw, raw + NCL_SYNTEC_REPLY_BODY, bytes);
+    ncl_mem_free(syntec->param_schema);
+    syntec->param_schema = raw;
+    syntec->param_schema_len = bytes;
+    syntec->params_count = (size_t)capacity;
+    return NCL_OK;
+}
+
+/** 表在手边就用缓存，没有才去读（读失败下次再试）。 */
+static ncl_err syntec_param_table_cached(syntec_ctx *syntec)
+{
+    ncl_err err;
+
+    if (syntec->param_schema != NULL) {
+        return NCL_OK;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        err = syntec_param_table_read_locked(syntec);
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "参数表");
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_param_capacity(ncl_syntec *syntec, size_t *count)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    int32_t capacity = 0;
+    ncl_err err;
+
+    if (syntec == NULL || count == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *count = 0;
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_param_capacity_frame(frame, sizeof(frame), serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_reply_i32(syntec->rx, syntec->last_rx_len, &capacity)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "参数容量");
+    }
+    if (capacity < 0) {
+        return syntec_note(syntec, NCL_ERR_RANGE, "参数容量");
+    }
+    *count = (size_t)capacity;
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_param_table(ncl_syntec *syntec, size_t first, size_t count,
+                               ncl_syntec_param_spec *out, size_t *out_count,
+                               size_t *total)
+{
+    size_t i;
+    ncl_err err;
+
+    if (syntec == NULL || out == NULL || out_count == NULL || count == 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *out_count = 0;
+    err = syntec_param_table_cached(syntec);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (total != NULL) {
+        *total = syntec->params_count;
+    }
+    for (i = 0; i < count && first + i < syntec->params_count; i++) {
+        syntec_param_spec_decode(
+            syntec->param_schema + (first + i) * NCL_SYNTEC_PARAM_SPEC_SIZE,
+            &out[i]);
+    }
+    *out_count = i;
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_param_find(ncl_syntec *syntec, unsigned no, size_t *index)
+{
+    size_t i;
+    ncl_err err;
+
+    if (syntec == NULL || no == 0u || no > 0xFFFFu) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    err = syntec_param_table_cached(syntec);
+    if (err != NCL_OK) {
+        return err;
+    }
+    for (i = 0; i < syntec->params_count; i++) {
+        const uint8_t *record =
+            syntec->param_schema + i * NCL_SYNTEC_PARAM_SPEC_SIZE;
+        unsigned entry = (unsigned)record[0] | ((unsigned)record[1] << 8);
+
+        if (entry == no) {
+            if (index != NULL) {
+                *index = i;
+            }
+            return NCL_OK;
+        }
+    }
+    snprintf(syntec->error, sizeof(syntec->error),
+             "参数表里没有 %u（表里有 %u 条）", no, (unsigned)syntec->params_count);
     return NCL_ERR_NOT_FOUND;
 }
 

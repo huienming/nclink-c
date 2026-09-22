@@ -50,6 +50,21 @@ uint32_t ncl_gb2312_codepoint(unsigned char hi, unsigned char lo);
 ncl_err ncl_gb2312_to_utf8(const char *in, size_t len, char **out,
                            size_t *out_len);
 
+/**
+ * 把 @p len 个字节的 **UTF-16LE** 文本（新代控制器的一些文本字段就是这个，
+ * 比如系统参数表的标题 `wchar_t[128]`）转成 UTF-8。
+ *
+ * 约定：
+ *   - 遇到 `0x0000` 就当文本结束（定长字段里剩下的都是 NUL 填充）。
+ *   - 代理对（U+10000 以上）照样拼；落单的代理项写 U+FFFD，不抛错。
+ *   - 奇数个字节时最后一个字节忽略。
+ *
+ * @param out     产出**新分配**的、NUL 结尾的 UTF-8 字符串；ncl_free 释放
+ * @param out_len 非空时写出字节数（不含结尾 NUL）
+ */
+ncl_err ncl_utf16le_to_utf8(const uint8_t *in, size_t len, char **out,
+                            size_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif
