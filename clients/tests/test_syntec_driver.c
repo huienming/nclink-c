@@ -833,6 +833,7 @@ static void test_params(void)
     char name[16];
     char *err = NULL;
     int32_t value = 0;
+    unsigned slot = 99;
     size_t count = 0;
 
     NCL_TEST_CASE("§11.4: an axis name code decodes the client's way");
@@ -890,6 +891,18 @@ static void test_params(void)
     NCL_CHECK_EQ_INT(axes[1].port, 3);
     NCL_CHECK_EQ_STR(axes[1].name, "Z");
 
+    NCL_TEST_CASE("11.4: a name resolves to the slot at read time");
+    NCL_CHECK_EQ_INT(ncl_syntec_axis_index(session, "Z", &slot, &count), NCL_OK);
+    NCL_CHECK_EQ_INT(slot, 2);   /* 控制器说 Z 是第 3 个槽 ... */
+    NCL_CHECK_EQ_INT(count, 3);  /* ... 而状态区一项有 3 个（最后槽号 + 1） */
+    NCL_CHECK_EQ_INT(ncl_syntec_axis_index(session, "x", &slot, &count), NCL_OK);
+    NCL_CHECK_EQ_INT(slot, 0); /* 名字不挑大小写 */
+    NCL_CHECK_EQ_INT(ncl_syntec_axis_index(session, "Y", &slot, &count),
+                     NCL_ERR_NOT_FOUND); /* 没启用的槽不算数 */
+    NCL_CHECK(strstr(ncl_syntec_last_error(session), "X/Z") != NULL);
+    NCL_CHECK_EQ_INT(ncl_syntec_axis_index(session, "", &slot, &count),
+                     NCL_ERR_INVALID_ARG);
+
     NCL_TEST_CASE("§11.4: one axis name on its own, and an unused slot");
     NCL_CHECK_EQ_INT(ncl_syntec_axis_name(session, 2, name, sizeof(name)),
                      NCL_OK);
@@ -901,16 +914,27 @@ static void test_params(void)
                                           sizeof(name)),
                      NCL_ERR_INVALID_ARG);
 
-    NCL_TEST_CASE("§11.4: no axis at all says so instead of guessing");
-    mock->param_count = 0;
-    count = 123;
+    NCL_TEST_CASE("11.4: the table is cached - a read does not ask 32 params again");
+    mock->param_count = 0; /* 这会儿控制器“什么都不知道”了 */
     NCL_CHECK_EQ_INT(ncl_syntec_axes(session, axes, NCL_SYNTEC_AXIS_SLOTS,
                                      &count),
-                     NCL_ERR_UNAVAILABLE);
-    NCL_CHECK_EQ_INT(count, 0);
-    NCL_CHECK(strstr(ncl_syntec_last_error(session), "轴表") != NULL);
+                     NCL_OK);
+    NCL_CHECK_EQ_INT(count, 2); /* TTL 内不重问，还是刚才那张表 */
 
+    NCL_TEST_CASE("11.4: a controller that says nothing is a clear 读不了");
     ncl_syntec_close(session);
+    session = ncl_syntec_open(&config, &err);
+    NCL_CHECK(session != NULL);
+    if (session != NULL) {
+        count = 123;
+        NCL_CHECK_EQ_INT(ncl_syntec_axes(session, axes, NCL_SYNTEC_AXIS_SLOTS,
+                                         &count),
+                         NCL_ERR_UNAVAILABLE);
+        NCL_CHECK_EQ_INT(count, 0);
+        NCL_CHECK(strstr(ncl_syntec_last_error(session), "轴表") != NULL);
+        ncl_syntec_close(session);
+    }
+
     mock_stop(mock);
 }
 
@@ -978,6 +1002,11 @@ static void test_adapter(void)
     mock_set_value(mock, 700u, 4321u);
     mock_set_value(mock, 12u, 0u);
     mock_set_value(mock, 76u, 70u);
+    /* 轴表（§11.4）：X 在第 1 槽（端口 1），Z 在第 3 槽（端口 3）。 */
+    mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_PORT + 0u, 1);
+    mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_NAME + 0u, 100); /* X */
+    mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_PORT + 2u, 3);
+    mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_NAME + 2u, 300); /* Z */
     snprintf(mock->program, sizeof(mock->program), "O1000");
 
     modules = ncl_modules_create();
@@ -1103,13 +1132,17 @@ static void test_adapter(void)
     NCL_TEST_CASE("位置走状态区：int16 + 10^-小数位");
     {
         /* 房把 X 摆到 1.234、Z 摆到 -0.5（int16 原值），小数位 3。 */
-        static const int16_t kMachine[2] = {1234, -500};
+        /*
+         * 状态区一项按**槽号**排：槽 0 = X、槽 1 = 另一个轴（这里塞 777 当陷阱）、
+         * 槽 2 = Z。轴的顺序由控制器说了算，所以读 Z 必须落在下标 2 上。
+         */
+        static const int16_t kMachine[3] = {1234, 777, -500};
         static const int16_t kDecimals[1] = {3};
-        static const int16_t kAbsolute[2] = {2000, -1};
+        static const int16_t kAbsolute[3] = {2000, 999, -1};
 
-        mock_set_zone(mock, NCL_SYNTEC_ZONE_MACHINE, kMachine, 2);
+        mock_set_zone(mock, NCL_SYNTEC_ZONE_MACHINE, kMachine, 3);
         mock_set_zone(mock, NCL_SYNTEC_ZONE_DECIMALS, kDecimals, 1);
-        mock_set_zone(mock, NCL_SYNTEC_ZONE_ABSOLUTE, kAbsolute, 2);
+        mock_set_zone(mock, NCL_SYNTEC_ZONE_ABSOLUTE, kAbsolute, 3);
 
         value = NULL;
         NCL_CHECK_EQ_INT(

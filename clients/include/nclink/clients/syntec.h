@@ -274,8 +274,11 @@ bool ncl_syntec_reply_i32(const uint8_t *frame, size_t len, int32_t *value);
 #define NCL_SYNTEC_ZONE_ABSOLUTE 181u /**< 绝对坐标                            */
 #define NCL_SYNTEC_ZONE_DISTANCE 221u /**< 剩余距离                            */
 #define NCL_SYNTEC_ZONE_DECIMALS 261u /**< 轴小数位（缩放用 10^dec）           */
-/** Most axes one position read handles (the frame's A is 4 + 2*count). */
-#define NCL_SYNTEC_POSITION_MAX_AXES 8u
+/**
+ * Most axes one position read handles (the frame's A is 4 + 2*count). 参数表里
+ * 一共 16 个轴槽（`*Nth axis ...`），状态区的一项就有这么长，所以按 16 留。
+ */
+#define NCL_SYNTEC_POSITION_MAX_AXES 16u
 
 /* ============================================================== session == */
 
@@ -370,6 +373,25 @@ typedef struct {
  */
 ncl_err ncl_syntec_axes(ncl_syntec *syntec, ncl_syntec_axis *out, size_t cap,
                         size_t *count);
+
+/**
+ * 轴名 -> 轴号（§11.4）。**轴号就是参数槽号**，也就是状态区里的下标：客户端的
+ * `get_MachineCoordinate()` 是 `r[i] = data[EnableAxisMappingID[i]]`——`data` 按
+ * 槽排，`r` 按"在用的轴"排。所以按路径里写死的 `X` 读值时：先在这里把 `X` 换成
+ * 槽号，再去读状态区，取第槽号个值。
+ *
+ * @p count 回填状态区一项里有几个轴值（客户端 `get_MaxUsedAxisID() + 1`），也就
+ * 是这次位置读该读几个。表带缓存（`NCL_SYNTEC_AXES_TTL_MS`）：读一次要问 32 个
+ * 参数，不能每个点位都问；刷新失败时继续用上一张好表。
+ *
+ * 名字不在"在用的轴"里（端口 0、没名字、或压根不在表里）回 NCL_ERR_NOT_FOUND，
+ * 并把控制器说在用的名字写进 ncl_syntec_last_error()——不猜。
+ */
+ncl_err ncl_syntec_axis_index(ncl_syntec *syntec, const char *name,
+                              unsigned *slot, size_t *count);
+
+/** 轴表缓存的有效期（毫秒）。 */
+#define NCL_SYNTEC_AXES_TTL_MS 5000u
 
 /* The nine items, each one named after what it reads (§3.2). A call that the
  * captured material does not cover answers NCL_ERR_UNAVAILABLE - "还读不了" -

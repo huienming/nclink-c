@@ -97,31 +97,48 @@ static ncl_err syntec_spindle_speed(void *ctx, double *out)
 
 /*
  * 位置是**状态区**（10 册 §11.3.1）：机械 101 / 相对 141 / 绝对 181 / 剩余 221。
- * 值 = 每轴一个 int16 ÷ 10^小数位（小数位本身是区 261，21A 车床答 3，与画面
+ * 值 = 每轴一个 int16 除以 10^小数位（小数位本身是区 261，21A 车床答 3，与画面
  * `0.000` 一致）。路径按 iNC-BOX 的格子：**机械坐标就是实际位置**，落
  * `/AXIS@<轴>/MOTOR/POSITION`；另外三组落在同一层的 `MOTOR/VARIABLE@*`。
  *
- * 轴按**轴号**寻址（`arg`）：本车床 X=0、Z=1（声明里按现场机型写死的顺序）。
- * 轴的使能/名称在控制器里是另一族属性（`get_EnableAxes` / `get_PrAxisName`），
- * 这一版按声明顺序读前 N 轴，读不到的轴位自然恒 0。
+ * 路径是声明里写死的、也不会变（iNC-BOX 的格子），**轴号在读值的时候才现查**：
+ * 点位的 `arg` 就是路径里那个字母（`'X'` / `'Z'`），先拿它去控制器问“这个轴名是
+ * 第几个槽”，再按那个槽号从状态区取值。客户端的 `get_MachineCoordinate()` 正是
+ * 这个口径：`r[i] = data[EnableAxisMappingID[i]]`——`data` 按槽排。
+ *
+ * 名字对不上（控制器没启用这个轴、或这名字根本不在表里）就照实报
+ * NCL_ERR_NOT_FOUND，不拿声明顺序去猜轴号——猜错就是读到另一个轴的位置。
  */
-#define NCL_SYNTEC_ADAPTER_AXES 2
-
 static ncl_err syntec_axis_zone(void *ctx, long long arg, unsigned zone,
                                 double *out)
 {
     double values[NCL_SYNTEC_POSITION_MAX_AXES];
     ncl_syntec *syntec = (ncl_syntec *)ctx;
+    char name[2];
+    unsigned slot = 0;
+    size_t count = 0;
     ncl_err rc;
 
-    if (arg < 0 || arg >= NCL_SYNTEC_ADAPTER_AXES) {
+    if (arg <= 0 || arg > 0x7F) {
         return NCL_ERR_INVALID_ARG;
     }
-    rc = ncl_syntec_position(syntec, zone, NCL_SYNTEC_ADAPTER_AXES, values);
+    name[0] = (char)arg;
+    name[1] = '\0';
+    rc = ncl_syntec_axis_index(syntec, name, &slot, &count);
     if (rc != NCL_OK) {
         return rc;
     }
-    *out = values[arg];
+    if (count > NCL_SYNTEC_POSITION_MAX_AXES) {
+        count = NCL_SYNTEC_POSITION_MAX_AXES; /* 本实现的上限（16 个轴槽） */
+    }
+    if (slot >= count) {
+        return NCL_ERR_RANGE; /* 槽号比读得到的还靠后：控制器说得不对 */
+    }
+    rc = ncl_syntec_position(syntec, zone, count, values);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    *out = values[slot];
     return NCL_OK;
 }
 
@@ -268,14 +285,15 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
     NCL_DATAITEM_F64("/SPINDLE_SPEED", syntec_spindle_speed)
 
     /* 位置：机械（= 实际位置）/ 绝对 / 相对 / 剩余，各轴一点。轴号 0 = X、1 = Z。 */
-    NCL_DATAITEM_F64("/AXIS@X/MOTOR/POSITION", syntec_machine_position, 0)
-    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/POSITION", syntec_machine_position, 1)
-    NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 0)
-    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 1)
-    NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 0)
-    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 1)
-    NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 0)
-    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 1)
+    /* arg 就是路径里的轴字母：轴号在读值的时候现查（§11.4），下面两行只是路径。 */
+    NCL_DATAITEM_F64("/AXIS@X/MOTOR/POSITION", syntec_machine_position, 'X')
+    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/POSITION", syntec_machine_position, 'Z')
+    NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'X')
+    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'Z')
+    NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'X')
+    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'Z')
+    NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'X')
+    NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'Z')
 
     NCL_METHOD_CALL("/SESSION", syntec_session)
     /* 轴表的元数据：名字与槽号都从控制器读（§11.4），客户端照着建路径。 */

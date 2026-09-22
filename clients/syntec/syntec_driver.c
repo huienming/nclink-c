@@ -49,6 +49,16 @@ struct ncl_syntec {
     uint8_t      rx[SYNTEC_MAX_BODY + 32];
     size_t       last_tx_len; /**< the frame the audit should show */
     size_t       last_rx_len;
+    /*
+     * 轴表缓存（§11.4）：路径是写死的，轴号在**读值的时候**现查，所以这张表要
+     * 留着。一次刷新要问 32 个参数，按 TTL 过期才重问；刷新失败就用上一张好表
+     * （轴配置在运行中不会变），一张都没读到才算失败。
+     */
+    ncl_syntec_axis axes[NCL_SYNTEC_AXIS_SLOTS];
+    size_t          axes_count;       /**< 在用的轴有几条               */
+    size_t          axes_state_count; /**< = 最后一条的槽号 + 1         */
+    int64_t         axes_at;          /**< 上一次刷新（含失败）的时刻   */
+    bool            axes_valid;       /**< 手上有一张读成功的表          */
 };
 
 /** The driver ops carry the session; the old name keeps the diff small. */
@@ -990,11 +1000,32 @@ ncl_err ncl_syntec_position(ncl_syntec *syntec, unsigned zone, size_t count,
 
 /* =============================================================== 参数区 == */
 
-ncl_err ncl_syntec_param(ncl_syntec *syntec, unsigned param, int32_t *value)
+/**
+ * 一次参数读，**调用者已经拿住锁、也已经连上**：读轴表要一口气问 32 个参数，
+ * 不能锁 32 次。
+ */
+static ncl_err syntec_param_locked(syntec_ctx *syntec, unsigned param,
+                                   int32_t *value)
 {
     uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
-    uint8_t serial;
+    uint8_t serial = (uint8_t)syntec->serial;
     ncl_syntec_view view;
+    ncl_err err;
+
+    if (ncl_syntec_param_frame(frame, sizeof(frame), param, serial) == 0) {
+        return NCL_ERR_RANGE;
+    }
+    err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial, &view);
+    if (err != NCL_OK) {
+        return err;
+    }
+    return ncl_syntec_reply_i32(syntec->rx, syntec->last_rx_len, value)
+               ? NCL_OK
+               : NCL_ERR_RANGE;
+}
+
+ncl_err ncl_syntec_param(ncl_syntec *syntec, unsigned param, int32_t *value)
+{
     ncl_err err;
 
     if (syntec == NULL || value == NULL || param == 0 || param > 0xFFFFu) {
@@ -1003,21 +1034,12 @@ ncl_err ncl_syntec_param(ncl_syntec *syntec, unsigned param, int32_t *value)
     ncl_mutex_lock(syntec->mutex);
     err = syntec_open_session(syntec);
     if (err == NCL_OK) {
-        serial = (uint8_t)syntec->serial;
-        if (ncl_syntec_param_frame(frame, sizeof(frame), param, serial) == 0) {
-            err = NCL_ERR_RANGE;
-        } else {
-            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
-                                        &view);
-        }
+        err = syntec_param_locked(syntec, param, value);
     }
     ncl_mutex_unlock(syntec->mutex);
     if (err != NCL_OK) {
         syntec_close_session(syntec);
         return syntec_note(syntec, err, "参数区");
-    }
-    if (!ncl_syntec_reply_i32(syntec->rx, syntec->last_rx_len, value)) {
-        return syntec_note(syntec, NCL_ERR_RANGE, "参数区");
     }
     return NCL_OK;
 }
@@ -1069,16 +1091,16 @@ ncl_err ncl_syntec_axis_name(ncl_syntec *syntec, unsigned slot, char *out,
     return NCL_OK;
 }
 
-ncl_err ncl_syntec_axes(ncl_syntec *syntec, ncl_syntec_axis *out, size_t cap,
-                        size_t *count)
+/**
+ * 读一遍轴表并换进缓存：16 个槽各问一次端口号（21 + 槽）与轴名（321 + 槽）。
+ * **调用者已经拿住锁、也已经连上**。
+ */
+static ncl_err syntec_axes_refresh_locked(syntec_ctx *syntec)
 {
+    ncl_syntec_axis axes[NCL_SYNTEC_AXIS_SLOTS];
     size_t found = 0;
     unsigned slot;
 
-    if (syntec == NULL || out == NULL || count == NULL || cap == 0) {
-        return NCL_ERR_INVALID_ARG;
-    }
-    *count = 0;
     for (slot = 0; slot < NCL_SYNTEC_AXIS_SLOTS; slot++) {
         char name[NCL_SYNTEC_AXIS_NAME_MAX];
         int32_t port = 0;
@@ -1086,13 +1108,14 @@ ncl_err ncl_syntec_axes(ncl_syntec *syntec, ncl_syntec_axis *out, size_t cap,
         ncl_err err;
 
         /* 判据与客户端一样：端口号 > 0 且 0 < 轴名代号 < 10000（见头文件）。 */
-        err = ncl_syntec_param(syntec, NCL_SYNTEC_PARAM_AXIS_PORT + slot, &port);
-        if (err != NCL_OK) {
-            return err;
+        err = syntec_param_locked(syntec, NCL_SYNTEC_PARAM_AXIS_PORT + slot,
+                                  &port);
+        if (err == NCL_OK) {
+            err = syntec_param_locked(syntec, NCL_SYNTEC_PARAM_AXIS_NAME + slot,
+                                      &code);
         }
-        err = ncl_syntec_param(syntec, NCL_SYNTEC_PARAM_AXIS_NAME + slot, &code);
         if (err != NCL_OK) {
-            return err;
+            return err; /* 表读了一半：不动缓存 */
         }
         if (port <= 0 || code <= 0 || code >= 10000) {
             continue;
@@ -1101,20 +1124,120 @@ ncl_err ncl_syntec_axes(ncl_syntec *syntec, ncl_syntec_axis *out, size_t cap,
             name[0] == '\0') {
             continue;
         }
-        if (found >= cap) {
-            return NCL_ERR_RANGE;
-        }
-        memset(&out[found], 0, sizeof(out[found]));
-        out[found].slot = slot;
-        out[found].port = port;
-        snprintf(out[found].name, sizeof(out[found].name), "%s", name);
+        memset(&axes[found], 0, sizeof(axes[found]));
+        axes[found].slot = slot;
+        axes[found].port = port;
+        snprintf(axes[found].name, sizeof(axes[found].name), "%s", name);
         found++;
     }
-    *count = found;
-    if (found == 0) {
+    memcpy(syntec->axes, axes, found * sizeof(axes[0]));
+    syntec->axes_count = found;
+    syntec->axes_state_count = found > 0 ? (size_t)axes[found - 1u].slot + 1u : 0u;
+    syntec->axes_valid = true;
+    syntec->axes_at = ncl_time_monotonic_millis();
+    return NCL_OK;
+}
+
+/**
+ * 表在手边就用缓存，过期才重读。刷新失败时：手上还有上一张好表就继续用它（轴配置
+ * 在运行中不会变，把失败写进 last_error 让现场看得见），一张都没读到才算失败。
+ */
+static ncl_err syntec_axes_cached(syntec_ctx *syntec)
+{
+    int64_t now = ncl_time_monotonic_millis();
+    ncl_err err;
+
+    if (syntec->axes_valid &&
+        now - syntec->axes_at < (int64_t)NCL_SYNTEC_AXES_TTL_MS) {
+        return syntec->axes_count > 0 ? NCL_OK
+                                      : syntec_note(syntec, NCL_ERR_UNAVAILABLE,
+                                                    "轴表");
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        err = syntec_axes_refresh_locked(syntec);
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        if (syntec->axes_valid) {
+            syntec->axes_at = now; /* 别每个点位都去重试那 32 个参数 */
+            (void)syntec_note(syntec, err, "轴表（沿用上一次读到的）");
+            return syntec->axes_count > 0 ? NCL_OK
+                                          : syntec_note(syntec, NCL_ERR_UNAVAILABLE,
+                                                        "轴表");
+        }
+        return syntec_note(syntec, err, "轴表");
+    }
+    if (syntec->axes_count == 0) {
         return syntec_note(syntec, NCL_ERR_UNAVAILABLE, "轴表");
     }
     return NCL_OK;
+}
+
+ncl_err ncl_syntec_axes(ncl_syntec *syntec, ncl_syntec_axis *out, size_t cap,
+                        size_t *count)
+{
+    ncl_err err;
+    size_t i;
+
+    if (syntec == NULL || out == NULL || count == NULL || cap == 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *count = 0;
+    err = syntec_axes_cached(syntec);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (syntec->axes_count > cap) {
+        return NCL_ERR_RANGE;
+    }
+    for (i = 0; i < syntec->axes_count; i++) {
+        out[i] = syntec->axes[i];
+    }
+    *count = syntec->axes_count;
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_axis_index(ncl_syntec *syntec, const char *name,
+                              unsigned *slot, size_t *count)
+{
+    ncl_err err;
+    size_t i;
+
+    if (syntec == NULL || ncl_str_is_blank(name)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    err = syntec_axes_cached(syntec);
+    if (err != NCL_OK) {
+        return err;
+    }
+    for (i = 0; i < syntec->axes_count; i++) {
+        if (ncl_streq_ignore_case(syntec->axes[i].name, name)) {
+            if (slot != NULL) {
+                *slot = syntec->axes[i].slot;
+            }
+            if (count != NULL) {
+                *count = syntec->axes_state_count;
+            }
+            return NCL_OK;
+        }
+    }
+    /* 读不到就说清楚：控制器说在用的轴列出来，别让现场猜。 */
+    {
+        size_t used = 0;
+
+        used = (size_t)snprintf(syntec->error, sizeof(syntec->error),
+                                "轴名 %s：控制器说在用的是 ", name);
+        for (i = 0; i < syntec->axes_count && used < sizeof(syntec->error) - 8u;
+             i++) {
+            used += (size_t)snprintf(syntec->error + used,
+                                     sizeof(syntec->error) - used, "%s%s",
+                                     i > 0 ? "/" : "", syntec->axes[i].name);
+        }
+    }
+    return NCL_ERR_NOT_FOUND;
 }
 
 void ncl_syntec_last_raw(const ncl_syntec *syntec, const uint8_t **request,
