@@ -25,6 +25,9 @@ typedef struct {
     char         *method_name;
     char         *tool_name;
     ncl_schema   *params_schema; /**< borrowed from server->schemas */
+    ncl_schema   *result_schema; /**< borrowed from server->schemas */
+    const char   *params_text;   /**< its source text, borrowed from there too */
+    const char   *result_text;   /**< likewise; NULL when the method has none */
 } ncl_binding;
 
 /** One compiled parameter schema, shared by every binding that declares it. */
@@ -84,6 +87,12 @@ struct ncl_server {
     size_t               schema_count;
     size_t               schema_capacity;
     size_t               events;
+
+    /* The model's METHODS item is out of date: a tool registered since it was
+     * last built. It is rebuilt when someone reads (model / probe / methods
+     * JSON), so registering a tool - the tool layer does it once per point -
+     * does not rebuild the item once per point. */
+    bool methods_dirty;
 
     ncl_server_publish_fn publish_sink;
     void                 *publish_user;
@@ -168,7 +177,9 @@ static ncl_binding *ncl_server_find_method(ncl_server *server,
 static ncl_schema *ncl_server_intern_schema(ncl_server *server,
                                             const char *text,
                                             const char *tool_name,
-                                            const char *method_name)
+                                            const char *method_name,
+                                            const char *what,
+                                            const char **out_text)
 {
     char *error = NULL;
     ncl_schema *schema;
@@ -176,13 +187,17 @@ static ncl_schema *ncl_server_intern_schema(ncl_server *server,
 
     for (i = 0; i < server->schema_count; i++) {
         if (strcmp(server->schemas[i].text, text) == 0) {
+            if (out_text != NULL) {
+                *out_text = server->schemas[i].text;
+            }
             return server->schemas[i].schema;
         }
     }
     schema = ncl_schema_compile_text(text, strlen(text), &error);
     if (schema == NULL) {
-        ncl_log_error("工具 %s 的方法 %s 参数 schema 无效: %s", tool_name,
-                      method_name, error != NULL ? error : "?");
+        /* "params" / "result" 分开报：万一新旧结构体混用（字段错位），一眼看得出是哪个。 */
+        ncl_log_error("工具 %s 的方法 %s 的 %s schema 无效: %s", tool_name,
+                      method_name, what, error != NULL ? error : "?");
         ncl_mem_free(error);
         return NULL;
     }
@@ -204,6 +219,9 @@ static ncl_schema *ncl_server_intern_schema(ncl_server *server,
         ncl_schema_free(schema);
         return NULL;
     }
+    if (out_text != NULL) {
+        *out_text = server->schemas[server->schema_count].text;
+    }
     server->schema_count++;
     return schema;
 }
@@ -215,7 +233,10 @@ static ncl_schema *ncl_server_intern_schema(ncl_server *server,
 static ncl_err ncl_server_add_method(ncl_server *server, const char *tool_name,
                                      void *instance, const char *method_name,
                                      ncl_tool_fn fn, const char *key,
-                                     ncl_schema *params_schema)
+                                     ncl_schema *params_schema,
+                                     ncl_schema *result_schema,
+                                     const char *params_text,
+                                     const char *result_text)
 {
     ncl_binding *binding;
 
@@ -238,6 +259,9 @@ static ncl_err ncl_server_add_method(ncl_server *server, const char *tool_name,
     binding->instance = instance;
     binding->fn = fn;
     binding->params_schema = params_schema;
+    binding->result_schema = result_schema;
+    binding->params_text = params_text;
+    binding->result_text = result_text;
     if (binding->key == NULL || binding->method_name == NULL) {
         ncl_mem_free(binding->key);
         ncl_mem_free(binding->method_name);
@@ -267,14 +291,24 @@ ncl_err ncl_server_register_tool(ncl_server *server, const char *tool_name,
     for (i = 0; i < method_count; i++) {
         char key[256];
         ncl_schema *schema = NULL;
+        ncl_schema *result = NULL;
+        const char *schema_text = NULL;
+        const char *result_text = NULL;
 
         if (methods[i].params_schema != NULL) {
             schema = ncl_server_intern_schema(server, methods[i].params_schema,
-                                              tool_name, methods[i].name);
+                                              tool_name, methods[i].name, "params",
+                                              &schema_text);
+        }
+        if (methods[i].result_schema != NULL) {
+            result = ncl_server_intern_schema(server, methods[i].result_schema,
+                                              tool_name, methods[i].name, "result",
+                                              &result_text);
         }
         snprintf(key, sizeof(key), "%s::%s", tool_name, methods[i].name);
         if (ncl_server_add_method(server, tool_name, instance, methods[i].name,
-                                  methods[i].fn, key, schema) != NCL_OK) {
+                                  methods[i].fn, key, schema, result, schema_text,
+                                  result_text) != NCL_OK) {
             return NCL_ERR_NOMEM;
         }
     }
@@ -284,6 +318,9 @@ ncl_err ncl_server_register_tool(ncl_server *server, const char *tool_name,
         const ncl_tool_binding *spec = &bindings[i];
         ncl_tool_fn fn = NULL;
         ncl_schema *schema = NULL;
+        ncl_schema *result = NULL;
+        const char *schema_text = NULL;
+        const char *result_text = NULL;
         size_t m;
         char key[1024];
 
@@ -296,7 +333,12 @@ ncl_err ncl_server_register_tool(ncl_server *server, const char *tool_name,
                 if (methods[m].params_schema != NULL) {
                     schema = ncl_server_intern_schema(
                         server, methods[m].params_schema, tool_name,
-                        methods[m].name);
+                        methods[m].name, "params", &schema_text);
+                }
+                if (methods[m].result_schema != NULL) {
+                    result = ncl_server_intern_schema(
+                        server, methods[m].result_schema, tool_name,
+                        methods[m].name, "result", &result_text);
                 }
                 break;
             }
@@ -309,7 +351,8 @@ ncl_err ncl_server_register_tool(ncl_server *server, const char *tool_name,
                  NCL_OPERATION_SEPARATOR, spec->path);
         if (ncl_server_add_method(server, spec->tool != NULL ? spec->tool : tool_name,
                                   instance, spec->method, fn, key,
-                                  schema) != NCL_OK) {
+                                  schema, result, schema_text,
+                                  result_text) != NCL_OK) {
             return NCL_ERR_NOMEM;
         }
     }
@@ -317,6 +360,11 @@ ncl_err ncl_server_register_tool(ncl_server *server, const char *tool_name,
     ncl_mem_free(server->last_tool_name);
     server->last_tool_name = ncl_strdup(tool_name);
     server->last_tool_instance = instance;
+    /* The model advertises what can be called, and a new tool changes that.
+     * The item itself is rebuilt on the next read (ncl_server_model() /
+     * probe / ncl_server_methods_json()): registering is cheap and cannot
+     * fail on the metadata, and the tool layer registers once per point. */
+    server->methods_dirty = true;
     return NCL_OK;
 }
 
@@ -407,6 +455,240 @@ const char *ncl_server_operation_method(const ncl_server *server, size_t index)
     return binding != NULL ? binding->method_name : NULL;
 }
 
+/**
+ * The path a path binding serves. A path binding's key is
+ * "<operation>#<path>"; a method-only binding's key is "<tool>::<method>", so
+ * the operation keyword in front of the separator decides. Returns NULL for a
+ * method-only binding.
+ */
+static const char *ncl_binding_path(const ncl_binding *binding,
+                                    const char **out_operation)
+{
+    const char *hash;
+    unsigned op;
+
+    if (binding == NULL || binding->key == NULL) {
+        return NULL;
+    }
+    hash = strchr(binding->key, NCL_OPERATION_SEPARATOR[0]);
+    if (hash == NULL || hash == binding->key || hash[1] == '\0') {
+        return NULL;
+    }
+    for (op = 0; op < NCL_OP_COUNT; op++) {
+        const char *name = ncl_operation_to_string((ncl_operation)op);
+        size_t len;
+        if (name == NULL) {
+            continue;
+        }
+        len = strlen(name);
+        if ((size_t)(hash - binding->key) == len &&
+            strncmp(binding->key, name, len) == 0) {
+            if (out_operation != NULL) {
+                *out_operation = name;
+            }
+            return hash + 1;
+        }
+    }
+    return NULL;
+}
+
+/** Parse a declared schema's source text; NULL when absent or malformed. */
+static ncl_json *ncl_schema_text_json(const char *text)
+{
+    if (text == NULL || text[0] == '\0') {
+        return NULL;
+    }
+    return ncl_json_parse_cstr(text, NULL);
+}
+
+/** Build the capabilities array from the current bindings. */
+static ncl_json *ncl_server_build_methods_json(ncl_server *server)
+{
+    ncl_json *methods;
+    size_t count;
+    size_t i;
+
+    if (server == NULL) {
+        return NULL;
+    }
+    methods = ncl_json_new_array();
+    if (methods == NULL) {
+        return NULL;
+    }
+    count = ncl_server_operation_count(server);
+    for (i = 0; i < count; i++) {
+        const ncl_binding *binding = ncl_server_operation_at(server, i);
+        ncl_json *entry;
+        ncl_json *binds;
+        ncl_json *schema;
+        char address[512];
+        size_t b;
+
+        if (binding == NULL || binding->tool_name == NULL ||
+            binding->method_name == NULL) {
+            continue;
+        }
+        entry = ncl_json_new_object();
+        if (entry == NULL) {
+            break;
+        }
+        snprintf(address, sizeof(address), "/%s/%s", binding->tool_name,
+                 binding->method_name);
+        ncl_json_obj_set_string(entry, "tool", binding->tool_name);
+        ncl_json_obj_set_string(entry, "method", binding->method_name);
+        ncl_json_obj_set_string(entry, "address", address);
+
+        schema = ncl_schema_text_json(binding->params_text);
+        if (schema != NULL) {
+            ncl_json_obj_set(entry, "params", schema);
+        }
+        schema = ncl_schema_text_json(binding->result_text);
+        if (schema != NULL) {
+            ncl_json_obj_set(entry, "result", schema);
+        }
+
+        /* The model paths this method serves, when it serves any (a point's
+         * read / write is one of these; a method-only tool has none). */
+        binds = ncl_json_new_array();
+        for (b = 0; binds != NULL && b < server->binding_count; b++) {
+            const ncl_binding *candidate = &server->bindings[b];
+            const char *operation = NULL;
+            const char *path;
+            ncl_json *item;
+
+            if (candidate->method_name == NULL || candidate->tool_name == NULL ||
+                strcmp(candidate->method_name, binding->method_name) != 0 ||
+                strcmp(candidate->tool_name, binding->tool_name) != 0) {
+                continue;
+            }
+            path = ncl_binding_path(candidate, &operation);
+            if (path == NULL) {
+                continue;
+            }
+            item = ncl_json_new_object();
+            if (item == NULL) {
+                continue;
+            }
+            ncl_json_obj_set_string(item, "operation", operation);
+            ncl_json_obj_set_string(item, "path", path);
+            ncl_json_arr_push(binds, item);
+        }
+        if (binds != NULL && ncl_json_arr_len(binds) > 0) {
+            ncl_json_obj_set(entry, "bindings", binds);
+        } else {
+            ncl_json_free(binds);
+        }
+        ncl_json_arr_push(methods, entry);
+    }
+    return methods;
+}
+
+/** The METHODS node of the model, or NULL when there is none. It is ours by
+ *  type, never by id: a model that happens to use the id keeps its own point. */
+static ncl_node *ncl_server_methods_node(const ncl_server *server)
+{
+    size_t i;
+
+    if (server == NULL || server->root_node == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < ncl_ptrvec_len(&server->root_node->configs); i++) {
+        ncl_node *config = ncl_node_config_at(server->root_node, i);
+        if (config != NULL && config->node_type_name != NULL &&
+            strcmp(config->node_type_name, NCL_METHODS_NODE_TYPE) == 0) {
+            return config;
+        }
+    }
+    return NULL;
+}
+
+ncl_err ncl_server_refresh_methods(ncl_server *server)
+{
+    ncl_node *node;
+    ncl_json *methods;
+    char id[64];
+    size_t i;
+
+    if (server == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (server->root_node == NULL) {
+        return NCL_OK;
+    }
+    methods = ncl_server_build_methods_json(server);
+    if (methods == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+
+    node = ncl_server_methods_node(server);
+    if (node == NULL) {
+        node = ncl_node_new(NCL_NODE_CONFIG);
+        if (node == NULL) {
+            ncl_json_free(methods);
+            return NCL_ERR_NOMEM;
+        }
+        /* A unique id, so path <-> id lookups stay unambiguous. */
+        for (i = 0; i < 100; i++) {
+            snprintf(id, sizeof(id), i == 0 ? NCL_METHODS_NODE_ID
+                                            : NCL_METHODS_NODE_ID "%u",
+                     (unsigned)i);
+            if (ncl_node_find_by_id(server->root_node, id) == NULL) {
+                break;
+            }
+        }
+        if (ncl_node_set_id(node, id) != NCL_OK ||
+            ncl_node_set_type_name(node, NCL_METHODS_NODE_TYPE) != NCL_OK ||
+            ncl_node_set_data_type(node, NCL_DATA_TYPE_LIST) != NCL_OK ||
+            ncl_node_set_description(
+                node,
+                "本设备可调用的方法清单：tool / method / address / params(schema)"
+                " / result(schema) / bindings") != NCL_OK ||
+            ncl_node_set_settable(node, false) != NCL_OK ||
+            ncl_node_add_config(server->root_node, node) != NCL_OK) {
+            ncl_node_free(node);
+            ncl_json_free(methods);
+            return NCL_ERR_NOMEM;
+        }
+        if (ncl_node_set_path(node, ncl_node_path(server->root_node)) !=
+            NCL_OK) {
+            ncl_json_free(methods);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    /* Takes ownership of the array. */
+    if (ncl_node_set_value(node, methods) != NCL_OK) {
+        ncl_json_free(methods);
+        return NCL_ERR_NOMEM;
+    }
+    server->methods_dirty = false;
+    return NCL_OK;
+}
+
+/** Rebuild the METHODS item when a tool registered since it was last built.
+ *  Best effort: a reader still gets the model, just with a stale item. */
+static void ncl_server_flush_methods(ncl_server *server)
+{
+    if (server != NULL && server->methods_dirty) {
+        (void)ncl_server_refresh_methods(server);
+    }
+}
+
+ncl_json *ncl_server_methods_json(ncl_server *server)
+{
+    ncl_node *node;
+
+    if (server == NULL) {
+        return NULL;
+    }
+    ncl_server_flush_methods(server);
+    node = ncl_server_methods_node(server);
+    if (node == NULL || node->value == NULL) {
+        /* No model to hang the item on; the bindings are still the truth. */
+        return ncl_server_build_methods_json(server);
+    }
+    return ncl_json_clone(node->value);
+}
+
 ncl_json *ncl_server_openapi_schema(ncl_server *server, const char *base_url)
 {
     ncl_json *document;
@@ -450,12 +732,18 @@ ncl_json *ncl_server_openapi_schema(ncl_server *server, const char *base_url)
     paths = ncl_json_new_object();
     count = ncl_server_operation_count(server);
     for (i = 0; i < count; i++) {
+        const ncl_binding *binding = ncl_server_operation_at(server, i);
         const char *tool = ncl_server_operation_tool(server, i);
         const char *method = ncl_server_operation_method(server, i);
         ncl_json *path_item;
         ncl_json *post;
         ncl_json *responses;
         ncl_json *ok;
+        ncl_json *ok_content;
+        ncl_json *ok_media;
+        ncl_json *envelope;
+        ncl_json *props;
+        ncl_json *value_prop;
         ncl_json *schema_prop;
         ncl_json *content;
         ncl_json *media;
@@ -472,22 +760,49 @@ ncl_json *ncl_server_openapi_schema(ncl_server *server, const char *base_url)
         ncl_json_obj_set_string(post, "summary", path);
         ncl_json_obj_set_string(post, "operationId", path);
 
-        /* Request body: a free form JSON object, matching the params map the
-         * tool method accepts. */
+        /* Request body: the method's declared params schema when it has one,
+         * so a client can build the call from this document alone; a free form
+         * JSON object otherwise. */
         request_body = ncl_json_new_object();
         ncl_json_obj_set_bool(request_body, "required", false);
         content = ncl_json_new_object();
         media = ncl_json_new_object();
-        schema_prop = ncl_json_new_object();
-        ncl_json_obj_set_string(schema_prop, "type", "object");
+        schema_prop = binding != NULL ? ncl_schema_text_json(binding->params_text)
+                                      : NULL;
+        if (schema_prop == NULL) {
+            schema_prop = ncl_json_new_object();
+            ncl_json_obj_set_string(schema_prop, "type", "object");
+        }
         ncl_json_obj_set(media, "schema", schema_prop);
         ncl_json_obj_set(content, "application/json", media);
         ncl_json_obj_set(request_body, "content", content);
         ncl_json_obj_set(post, "requestBody", request_body);
 
+        /* 200: the envelope every method answer uses - "code" plus, when the
+         * call has one, the value under "return" (the method's result schema
+         * when it declared one) and the outcome under "result". */
         responses = ncl_json_new_object();
         ok = ncl_json_new_object();
         ncl_json_obj_set_string(ok, "description", "successful operation");
+        envelope = ncl_json_new_object();
+        ncl_json_obj_set_string(envelope, "type", "object");
+        props = ncl_json_new_object();
+        schema_prop = ncl_json_new_object();
+        ncl_json_obj_set_string(schema_prop, "type", "string");
+        ncl_json_obj_set(props, "code", schema_prop);
+        value_prop = binding != NULL ? ncl_schema_text_json(binding->result_text)
+                                     : NULL;
+        ncl_json_obj_set(props, "return",
+                         value_prop != NULL ? value_prop : ncl_json_new_object());
+        schema_prop = ncl_json_new_object();
+        ncl_json_obj_set_string(schema_prop, "type", "string");
+        ncl_json_obj_set(props, "result", schema_prop);
+        ncl_json_obj_set(envelope, "properties", props);
+        ok_media = ncl_json_new_object();
+        ncl_json_obj_set(ok_media, "schema", envelope);
+        ok_content = ncl_json_new_object();
+        ncl_json_obj_set(ok_content, "application/json", ok_media);
+        ncl_json_obj_set(ok, "content", ok_content);
         ncl_json_obj_set(responses, "200", ok);
         ncl_json_obj_set(post, "responses", responses);
 
@@ -511,6 +826,11 @@ char *ncl_server_openapi_schema_json(ncl_server *server, const char *base_url)
 }
 
 /* ========================================================== life cycle ==== */
+
+unsigned ncl_server_abi_shape(void)
+{
+    return NCL_SERVER_ABI_SHAPE;
+}
 
 ncl_server *ncl_server_create(const ncl_server_options *options)
 {
@@ -632,11 +952,14 @@ ncl_err ncl_server_set_model(ncl_server *server, ncl_node *root)
     }
     ncl_node_free(server->root_node);
     server->root_node = root;
-    return NCL_OK;
+    /* The model the clients get advertises what can be called right now. */
+    return ncl_server_refresh_methods(server);
 }
 
 ncl_node *ncl_server_model(ncl_server *server)
 {
+    /* A caller that reads the model wants what can be called *now*. */
+    ncl_server_flush_methods(server);
     return server != NULL ? server->root_node : NULL;
 }
 
@@ -645,6 +968,9 @@ ncl_err ncl_server_save_model(ncl_server *server)
     char *text;
     ncl_err rc;
     const char *path;
+    ncl_node *methods;
+    size_t index;
+    bool detached = false;
 
     if (server == NULL || server->root_node == NULL) {
         return NCL_ERR_INVALID_ARG;
@@ -657,12 +983,34 @@ ncl_err ncl_server_save_model(ncl_server *server)
     if (ncl_path_exists(path)) {
         return NCL_OK;
     }
+    /* The METHODS item is runtime capability, not part of the device model:
+     * the file stays what the site handed us, the node comes back on the next
+     * registration (see ncl_server_refresh_methods()). */
+    methods = ncl_server_methods_node(server);
+    if (methods != NULL) {
+        for (index = 0; index < ncl_ptrvec_len(&server->root_node->configs);
+             index++) {
+            if (ncl_node_config_at(server->root_node, index) == methods) {
+                (void)ncl_ptrvec_take(&server->root_node->configs, index);
+                detached = true;
+                break;
+            }
+        }
+    }
     text = ncl_node_write_string(server->root_node);
     if (text == NULL) {
+        if (detached) {
+            /* The vector kept its capacity when the node was taken out, so
+             * putting it back cannot fail (and cannot leak). */
+            (void)ncl_ptrvec_push(&server->root_node->configs, methods);
+        }
         return NCL_ERR_NOMEM;
     }
     rc = ncl_file_write_all(path, text, strlen(text));
     ncl_mem_free(text);
+    if (detached) {
+        (void)ncl_ptrvec_push(&server->root_node->configs, methods);
+    }
     return rc;
 }
 
@@ -1210,6 +1558,8 @@ ncl_message *ncl_server_dispatch(ncl_server *server, const char *topic,
         ncl_message_set_message_id(response, request->message_id);
         ncl_message_set_code(response, NCL_KW_CODE_OK);
         if (server->root_node != NULL) {
+            /* The answer carries the capability surface too (METHODS). */
+            ncl_server_flush_methods(server);
             ncl_message_set_model(response, ncl_node_clone(server->root_node, false));
         }
         return response;
@@ -1239,17 +1589,16 @@ ncl_message *ncl_server_dispatch(ncl_server *server, const char *topic,
     }
     case NCL_MSG_PING: {
         ncl_message *response = ncl_message_new(NCL_MSG_PONG);
-        char *schema;
         if (response == NULL) {
             return NULL;
         }
         ncl_message_set_message_id(response, request->message_id);
-        /* A Ping is answered with the generated OpenAPI schema. */
-        schema = ncl_server_openapi_schema_json(server, NULL);
-        if (schema != NULL) {
-            ncl_message_set_open_api_schema(response, schema);
-            ncl_mem_free(schema);
-        }
+        /* A Ping is a liveness probe: the answer is the status alone, so a
+         * heartbeat stays one small publish. The capability surface travels
+         * elsewhere - the model's METHODS item (see
+         * ncl_server_refresh_methods()) and, for HTTP clients, the OpenAPI
+         * document on GET /api/schema. */
+        ncl_message_set_code(response, NCL_KW_CODE_OK);
         return response;
     }
     default:
@@ -2142,8 +2491,15 @@ static ncl_err ncl_builtin_remove_sample(void *instance, const ncl_json *params,
 ncl_err ncl_server_register_builtin_tool(ncl_server *server)
 {
     static const ncl_tool_method methods[] = {
-        {"addSample", ncl_builtin_add_sample, NULL},
-        {"removeSample", ncl_builtin_remove_sample, NULL},
+        /* addSample 的参数是一个采样通道配置对象；removeSample 按 id 撤。 */
+        {"addSample", ncl_builtin_add_sample,
+         "{\"type\":\"object\",\"properties\":{\"request\":{\"type\":\"object\"}},"
+         "\"required\":[\"request\"]}",
+         "{\"type\":\"boolean\"}"},
+        {"removeSample", ncl_builtin_remove_sample,
+         "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\","
+         "\"minLength\":1}},\"required\":[\"id\"]}",
+         "{\"type\":\"boolean\"}"},
     };
     return ncl_server_register_tool(server, "nclinkServer", server, methods,
                                     sizeof(methods) / sizeof(methods[0]), NULL, 0);

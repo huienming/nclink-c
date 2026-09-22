@@ -686,6 +686,48 @@ ncl_node *ncl_node_find_by_id(const ncl_node *node, const char *id)
     return NULL;
 }
 
+ncl_node *ncl_node_find_by_type(const ncl_node *node, const char *type_name)
+{
+    size_t i;
+
+    if (node == NULL || type_name == NULL) {
+        return NULL;
+    }
+    if (node->node_type_name != NULL &&
+        strcmp(node->node_type_name, type_name) == 0) {
+        return (ncl_node *)node;
+    }
+    for (i = 0; i < ncl_ptrvec_len(&node->configs); i++) {
+        ncl_node *hit = ncl_node_find_by_type(ncl_node_config_at(node, i),
+                                             type_name);
+        if (hit != NULL) {
+            return hit;
+        }
+    }
+    for (i = 0; i < ncl_ptrvec_len(&node->data_items); i++) {
+        ncl_node *hit = ncl_node_find_by_type(ncl_node_data_item_at(node, i),
+                                             type_name);
+        if (hit != NULL) {
+            return hit;
+        }
+    }
+    for (i = 0; i < ncl_ptrvec_len(&node->components); i++) {
+        ncl_node *hit = ncl_node_find_by_type(ncl_node_component_at(node, i),
+                                             type_name);
+        if (hit != NULL) {
+            return hit;
+        }
+    }
+    for (i = 0; i < ncl_ptrvec_len(&node->devices); i++) {
+        ncl_node *hit = ncl_node_find_by_type(ncl_node_device_at(node, i),
+                                             type_name);
+        if (hit != NULL) {
+            return hit;
+        }
+    }
+    return NULL;
+}
+
 bool ncl_node_is_sample_node(const ncl_node *node)
 {
     return node != NULL && node->node_type_name != NULL &&

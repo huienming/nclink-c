@@ -105,6 +105,16 @@ func TestServerToolAndQuery(t *testing.T) {
 		t.Fatalf("BindingCount() = %d, want 4", got)
 	}
 
+	// ---- the capability surface: what was registered is what the model says ----
+	methods := server.MethodsJSON()
+	if !strings.Contains(methods, `"/plc/getStatus"`) ||
+		!strings.Contains(methods, `"path":"/MACHINE/STATUS"`) {
+		t.Fatalf("MethodsJSON() = %s", methods)
+	}
+	if !strings.Contains(methods, `"required":["value"]`) {
+		t.Fatalf("MethodsJSON() carries no params schema: %s", methods)
+	}
+
 	// ---- query hits the binding and carries the handler's value ----
 	request := queryRequest(t, "q1", "/MACHINE/STATUS")
 	defer request.Close()

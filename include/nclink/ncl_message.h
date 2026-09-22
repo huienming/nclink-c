@@ -176,7 +176,13 @@ struct ncl_message {
 
     union {
         struct {
-            char *open_api_schema; /**< "OpenApiSchema" */
+            /**
+             * "code": "OK" / "NG". A Pong is a liveness answer and nothing
+             * else - the whole document is one small publish (see
+             * ncl_server.h: the method metadata travels in the model's
+             * METHODS item, the OpenAPI document over REST).
+             */
+            char *code;
         } pong;
         struct {
             char *version;
@@ -291,9 +297,9 @@ ncl_err ncl_message_finalise(ncl_message *msg);
 ncl_err ncl_message_set_message_id(ncl_message *msg, const char *id);
 
 /* Field setters shorthands, one per concrete message type. */
+/** Sets "code"; also the status a Pong carries. */
 ncl_err ncl_message_set_code(ncl_message *msg, const char *code);
 ncl_err ncl_message_set_reason(ncl_message *msg, const char *reason);
-ncl_err ncl_message_set_open_api_schema(ncl_message *msg, const char *schema);
 ncl_err ncl_message_set_version(ncl_message *msg, const char *version);
 ncl_err ncl_message_set_device_id(ncl_message *msg, const char *device_id);
 ncl_err ncl_message_set_model(ncl_message *msg, ncl_node *model);
@@ -328,6 +334,8 @@ ncl_err     ncl_message_set_return(ncl_message *msg, ncl_json *value);
 
 const char *ncl_message_handler(const ncl_message *msg);
 const char *ncl_message_request_id(const ncl_message *msg);
+/** The "code" of a response message (register / probe / method / pong). */
+const char *ncl_message_code(const ncl_message *msg);
 bool        ncl_message_async(const ncl_message *msg);
 bool        ncl_message_has_async(const ncl_message *msg);
 const char *ncl_message_status(const ncl_message *msg);

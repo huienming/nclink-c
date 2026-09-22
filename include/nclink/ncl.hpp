@@ -353,6 +353,36 @@ public:
         return Model(model);
     }
 
+    /**
+     * The device's capability list: one object per callable method with its
+     * "tool" / "method" / "address" (what method_call() takes) / "params"
+     * schema / "result" schema / the model paths it serves.
+     *
+     * It travels with the model, so a probed client already has it. Throws
+     * Error(NCL_ERR_NOT_FOUND) when the device reports no capability list.
+     */
+    Json methods() {
+        const ncl_json *methods = ncl_client_methods(value_);
+        if (methods == nullptr) {
+            throw Error(NCL_ERR_NOT_FOUND,
+                        "the device model carries no METHODS item");
+        }
+        return Json(ncl_json_clone(methods));
+    }
+
+    /**
+     * One method's metadata, looked up by address ("/plc/setValue"; the
+     * leading slash is optional). Throws Error(NCL_ERR_NOT_FOUND) when the
+     * device advertises no such method.
+     */
+    Json find_method(const std::string &address) {
+        const ncl_json *entry = ncl_client_find_method(value_, address.c_str());
+        if (entry == nullptr) {
+            throw Error(NCL_ERR_NOT_FOUND, "no such method: " + address);
+        }
+        return Json(ncl_json_clone(entry));
+    }
+
 private:
     enum Slot { Sample = 0, Event = 1 };
 

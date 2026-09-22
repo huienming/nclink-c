@@ -63,8 +63,18 @@ static void test_simple_messages(void)
 
     m = ncl_message_new(NCL_MSG_PONG);
     ncl_message_set_message_id(m, "m1");
-    ncl_message_set_open_api_schema(m, "{}");
-    check_wire(m, "{\"@id\":\"m1\",\"OpenApiSchema\":\"{}\"}", "Pong / OpenApiSchema");
+    ncl_message_set_code(m, "OK");
+    check_wire(m, "{\"@id\":\"m1\",\"code\":\"OK\"}", "Pong carries the status");
+
+    /* The status is the whole message: without one there is nothing to say. */
+    m = ncl_message_new(NCL_MSG_PONG);
+    ncl_message_set_message_id(m, "m1");
+    NCL_CHECK(!ncl_message_is_valid(m));
+    ncl_message_set_code(m, "NOPE");
+    NCL_CHECK(!ncl_message_is_valid(m));
+    ncl_message_set_code(m, "OK");
+    NCL_CHECK(ncl_message_is_valid(m));
+    ncl_message_free(m);
 
     m = ncl_message_new(NCL_MSG_PROBE_VERSION);
     ncl_message_set_message_id(m, "m1");

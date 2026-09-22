@@ -163,6 +163,20 @@ class Server:
     def model_json(self):
         return take_text(lib.nclshim_server_model_json(self._require_open()))
 
+    def methods(self):
+        """这台设备现在能调用什么：模型 METHODS 项的 value，每条一个 dict。
+
+        字段：``tool`` / ``method`` / ``address``（methodCall 里写这个）/
+        ``params`` / ``result`` / ``bindings``（后三项没有就不出现）。
+        和客户端 probe 回来的那份一模一样（见 `DeviceClient.methods`）。
+        """
+        out = ctypes.c_void_p()
+        rc = lib.nclshim_server_methods_json(self._require_open(), ctypes.byref(out))
+        if rc != 0:
+            raise NclinkError(rc, "methods")
+        text = take_text(out.value)
+        return _json_stdlib.loads(text) if text else []
+
     @property
     def binding_count(self):
         """已注册的 "<operation>#<path>" 绑定数（每个方法名本身也算一条）。"""
@@ -527,6 +541,9 @@ def _response_topic(request_topic):
     """请求主题 -> 应答主题：Query/Request/<sn> -> Query/Response/<sn>。"""
     if request_topic is None:
         return None
+    if request_topic.startswith("Ping/"):
+        # 心跳的应答在 Pong/<sn>（Pong 只带一个 code 状态）
+        return "Pong/" + request_topic[len("Ping/"):]
     return request_topic.replace("/Request/", "/Response/", 1)
 
 class HttpEndpoint:

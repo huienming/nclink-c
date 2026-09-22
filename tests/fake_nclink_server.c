@@ -12,8 +12,9 @@
 
 /** History depth for ncl_fake_server_publish_at(). */
 #define NCL_FAKE_HISTORY 8
-/** Largest payload the test double records. The Pong reply carries the whole
- *  OpenAPI document, so this has to be comfortably larger than a few KB. */
+/** Largest payload the test double records. A probe answer carries the whole
+ *  device model (methods item included), so this has to be comfortably larger
+ *  than a few KB. */
 #define NCL_FAKE_PAYLOAD_MAX 32768
 
 typedef struct {

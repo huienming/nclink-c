@@ -314,6 +314,12 @@ namespace Nclink
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_get_path")]
         internal static extern IntPtr ClientGetPath(IntPtr client, byte[] id);
 
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_methods_json")]
+        internal static extern int ClientMethodsJson(IntPtr client, out IntPtr json);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_find_method_json")]
+        internal static extern int ClientFindMethodJson(IntPtr client, byte[] address, out IntPtr json);
+
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_client_subscribe_samples")]
         internal static extern int ClientSubscribeSamples(IntPtr client, int qos, IntPtr host);
 
@@ -357,6 +363,9 @@ namespace Nclink
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_model_json")]
         internal static extern IntPtr ServerModelJson(IntPtr handle);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_methods_json")]
+        internal static extern int ServerMethodsJson(IntPtr handle, out IntPtr json);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, EntryPoint = "nclshim_server_openapi_json")]
         internal static extern IntPtr ServerOpenapiJson(IntPtr handle, byte[] baseUrl);

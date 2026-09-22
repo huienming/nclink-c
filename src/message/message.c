@@ -87,7 +87,7 @@ void ncl_message_free(ncl_message *msg)
 
     switch (msg->type) {
     case NCL_MSG_PONG:
-        ncl_mem_free(msg->as.pong.open_api_schema);
+        ncl_mem_free(msg->as.pong.code);
         break;
     case NCL_MSG_PROBE_VERSION:
         ncl_mem_free(msg->as.probe_version.version);
@@ -234,6 +234,8 @@ ncl_err ncl_message_set_code(ncl_message *msg, const char *code)
         return NCL_ERR_INVALID_ARG;
     }
     switch (msg->type) {
+    case NCL_MSG_PONG:
+        return ncl_msg_set_str(&msg->as.pong.code, code);
     case NCL_MSG_REGISTER_RESPONSE:
         return ncl_msg_set_str(&msg->as.register_response.code, code);
     case NCL_MSG_PROBE_QUERY_RESPONSE:
@@ -266,14 +268,6 @@ ncl_err ncl_message_set_reason(ncl_message *msg, const char *reason)
     default:
         return NCL_ERR_INVALID_TYPE;
     }
-}
-
-ncl_err ncl_message_set_open_api_schema(ncl_message *msg, const char *schema)
-{
-    if (msg == NULL || msg->type != NCL_MSG_PONG) {
-        return NCL_ERR_INVALID_TYPE;
-    }
-    return ncl_msg_set_str(&msg->as.pong.open_api_schema, schema);
 }
 
 ncl_err ncl_message_set_version(ncl_message *msg, const char *version)
@@ -534,6 +528,31 @@ const char *ncl_message_request_id(const ncl_message *msg)
     }
 }
 
+const char *ncl_message_code(const ncl_message *msg)
+{
+    if (msg == NULL) {
+        return NULL;
+    }
+    switch (msg->type) {
+    case NCL_MSG_PONG:
+        return msg->as.pong.code;
+    case NCL_MSG_REGISTER_RESPONSE:
+        return msg->as.register_response.code;
+    case NCL_MSG_PROBE_QUERY_RESPONSE:
+        return msg->as.probe_query_response.code;
+    case NCL_MSG_PROBE_SET_RESPONSE:
+        return msg->as.probe_set_response.code;
+    case NCL_MSG_METHOD_CALL_RESPONSE:
+        return msg->as.method_call_response.code;
+    case NCL_MSG_METHOD_STATUS_RESPONSE:
+        return msg->as.method_status_response.code;
+    case NCL_MSG_METHOD_RESULT_RESPONSE:
+        return msg->as.method_result_response.code;
+    default:
+        return NULL;
+    }
+}
+
 ncl_err ncl_message_set_async(ncl_message *msg, bool async)
 {
     if (msg == NULL || msg->type != NCL_MSG_METHOD_CALL_REQUEST) {
@@ -779,7 +798,7 @@ bool ncl_message_is_valid(const ncl_message *msg)
         return !ncl_str_is_blank(msg->message_id);
 
     case NCL_MSG_PONG:
-        return true;
+        return ncl_check_is_code_valid(msg->as.pong.code);
 
     case NCL_MSG_PROBE_VERSION:
         return !ncl_str_is_empty(msg->as.probe_version.version);
@@ -1362,7 +1381,7 @@ ncl_json *ncl_message_to_json(const ncl_message *msg)
         break;
 
     case NCL_MSG_PONG:
-        ncl_json_set_if(obj, "OpenApiSchema", msg->as.pong.open_api_schema);
+        ncl_json_set_if(obj, "code", msg->as.pong.code);
         break;
 
     case NCL_MSG_PROBE_VERSION:
@@ -1873,7 +1892,7 @@ ncl_message *ncl_message_from_json(ncl_msg_type type, const ncl_json *json)
     case NCL_MSG_PING:
         break;
     case NCL_MSG_PONG:
-        msg->as.pong.open_api_schema = ncl_msg_read_string(json, "OpenApiSchema");
+        msg->as.pong.code = ncl_msg_read_string(json, "code");
         break;
     case NCL_MSG_PROBE_VERSION:
         msg->as.probe_version.version = ncl_msg_read_string(json, "version");

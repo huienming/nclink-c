@@ -334,6 +334,51 @@ func (c *Client) Probe(timeoutMS uint) (*Model, error) {
 	return out, nil
 }
 
+// MethodsJSON is the device's capability list: the model's METHODS item value,
+// a JSON array with one object per callable method (tool / method / address /
+// params schema / result schema / the model paths it serves). "[]" when the
+// device reports none.
+//
+// The list arrives with the model Probe fetches, so it costs no extra round
+// trip; unmarshal it into your own type when you want structs.
+func (c *Client) MethodsJSON() string {
+	if c == nil || c.c == nil {
+		return "[]"
+	}
+	methods := C.ncl_client_methods(c.c)
+	if methods == nil {
+		return "[]"
+	}
+	text := C.ncl_json_write_string(methods)
+	if text == nil {
+		return "[]"
+	}
+	defer C.free(unsafe.Pointer(text))
+	return C.GoString(text)
+}
+
+// FindMethodJSON looks one method up by address ("/plc/setValue"; the leading
+// slash is optional). "" when the device advertises no such method. With the
+// entry in hand a caller has what it needs to build the call: the address for
+// MethodCall and the params schema in "params".
+func (c *Client) FindMethodJSON(address string) string {
+	if c == nil || c.c == nil {
+		return ""
+	}
+	ca := C.CString(address)
+	defer C.free(unsafe.Pointer(ca))
+	entry := C.ncl_client_find_method(c.c, ca)
+	if entry == nil {
+		return ""
+	}
+	text := C.ncl_json_write_string(entry)
+	if text == nil {
+		return ""
+	}
+	defer C.free(unsafe.Pointer(text))
+	return C.GoString(text)
+}
+
 // Value reads a single value; the caller closes the result.
 func (c *Client) Value(path string, timeoutMS uint) (*Json, error) {
 	cp := C.CString(path)

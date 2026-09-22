@@ -312,6 +312,20 @@ NCLSHIM_API char *nclshim_client_get_id(const void *client, const char *path);
 
 NCLSHIM_API char *nclshim_client_get_path(const void *client, const char *id);
 
+/**
+ * 设备能力面：模型 METHODS 项的 value（一个 JSON 数组，每条一个方法）。
+ * *out_json 是 malloc 的文本（调用方释放）；设备没报能力面时是 "[]"。
+ */
+NCLSHIM_API int nclshim_client_methods_json(const void *client, char **out_json);
+
+/**
+ * 按地址取一个方法的元数据（"plc/setValue" / "/plc/setValue" 都认）。
+ * 找不到时 rc=0 且 *out_json=NULL。
+ */
+NCLSHIM_API int nclshim_client_find_method_json(const void *client,
+                                                const char *address,
+                                                char **out_json);
+
 /** 订阅采样；msg 只在回调期间有效。 */
 NCLSHIM_API int nclshim_client_subscribe_samples(const void *client, int qos,
                                                  void *host);
@@ -365,6 +379,16 @@ NCLSHIM_API const char *nclshim_server_sn(const void *handle);
 NCLSHIM_API const void *nclshim_server_model(const void *handle);
 
 NCLSHIM_API char *nclshim_server_model_json(const void *handle);
+
+/** 这台设备现在能调用什么（ncl_server_methods_json 的文本；malloc，调用方释放）。 */
+NCLSHIM_API int nclshim_server_methods_json(const void *handle, char **out_json);
+
+/**
+ * 垫片编译时看到的结构体形状（NCL_SERVER_ABI_SHAPE）。和核心库的
+ * ncl_server_abi_shape() 比一下就知道两者是不是同一版头文件编出来的：
+ * nclshim_server_create() 自己会先查，不一致直接返回 NULL 并打日志。
+ */
+NCLSHIM_API unsigned nclshim_abi_shape(void);
 
 NCLSHIM_API int nclshim_server_binding_count(const void *handle);
 

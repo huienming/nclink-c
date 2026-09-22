@@ -1613,6 +1613,10 @@ ncl_err ncl_tool_register(ncl_server *server, const ncl_tool_decl *decl,
             }
             point_method_name(point_name, candidate, names[count],
                               sizeof(names[count]));
+            /* Zeroed before the three fields below: the struct is not
+             * initialised here, and every field the host does not set has to
+             * be NULL rather than whatever was on the stack. */
+            (void)memset(&methods[count], 0, sizeof(methods[count]));
             methods[count].name = names[count];
             methods[count].fn = shim_for(candidate);
             methods[count].params_schema = NULL;

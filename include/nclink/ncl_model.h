@@ -21,6 +21,7 @@
 #include <stdbool.h>
 
 #include "nclink/ncl_common.h"
+#include "nclink/ncl_general.h"
 #include "nclink/ncl_json.h"
 
 #ifdef __cplusplus
@@ -182,6 +183,13 @@ ncl_sample_ref *ncl_node_sample_at(const ncl_node *node, size_t index);
 
 /** Depth first lookup by id below @p node. */
 ncl_node *ncl_node_find_by_id(const ncl_node *node, const char *id);
+
+/**
+ * Depth first lookup by the node's "type" (node_type_name) below @p node,
+ * @p node included. This is how a client finds the reserved items the protocol
+ * names by type rather than by id, e.g. NCL_METHODS_NODE_TYPE.
+ */
+ncl_node *ncl_node_find_by_type(const ncl_node *node, const char *type_name);
 
 /** True when the node type string equals NCL_NODE_TYPE_SAMPLE_CHANNEL. */
 bool ncl_node_is_sample_node(const ncl_node *node);

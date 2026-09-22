@@ -29,7 +29,7 @@ import java.util.Map;
 public final class SelfTest {
     private static final String SAMPLE_TOPIC = "Sample/V203243111F/s1";
     private static final String SAMPLE_PAYLOAD =
-            "{\"@id\":\"m1\",\"paths\":[\"/STATUS\"],\"id\":\"s1\","
+            "{\"@id\":\"m1\",\"paths\":[\"/MACHINE/STATUS\"],\"id\":\"s1\","
             + "\"beginTime\":\"1700000000000\",\"data\":[{\"data\":[1,2]}],"
             + "\"interval\":1000,\"uploadInterval\":2000}";
     private static final String EVENT_TOPIC = "Event/V203243111F";
@@ -143,7 +143,8 @@ public final class SelfTest {
         }
         try (Model model = Model.parse(text)) {
             Node root = model.root();
-            check("fixture 根路径", "/NC_LINK_ROOT".equals(root.path()));
+            // 根是那个分隔符本身，不是一段路径
+            check("fixture 根路径", "/".equals(root.path()));
             check("fixture 根 id", "01".equals(root.id()));
 
             List<Node> items = new ArrayList<Node>();
@@ -270,7 +271,20 @@ public final class SelfTest {
                     });
             check("工具计数", device.operationCount() == 2 && device.bindingCount() >= 1);
 
-            String query = "{\"@id\":\"q1\",\"ids\":[{\"id\":\"/STATUS\","
+            // 能力面：注册了什么，模型 METHODS 项里就有什么
+            boolean methodsOk = false;
+            try (Json methods = device.methods()) {
+                for (Object item : (List<?>) methods.toJavaObject()) {
+                    Map<?, ?> entry = (Map<?, ?>) item;
+                    if ("/plc/getValue".equals(entry.get("address"))
+                            && "getValue".equals(entry.get("method"))) {
+                        methodsOk = true;
+                    }
+                }
+            }
+            check("能力面含 /plc/getValue", methodsOk);
+
+            String query = "{\"@id\":\"q1\",\"ids\":[{\"id\":\"/MACHINE/STATUS\","
                     + "\"params\":{\"operation\":\"get_value\"}}]}";
             Object reply = device.dispatch("Query/Request/V2TEST00001",
                     query.getBytes(StandardCharsets.UTF_8));
@@ -338,7 +352,7 @@ public final class SelfTest {
                     (method, params) -> {
                         throw new IllegalStateException("坏掉了");
                     });
-            String query = "{\"@id\":\"q1\",\"ids\":[{\"id\":\"/STATUS\","
+            String query = "{\"@id\":\"q1\",\"ids\":[{\"id\":\"/MACHINE/STATUS\","
                     + "\"params\":{\"operation\":\"get_value\"}}]}";
             Map<?, ?> body = (Map<?, ?>) ((Message) device.dispatch("Query/Request/V2TEST00001",
                     query.getBytes(StandardCharsets.UTF_8))).toJavaObject();

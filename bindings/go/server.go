@@ -96,6 +96,7 @@ type ServerOptions struct {
 type ToolMethod struct {
 	Name   string
 	Schema string // optional JSON Schema (draft-07 subset) of the parameters
+	Result string // optional JSON Schema of the return value (published metadata)
 }
 
 // Binding binds one operation of one model path to a method of the tool.
@@ -341,6 +342,30 @@ func (s *Server) OpenAPI(baseURL string) string {
 	return C.GoString(text)
 }
 
+// MethodsJSON is what this device can be asked to do right now: the model's
+// METHODS item value, a JSON array with one object per callable method (tool /
+// method / address / params schema / result schema / bindings). Unmarshal it
+// into your own type when you want structs instead of JSON.
+//
+// The same list travels to a client with the model it gets from Probe, so the
+// two views always agree.
+func (s *Server) MethodsJSON() string {
+	if s == nil || s.server == nil {
+		return "[]"
+	}
+	methods := C.ncl_server_methods_json(s.server)
+	if methods == nil {
+		return "[]"
+	}
+	defer C.ncl_json_free(methods)
+	text := C.ncl_json_write_string(methods)
+	if text == nil {
+		return "[]"
+	}
+	defer C.free(unsafe.Pointer(text))
+	return C.GoString(text)
+}
+
 // BindingCount is the number of "<operation>#<path>" bindings.
 func (s *Server) BindingCount() int {
 	if s == nil || s.server == nil {
@@ -379,6 +404,7 @@ func (s *Server) RegisterTool(tool string, methods []ToolMethod,
 	cMethods := make([]C.ncl_tool_method, len(methods))
 	names := make([]*C.char, len(methods))
 	schemas := make([]*C.char, len(methods))
+	results := make([]*C.char, len(methods))
 	for i, method := range methods {
 		names[i] = C.CString(method.Name)
 		defer C.free(unsafe.Pointer(names[i]))
@@ -391,6 +417,11 @@ func (s *Server) RegisterTool(tool string, methods []ToolMethod,
 			schemas[i] = C.CString(method.Schema)
 			defer C.free(unsafe.Pointer(schemas[i]))
 			cMethods[i].params_schema = schemas[i]
+		}
+		if method.Result != "" {
+			results[i] = C.CString(method.Result)
+			defer C.free(unsafe.Pointer(results[i]))
+			cMethods[i].result_schema = results[i]
 		}
 	}
 

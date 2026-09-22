@@ -1160,6 +1160,50 @@ char *ncl_client_get_path(ncl_client *client, const char *id)
     return path;
 }
 
+ncl_node *ncl_client_methods_node(const ncl_client *client)
+{
+    if (client == NULL || client->root_node == NULL) {
+        return NULL;
+    }
+    return ncl_node_find_by_type(client->root_node, NCL_METHODS_NODE_TYPE);
+}
+
+const ncl_json *ncl_client_methods(const ncl_client *client)
+{
+    ncl_node *node = ncl_client_methods_node(client);
+
+    return node != NULL ? node->value : NULL;
+}
+
+const ncl_json *ncl_client_find_method(const ncl_client *client,
+                                       const char *address)
+{
+    const ncl_json *methods = ncl_client_methods(client);
+    size_t i;
+
+    if (methods == NULL || address == NULL) {
+        return NULL;
+    }
+    if (address[0] == NCL_PATH_SEPARATOR[0]) {
+        address++; /* "/plc/setValue" and "plc/setValue" are the same address */
+    }
+    for (i = 0; i < ncl_json_arr_len(methods); i++) {
+        const ncl_json *entry = ncl_json_arr_get(methods, i);
+        const char *candidate = ncl_json_obj_get_string(entry, "address");
+
+        if (candidate == NULL) {
+            continue;
+        }
+        if (candidate[0] == NCL_PATH_SEPARATOR[0]) {
+            candidate++;
+        }
+        if (strcmp(candidate, address) == 0) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
 bool ncl_client_is_ready(ncl_client *client)
 {
     return client != NULL && client->channel != NULL;

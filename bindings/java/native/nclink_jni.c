@@ -1051,6 +1051,51 @@ JNIEXPORT jstring JNICALL Java_com_nclink_Native_clientGetPath(JNIEnv *env,
     return take_jstring(env, path);
 }
 
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientMethodsJson(
+    JNIEnv *env, jclass cls, jlong client, jobjectArray out)
+{
+    char *json = NULL;
+    int rc = nclshim_client_methods_json(HANDLE(client), &json);
+
+    (void)cls;
+    set_string(env, out, 0, rc == 0 ? json : NULL);
+    if (rc != 0) {
+        nclshim_free(json);
+    }
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_clientFindMethodJson(
+    JNIEnv *env, jclass cls, jlong client, jstring address, jobjectArray out)
+{
+    char *raw = from_jstring(env, address);
+    char *json = NULL;
+    /* raw == NULL（传了 null）由垫片自己按参数错误回。 */
+    int rc = nclshim_client_find_method_json(HANDLE(client), raw, &json);
+
+    (void)cls;
+    free(raw);
+    set_string(env, out, 0, rc == 0 ? json : NULL);
+    if (rc != 0) {
+        nclshim_free(json);
+    }
+    return (jint)rc;
+}
+
+JNIEXPORT jint JNICALL Java_com_nclink_Native_serverMethodsJson(
+    JNIEnv *env, jclass cls, jlong server, jobjectArray out)
+{
+    char *json = NULL;
+    int rc = nclshim_server_methods_json(HANDLE(server), &json);
+
+    (void)cls;
+    set_string(env, out, 0, rc == 0 ? json : NULL);
+    if (rc != 0) {
+        nclshim_free(json);
+    }
+    return (jint)rc;
+}
+
 JNIEXPORT jint JNICALL Java_com_nclink_Native_clientSubscribeSamples(
     JNIEnv *env, jclass cls, jlong client, jint qos, jobject target,
     jlongArray out_host)
@@ -1227,6 +1272,12 @@ static char *jni_exception_text(JNIEnv *env)
         return nclshim_strdup("Java 回调抛出异常");
     }
     text = (jstring)(*env)->CallObjectMethod(env, error, mid);
+    if ((*env)->ExceptionCheck(env)) {
+        /* toString() 自己抛了（少见）：清掉挂起异常，用兜底文本，绝不让异常
+         * 跟着我们回到 C 线程。 */
+        (*env)->ExceptionClear(env);
+        text = NULL;
+    }
     if (text != NULL) {
         const char *chars = (*env)->GetStringUTFChars(env, text, NULL);
 

@@ -179,6 +179,7 @@ ctest --test-dir build-linux --output-on-failure
 ncl::Client::init("tcp://broker:1883");     // ssl:// 需要启用 TLS 的构建
 ncl::Client client("V203243111F");
 ncl::Model  model = client.probe();          // 拉取设备模型
+ncl::Json   caps  = client.methods();        // 能力面（方法 / 地址 / 入参 schema）
 ncl::Json   v     = client.value("/MACHINE/STATUS"); // 读值
 client.set("/MACHINE/STATUS", ncl::Json::parse("42"));
 // 出错抛 ncl::Error（继承 std::runtime_error，e.code() 是 ncl_err）
@@ -201,6 +202,7 @@ defer nclink.Shutdown()
 
 client, _ := nclink.Get("V203243111F")
 model, _ := client.Probe(5000)          // 拉设备模型
+caps := client.MethodsJSON()            // 能力面（JSON 数组，自己 Unmarshal）
 v, _ := client.Value("/MACHINE/STATUS", 5000)   // 读值
 defer v.Close()
 
@@ -231,6 +233,7 @@ Nclink.logInit();
 Nclink.init("tcp://127.0.0.1:1883");
 try (DeviceClient device = Nclink.getDevice("V2023A7B762")) {
     try (Model model = device.probe()) { /* 遍历模型树 */ }
+    try (Json methods = device.methods()) { /* 能力面：方法 + 入参 schema */ }
     try (Json value = device.getValue("/MACHINE/STATUS")) { /* 读值 */ }
     device.setValue("/MACHINE/STATUS", "42");
     device.subscribeSamples(2, (topic, sample) -> show(sample));  // 快照，出了回调也能用
@@ -280,6 +283,7 @@ import nclink
 nclink.init("tcp://127.0.0.1:1883")
 with nclink.get_device("V2023A7B762") as device:
     with device.probe() as model: ...                     # 拉模型（顺带装进客户端）
+    methods = device.methods()                            # 能力面（list[dict]）
     with device.get_value("/MACHINE/STATUS") as value: ...         # 读值
     device.subscribe_samples(2, lambda topic, sample: print(sample.rows))
 nclink.shutdown()
@@ -323,6 +327,7 @@ Nclink.Init("tcp://127.0.0.1:1883");
 using (NclDeviceClient device = Nclink.GetDevice("V2023A7B762"))
 {
     using (NclModel model = device.Probe()) { /* 遍历模型树 */ }
+    using (NclJson methods = device.Methods()) { /* 能力面：方法 + 入参 schema */ }
     long status = device.GetLong("/MACHINE/STATUS");
     device.SetValue("/MACHINE/STATUS", "42");
     device.SampleReceived += (s, e) => Console.WriteLine(e.Sample);
@@ -368,6 +373,10 @@ P/Invoke、Java 走 JNI（`nclink_jni` 把垫片一起编进去）、Python 走 
 3.4.0 又加了文件通道握手那组：`nclshim_client_file_channel_open` /
 `..._open_ex` / `..._close` / `..._is_open` 与便利入口
 `nclshim_client_ensure_file_channel`（托管绑定的上传/下载等便利方法用它按需握手）。
+能力面那组：`nclshim_client_methods_json` / `nclshim_client_find_method_json` /
+`nclshim_server_methods_json`；另外 `nclshim_abi_shape()` 报出垫片编译时看到的结构体
+形状（和核心库的 `ncl_server_abi_shape()` 比对，防止"只换了核心库/只换了垫片"这种
+重编不一致 —— `nclshim_server_create()` 自己会先查，不一致就打日志返回 NULL）。
 
 ### 2.4 CMake 选项
 
@@ -572,7 +581,8 @@ int main(void) {
         return 1;
     }
 
-    /* probe：拿设备模型。模型所有权要显式接管（见 4.7） */
+    /* probe：拿设备模型（里面已经带着 METHODS 能力项，见 4.3）。
+     * 模型所有权要显式接管（见 4.7） */
     if (ncl_client_probe(client, 5000, &probe) == NCL_OK && probe != NULL) {
         ncl_client_set_root_node(client, ncl_message_take_model(probe));
         ncl_message_free(probe);
@@ -810,7 +820,7 @@ SN 是设备身份，也是所有主题的地址。两种来源必须分清：
 | `Method/Result/Request/<sn>` / `.../Response/<sn>` | 客户端 → 设备 | 异步调用的结果（按 `handler`） |
 | `Sample/<sn>/<通道id>` | 设备 → 订阅方 | 采样上报 |
 | `Event/<sn>` | 设备 → 订阅方 | 事件推送 |
-| `Ping/<sn>` / `Pong/<sn>` | 双向 | 心跳 |
+| `Ping/<sn>` / `Pong/<sn>` | 双向 | 心跳；`Pong` **只带一个 `code` 状态**（`OK` 就是活着），不背任何文档 |
 
 设备端 `ncl_server_subscribe()` 会订阅 8 个请求主题（含 Status/Result 两对）；客户端
 `ncl_client_subscribe()` 订阅 8 个响应主题，事件主题需要单独
@@ -913,6 +923,70 @@ char *path = ncl_client_get_path(client, "030001"); /* "/MACHINE/STATUS" */
 读写接口的 `path` 参数：以 `/` 开头按路径解释；否则按节点 id 查模型再换算成路径
 （服务端 `ncl_server_resolve_path()` 有同样的规则）。
 
+#### 能力面就挂在模型里：`METHODS` 项
+
+模型根部有一个**保留的配置项**，列表里写着这台设备现在能调用什么：
+
+| 项 | 值 |
+|----|----|
+| 路径 / id / type | `/METHODS` / `methods` / `METHODS` |
+| `dataType` | `LIST`（值是一个数组，每条 = 一个方法） |
+| `settable` | `false`（只读；它不是采集量，也不参与采样通道） |
+
+每条方法的形状：
+
+```json
+{"tool":"plc","method":"setValue","address":"/plc/setValue",
+ "params":{"type":"object","properties":{"value":{"type":"integer"}}},
+ "result":{"type":"boolean"},
+ "bindings":[{"operation":"set_value","path":"/MACHINE/STATUS"}]}
+```
+
+| 字段 | 含义 |
+|------|------|
+| `tool` / `method` | 工具名、方法名 |
+| `address` | `methodCall` 的 `method` 字段写这个：`/<工具>/<方法>` |
+| `params` | 注册时声明的入参 JSON Schema（`ncl_tool_method.params_schema`），没声明就没有这一项 |
+| `result` | 声明的返回 JSON Schema（`ncl_tool_method.result_schema`，NULL 就没有这一项） |
+| `bindings` | 它服务模型里的哪些路径与操作（纯方法型工具没有这一项） |
+
+它由 `ncl_server_refresh_methods()` 生成：注册工具只是把它标记为"待重建"（一台设备
+的工具按点位注册，几十次注册不该做几十次重建），读模型、应答 probe、
+`ncl_server_methods_json()` 时顺手重建；`ncl_server_set_model()` 装模型时立刻建一次。
+所以**客户端 probe 回来的模型里已经带着它**：按 id 查路径即可，不需要再问一次、
+心跳也不必背文档（见 4.1 的 `Pong`）。
+它属于运行期能力面，**不写进 `conf/model/nclink.json`**（`ncl_server_save_model()`
+落盘时会把它摘掉），下次启动由注册过程重新生成。
+
+单独取这份清单：`ncl_server_methods_json(server)` 返回同一个数组；
+宿主自己改了绑定就调一次 `ncl_server_refresh_methods(server)`。
+
+客户端侧**不用再问一次**：probe 回来的模型里已经有它，三个便捷入口直接读：
+
+```c
+/* 全部方法（借用，别 free；模型换了它就失效） */
+const ncl_json *methods = ncl_client_methods(client);
+
+/* 一个方法：按地址查，前导 '/' 可省。拿到就能拼调用 */
+const ncl_json *entry = ncl_client_find_method(client, "/plc/setValue");
+ncl_message_set_method(request, ncl_json_obj_get_string(entry, "address"));
+/* entry 里的 "params" 就是它的入参 schema，可以拿来校验/填参 */
+
+/* 按 id 或按 type 找节点（METHODS 项就靠这条路径无关地找） */
+ncl_node *node = ncl_node_find_by_type(ncl_client_root_node(client),
+                                       NCL_METHODS_NODE_TYPE);
+```
+
+语言绑定同名：`client.methods()` / `client.find_method(address)`
+（C++ `ncl::Client::methods()` / `find_method()`、C# `Methods()` / `FindMethod()`、
+Go `MethodsJSON()` / `FindMethodJSON()`、Java `methods()` / `findMethod()`），
+设备端也有同一份（Python `server.methods()`、Java `Server.methods()`、C# `Methods()`、
+Go `MethodsJSON()`）。
+
+> `ncl_node_find_by_type()` 是"按类型找保留项"的通用入口：`METHODS` 这类协议规定的
+> 节点不靠 id 认，靠 `type` 认。**根节点的路径是 `/`**（它本身就是那个分隔符，
+> 不是一段），设备挂在它下面。
+
 ### 4.4 工具注册与 `<operation>#<path>` 绑定
 
 把「模型路径 + 操作」映射到 C 函数用显式注册：
@@ -944,6 +1018,10 @@ ncl_server_register_tool(server, "plc", instance, methods, method_count,
 ```c
 ncl_message_set_method(request, "/plc/setValue");   /* 也接受 "plc/setValue" */
 ```
+
+注册（含 `NCL_OP_*` 的路径绑定）除了建绑定表，还会刷新模型里的 `METHODS` 能力项
+与 REST 的 OpenAPI 文档；`ncl_tool_method` 的第 3、4 个字段（入参 schema、返回
+schema，都可为 NULL）是这两处共同的来源。
 
 ### 4.5 采样与上报
 
@@ -2128,6 +2206,8 @@ size_t binds   = ncl_server_binding_count(server);
 ```c
 ncl_json *schema = ncl_server_openapi_schema(server, "http://host:9008/api");
 char *schema_json = ncl_server_openapi_schema_json(server, base_url);
+/* 每个操作的 requestBody 是声明过的入参 schema、200 是应答信封（return 带返回 schema） */
+ncl_json *methods = ncl_server_methods_json(server);   /* 模型 METHODS 项的内容 */
 ncl_node *model = ncl_server_model(server);
 const char *sn = ncl_server_sn(server);
 ncl_server_set_user_data(server, my_state, my_cleanup);   /* 挂载自有数据 */
@@ -2764,6 +2844,10 @@ Copyright (c) 2026 huienming
 - `void ncl_client_set_root_node(ncl_client *client, ncl_node *root_node);`
 - `char *ncl_client_get_id(ncl_client *client, const char *path);` — Path -> id and id -> path lookups through the device model.
 - `char *ncl_client_get_path(ncl_client *client, const char *id);`
+- `ncl_node *ncl_client_methods_node(const ncl_client *client);` — 设备模型的 `METHODS` 项（借用，没有就 NULL）
+- `const ncl_json *ncl_client_methods(const ncl_client *client);` — 那份方法清单数组（借用）
+- `const ncl_json *ncl_client_find_method(const ncl_client *client, const char *address);` — 按地址
+  （`"/plc/setValue"`，前导斜杠可省）取一个方法的元数据；没有就是 NULL
 - `ncl_err ncl_client_subscribe_events(ncl_client *client, int qos);` — Subscribe to the device's event topic ("Event/<sn>").
 - `ncl_err ncl_client_unsubscribe_events(ncl_client *client);`
 - `void ncl_client_set_event_handler(ncl_client *client, ncl_client_event_fn fn, void *user);` — Install (or clear, with @p fn == NULL) the event callback.
@@ -3184,7 +3268,8 @@ Copyright (c) 2026 huienming
 - `ncl_err ncl_message_set_message_id(ncl_message *msg, const char *id);` — Sets "@id".
 - `ncl_err ncl_message_set_code(ncl_message *msg, const char *code);`
 - `ncl_err ncl_message_set_reason(ncl_message *msg, const char *reason);`
-- `ncl_err ncl_message_set_open_api_schema(ncl_message *msg, const char *schema);`
+- `const char *ncl_message_code(const ncl_message *msg);` — 应答（含 `Pong`）的 `code`；
+  `Pong` 只有这一个字段，"活着"就是 `OK`
 - `ncl_err ncl_message_set_version(ncl_message *msg, const char *version);`
 - `ncl_err ncl_message_set_device_id(ncl_message *msg, const char *device_id);`
 - `ncl_err ncl_message_set_model(ncl_message *msg, ncl_node *model);`
@@ -3286,6 +3371,8 @@ Copyright (c) 2026 huienming
 - `size_t ncl_node_sample_count(const ncl_node *node);`
 - `ncl_sample_ref *ncl_node_sample_at(const ncl_node *node, size_t index);`
 - `ncl_node *ncl_node_find_by_id(const ncl_node *node, const char *id);` — Depth first lookup by id below @p node.
+- `ncl_node *ncl_node_find_by_type(const ncl_node *node, const char *type_name);` — 按 `type` 深度优先查
+  （含 @p node 自身）：协议用类型点名的保留项（`NCL_METHODS_NODE_TYPE`）靠它找
 - `bool ncl_node_is_sample_node(const ncl_node *node);` — True when the node type string equals NCL_NODE_TYPE_SAMPLE_CHANNEL.
 - `ncl_err ncl_node_set_path(ncl_node *node, const char *parent_path);` — Recompute the path of @p node and of its subtree, applying the "parent of a
 - `const char *ncl_node_path(const ncl_node *node);` — Effective path: the root derives it from its type, others return the stored
@@ -3408,10 +3495,17 @@ Copyright (c) 2026 huienming
 - `ncl_node *ncl_server_model(ncl_server *server);`
 - `ncl_err ncl_server_save_model(ncl_server *server);` — Persist the model to the file ncl_env_model_file() names.
 - `ncl_err ncl_server_register_tool(ncl_server *server, const char *tool_name, void *instance, const ncl_tool_method *methods, size_t method_count, const ncl_tool_binding *bindings, size_t binding_count);`
+- `unsigned ncl_server_abi_shape(void);` — 这个核心库编译时的边界结构体大小指纹
+  （`NCL_SERVER_ABI_SHAPE`）。预编译的垫片/宿主拿它和自己的宏比一次，就知道两边是不是
+  同一版头文件编出来的（`nclshim_server_create()` 已经这么做了）
 - `size_t ncl_server_binding_count(const ncl_server *server);` — Number of "<operation>#<path>" bindings currently registered.
 - `size_t ncl_server_operation_count(const ncl_server *server);` — Number of distinct (tool, method) pairs, i.e.
 - `const char *ncl_server_operation_tool(const ncl_server *server, size_t index);` — Name of the tool owning operation @p index.
 - `const char *ncl_server_operation_method(const ncl_server *server, size_t index);` — Method name of operation @p index.
+- `ncl_json *ncl_server_methods_json(ncl_server *server);` — 每个可调用方法一条：tool / method / address /
+  params(schema) / result(schema) / bindings；模型 `METHODS` 项与 OpenAPI 文档都由它生成。
+- `ncl_err ncl_server_refresh_methods(ncl_server *server);` — 按当前注册表重建模型里的 `METHODS` 项
+  （`ncl_server_register_tool()` 与 `ncl_server_set_model()` 自动调用）。
 - `ncl_json *ncl_server_openapi_schema(ncl_server *server, const char *base_url);` — Build the OpenAPI 3.0 document describing the server's operations: one POST
 - `char *ncl_server_openapi_schema_json(ncl_server *server, const char *base_url);` — ncl_server_openapi_schema() serialised to a heap JSON string.
 - `ncl_message *ncl_server_invoke_query(ncl_server *server, const ncl_message *request);` — Takes ownership of nothing; returns a new message the caller frees.

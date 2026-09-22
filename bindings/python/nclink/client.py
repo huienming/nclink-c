@@ -302,6 +302,38 @@ class DeviceClient:
         """节点 id -> 数据项路径（没有就是 None）。"""
         return take_text(lib.nclshim_client_get_path(self._check_open(), encode(node_id)))
 
+    # -------------------------------------------------------- 能力面 -- #
+
+    def methods(self):
+        """设备方法清单：模型 METHODS 项的 value，每条一个 dict。
+
+        字段：``tool`` / ``method`` / ``address``（methodCall 里写这个）/
+        ``params``（入参 JSON Schema）/ ``result``（返回 JSON Schema）/
+        ``bindings``（这个方法服务模型里的哪些路径与操作）。后面三项没有就不出现。
+
+        设备没报能力面（模型里没有 METHODS 项）时返回空列表。
+        """
+        out = ctypes.c_void_p()
+        rc = lib.nclshim_client_methods_json(self._check_open(), ctypes.byref(out))
+        if rc != 0:
+            raise NclinkError(rc, "methods")
+        text = take_text(out.value)
+        return _json_stdlib.loads(text) if text else []
+
+    def find_method(self, address):
+        """按地址取一个方法的元数据（``"/plc/setValue"``，前导斜杠可省）。
+
+        没有这个方法就返回 None。拿到它就能直接拼调用：
+        ``methodCall(entry["address"], params)``，``params`` 用 ``entry["params"]`` 校验。
+        """
+        out = ctypes.c_void_p()
+        rc = lib.nclshim_client_find_method_json(self._check_open(), encode(address),
+                                                ctypes.byref(out))
+        if rc != 0:
+            raise NclinkError(rc, "find_method")
+        text = take_text(out.value)
+        return _json_stdlib.loads(text) if text else None
+
     # ------------------------------------------------------------ 订阅 -- #
 
     def subscribe_samples(self, qos=0, callback=None):

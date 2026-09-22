@@ -240,6 +240,17 @@ namespace Nclink
             return Native.TakeUtf8(Native.ServerModelJson(RequireOpen()));
         }
 
+        /// <summary>
+        /// 这台设备现在能调用什么：模型 METHODS 项的 value（NclJson 数组，用完 Dispose）。
+        /// 形状与 <see cref="NclDeviceClient.Methods"/> 一致。
+        /// </summary>
+        public NclJson Methods()
+        {
+            NclinkException.Check(Native.ServerMethodsJson(RequireOpen(), out IntPtr json),
+                                  "Methods");
+            return NclJson.Parse(Native.TakeUtf8(json) ?? "[]");
+        }
+
         /// <summary>OpenAPI 3.0 文档（每个 &lt;工具&gt;/&lt;方法&gt; 一个 POST 路径）。</summary>
         public string OpenapiJson(string baseUrl = "")
         {

@@ -312,6 +312,12 @@ final class Native {
 
     static native String clientGetPath(long client, String id);
 
+    /** 设备能力面（模型 METHODS 项的 value，JSON 数组文本）。 */
+    static native int clientMethodsJson(long client, String[] out);
+
+    /** 按地址取一个方法的元数据；没有这个方法时 out[0] 为 null。 */
+    static native int clientFindMethodJson(long client, String address, String[] out);
+
     static native int clientSubscribeSamples(long client, int qos, DeviceClient target,
                                              long[] outHost);
 
@@ -358,6 +364,9 @@ final class Native {
     static native String serverModelJson(long server);
 
     static native String serverOpenapiJson(long server, String baseUrl);
+
+    /** 这台设备现在能调用什么（同 clientMethodsJson）。 */
+    static native int serverMethodsJson(long server, String[] out);
 
     static native int serverBindingCount(long server);
 

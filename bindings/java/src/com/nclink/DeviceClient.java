@@ -415,6 +415,33 @@ public final class DeviceClient implements AutoCloseable {
         return Native.clientGetPath(requireOpen(), id);
     }
 
+    // ---------------------------------------------------------- 能力面 -- //
+
+    /**
+     * 设备方法清单：模型 METHODS 项的 value（一个 JSON 数组，用完 close）。
+     *
+     * <p>每条含 {@code tool} / {@code method} / {@code address}（methodCall 里写这个）/
+     * {@code params}（入参 JSON Schema）/ {@code result}（返回 JSON Schema）/
+     * {@code bindings}（它服务模型里的哪些路径与操作）；后三项没有就不出现。
+     * 设备没报能力面时是空数组。
+     */
+    public Json methods() {
+        String[] out = new String[1];
+        NclinkException.check(Native.clientMethodsJson(requireOpen(), out), "methods");
+        return Json.parse(out[0] == null ? "[]" : out[0]);
+    }
+
+    /**
+     * 按地址取一个方法的元数据（{@code "/plc/setValue"}，前导斜杠可省）。
+     * 没有这个方法就返回 null。
+     */
+    public Json findMethod(String address) {
+        String[] out = new String[1];
+        NclinkException.check(Native.clientFindMethodJson(requireOpen(), address, out),
+                "findMethod");
+        return out[0] == null ? null : Json.parse(out[0]);
+    }
+
     // -------------------------------------------------------------- 订阅 -- //
 
     /** 订阅采样（{@code Sample/<sn>/#}），QoS 0。 */

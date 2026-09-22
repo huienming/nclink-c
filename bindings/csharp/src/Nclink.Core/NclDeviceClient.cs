@@ -264,6 +264,35 @@ namespace Nclink
             return Native.TakeUtf8(Native.ClientGetPath(_client, Native.Utf8Z(id)));
         }
 
+        /* ------------------------------------------------------------ 能力面 -- */
+
+        /// <summary>
+        /// 设备方法清单：模型 METHODS 项的 value（一个 NclJson 数组，用完 Dispose）。
+        /// 每条含 tool / method / address（MethodCall 里写这个）/ params（入参
+        /// JSON Schema）/ result（返回 JSON Schema）/ bindings（服务哪些路径）；
+        /// 后三项没有就不出现。设备没报能力面时是空数组。
+        /// </summary>
+        public NclJson Methods()
+        {
+            ThrowIfDisposed();
+            NclinkException.Check(Native.ClientMethodsJson(_client, out IntPtr json),
+                                  "Methods");
+            return NclJson.Parse(Native.TakeUtf8(json) ?? "[]");
+        }
+
+        /// <summary>
+        /// 按地址取一个方法的元数据（"/plc/setValue"，前导斜杠可省）；没有就是 null。
+        /// </summary>
+        public NclJson FindMethod(string address)
+        {
+            ThrowIfDisposed();
+            NclinkException.Check(
+                Native.ClientFindMethodJson(_client, Native.Utf8Z(address), out IntPtr json),
+                "FindMethod");
+            string text = Native.TakeUtf8(json);
+            return text == null ? null : NclJson.Parse(text);
+        }
+
         /* ------------------------------------------------------ 采样与事件 -- */
 
         /// <summary>订阅采样（Sample/&lt;sn&gt;/#）；回调走 <see cref="SampleReceived"/>。</summary>

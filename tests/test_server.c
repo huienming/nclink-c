@@ -228,6 +228,8 @@ static void test_server_end_to_end(void)
     NCL_CHECK_EQ_INT(ncl_server_register_builtin_tool(server), NCL_OK);
     /* 4 methods + 3 path bindings + 2 built in methods */
     NCL_CHECK_EQ_INT(ncl_server_binding_count(server), 9);
+    /* 垫片/宿主靠这个指纹发现"和核心库不是同一版头文件编的" */
+    NCL_CHECK_EQ_INT(ncl_server_abi_shape(), NCL_SERVER_ABI_SHAPE);
 
     NCL_TEST_CASE("server connects and subscribes to its request topics");
     NCL_CHECK_EQ_INT(ncl_mqtt_client_connect(mqtt), NCL_OK);
@@ -389,10 +391,20 @@ static void test_server_end_to_end(void)
         response = wait_for_response(broker, baseline, 5000);
         NCL_CHECK(response != NULL);
         if (response != NULL) {
+            ncl_node *model = response->as.probe_query_response.model;
             NCL_CHECK_EQ_INT(response->type, NCL_MSG_PROBE_QUERY_RESPONSE);
             NCL_CHECK_EQ_STR(response->as.probe_query_response.code, NCL_KW_CODE_OK);
-            NCL_CHECK(response->as.probe_query_response.model != NULL);
-            NCL_CHECK(ncl_node_is_valid(response->as.probe_query_response.model));
+            NCL_CHECK(model != NULL);
+            NCL_CHECK(ncl_node_is_valid(model));
+            /* 能力面随模型一起到客户端：METHODS 项里有刚注册的方法 */
+            {
+                ncl_node *methods = ncl_node_find_by_type(model, NCL_METHODS_NODE_TYPE);
+                NCL_CHECK(methods != NULL);
+                if (methods != NULL) {
+                    NCL_CHECK_EQ_STR(ncl_node_path(methods), NCL_METHODS_PATH);
+                    NCL_CHECK(ncl_json_arr_len(methods->value) >= 3);
+                }
+            }
             ncl_message_free(response);
         }
     }
@@ -416,6 +428,9 @@ static void test_server_end_to_end(void)
         if (response != NULL) {
             NCL_CHECK_EQ_INT(response->type, NCL_MSG_PONG);
             NCL_CHECK_EQ_STR(response->message_id, "ping1");
+            /* The answer is the status and nothing else: a heartbeat has to
+             * stay cheap (the capability surface travels in the model). */
+            NCL_CHECK_EQ_STR(ncl_message_code(response), NCL_KW_CODE_OK);
             ncl_message_free(response);
         }
     }

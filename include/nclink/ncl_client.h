@@ -116,6 +116,35 @@ void      ncl_client_set_root_node(ncl_client *client, ncl_node *root_node);
 char *ncl_client_get_id(ncl_client *client, const char *path);
 char *ncl_client_get_path(ncl_client *client, const char *id);
 
+/*
+ * Capability surface: what this device says it can be asked to do.
+ *
+ * A Probe answer carries the model's METHODS item (see ncl_general.h), so a
+ * client that installed the probed model already holds the whole list - no
+ * extra round trip. Each method entry is
+ *
+ *   {"tool":..,"method":..,"address":"/<tool>/<method>",
+ *    "params":{...JSON Schema...},"result":{...},
+ *    "bindings":[{"operation":"set_value","path":"/MACHINE/STATUS"}]}
+ *
+ * with "params" / "result" / "bindings" absent when the method has none.
+ */
+
+/** The model's METHODS item, or NULL when the model has none (borrowed). */
+ncl_node *ncl_client_methods_node(const ncl_client *client);
+
+/** Its "value": one object per callable method (borrowed, NULL when none). */
+const ncl_json *ncl_client_methods(const ncl_client *client);
+
+/**
+ * The entry whose "address" is @p address ("/plc/setValue"; a leading '/' is
+ * optional). NULL when no such method is advertised. With the entry in hand a
+ * caller has everything it needs to build the call: the address for
+ * ncl_message_set_method() and the params schema to validate or fill in.
+ */
+const ncl_json *ncl_client_find_method(const ncl_client *client,
+                                       const char *address);
+
 /* Events ------------------------------------------------------------------ */
 
 /**

@@ -132,6 +132,16 @@ public final class Server implements AutoCloseable {
         return Native.serverOpenapiJson(requireOpen(), baseUrl);
     }
 
+    /**
+     * 这台设备现在能调用什么：模型 METHODS 项的 value（JSON 数组，用完 close）。
+     * 形状与 {@link DeviceClient#methods()} 一致。
+     */
+    public Json methods() {
+        String[] out = new String[1];
+        NclinkException.check(Native.serverMethodsJson(requireOpen(), out), "methods");
+        return Json.parse(out[0] == null ? "[]" : out[0]);
+    }
+
     /** 已注册的 "<operation>#<path>" 绑定数（每个方法名本身也算一条）。 */
     public int bindingCount() {
         return Native.serverBindingCount(requireOpen());
@@ -549,6 +559,10 @@ public final class Server implements AutoCloseable {
     private static String responseTopic(String requestTopic) {
         if (requestTopic == null) {
             return null;
+        }
+        if (requestTopic.startsWith("Ping/")) {
+            // 心跳的应答在 Pong/<sn>（Pong 只带一个 code 状态）
+            return "Pong/" + requestTopic.substring("Ping/".length());
         }
         int index = requestTopic.indexOf("/Request/");
         return index < 0 ? requestTopic

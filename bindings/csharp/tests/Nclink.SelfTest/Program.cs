@@ -21,7 +21,7 @@ namespace Nclink.SelfTest
         private const string Sn = "V2CSTEST001";
         private const string SampleTopic = "Sample/V203243111F/s1";
         private const string SamplePayload =
-            "{\"@id\":\"m1\",\"paths\":[\"/STATUS\"],\"id\":\"s1\"," +
+            "{\"@id\":\"m1\",\"paths\":[\"/MACHINE/STATUS\"],\"id\":\"s1\"," +
             "\"beginTime\":\"1700000000000\",\"data\":[{\"data\":[1,2]}]," +
             "\"interval\":1000,\"uploadInterval\":2000}";
         private const string EventTopic = "Event/V203243111F";
@@ -204,10 +204,24 @@ namespace Nclink.SelfTest
                 Check("路径绑定计数", device.BindingCount >= 2);
                 Check("初始没有采样通道", device.SampleCount == 0);
 
+                // 能力面：注册了什么，模型 METHODS 项里就有什么
+                using (NclJson methods = device.Methods())
+                {
+                    bool advertised = false;
+                    foreach (NclJson entry in methods.Items())
+                    {
+                        if (entry.Get("address").AsString() == "/plc/getStatus")
+                        {
+                            advertised = true;
+                        }
+                    }
+                    Check("能力面含 /plc/getStatus", advertised);
+                }
+
                 // 离线驱动一条 Query 请求（路径 绑定 -> 工具方法）
                 using (NclJson reply = device.Dispatch(
                            "Query/Request/" + Sn,
-                           "{\"@id\":\"q1\",\"ids\":[{\"id\":\"/STATUS\"," +
+                           "{\"@id\":\"q1\",\"ids\":[{\"id\":\"/MACHINE/STATUS\"," +
                            "\"params\":{\"operation\":\"get_value\"}}]}"))
                 {
                     NclJson value = reply.Get("values")[0];

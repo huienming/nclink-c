@@ -53,6 +53,22 @@ extern "C" {
 /** Default timeout of one protocol operation, milliseconds. */
 #define NCL_OPERATION_TIMEOUT 5000
 
+/* ------------------------------------------------------- the METHODS item -- */
+
+/**
+ * The model item that lists every callable method. It is a root level config
+ * of the device model: id "methods", type "METHODS", dataType LIST and a
+ * "value" array with one object per method (tool / method / address / params
+ * schema / result schema / the model paths it serves).
+ *
+ * The device side writes it (ncl_server_refresh_methods()) so that a Probe
+ * answer carries the whole capability surface, and the client side reads it
+ * (ncl_client_methods()).
+ */
+#define NCL_METHODS_NODE_ID   "methods"
+#define NCL_METHODS_NODE_TYPE "METHODS"
+#define NCL_METHODS_PATH      "/METHODS"
+
 /* -------------------------------------------------------------- Code ----- */
 
 /** Status code of a request or response item ("code"). */

@@ -3,6 +3,94 @@
 本文件记录 NC-Link C 实现（`nclink-core-c`）的版本变更。版本号跟随
 NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
+## 未发布
+
+### 能力发现挪出心跳：`Pong` 只回状态，方法清单进模型，schema 补齐
+
+  * **`Pong` 轻量化**。`Pong` 原来背着整份 OpenAPI 文档（几 KB），心跳成了最重的
+    一次发布。现在它**只有 `code`**：`{"@id":"..","code":"OK"}`，报文体固定两个字
+    段；`ncl_message_set_open_api_schema()` 随之删除（`ncl_message_set_code()` 认得
+    `Pong`，读用新增的 `ncl_message_code()`）。`Ping` 的应答不再生成文档，省掉
+    每次心跳一次 JSON 构建。
+
+  * **方法清单进模型**（`ncl_server.h` 的 `NCL_METHODS_NODE_ID`）。模型根部多一个
+    保留配置项：路径 `/METHODS`、id `methods`、type `METHODS`、`dataType` `LIST`，
+    值是每个可调用方法一条：
+
+    ```json
+    {"tool":"plc","method":"setValue","address":"/plc/setValue",
+     "params":{...},"result":{...},
+     "bindings":[{"operation":"set_value","path":"/MACHINE/STATUS"}]}
+    ```
+
+    于是 `probe` 一次就把整个能力面带回来（客户端不用再问、也不用猜），
+    `params` / `result` / `bindings` 没有就不出现。注册只把它标记成待重建（工具层
+    按点位注册，几十次注册不该做几十次重建）：读模型 / 应答 probe /
+    `ncl_server_methods_json()` 时顺手重建，`ncl_server_set_model()` 装模型时立刻建
+    一次。单独取这份数组用 `ncl_server_methods_json()`。它是运行期能力面，**不写进**
+    `conf/model/nclink.json`（`ncl_server_save_model()` 落盘时摘掉，启动时再生成）。
+
+  * **schema 补齐（REST 侧仍然返回）**。`ncl_tool_method` 多一个可省的
+    `result_schema`（返回值的 JSON Schema），语言绑定的 `register_tool` 方法描述
+    里对应 `"result"` 键；OpenAPI 文档不再只有自由对象：**requestBody 用声明过的
+    入参 schema，200 用应答信封**（`code` / `return`（带返回 schema）/ `result`）。
+    内置 `nclinkServer` 的 `addSample` / `removeSample` 也补了 schema。HTTP 客户端
+    照着 `/api/schema` 就能拼出调用。
+
+  * 顺带修掉一个隐患：`src/tool/tool.c` 里逐个字段填 `ncl_tool_method` 的数组没有
+    清零，宿主没写的字段是栈上的垃圾（新增字段后立刻炸出段错误）。现在填之前先
+    `memset`，这类字段以后再加也不会漏。
+
+  * 绑定侧：垫片 `nclshim_server_register_tool()` 的方法描述多认一个 `"result"`
+    键（`methods_json: [{"name":..,"schema":..,"result":..}]`，C#/Java/Python 都
+    走它，Go 直接填结构体）；Python / Java 的离线 `dispatch("Ping/<sn>", ..)` 现在
+    按 `Pong/<sn>` 解析应答（原来是拿请求主题硬套，Pong 会被当成 Ping 解，`code`
+    就丢了），Python 侧加了用例。
+
+  * **要重编的东西**：`ncl_tool_method` 加了一个字段、`Pong` 的报文体变了，所以
+    语言绑定的垫片（`bindings/native`）与任何自己填 `ncl_tool_method` 的宿主代码
+    要跟着重编；对端实现也要按新报文改（`Pong` 里不再有 `OpenApiSchema`）。
+
+### 客户端取能力面的四个入口 + 各语言绑定同名方法
+
+  * `ncl_client_methods_node()` / `ncl_client_methods()` —— 设备模型的 `METHODS` 项与
+    它的数组；`ncl_client_find_method(client, "/plc/setValue")` —— 按地址取一个方法的
+    元数据（前导斜杠可省），拿到就能拼调用（`address` + `params` schema）。
+  * `ncl_node_find_by_type(node, "METHODS")` —— 按 `type` 深度优先找节点（含自身）：
+    协议用类型点名的保留项靠它找，客户端不必知道路径。
+  * 绑定：C++ `Client::methods()` / `find_method()`；Python `DeviceClient.methods()` /
+    `find_method()` 与 `Server.methods()`；Java `DeviceClient.methods()` /
+    `findMethod()`、`Server.methods()`；C# `Methods()` / `FindMethod()`（客户端与设备端）；
+    Go `MethodsJSON()` / `FindMethodJSON()`（客户端与设备端，`ToolMethod` 多一个 `Result`
+    字段）。垫片多三个导出：`nclshim_client_methods_json` /
+    `nclshim_client_find_method_json` / `nclshim_server_methods_json`。
+
+  * **根节点路径就是 `/`**（它本身就是分隔符，不是一段路径）。Python / Java 的自检里
+    那条 `/NC_LINK_ROOT` 期望是错的，已按这个更正。
+
+  * 顺手修掉两处自检夹具的老账：C# / Java 的离线 Query 用 `"/STATUS"` 查一条绑在
+    `"/MACHINE/STATUS"` 的路径（现在按绑定路径查），C# / Java 的采样夹具 `paths` 写的是
+    `"/STATUS"` 而期望是 `"/MACHINE/STATUS"`。**C# 自检 107 项全过、Java 自检 108 项全过**
+    （Java 那 2 项"异常文本进 reason / lastCallbackError"的失败就是这条老路径：
+    查不到绑定 → 答 NG 的 reason 是库的"未找到"，处理函数根本没被调用）。
+
+  * 排障记录：期间见到过 Java 在注册工具时原生崩溃（ucrtbase 访问违例）。那不是 JNI 的
+    bug —— 是**重编不一致**：`ncl_tool_method` 加了字段之后，旧 `nclink_jni.dll`
+    （按旧布局填结构体）和新核心库混用，核心按新布局读到了错位的字段（日志里那句
+    "plc 的 getValue 参数 schema 无效" 就是签名）。整棵重编后注册、回调、异常应答
+    （`reason` = `java.lang.IllegalStateException: …`）都正常。
+
+    这条已经**当场复现**（`sizeof(ncl_tool_method)` = 24 的数组喂给新核心：先打
+    "…的 result schema 无效: schema is not valid JSON"，然后 0xC0000005 —— 和当时的
+    崩溃日志一模一样），所以顺手加了道闸：
+
+  * **ABI 形状闸门**。`NCL_SERVER_ABI_SHAPE`（`ncl_server_options` / `ncl_tool_method` /
+    `ncl_tool_binding` 三个结构体的大小指纹）由头文件算出、核心库用
+    `ncl_server_abi_shape()` 报出自己的那一份；垫片用 `nclshim_abi_shape()` 报自己
+    编译时的值，并在 `nclshim_server_create()` 里先比一次：不一致直接
+    `"垫片与核心库的结构体形状不一致（shim %u / core %u）：请把绑定垫片与核心库一起重编"`
+    返回 NULL。这样"忘了重编"就是一条清楚的错误，而不是静默的内存破坏。
+
 ## 3.5.0
 
 ### 又扫出来三条：模态、执行中的程序段、合成进给速度（33 条读得到）

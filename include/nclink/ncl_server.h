@@ -59,6 +59,13 @@ typedef struct {
      * with "check" enabled; see ncl_server_check_method_call().
      */
     const char *params_schema;
+    /**
+     * Optional JSON Schema for what the method returns (the "return" member of
+     * a Method/Call response). Not validated at runtime - it is published: it
+     * goes into the OpenAPI document and into the model's METHODS item, so a
+     * client knows what it is about to receive. NULL = not described.
+     */
+    const char *result_schema;
 } ncl_tool_method;
 
 /** Binds one operation on one model path to a tool method. */
@@ -83,6 +90,25 @@ typedef struct {
     ncl_server_publish_fn publish;
     void                 *publish_user;
 } ncl_server_options;
+
+/**
+ * Fingerprint of the structs a caller fills in and the core reads
+ * (ncl_server_options, ncl_tool_method, ncl_tool_binding): their sizes, which
+ * change whenever a field is added.
+ *
+ * A caller that links a *prebuilt* core library - the language shims, the
+ * adapters, a host program - compares this against ncl_server_abi_shape(),
+ * which was compiled into that library. A mismatch means the two were built
+ * from different headers: the core would read fields that are not there, and
+ * the array element count would be wrong. That is silent memory corruption, so
+ * refuse the call instead (nclshim_server_create() does exactly that).
+ */
+#define NCL_SERVER_ABI_SHAPE                                                   \
+    ((unsigned)(sizeof(ncl_server_options) * 1000000u +                        \
+                sizeof(ncl_tool_method) * 1000u + sizeof(ncl_tool_binding)))
+
+/** NCL_SERVER_ABI_SHAPE as compiled into the core library. */
+unsigned ncl_server_abi_shape(void);
 
 ncl_server *ncl_server_create(const ncl_server_options *options);
 void        ncl_server_free(ncl_server *server);
@@ -134,6 +160,24 @@ size_t ncl_server_operation_count(const ncl_server *server);
 const char *ncl_server_operation_tool(const ncl_server *server, size_t index);
 /** Method name of operation @p index. */
 const char *ncl_server_operation_method(const ncl_server *server, size_t index);
+
+/**
+ * One object per callable method (see NCL_METHODS_NODE_ID): tool, method,
+ * address, the declared params / result schemas and the model paths the method
+ * serves. This is what the model's METHODS item carries and what the OpenAPI
+ * document is built from. The caller frees the array; NULL on failure.
+ */
+ncl_json *ncl_server_methods_json(ncl_server *server);
+
+/**
+ * Rebuild the model's METHODS item (see NCL_METHODS_NODE_ID) from the
+ * currently registered tools. ncl_server_register_tool() only marks the item
+ * stale - one tool costs one flag, not one rebuild - and the readers
+ * (ncl_server_model(), a Probe answer, ncl_server_methods_json()) rebuild it
+ * on the way out. ncl_server_set_model() rebuilds it right away. A host that
+ * changes bindings behind the server's back calls this itself.
+ */
+ncl_err ncl_server_refresh_methods(ncl_server *server);
 
 /**
  * Build the OpenAPI 3.0 document describing the server's operations: one POST

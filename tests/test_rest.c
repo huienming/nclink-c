@@ -184,8 +184,11 @@ static void test_openapi_document(void)
     ncl_json *document;
     char *text;
     static const ncl_tool_method methods[] = {
-    {"getValue", tool_get, NULL},
-    {"setValue", tool_put, NULL},
+    {"getValue", tool_get, NULL, NULL},
+    {"setValue", tool_put,
+     "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}},"
+     "\"required\":[\"value\"]}",
+     "{\"type\":\"boolean\",\"description\":\"写入是否成功\"}"},
     };
 
     memset(&options, 0, sizeof(options));
@@ -235,8 +238,40 @@ static void test_openapi_document(void)
                 NCL_CHECK(ncl_json_obj_get(post, "responses") != NULL);
             }
         }
+        {
+            /* The declared schemas travel with the document, so a client can
+             * build the HTTP call from it alone. */
+            ncl_json *paths = ncl_json_obj_get(document, "paths");
+            ncl_json *post = ncl_json_obj_get(
+                ncl_json_obj_get(paths, "/plcTool/setValue"), "post");
+            ncl_json *schema =
+                ncl_json_obj_get(ncl_json_obj_get(ncl_json_obj_get(post,
+                                                                    "requestBody"),
+                                                  "content"),
+                                 "application/json");
+            ncl_json *params = ncl_json_obj_get(schema, "schema");
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
+                                 ncl_json_obj_get(ncl_json_obj_get(params, "properties"),
+                                                  "value"),
+                                 "type"),
+                             "integer");
+            /* getValue declared none: it falls back to a free form object. */
+            post = ncl_json_obj_get(ncl_json_obj_get(paths, "/plcTool/getValue"),
+                                    "post");
+            NCL_CHECK_EQ_STR(
+                ncl_json_obj_get_string(
+                    ncl_json_obj_get(
+                        ncl_json_obj_get(ncl_json_obj_get(ncl_json_obj_get(
+                                             post, "requestBody"),
+                                         "content"),
+                                         "application/json"),
+                        "schema"),
+                    "type"),
+                "object");
+        }
         text = ncl_json_write_string(document);
         NCL_CHECK(text != NULL && strlen(text) > 100);
+        NCL_CHECK(strstr(text, "写入是否成功") != NULL); /* the result schema */
         ncl_free_safe(text);
         ncl_json_free(document);
     }
@@ -251,12 +286,128 @@ static void test_openapi_document(void)
     ncl_server_free(server);
 }
 
-static void test_pong_carries_schema(void)
+/*
+ * 模型的 METHODS 数据项：probe 一次带回整个能力面（有哪些方法、地址怎么拼、
+ * 入参/返回 schema、这个方法服务哪些路径），心跳因此不必再背着文档走。
+ */
+static void test_methods_item_in_the_model(void)
+{
+    static const char *kModel =
+        "{\"name\":\"nclink\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\","
+        "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\","
+        "\"dataItems\":[{\"id\":\"030001\",\"type\":\"STATUS\"}],"
+        "\"version\":\"2.0\"}]}";
+    static const ncl_tool_method methods[] = {
+        {"getValue", tool_get, NULL, NULL},
+        {"setValue", tool_put,
+         "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}},"
+         "\"required\":[\"value\"]}",
+         "{\"type\":\"boolean\"}"},
+    };
+    static const ncl_tool_binding bindings[] = {
+        {"/PLC/STATUS", NCL_OP_GET_VALUE, "getValue", "plcTool"},
+        {"/PLC/STATUS", NCL_OP_SET_VALUE, "setValue", "plcTool"},
+    };
+    ncl_server_options options;
+    ncl_server *server;
+    ncl_node *node;
+    const ncl_json *list;
+    char *text;
+    bool seen_set_value = false;
+    size_t i;
+
+    memset(&options, 0, sizeof(options));
+    options.sn = TEST_SN;
+    options.model_json = kModel;
+    server = ncl_server_create(&options);
+    NCL_CHECK(server != NULL);
+    if (server == NULL) {
+        return;
+    }
+
+    NCL_TEST_CASE("the model has a METHODS item before any tool registers");
+    node = ncl_node_find_by_id(ncl_server_model(server), NCL_METHODS_NODE_ID);
+    NCL_CHECK(node != NULL);
+    if (node != NULL) {
+        NCL_CHECK_EQ_INT(node->type, NCL_NODE_CONFIG);
+        NCL_CHECK_EQ_STR(node->node_type_name, NCL_METHODS_NODE_TYPE);
+        NCL_CHECK_EQ_STR(ncl_node_path(node), NCL_METHODS_PATH);
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(node->value), 0);
+    }
+
+    NCL_CHECK_EQ_INT(ncl_server_register_tool(server, "plcTool", server, methods,
+                                              sizeof(methods) / sizeof(methods[0]),
+                                              bindings,
+                                              sizeof(bindings) / sizeof(bindings[0])),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_server_register_builtin_tool(server), NCL_OK);
+
+    NCL_TEST_CASE("registering a tool refreshes the METHODS item");
+    node = ncl_node_find_by_id(ncl_server_model(server), NCL_METHODS_NODE_ID);
+    NCL_CHECK(node != NULL);
+    if (node == NULL) {
+        ncl_server_free(server);
+        return;
+    }
+    list = node->value;
+    /* getValue, setValue, addSample, removeSample */
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(list), 4);
+    for (i = 0; i < ncl_json_arr_len(list); i++) {
+        const ncl_json *entry = ncl_json_arr_get(list, i);
+        const char *method = ncl_json_obj_get_string(entry, "method");
+        const char *address = ncl_json_obj_get_string(entry, "address");
+
+        NCL_CHECK(method != NULL);
+        NCL_CHECK(address != NULL);
+        if (method == NULL || address == NULL) {
+            continue;
+        }
+        if (strcmp(method, "setValue") == 0) {
+            const ncl_json *binds;
+            const ncl_json *params_props;
+            seen_set_value = true;
+            NCL_CHECK_EQ_STR(address, "/plcTool/setValue");
+            params_props = ncl_json_obj_get(ncl_json_obj_get(entry, "params"),
+                                            "properties");
+            NCL_CHECK(params_props != NULL);
+            NCL_CHECK(ncl_json_obj_get(params_props, "value") != NULL);
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
+                                 ncl_json_obj_get(entry, "result"), "type"),
+                             "boolean");
+            /* 这个方法服务哪条路径，也在里面 */
+            binds = ncl_json_obj_get(entry, "bindings");
+            NCL_CHECK_EQ_INT(ncl_json_arr_len(binds), 1);
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(binds, 0),
+                                                     "operation"),
+                             "set_value");
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(ncl_json_arr_get(binds, 0),
+                                                     "path"),
+                             "/PLC/STATUS");
+        } else if (strcmp(method, "getValue") == 0) {
+            NCL_CHECK_EQ_STR(address, "/plcTool/getValue");
+            NCL_CHECK(ncl_json_obj_get(entry, "params") == NULL);
+        }
+    }
+    NCL_CHECK(seen_set_value);
+
+    NCL_TEST_CASE("the model written for a client carries the METHODS item");
+    text = ncl_node_write_string(ncl_server_model(server));
+    NCL_CHECK(text != NULL);
+    if (text != NULL) {
+        NCL_CHECK(strstr(text, "\"type\":\"METHODS\"") != NULL);
+        NCL_CHECK(strstr(text, "\"/plcTool/setValue\"") != NULL);
+        ncl_free_safe(text);
+    }
+    ncl_server_free(server);
+}
+
+static void test_ping_is_a_liveness_answer(void)
 {
     ncl_server_options options;
     ncl_server *server;
     ncl_message *ping;
     ncl_message *pong;
+    char *text;
 
     memset(&options, 0, sizeof(options));
     options.sn = TEST_SN;
@@ -267,7 +418,7 @@ static void test_pong_carries_schema(void)
     }
     ncl_server_register_builtin_tool(server);
 
-    NCL_TEST_CASE("Ping is answered with a Pong carrying the OpenAPI schema");
+    NCL_TEST_CASE("Ping is answered with the status alone");
     ping = ncl_message_new(NCL_MSG_PING);
     ncl_message_set_message_id(ping, "p1");
     pong = ncl_server_dispatch(server, "Ping/" TEST_SN, ping);
@@ -275,8 +426,10 @@ static void test_pong_carries_schema(void)
     if (pong != NULL) {
         NCL_CHECK_EQ_INT(pong->type, NCL_MSG_PONG);
         NCL_CHECK_EQ_STR(pong->message_id, "p1");
-        NCL_CHECK(pong->as.pong.open_api_schema != NULL);
-        NCL_CHECK(strstr(pong->as.pong.open_api_schema, "openapi") != NULL);
+        NCL_CHECK_EQ_STR(ncl_message_code(pong), NCL_KW_CODE_OK);
+        text = ncl_message_write_string(pong);
+        NCL_CHECK_EQ_STR(text, "{\"@id\":\"p1\",\"code\":\"OK\"}");
+        ncl_free_safe(text);
         ncl_message_free(pong);
     }
     ncl_message_free(ping);
@@ -434,7 +587,8 @@ static void test_schema_endpoints(void)
 NCL_TEST_MAIN_BEGIN()
     test_result_envelope();
     test_openapi_document();
-    test_pong_carries_schema();
+    test_methods_item_in_the_model();
+    test_ping_is_a_liveness_answer();
     test_schema_endpoints();
     test_http_tool_invocation();
 NCL_TEST_MAIN_END()

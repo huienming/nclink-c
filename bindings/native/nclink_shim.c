@@ -935,6 +935,46 @@ NCLSHIM_API char *nclshim_client_get_path(const void *client, const char *id)
                                         : NULL;
 }
 
+NCLSHIM_API int nclshim_client_methods_json(const void *client, char **out_json)
+{
+    const ncl_json *methods;
+
+    if (out_json != NULL) {
+        *out_json = NULL;
+    }
+    if (client == NULL || out_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    methods = ncl_client_methods((const ncl_client *)client);
+    if (methods == NULL) {
+        /* 没有模型 / 模型里没有 METHODS 项：空清单，不是错误。 */
+        *out_json = ncl_strdup("[]");
+    } else {
+        *out_json = ncl_json_write_string(methods);
+    }
+    return *out_json != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
+NCLSHIM_API int nclshim_client_find_method_json(const void *client,
+                                                const char *address,
+                                                char **out_json)
+{
+    const ncl_json *entry;
+
+    if (out_json != NULL) {
+        *out_json = NULL;
+    }
+    if (client == NULL || address == NULL || out_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    entry = ncl_client_find_method((const ncl_client *)client, address);
+    if (entry == NULL) {
+        return NCL_OK; /* 没有这个方法：rc=0 + NULL，和 get_path 一个规矩 */
+    }
+    *out_json = ncl_json_write_string(entry);
+    return *out_json != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
 /*
  * 采样/事件回调：host 是调用方给的两格数组 [函数指针, 用户数据]，托管侧用
  * GCHandle 钉住，必须活到取消订阅之后。
@@ -1281,6 +1321,14 @@ NCLSHIM_API const void *nclshim_server_create_ex(const char *sn, const char *mod
     if (sn == NULL || sn[0] == '\0') {
         return NULL;
     }
+    /* 结构体形状对不上 = 垫片与核心库不是同一版头文件编出来的：再往下走就是
+     * 按错位的字段读内存（静默的内存破坏），宁可直接拒绝。 */
+    if (ncl_server_abi_shape() != NCL_SERVER_ABI_SHAPE) {
+        ncl_log_error("垫片与核心库的结构体形状不一致（shim %u / core %u）："
+                      "请把绑定垫片与核心库一起重编",
+                      (unsigned)NCL_SERVER_ABI_SHAPE, ncl_server_abi_shape());
+        return NULL;
+    }
     ctx = (nclshim_server_ctx *)calloc(1, sizeof(*ctx));
     if (ctx == NULL) {
         return NULL;
@@ -1417,6 +1465,31 @@ NCLSHIM_API char *nclshim_server_model_json(const void *handle)
                : NULL;
 }
 
+NCLSHIM_API unsigned nclshim_abi_shape(void)
+{
+    return (unsigned)NCL_SERVER_ABI_SHAPE;
+}
+
+NCLSHIM_API int nclshim_server_methods_json(const void *handle, char **out_json)
+{
+    const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
+    ncl_json *methods;
+
+    if (out_json != NULL) {
+        *out_json = NULL;
+    }
+    if (ctx == NULL || ctx->server == NULL || out_json == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    methods = ncl_server_methods_json(ctx->server);
+    if (methods == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    *out_json = ncl_json_write_string(methods);
+    ncl_json_free(methods);
+    return *out_json != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
 NCLSHIM_API int nclshim_server_binding_count(const void *handle)
 {
     const nclshim_server_ctx *ctx = (const nclshim_server_ctx *)handle;
@@ -1472,7 +1545,8 @@ NCLSHIM_API int nclshim_server_subscribe(const void *handle)
 /**
  * 注册一个工具：方法表与路径绑定都用 JSON 描述——
  *
- *   methods_json:  [{"name":"getValue"},{"name":"setValue","schema":{...}}]
+ *   methods_json:  [{"name":"getValue"},{"name":"setValue","schema":{...},
+ *                    "result":{...}}]
  *   bindings_json: [{"path":"/STATUS","operation":0,"method":"getValue"}]（可为 NULL）
  *
  * host 是托管侧给的两格 [工具回调, 用户数据]，和采样/事件回调一个约定；回调的
@@ -1488,6 +1562,7 @@ NCLSHIM_API int nclshim_server_register_tool(const void *handle, const char *too
     ncl_tool_method *methods = NULL;
     ncl_tool_binding *specs = NULL;
     char **schemas = NULL;
+    char **results = NULL;
     nclshim_tool_ctx *tool = NULL;
     void **slots = (void **)host;
     size_t count = 0;
@@ -1512,8 +1587,9 @@ NCLSHIM_API int nclshim_server_register_tool(const void *handle, const char *too
 
     methods = (ncl_tool_method *)calloc(count, sizeof(*methods));
     schemas = (char **)calloc(count, sizeof(*schemas));
+    results = (char **)calloc(count, sizeof(*results));
     tool = (nclshim_tool_ctx *)calloc(1, sizeof(*tool));
-    if (methods == NULL || schemas == NULL || tool == NULL) {
+    if (methods == NULL || schemas == NULL || results == NULL || tool == NULL) {
         rc = NCL_ERR_NOMEM;
         goto done;
     }
@@ -1534,6 +1610,7 @@ NCLSHIM_API int nclshim_server_register_tool(const void *handle, const char *too
         const ncl_json *entry = ncl_json_arr_get(doc, i);
         const char *name = ncl_json_obj_get_string(entry, "name");
         const ncl_json *schema = ncl_json_obj_get(entry, "schema");
+        const ncl_json *result = ncl_json_obj_get(entry, "result");
 
         if (name == NULL) {
             rc = NCL_ERR_INVALID_ARG;
@@ -1549,6 +1626,10 @@ NCLSHIM_API int nclshim_server_register_tool(const void *handle, const char *too
         if (schema != NULL && !ncl_json_is_null(schema)) {
             schemas[i] = ncl_json_write_string(schema);
             methods[i].params_schema = schemas[i];
+        }
+        if (result != NULL && !ncl_json_is_null(result)) {
+            results[i] = ncl_json_write_string(result);
+            methods[i].result_schema = results[i];
         }
     }
 
@@ -1604,8 +1685,10 @@ done:
     }
     for (i = 0; i < count; i++) {
         free(schemas[i]);
+        free(results[i]);
     }
     free(schemas);
+    free(results);
     free(methods);
     free(specs);
     ncl_json_free(binds);

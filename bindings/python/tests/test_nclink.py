@@ -141,7 +141,8 @@ class ModelTest(unittest.TestCase):
         with nclink.Model.parse(_fixture_text()) as model:
             self.assertIn("NC_LINK_ROOT", model.to_json())
             root = model.root
-            self.assertEqual(root.path, "/NC_LINK_ROOT")
+            # 根就是那个分隔符本身，不是一段路径（设备挂在 "/" 下面）
+            self.assertEqual(root.path, "/")
             self.assertEqual(root.id, "01")
             # 设备 -> 数据项：遍历拿到的 id，反查要能找回同一个路径
             items = [node for node in _walk(root)
@@ -262,6 +263,13 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(device.operation_count, 2)
         self.assertGreaterEqual(device.binding_count, 1)
 
+        # 能力面：注册了什么，模型 METHODS 项里就有什么
+        by_address = {m["address"]: m for m in device.methods()}
+        self.assertIn("/plc/getValue", by_address)
+        self.assertIn("/plc/getCount", by_address)
+        self.assertEqual(by_address["/plc/getValue"]["bindings"],
+                         [{"operation": "get_value", "path": "/MACHINE/STATUS"}])
+
         payload = '{"@id":"q1","ids":[{"id":"/MACHINE/STATUS","params":{"operation":"get_value"}}]}'
         reply = device.dispatch("Query/Request/V2TEST00001", payload)
         self.assertEqual(reply.type, nclink.MessageType.QUERY_RESPONSE)
@@ -275,6 +283,14 @@ class ServerTest(unittest.TestCase):
         payload = '{"@id":"q1","ids":[{"id":"/NOPE","params":{"operation":"get_value"}}]}'
         body = device.dispatch("Query/Request/V2TEST00001", payload).to_python()
         self.assertNotEqual(body["values"][0]["code"], "OK")
+
+    def test_ping_is_a_status_only_pong(self):
+        """心跳：Ping 的应答在 Pong/<sn>，正文只有 @id + code。"""
+        device = self._device()
+        reply = device.dispatch("Ping/V2TEST00001", '{"@id":"p1"}')
+        self.assertEqual(reply.type, nclink.MessageType.PONG)
+        body = reply.to_python()
+        self.assertEqual(body, {"@id": "p1", "code": "OK"})
 
     def test_method_call_and_check(self):
         device = self._device()

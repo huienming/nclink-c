@@ -320,18 +320,28 @@ if (ncl_client_get_value(dev, "/STATUS", 5000, &value) == NCL_OK) {
 /* 写一个值 */
 ncl_client_set_value(dev, "/STATUS", ncl_json_new_int(7), 5000);
 
-/* 探测设备模型并装入客户端，随后可按路径/ID 互查 */
+/* 探测设备模型并装入客户端，随后可按路径/ID 互查。
+ * 模型里带着 METHODS 能力项（有哪些方法、怎么调），见下文「能力发现」 */
 ncl_message *probe = NULL;
 if (ncl_client_probe(dev, 5000, &probe) == NCL_OK) {
     ncl_client_set_root_node(dev, ncl_message_take_model(probe)); /* 所有权转移 */
     ncl_message_free(probe);
     char *id = ncl_client_get_id(dev, "/STATUS");   /* "030001" */
+    char *methods = ncl_client_get_path(dev, NCL_METHODS_NODE_ID); /* "/METHODS" */
     free(id);
+    free(methods);
 }
 
 /* 方法调用：添加/删除采样通道 */
 ncl_client_add_sample(dev, config_node, 5000);
 ncl_client_remove_sample(dev, "ch1", 5000);
+
+/* 心跳：只有状态，没有文档 */
+ncl_message *pong = NULL;
+if (ncl_client_ping(dev, 5000, &pong) == NCL_OK) {
+    bool alive = strcmp(ncl_message_code(pong), NCL_KW_CODE_OK) == 0;
+    ncl_message_free(pong);
+}
 
 ncl_client_holder_shutdown();
 ```
@@ -352,14 +362,18 @@ ncl_http_server_start(http);
 ```
 
 - `GET /api/schema` 返回 OpenAPI 3.0 文档（`openapi`/`info`/`servers`/`paths`），
-  每个已注册操作对应一条 `POST /<工具>/<方法>`；
+  每个已注册操作对应一条 `POST /<工具>/<方法>`：**requestBody 是该方法声明过的
+  参数 JSON Schema，200 是应答信封**（`code` / `return`（带返回 schema）/ `result`），
+  HTTP 客户端照着文档就能拼出调用；
 - `GET /swagger-ui` 返回内置浏览页（读 `/api/schema` 列出全部操作），
   也可把 `/api/schema` 直接填进任意 OpenAPI 客户端；
 - 业务应答统一用 `Result` 封装：`ncl_result_success(data)` →
   `{"status":true,"data":...}`，`ncl_result_failed(msg)` → `{"status":false,"data":"..."}`，
   无数据时按 NON_NULL 省略 `data`。
 
-另外 `Ping` 的应答 `Pong` 携带该 OpenAPI 文档。
+`Ping/<sn>` 的应答 `Pong/<sn>` **只带一个 `code` 状态**（`OK` 就是活着），心跳就
+是一次小发布、不背文档：客户端要在设备能力走模型里的 `METHODS` 项（见下文
+「能力发现」），HTTP 客户端走 `/api/schema`。
 
 #### 采样与上报
 
@@ -525,6 +539,57 @@ static const ncl_tool_method methods[] = {
 也可以直接调用 `ncl_server_check_method_call(server, request)`，或者用
 `ncl_json_schema_validate(json, schema, &errors)` 独立校验任意 JSON 文档。
 
+#### 能力发现：模型里的 METHODS 项
+
+客户端不必"猜"设备有哪些方法：**设备模型里有一个保留的配置项 `METHODS`
+（路径 `/METHODS`，id `methods`），它的 `value` 就是全部可调用方法的元数据**。
+注册工具只把它标记成待重建（`ncl_server_refresh_methods()` 在读模型 / 应答
+`probe` / 取清单时重建），所以 `probe` 拿到模型的那一刻，能力面已经在手里了 ——
+不需要额外的往返，心跳也不必背着文档走（见上文 `Pong`）：
+
+```json
+{"id":"methods","type":"METHODS","dataType":"LIST","settable":false,
+ "value":[
+   {"tool":"plc","method":"setValue","address":"/plc/setValue",
+    "params":{"type":"object","properties":{"value":{"type":"integer"}}},
+    "result":{"type":"boolean"},
+    "bindings":[{"operation":"set_value","path":"/MACHINE/STATUS"}]}]}
+```
+
+* `address` 就是 `methodCall` 里 `method` 字段要写的东西（`/<工具>/<方法>`）；
+* `params` / `result` 是注册时声明的那两份 JSON Schema（没声明就不出现）；
+* `bindings` 说明这个方法服务模型里的哪些路径与操作（纯方法型工具没有这项）。
+
+```c
+/* 设备端：声明返回 schema 也一样简单（第 4 个字段，可省） */
+static const ncl_tool_method methods[] = {
+    {"setValue", set_status,
+     "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}},"
+     "\"required\":[\"value\"]}",
+     "{\"type\":\"boolean\"}"},
+};
+
+/* 客户端：probe 一次 → 能力面已经在手里（不用再问一次） */
+ncl_client_probe(client, 5000, &probe);
+ncl_client_set_root_node(client, ncl_message_take_model(probe));
+
+const ncl_json *caps = ncl_client_methods(client);        /* 全部方法 */
+const ncl_json *entry = ncl_client_find_method(client, "/plc/setValue");
+/* entry["address"] → methodCall 的 method；entry["params"] → 入参 schema */
+
+/* 想按"保留项"的规矩找节点（按 type，不按 id）也可以 */
+ncl_node *node = ncl_node_find_by_type(ncl_client_root_node(client),
+                                       NCL_METHODS_NODE_TYPE);
+```
+
+各语言绑定同名：`client.methods()` / `client.find_method(address)`
+（C++ `methods()` / `find_method()`、C# `Methods()` / `FindMethod()`、
+Go `MethodsJSON()` / `FindMethodJSON()`）；设备端给自己也留了一份
+（Python `server.methods()`、Java `Server.methods()`、C# `Methods()`、Go `MethodsJSON()`）。
+
+要单独取这份清单，可以调 `ncl_server_methods_json(server)`（数组）或
+`ncl_server_refresh_methods(server)`（宿主自己改了绑定之后重新生成）。
+
 ## 设计要点
 
 1. **零依赖**。JSON、线程池、TTL 缓存、主题路由、编解码、MQTT、HTTP、
@@ -557,10 +622,10 @@ static const ncl_tool_method methods[] = {
 | `mqtt` | MQTT 5.0 报文：变长整数、CONNECT/CONNACK、PUBLISH、ACK 系列、SUBSCRIBE/SUBACK、PING、DISCONNECT、属性块（按 OASIS 规范逐字节校验） |
 | `mqtt_client` | MQTT 客户端端到端（内置假 broker，可接受多次连接）：连接/保活、QoS 0/1/2 状态机（含 PUBREL 段）、入站消息投递与应答、退订、断开、连接失败，**断线自动重连 + 订阅恢复（并断言恢复不阻塞接收线程）**、**服务器 DISCONNECT 0x8E 停止重连** |
 | `client` | 客户端全链路：管理器初始化、按 SN 分配客户端、getValue/getLength/setValue（含索引与区间）、probe 装载模型、路径/ID 互查、addSample/removeSample、**采样订阅 `Sample/<sn>/#` 与回调（含通道/周期/多值解析、未注册处理器丢弃）**、请求超时（内置假 NC-Link 服务器） |
-| `server` | 服务端全链路：模型装载与后构造、工具/路径绑定、Query/Set/MethodCall 分发、probe 返回模型、Ping→Pong、addSample/removeSample（经 MQTT 往返验证） |
+| `server` | 服务端全链路：模型装载与后构造、工具/路径绑定、Query/Set/MethodCall 分发、probe 返回模型（内含 METHODS 能力面）、Ping→Pong（只回状态）、addSample/removeSample（经 MQTT 往返验证） |
 | `server`（采样） | 采样通道启停、按 `sampleInterval` 采集、按 `uploadInterval` 聚合上报，校验 `Sample/<sn>/<通道id>` 报文结构与取值 |
 | `http` | HTTP 服务：真实 socket 往返验证状态行/头部/正文、查询参数与 URL 解码、JSON 与表单正文、404/405/500、通配路由、CORS 预检、URL 编解码与状态文本 |
-| `rest` | 应答封装（`{status,data}`、空值省略）、OpenAPI 3.0 文档生成（info/servers/paths、每个操作一个 POST）、Pong 携带 schema、`/api/schema` 与 `/swagger-ui` 端点 |
+| `rest` | 应答封装（`{status,data}`、空值省略）、OpenAPI 3.0 文档生成（info/servers/paths、每个操作一个 POST、requestBody 与 200 带上声明过的 schema）、`/api/schema` 与 `/swagger-ui` 端点 |
 | `config` | 配置读写与对应 REST 接口：初始化/SN、模型/驱动/IP 配置的读写往返、`mqtt.cfg` 三字段往返、服务器列表、缺失文件与不支持方法（404/405）、隔离的临时安装根目录 |
 | `ftp` | FTP 两端互相验证：登录/鉴权失败、主动与被动两种数据连接、STOR/RETR 二进制往返、LIST/NLST、MKD/RMD/DELE/RNFR-RNTO、SIZE/MDTM、NOOP 保活、路径无法越出登录根、连接计数与停止清理 |
 | `file` | 文件传输全链路：SHA-256 标准向量、文件属性的字段顺序与往返、`needCompression`/`totalChunks`、`bin/ftp.txt` 往返、FTP 文件工具对真实 FTP 服务的写/列/建目录/下载/删除、`/CONTROLLER/FILE` 工具经协议往返（客户端上传→设备落地→回传）、methodCall 的 `@file` 标记与 `fileKeys` 替换、设备端 FTP 端点 |

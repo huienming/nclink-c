@@ -75,7 +75,7 @@ static void on_sample(ncl_client *client, const char *topic,
 #define NCL_TEST_DATA_DIR "."
 #endif
 
-static char g_model_json[1024];
+static char g_model_json[4096];
 
 /**
  * Load a small valid device model for the probe response.
@@ -85,11 +85,23 @@ static char g_model_json[1024];
  * arrived without a "paths" header. The two data items resolve to the paths
  * "/PLC/STATUS" and "/PLC/PART_COUNT" (a data item directly under a device takes its
  * path from its type).
+ *
+ * It also carries the reserved METHODS item a real device adds to its model, so
+ * the probe path in this suite exercises the capability surface too.
  */
 static void load_model(void)
 {
     snprintf(g_model_json, sizeof(g_model_json),
              "{\"name\":\"nclink\",\"id\":\"01\",\"type\":\"NC_LINK_ROOT\","
+             "\"configs\":[{\"id\":\"methods\",\"type\":\"METHODS\","
+             "\"dataType\":\"LIST\",\"settable\":false,\"value\":["
+             "{\"tool\":\"plc\",\"method\":\"getValue\","
+             "\"address\":\"/plc/getValue\",\"bindings\":[{\"operation\":"
+             "\"get_value\",\"path\":\"/PLC/STATUS\"}]},"
+             "{\"tool\":\"plc\",\"method\":\"setValue\","
+             "\"address\":\"/plc/setValue\",\"params\":{\"type\":\"object\"},"
+             "\"result\":{\"type\":\"boolean\"},\"bindings\":[{\"operation\":"
+             "\"set_value\",\"path\":\"/PLC/STATUS\"}]}]}],"
              "\"devices\":[{\"id\":\"02\",\"type\":\"PLC\",\"configs\":["
              "{\"id\":\"ch1\",\"type\":\"SAMPLE_CHANNEL\",\"sampleInterval\":1000,"
              "\"uploadInterval\":5000,\"ids\":[{\"id\":\"/PLC/STATUS\"},"
@@ -363,6 +375,44 @@ static void test_client_full_flow(void)
             ncl_free_safe(id);
         }
         NCL_CHECK(ncl_client_get_id(client, "/nope") == NULL);
+    }
+
+    NCL_TEST_CASE("the probed model advertises what the device can be asked to do");
+    {
+        ncl_node *node = ncl_client_methods_node(client);
+        const ncl_json *methods = ncl_client_methods(client);
+        const ncl_json *entry;
+
+        NCL_CHECK(node != NULL);
+        if (node != NULL) {
+            NCL_CHECK_EQ_STR(ncl_node_path(node), NCL_METHODS_PATH);
+            NCL_CHECK_EQ_INT(
+                ncl_node_find_by_type(ncl_client_root_node(client),
+                                      NCL_METHODS_NODE_TYPE) == node,
+                1);
+        }
+        /* getValue + setValue */
+        NCL_CHECK_EQ_INT(ncl_json_arr_len(methods), 2);
+
+        entry = ncl_client_find_method(client, "/plc/setValue");
+        NCL_CHECK(entry != NULL);
+        if (entry != NULL) {
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(entry, "method"), "setValue");
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
+                                 ncl_json_obj_get(entry, "result"), "type"),
+                             "boolean");
+            NCL_CHECK_EQ_STR(ncl_json_obj_get_string(
+                                 ncl_json_arr_get(ncl_json_obj_get(entry, "bindings"), 0),
+                                 "operation"),
+                             "set_value");
+        }
+        /* 带不带前导 '/' 是同一个地址 */
+        NCL_CHECK(ncl_client_find_method(client, "plc/setValue") == entry);
+        NCL_CHECK(ncl_client_find_method(client, "/plc/nope") == NULL);
+        /* 没有声明 params 的方法照样在清单里，只是没有那一项 */
+        NCL_CHECK(ncl_json_obj_get(
+                      ncl_client_find_method(client, "/plc/getValue"), "params")
+                  == NULL);
     }
 
     NCL_TEST_CASE("methodCall addSample succeeds");
