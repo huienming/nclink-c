@@ -676,8 +676,9 @@ worker → 每个 worker 的 IL 里只有一个 `ldc.i4` 常量（脚本在参�
 2. **WARNING 的非空条目布局**：只实测过"没报警 → 空正文 → `[]`"；有报警时回
    `NCL_ERR_UNAVAILABLE`，理由写"非空报警条目布局待抓包"。
 
-读一侧是完整的；写（宏 / 参数 / 刀补 / PLC 写 / 程序上下行）在 client 里没有对应调用，
-适配器也就不声明 —— 现场网关那一侧的新代同样只有读 + Open/Close/GetResponse。
+读一侧是完整的；写这一侧：**参数（§11.6）与刀补（§11.7）已经开了**（权限在适配器外面控），
+宏 / PLC 写 / 程序上下行在 client 里没有对应调用，适配器也就不声明 ——
+现场网关那一侧的新代同样只有读 + Open/Close/GetResponse。
 
 ### 11.1 与 **21A 模拟器**的联调（2026-09-22，真靶机）
 
@@ -1037,8 +1038,9 @@ UNAVAILABLE”。
   * `get_keys` —— 参数号清单（按表里的顺序，字符串数组）；
   * `get_value` —— `params.keys` 给号（数组或单个），答 `{"321":100,...}`；
   * `get_attributes` —— `params.keys` 给号，答 `[{"no","title","flags","fallback"}, ...]`。
-  * **写不声明**（`set_value` / `add` / `delete`）：控制器侧没验过怎么写参数，
-    没声明的操作由宿主回 "Unsupported Operation"，比给个假写入口诚实。
+  * **写**只开 `set_value`（§11.6）：`{"keys":"321","value":111}` 或直接给字典 `{"321":111}`。
+    `add` / `delete` 不声明：参数表是控制器定的，没有这两个动作。
+    权限、白名单、二次确认都在适配器外面（用户口径："权限在外面控制"）。
   * 没给 `keys` 时 `get_value` 答 `{}`、`get_attributes` 答 `[]`（不报错）：自检与轮询会对
     每个点位盲读一次，四千个参数没有"盲读"这一说，报错只会让现场每次自检看到一条假失败。
   * 号不在表里回 `NCL_ERR_NOT_FOUND`；一次最多 64 个号（每条一次往返）。
@@ -1065,10 +1067,10 @@ UNAVAILABLE”。
 | 字段 | 值 |
 |---|---|
 | request | `0x0403` |
-| A | `12`（= 8 + 4：In 的两个 i32 + 应答正文的 4 字节） |
+| A | `4`（= `dwSizeOut`：`Out_OCK_ParamPutValueParams` 只有 `{ hr }`；原先写的 12 多要了 8 个字节的填充，仿真器不查，见 §11.8） |
 | B | 参数号 |
 | **flag** | **新值**（读法里这一位固定是 1，写的时候它装的是值） |
-| 应答正文 | 4 字节 `hr`：`00 00 00 00` = 成功 |
+| 应答 | 20 字节：`[12..15]` 传输层 hr、**`[16..19]` 就是 `hr`**（2026-09-22 按 §11.8 修正） |
 
 **实测**（参数 336 = `*16th axis axis name`，这台两轴机床用不到的槽）：
 `B=336, flag=908` → 回 `hr=0`，用 `0x0404` 读回确认 **908** ✓；再写
@@ -1095,7 +1097,11 @@ UNAVAILABLE”。
 | 用途 | 码 | 帧 | 21A |
 |---|---|---|---|
 | 条数 | `0x04C2` `NcGetEnabledToolNumber` = `CODE(1,194)` | `A = 8`、`B = 0` | **96** |
-| 一把刀 | `0x043F` `NcGetToolCompensation` = `CODE(1,63)` | `A = 4 + 224`、`B = 刀号索引（从 0）` | 答 **224 字节** |
+| 读一把 | `0x043F` `NcGetToolCompensation` = `CODE(1,63)` | `A = 4 + 224`、`B = 刀号` | 答 **224 字节** |
+| 写一把 | `0x0440` `NcPutToolCompensation` = `CODE(1,64)` | `A = 4`（Out 只有 `hr`）、`B = 刀号`，**In 228 字节跟在桩头后面** | 落盘 ✓ |
+
+**刀号从 1 起，读写同一个号**（2026-09-22 定住：写第 5 把、读第 4/5/6 把，只有第 5 把变），
+和 `/CONTROLLER/TOOL` 的 key 一致。原先记的“从 0”是因为这台模拟器的刀补全为 0，偏移一位看不出来。
 
 一条记录 224 字节（从控制器侧 `JMarshal::get_SizeOfToolOffset()` 的 IL 读出来：`8 + 27×8`）：
 
@@ -1121,8 +1127,80 @@ UNAVAILABLE”。
 * `length` ← `LengthGeometry[0]`，12 组原名另给（归属由 `get_LatheToolAxisMappingID` 那张表说）；
 * `radius` = 几何、`radius_wear` = 磨损（长度同理）；
 * `time_usage`（寿命）**不给**：这条路上没有来源（册 4 里 FANUC 那边走 `cnc_rdlife`），`get_attributes` 里把这一条写明。
-* **写刀补（`0x0440` `NcPutToolCompensation`）不声明**：224 字节装不进 flag 那一位，帧形状必须先真机抓包。
+* **写刀补（`0x0440` `NcPutToolCompensation`）已开放**（用户口径：“提供写的能力就好，权限在外面控制”）：
+  帧是 **256 字节** = 12（包头）+ 16（KrnlAPI 桩头）+ 228（In），In = `{ nToolNo i32, TToolOffset 224 }`
+  （控制器侧 `JMarshal::SizeOfOCK_ToolOffsetArray()` = `sizeof(int) + SizeOfToolOffset()` = 4 + 224）。
+  写法和参数那一格一样：`set_value` 给一个对象，**只写要改的字段**（适配器先读回整条打底再覆盖，
+  没给的字段不会被动）；一次只写一把（`keys` 给一个刀号）。
 
 **21A 实测**：`--model` 出 `{"id":"p65","name":"刀具","type":"TOOL","dataType":"LIST"}`（册 4 说刀具列表就是 list）；
-`0x04C2` 答 **96**；`0x043F` 取 A=228 恰好答 **224 字节**（这台模拟器的刀补全为 0，所以字段取值还没在非零数据上验过）；
+`0x04C2` 答 **96**；`0x043F` 取 A=228 恰好答 **224 字节**。
+
+**写刀补在 21A 上闭环了（2026-09-22）**：
+
+1. 本仓库 C 客户端造出 256 字节的写帧（`ncl_syntec_tool_put_frame()`，单元测试逐字段钉住），
+   发给模拟器 → 传输层 hr = 0、`hr` = 0，读回来正是写下去的那条：
+   `nose=3 radius=0.750 rwear=0.250 len0=1.500 angle=60.0`；
+2. 邻刀（第 4、第 6 把）没动，写第 5 把只有第 5 把变；
+3. **写是落盘的**：之后 `SysData/CNC/ToolTable.Dat` 的 sha256 变了（模拟器自己保存），
+   验完已按备份还原（`param.dat` 同理）；
+4. 0 号刀不写（刀号从 1 起）。
 `--once`：65 个点位（56 可读 / 9 待抓包 / 25 个没配的轴报错）。
+
+### 11.8 线协议补齐：桩头 16 字节、`A` 是 `dwSizeOut`、`hr` 在 [16..19]（2026-09-22，反汇编 + 21A 实测）
+
+§3.1 那张表是按**抓到的字节**量的，字段名字是猜的。把两端程序集翻完之后（`OCAPIServer.exe`
+是 .NET，`Syntec.OpenCNC.dll` / `Syntec.RemoteCNC.Win32.dll` 也是），真实结构定下来了：
+
+**出处 1：OCAPIServer.exe**（收到一帧之后怎么读）
+
+```
+CTCPCMD_PacketStart      { u4 Length; u2 CmdID; (2 pad); u4 Reserved }         // 12 字节
+MMI_Request_KrnlAPI      { i4 uFuncID; i4 dwCode; i4 dwSizeIn; i4 dwSizeOut; ptr pBufferIn }
+Krnl_Response_KrnlAPI    { i4 hr; ptr pBufferOut }
+```
+
+* `TCPService::RecvPacketStart()` 读 **12** 字节包头（`m_HeaderBuf`），`Length` 与 `Reserved` 取出来，
+  `Reserved` 存进 `m_nWtfReserved`；`RecvPacketContent()` 再读 **`Length`** 字节进 `m_WorkBuffer`。
+* `ProcessPacket()` 把 `m_WorkBuffer` 直接当 `MMI_Request_KrnlAPI`（`*` 指针）用，`uFuncID = [0..3]`，
+  拿去分派 → 于是**包头之后就是 16 字节桩头**：`[12..15] uFuncID`、`[16..19] dwCode`、
+  `[20..23] dwSizeIn`、`[24..27] dwSizeOut`、**[28..] In 本体**。
+* 分派命中 `uFuncID == 200` 时（`TCPDipoleService::DispatchPacketByFunctionID`）：
+  `resp = new byte[4 + dwSizeOut]`，然后 `KrnlAPI(dwCode, &pBufferIn 字段, dwSizeIn, &resp[4], dwSizeOut)`
+  —— **`pBufferIn` 传的是“`pBufferIn` 这个字段自己的地址”**，也就是 `[28..]`，所以大的 In 就放在那儿；
+  应答也照这个形状：`{ 传输层 hr i4 } + { Out }`，`PreparePackets(resp, 4 + dwSizeOut, uFuncID, Reserved)`。
+* 每个 `Out_OCK_*` 结构体的**第一个字段都是 `hr`**，调用方一律先看它（`CKrnlAPI::FAILED(Out.hr)`）。
+  所以应答里：`[12..15]` 传输层 hr、**`[16..19]` 就是 `hr`**、`[20..]` 才是 Out 的第二个字段起。
+
+**出处 2：Syntec.OpenCNC.dll**（读的那一路怎么拼 In/Out）
+
+```
+JMarshal::get_SizeOfToolOffset()      = 8 + 3*8 + 2*8*12                      = 224
+JMarshal::SizeOfOCK_ToolOffsetArray() = sizeof(int) + SizeOfToolOffset()      = 228
+JMarshal::OCK_ToolOffsetArrayToPtr(nToolNo, TToolOffset, dst)
+     → WriteInt32(dst, nToolNo); ToolOffsetToPtr(TToolOffset, dst + 4)
+CKrnlAPI::MultiTCPNcPutToolCompensation(link, nToolNo, TToolOffset)
+     → OcApi::MultiTCPKrnlAPI(link, dwCode, pBufferIn, dwSizeIn, pBufferOut, dwSizeOut)
+```
+
+顺带把 §3.1 的字段名对齐（值不变，只是名字对了）：
+
+| §3.1 原来的叫法 | 实际是 |
+|---|---|
+| `[12..13] uFuncID = 200` + `[14..15] uSerial` | `[12..15] uFuncID`（i4 = 200；参考客户端永远发 0 在 [14]，21A 也不查） |
+| `[16..19] request` | **`dwCode`**（0x0407 / 0x043F / 0x0440 …） |
+| `[20..23] type = 4` | **`dwSizeIn`**（状态/参数读都是 4：In 就是一个 i32） |
+| `[24..27] 参数 A` | **`dwSizeOut`**（含 Out 自己的 `hr`） |
+| `[28..31] 参数 B` | **In 的第 1 个 i32**（读法里就是号；写参数时两格 = `{ nNo, newVal }`） |
+| `[32..35] flag` | **In 的第 2 个 i32**（`dwSizeIn` = 4 时它其实在 In 之外，参考客户端发 1） |
+| `[8..9] 200` + `[10..11] code` | `Reserved`（`(code<<16)` + `200`），应答原样回显 |
+
+**实测复核**（2026-09-22 21A，`tools/syntec_tool_put2.py` / `syntec_c_frame_check.py`）：
+
+* 参数读 `0x0404`：`Length = 12` = 4 + 8（Out = `{hr, nValue}`），值在 `[20..23]` ✓；
+* 参数写 `0x0403` 取 `A = 4`：`Length = 8` = 4 + 4（Out = `{hr}`），`[16..19] = 0` ✓；
+* 读刀 `0x043F`：`Length = 232` = 4 + 228（Out = `{hr, TToolOffset}`），刀补在 `[20..]` ✓；
+* 写刀 `0x0440`：`Length = 244` = 16 + 228（In = `{ nToolNo, TToolOffset }`），应答 20 字节 ✓。
+
+**留给真机的**：`hr != 0` 时的拒绝语义（这台模拟器一律回 0，验不出来）、以及 [14] 那个字节
+到底是谁的（参考客户端永远发 0；本仓库沿用 0）。

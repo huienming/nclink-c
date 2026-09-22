@@ -36,8 +36,10 @@
  * hands `dwCode` straight to its native Krnl API, so the codes are the native
  * ones and were not recoverable from the delivered material.
  *
- * Reads only. The box's own driver layer lists no write endpoint for SYNTEC
- * either (i-BOX 设备 API 清单 §4.5), so a write reports NCL_ERR_NOT_SUPPORTED.
+ * The generic facade reads; the semantic API also writes the two things the
+ * controller answers a write for - a system parameter (§11.6) and one tool's
+ * offset (§11.7). Whether a write is allowed is the adapter's business: this
+ * layer just offers the calls (user's call: "权限在外面控制").
  *
  * The raw escape hatch takes `CmdID u2 | funcId u2 | body bytes` and answers
  * with the reply body, which is how an undocumented command is tried.

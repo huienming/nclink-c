@@ -1151,6 +1151,55 @@ ncl_err ncl_syntec_tool_get(ncl_syntec *syntec, unsigned index,
     return NCL_OK;
 }
 
+/*
+ * §11.7 写一把刀：`0x0440`，In 是 `{ nToolNo, TToolOffset }` 228 字节，跟着
+ * 16 字节桩头走（`ncl_syntec_tool_put_frame()`）。索引是**刀号（从 1 起）**，
+ * 和读用的是同一个号，也就和 `/CONTROLLER/TOOL` 的 key 一致。
+ *
+ * 应答只有 `Out_OCK_NcPutToolCompensationParams { hr }` 4 字节，所以这里看的是
+ * [16..19] 那个 hr（`ncl_syntec_reply_hr()`），不是 [20..23]。
+ */
+ncl_err ncl_syntec_tool_put(ncl_syntec *syntec, unsigned index,
+                            const ncl_syntec_tool *tool)
+{
+    uint8_t frame[NCL_SYNTEC_TOOL_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    int32_t hr = -1;
+    ncl_err err;
+
+    if (syntec == NULL || tool == NULL || index == 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_tool_put_frame(frame, sizeof(frame), tool, index,
+                                      serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_reply_hr(syntec->rx, syntec->last_rx_len, &hr)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "刀具写入失败");
+    }
+    if (hr != 0) {
+        snprintf(syntec->error, sizeof(syntec->error),
+                 "刀具 %u 写入被拒绝（hr=0x%08X）", index, (unsigned)hr);
+        return NCL_ERR_IO;
+    }
+    return NCL_OK;
+}
+
 ncl_err ncl_syntec_param_put(ncl_syntec *syntec, unsigned param, int32_t value)
 {
     uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
@@ -1174,7 +1223,7 @@ ncl_err ncl_syntec_param_put(ncl_syntec *syntec, unsigned param, int32_t value)
                                         &view);
         }
         if (err == NCL_OK &&
-            !ncl_syntec_reply_i32(syntec->rx, syntec->last_rx_len, &hr)) {
+            !ncl_syntec_reply_hr(syntec->rx, syntec->last_rx_len, &hr)) {
             err = NCL_ERR_RANGE;
         }
     }

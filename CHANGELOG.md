@@ -5,6 +5,33 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### SYNTEC：刀补**能写了**，线协议那 16 字节桩头也补对（2026-09-22，21A 实测）
+
+  * **先把线协议读对**：`OCAPIServer.exe` 是 .NET，反汇编定下真实结构 ——
+    包头之后**没有**那个 8 字节 function header，`m_WorkBuffer` 直接就是
+    `MMI_Request_KrnlAPI { uFuncID i4, dwCode i4, dwSizeIn i4, dwSizeOut i4, pBufferIn }`，
+    所以 `[12..15] uFuncID`、`[16..19] dwCode`、`[20..23] dwSizeIn`、`[24..27] dwSizeOut`，
+    **In 本体从 [28..] 起**（§3.1 里原来的 “type = 4 / 参数 A / 参数 B / flag” 就是这四格）；
+    应答 = 12 字节包头 + 传输层 hr + Out，而**每个 `Out_OCK_*` 的第一个字段都是 `hr`**，
+    即 `[16..19]`（`[20..]` 才是 Out 的第二个字段起）。10 册新增 §11.8 记这一段。
+  * **写刀补上线**（`0x0440` `NcPutToolCompensation`）：`/CONTROLLER/TOOL` 的配置对象现在
+    同时声明 `get_value` 与 **`set_value`**。一帧 256 字节 = 12 + **16 字节桩头** + 228 字节 In
+    （`{ nToolNo i32, TToolOffset 224 }`，控制器侧 `SizeOfOCK_ToolOffsetArray()` = 4 + 224）；
+    写着给一个对象、**只写要改的字段**（先读回整条打底再覆盖），未知字段当场拒（写错名字不静默）；
+    `hr != 0` 回 `NCL_ERR_IO` 并写进 `last_error`。**权限/白名单照旧在适配器外面**。
+  * **刀号从 1 起，读写同一个号**（和 `/CONTROLLER/TOOL` 的 key 一致）：写第 5 把、读第 4/5/6 把，
+    只有第 5 把变 —— 原先 “B = 刀号索引（从 0）” 是零数据下看不出来的偏移，已更正。
+  * **两处更正**：参数写入 `0x0403` 的 `A` 由 12 改成 **4**（`Out_OCK_ParamPutValueParams` 只有
+    `{ hr }`，`A` 就是 `dwSizeOut`）；`hr` 从 `[20..23]` 改读 **`[16..19]`**（新增
+    `ncl_syntec_reply_hr()`）—— 之前那格读的是 Out 的第二个字段，真机上"拒绝"会被当成成功。
+  * **21A 闭环**：本仓库 C 客户端造出 256 字节写帧 → 模拟器 `hr = 0` → 读回正是写下去的值
+    （`nose=3 radius=0.750 rwear=0.250 len0=1.500 angle=60.0`），邻刀未动，**并且落盘**
+    （`SysData/CNC/ToolTable.Dat` 的 sha256 变了，验完已按备份还原）。探针进了仓库：
+    `tools/site-probe/syntec_tool_write_probe.py`（写—读回—还原一条龙）。
+  * **测试**：新增写帧 256 字节的逐字段断言（Length/dwCode/dwSizeIn/dwSizeOut/刀号/记录偏移）、
+    写—读回、`hr != 0` 回 `NCL_ERR_IO`、0 号刀拒；适配器级补 `set_value` 两条（改两个字段、
+    未知字段拒）。mock 的应答也按真形状改成 `{ 传输层 hr, Out }`。**ctest 43/43**。
+
 ### 新代 SYNTEC 适配器：九项按 10 册 §3.1/§3.2 的现场闭环实现
 
   * **client 侧**（`clients/include/nclink/clients/syntec.h` + `clients/syntec/`）：§3.1

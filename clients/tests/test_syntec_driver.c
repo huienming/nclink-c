@@ -109,7 +109,11 @@ typedef struct {
         double  length_geometry[12];
         double  length_wear[12];
         double  tool_angle;
-    } tools[4];
+    } tools[4]; /**< 刀号就是下标（刀号从 1 起，tools[0] 不用） */
+    /* 写刀补：记下刀号与桩头里报的 dwSizeIn，用来验 228 字节那条 In */
+    uint32_t last_tool_put;
+    size_t   tool_put_in_len;
+    int      tool_put_count;
 } syntec_mock;
 
 /** 小端写一个 IEEE754 double（mock 侧造 224 字节记录用）。 */
@@ -126,6 +130,18 @@ static void put_f64(uint8_t *out, double value)
 }
 
 /** The value the mock answers for one register / state number (0 when unset). */
+/** 读一个小端 IEEE754 double（mock 验 224 字节记录用）。 */
+static double get_f64(const uint8_t *in)
+{
+    union {
+        double   d;
+        uint64_t u;
+    } v;
+
+    v.u = (uint64_t)get_u32(in) | ((uint64_t)get_u32(in + 4u) << 32);
+    return v.d;
+}
+
 static uint16_t mock_item_value(const syntec_mock *mock, uint32_t key)
 {
     size_t i;
@@ -279,7 +295,8 @@ static void mock_main(void *arg)
                     }
                     want = param_a >= 4u ? (size_t)(param_a - 4u) / 2u : 0u;
                     n = want < mock->zones[z].count ? want : mock->zones[z].count;
-                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
                     for (k = 0; k < n; k++) {
                         reply[NCL_SYNTEC_REPLY_BODY + k * 2u] =
                             (uint8_t)((uint16_t)mock->zones[z].values[k] & 0xFF);
@@ -313,7 +330,8 @@ static void mock_main(void *arg)
                             break;
                         }
                     }
-                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
                     reply[NCL_SYNTEC_REPLY_BODY + 0] = (uint8_t)(raw & 0xFFu);
                     reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)((raw >> 8) & 0xFFu);
                     reply[NCL_SYNTEC_REPLY_BODY + 2] = (uint8_t)((raw >> 16) & 0xFFu);
@@ -326,7 +344,7 @@ static void mock_main(void *arg)
                     continue;
                 }
 
-                /* 参数写入（§11.6）：A = 12、B = 参数号、flag = 新值，答 4 字节 hr。 */
+                /* 参数写入（§11.6）：A = 4、B = 参数号、flag = 新值；Out = { hr }。 */
                 if (request == NCL_SYNTEC_CODE_PARAM_PUT) {
                     uint32_t new_value = get_u32(view.body + 12);
                     uint32_t raw = (uint32_t)mock->put_hr;
@@ -336,14 +354,53 @@ static void mock_main(void *arg)
                     if (mock->put_hr == 0) {
                         mock_set_param(mock, param_b, (int32_t)new_value);
                     }
-                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
-                    reply[NCL_SYNTEC_REPLY_BODY + 0] = (uint8_t)(raw & 0xFFu);
-                    reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)((raw >> 8) & 0xFFu);
-                    reply[NCL_SYNTEC_REPLY_BODY + 2] = (uint8_t)((raw >> 16) & 0xFFu);
-                    reply[NCL_SYNTEC_REPLY_BODY + 3] = (uint8_t)((raw >> 24) & 0xFFu);
-                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + 4u));
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
+                    put_u32(reply + NCL_SYNTEC_REPLY_HR, raw);
+                    put_u32(reply, (uint32_t)(4u + sizeof(int32_t)));
                     if (ncl_socket_send(peer, reply,
-                                        NCL_SYNTEC_REPLY_BODY + 4u) != NCL_OK) {
+                                        NCL_SYNTEC_REPLY_HR + 4u) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /*
+                 * 写刀补（§11.7，0x0440）：In 是 { nToolNo, TToolOffset } 228 字节，
+                 * 跟在 16 字节桩头后面（整帧 256 字节）；Out 是 { hr }。
+                 */
+                if (request == NCL_SYNTEC_CODE_TOOL_PUT) {
+                    uint32_t index = get_u32(frame + NCL_SYNTEC_PACKET_HEADER +
+                                             NCL_SYNTEC_KRML_HEAD);
+                    const uint8_t *record = frame + NCL_SYNTEC_PACKET_HEADER +
+                                            NCL_SYNTEC_KRML_HEAD + 4u;
+                    const size_t tool_slots =
+                        sizeof(mock->tools) / sizeof(mock->tools[0]);
+                    uint32_t raw = (uint32_t)mock->put_hr;
+                    size_t k;
+
+                    mock->last_tool_put = index;
+                    mock->tool_put_in_len =
+                        (size_t)get_u32(frame + NCL_SYNTEC_PACKET_HEADER + 8u);
+                    mock->tool_put_count++;
+                    if (mock->put_hr == 0 && index < tool_slots) {
+                        mock->tools[index].tool_nose = (int32_t)get_u32(record);
+                        mock->tools[index].radius_geometry = get_f64(record + 8u);
+                        mock->tools[index].radius_wear = get_f64(record + 16u);
+                        for (k = 0; k < NCL_SYNTEC_TOOL_LENGTHS; k++) {
+                            mock->tools[index].length_geometry[k] =
+                                get_f64(record + 24u + k * 8u);
+                            mock->tools[index].length_wear[k] =
+                                get_f64(record + 120u + k * 8u);
+                        }
+                        mock->tools[index].tool_angle = get_f64(record + 216u);
+                    }
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
+                    put_u32(reply + NCL_SYNTEC_REPLY_HR, raw);
+                    put_u32(reply, (uint32_t)(4u + sizeof(int32_t)));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_HR + 4u) != NCL_OK) {
                         break;
                     }
                     continue;
@@ -353,7 +410,8 @@ static void mock_main(void *arg)
                 if (request == NCL_SYNTEC_CODE_PARAM_CAPACITY) {
                     uint32_t raw = (uint32_t)mock->schema_count;
 
-                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
                     reply[NCL_SYNTEC_REPLY_BODY + 0] = (uint8_t)(raw & 0xFFu);
                     reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)((raw >> 8) & 0xFFu);
                     reply[NCL_SYNTEC_REPLY_BODY + 2] = (uint8_t)((raw >> 16) & 0xFFu);
@@ -373,7 +431,8 @@ static void mock_main(void *arg)
                                                          : mock->schema_count;
                     size_t k;
 
-                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
                     for (k = 0; k < n; k++) {
                         uint8_t *record =
                             reply + NCL_SYNTEC_REPLY_BODY +
@@ -411,7 +470,8 @@ static void mock_main(void *arg)
                 if (request == NCL_SYNTEC_CODE_TOOL_COUNT) {
                     uint32_t raw = (uint32_t)mock->tool_count;
 
-                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
                     reply[NCL_SYNTEC_REPLY_BODY + 0] = (uint8_t)(raw & 0xFFu);
                     reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)((raw >> 8) & 0xFFu);
                     reply[NCL_SYNTEC_REPLY_BODY + 2] = (uint8_t)((raw >> 16) & 0xFFu);
@@ -424,13 +484,14 @@ static void mock_main(void *arg)
                     continue;
                 }
 
-                /* 一条刀补（§11.7）：B = 刀号索引，正文 224 字节。 */
-                if (request == NCL_SYNTEC_CODE_TOOL_GET &&
-                    param_b < mock->tool_count) {
+                /* 一条刀补（§11.7）：B = 刀号（从 1 起），正文 224 字节。 */
+                if (request == NCL_SYNTEC_CODE_TOOL_GET && param_b >= 1u &&
+                    param_b < mock->tool_count + 1u) {
                     uint8_t *record = reply + NCL_SYNTEC_REPLY_BODY;
                     size_t k;
 
-                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
                     memset(record, 0, NCL_SYNTEC_TOOL_SIZE);
                     put_u32(record, (uint32_t)mock->tools[param_b].tool_nose);
                     put_f64(record + 8u, mock->tools[param_b].radius_geometry);
@@ -460,7 +521,8 @@ static void mock_main(void *arg)
                 }
                 /* The answer repeats the request's 20 byte header and carries
                  * the value after it (§3.2). */
-                memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
                 if (code == 0x071eu) {          /* PROGRAM: the body is text  */
                     item_body = strlen(mock->program);
                     if (item_body > 0) {
@@ -1193,16 +1255,16 @@ static void test_param_table(void)
 
     NCL_TEST_CASE("11.7: a tool is 224 bytes (nose, radius, 12 lengths, angle)");
     mock->tool_count = 2;
-    mock->tools[0].tool_nose = 3;
-    mock->tools[0].radius_geometry = 0.8;
-    mock->tools[0].radius_wear = 0.01;
-    mock->tools[0].length_geometry[0] = 12.5;
-    mock->tools[0].length_geometry[11] = -1.25;
-    mock->tools[0].length_wear[11] = -0.02;
-    mock->tools[0].tool_angle = 60.0;
+    mock->tools[1].tool_nose = 3; /* 刀号 1 = tools[1]：线上刀号从 1 起 */
+    mock->tools[1].radius_geometry = 0.8;
+    mock->tools[1].radius_wear = 0.01;
+    mock->tools[1].length_geometry[0] = 12.5;
+    mock->tools[1].length_geometry[11] = -1.25;
+    mock->tools[1].length_wear[11] = -0.02;
+    mock->tools[1].tool_angle = 60.0;
     NCL_CHECK_EQ_INT(ncl_syntec_tool_count(session, &total), NCL_OK);
     NCL_CHECK_EQ_INT(total, 2);
-    NCL_CHECK_EQ_INT(ncl_syntec_tool_get(session, 0, &tool), NCL_OK);
+    NCL_CHECK_EQ_INT(ncl_syntec_tool_get(session, 1, &tool), NCL_OK);
     NCL_CHECK_EQ_INT(tool.tool_nose, 3);
     NCL_CHECK(tool.radius_geometry == 0.8);
     NCL_CHECK(tool.radius_wear == 0.01);
@@ -1211,7 +1273,7 @@ static void test_param_table(void)
     NCL_CHECK(tool.length_wear[11] == -0.02);
     NCL_CHECK(tool.tool_angle == 60.0); /* 它在最后，而且是 double */
 
-    NCL_TEST_CASE("11.6: a write lands (A=12, B=the number, flag=the value)");
+    NCL_TEST_CASE("11.6: a write lands (A=4, B=the number, flag=the value)");
     mock->put_hr = 0;
     NCL_CHECK_EQ_INT(ncl_syntec_param_put(session, 321u, 111), NCL_OK);
     NCL_CHECK_EQ_INT(mock->last_put_param, 321u);
@@ -1224,6 +1286,71 @@ static void test_param_table(void)
     NCL_CHECK_EQ_INT(ncl_syntec_param_put(session, 321u, 222), NCL_ERR_IO);
     NCL_CHECK(strstr(ncl_syntec_last_error(session), "0x00001234") != NULL);
     mock->put_hr = 0;
+
+    /*
+     * §11.7 写刀：帧是 256 字节，In 是 228 字节的 { nToolNo, TToolOffset }，
+     * 跟在 16 字节桩头后面（桩头里塞不下），A = dwSizeOut = 4（Out 只有 hr）。
+     */
+    NCL_TEST_CASE("11.7: the write frame is 16 + 228 bytes, the In behind the head");
+    {
+        uint8_t frame[NCL_SYNTEC_TOOL_FRAME];
+        ncl_syntec_tool want;
+
+        memset(&want, 0, sizeof(want));
+        want.tool_nose = 3;
+        want.radius_geometry = 0.75;
+        want.length_geometry[0] = 1.5;
+        want.tool_angle = 60.0;
+        NCL_CHECK_EQ_INT(NCL_SYNTEC_TOOL_FRAME, 256);
+        NCL_CHECK_EQ_INT(NCL_SYNTEC_TOOL_IN, 228);
+        NCL_CHECK_EQ_INT(ncl_syntec_tool_put_frame(frame, sizeof(frame), &want,
+                                                   5u, 0u),
+                         NCL_SYNTEC_TOOL_FRAME);
+        NCL_CHECK_EQ_INT(get_u32(frame), 16u + 228u);        /* Length */
+        NCL_CHECK_EQ_INT(get_u16(frame + 4), 16);            /* CmdID */
+        NCL_CHECK_EQ_INT(get_u32(frame + 8), 0x070000C8u);   /* Reserved */
+        NCL_CHECK_EQ_INT(get_u16(frame + 12), 200);          /* uFuncID */
+        NCL_CHECK_EQ_INT(get_u32(frame + 16), NCL_SYNTEC_CODE_TOOL_PUT);
+        NCL_CHECK_EQ_INT(get_u32(frame + 20), 228u);         /* dwSizeIn */
+        NCL_CHECK_EQ_INT(get_u32(frame + 24), 4u);           /* dwSizeOut */
+        NCL_CHECK_EQ_INT(get_u32(frame + 28), 5u);           /* nToolNo */
+        NCL_CHECK_EQ_INT(get_u32(frame + 32), 3u);           /* ToolNose */
+        NCL_CHECK(get_f64(frame + 40) == 0.75);              /* RadiusGeometry */
+        NCL_CHECK(get_f64(frame + 56) == 1.5);               /* LengthGeometry[0] */
+        NCL_CHECK(get_f64(frame + 248) == 60.0);             /* ToolAngle */
+    }
+
+    NCL_TEST_CASE("11.7: a tool write lands and the read gives it back");
+    {
+        ncl_syntec_tool want;
+
+        memset(&want, 0, sizeof(want));
+        want.tool_nose = 7;
+        want.radius_geometry = 1.25;
+        want.tool_angle = 80.0;
+        mock->put_hr = 0;
+        NCL_CHECK_EQ_INT(ncl_syntec_tool_put(session, 1u, &want), NCL_OK);
+        NCL_CHECK_EQ_INT(mock->last_tool_put, 1u);
+        NCL_CHECK_EQ_INT(mock->tool_put_in_len, NCL_SYNTEC_TOOL_IN);
+        NCL_CHECK_EQ_INT(ncl_syntec_tool_get(session, 1u, &tool), NCL_OK);
+        NCL_CHECK_EQ_INT(tool.tool_nose, 7);
+        NCL_CHECK(tool.radius_geometry == 1.25);
+        NCL_CHECK(tool.tool_angle == 80.0);
+    }
+
+    NCL_TEST_CASE("11.7: a refused tool write is NCL_ERR_IO, tool 0 is invalid");
+    {
+        ncl_syntec_tool want;
+
+        memset(&want, 0, sizeof(want));
+        want.tool_nose = 9;
+        mock->put_hr = 0x1234;
+        NCL_CHECK_EQ_INT(ncl_syntec_tool_put(session, 1u, &want), NCL_ERR_IO);
+        NCL_CHECK(strstr(ncl_syntec_last_error(session), "0x00001234") != NULL);
+        mock->put_hr = 0;
+        NCL_CHECK_EQ_INT(ncl_syntec_tool_put(session, 0u, &want),
+                         NCL_ERR_INVALID_ARG); /* 刀号从 1 起 */
+    }
 
     ncl_syntec_close(session);
     mock_stop(mock);
@@ -1351,9 +1478,9 @@ static void test_adapter(void)
     mock_set_param(mock, 321u, 100);
     /* 刀具表（§11.7）：两把刀，第一把给点非零值。 */
     mock->tool_count = 2;
-    mock->tools[0].tool_nose = 3;
-    mock->tools[0].radius_geometry = 0.8;
-    mock->tools[0].tool_angle = 60.0;
+    mock->tools[1].tool_nose = 3; /* 刀号 1 = tools[1] */
+    mock->tools[1].radius_geometry = 0.8;
+    mock->tools[1].tool_angle = 60.0;
     snprintf(mock->program, sizeof(mock->program), "O1000");
 
     modules = ncl_modules_create();
@@ -1686,6 +1813,73 @@ static void test_adapter(void)
                 NCL_CHECK(ncl_json_as_int(ncl_json_arr_get(row->values, 0), &length));
                 NCL_CHECK_EQ_INT(length, 1);
             }
+            ncl_message_free(response);
+        }
+    }
+
+    NCL_TEST_CASE("11.7: a Set writes the tool (permissions live outside)");
+    {
+        ncl_message *write = ncl_message_new(NCL_MSG_SET_REQUEST);
+        ncl_set_request_item *item =
+            ncl_set_request_item_new("/MACHINE/CONTROLLER/TOOL");
+        ncl_message *response;
+        ncl_json *value;
+
+        NCL_CHECK(write != NULL && item != NULL);
+        /* 只给要改的字段：适配器先读回整条打底，别的字段不会被动。 */
+        value = ncl_json_new_object();
+        NCL_CHECK(value != NULL);
+        (void)ncl_json_obj_set_double(value, "radius_wear", 0.02);
+        (void)ncl_json_obj_set_int(value, "kind", 5);
+        (void)ncl_params_set_string(&item->params, "operation", "set_value");
+        (void)ncl_params_set_string(&item->params, "keys", "1");
+        (void)ncl_json_obj_set(item->params, "value", value);
+        (void)ncl_message_set_message_id(write, "s2");
+        (void)ncl_message_add_set_request_item(write, item);
+        mock->put_hr = 0;
+        response = ncl_server_invoke_set(ncl_host_server(host), write);
+        ncl_message_free(write);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_set_response_item *row =
+                ncl_ptrvec_at(&response->as.set_response.items, 0);
+
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            ncl_message_free(response);
+        }
+        NCL_CHECK_EQ_INT(mock->last_tool_put, 1u);
+        NCL_CHECK_EQ_INT(mock->tool_put_in_len, NCL_SYNTEC_TOOL_IN);
+        /* 改的两个字段进去了，没提的半径还是 mock 里原来那个 0.8 */
+        NCL_CHECK_EQ_INT(mock->tools[1].tool_nose, 5);
+        NCL_CHECK(mock->tools[1].radius_wear == 0.02);
+        NCL_CHECK(mock->tools[1].radius_geometry == 0.8);
+    }
+
+    NCL_TEST_CASE("11.7: a Set refuses a field the tool does not have");
+    {
+        ncl_message *write = ncl_message_new(NCL_MSG_SET_REQUEST);
+        ncl_set_request_item *item =
+            ncl_set_request_item_new("/MACHINE/CONTROLLER/TOOL");
+        ncl_message *response;
+        ncl_json *value;
+
+        NCL_CHECK(write != NULL && item != NULL);
+        value = ncl_json_new_object();
+        NCL_CHECK(value != NULL);
+        (void)ncl_json_obj_set_double(value, "radiuswear", 0.02); /* 少个下划线 */
+        (void)ncl_params_set_string(&item->params, "operation", "set_value");
+        (void)ncl_params_set_string(&item->params, "keys", "1");
+        (void)ncl_json_obj_set(item->params, "value", value);
+        (void)ncl_message_set_message_id(write, "s3");
+        (void)ncl_message_add_set_request_item(write, item);
+        response = ncl_server_invoke_set(ncl_host_server(host), write);
+        ncl_message_free(write);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_set_response_item *row =
+                ncl_ptrvec_at(&response->as.set_response.items, 0);
+
+            NCL_CHECK(row != NULL && !ncl_check_is_code_ok(row->code));
             ncl_message_free(response);
         }
     }

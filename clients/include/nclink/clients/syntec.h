@@ -43,6 +43,35 @@ extern "C" {
 #define NCL_SYNTEC_PACKET_HEADER 12u
 #define NCL_SYNTEC_FUNCTION_HEADER 8u
 
+/**
+ * KrnlAPI 的桩头其实是 **16** 字节，不是 NCL_SYNTEC_FUNCTION_HEADER 那 8 字节：
+ * OCAPIServer 把包头之后的全部字节当成 `Syntec.OpenCNC.MMI_Request_KrnlAPI`
+ * （`{ uFuncID i4, dwCode i4, dwSizeIn i4, dwSizeOut i4, pBufferIn ptr }`，
+ * 线上只发前 16 字节），于是
+ *
+ *   [0..3]   uFuncID   = 200（KrnlAPI 那一路的号）
+ *   [4..7]   dwCode    = 0x043F / 0x0440 …（要调哪一个 Krnl API）
+ *   [8..11]  dwSizeIn  = In 的字节数
+ *   [12..15] dwSizeOut = Out 的字节数（连 Out 自己的 hr 一起算）
+ *   [16..]   In 本体，紧跟桩头，大到几百字节也走这里
+ *
+ * 因此一帧 = 12 + 16 + dwSizeIn，包头的 Length 字段 = 16 + dwSizeIn。
+ * `ncl_syntec_item_frame()` 造的那些短帧（dwSizeIn 4 或 8）把 In 塞在桩头最后
+ * 8 个字节里，长度同样是 24，与抓到的现场帧逐字节一致。
+ */
+#define NCL_SYNTEC_KRML_HEAD 16u
+
+/**
+ * 应答的形状：12 字节包头 + 传输层 hr（i4）+ Out，而 **Out 的第一个字段永远是
+ * 这个 Krnl API 自己的 hr**（控制器侧每个 `Out_OCK_*` 都这么定义，调用方也一律
+ * 先看它）。所以
+ *
+ *   [12..15] 传输层 hr（Socket 层，0 = 送到了）
+ *   [16..19] OCK 的 hr（0 = 控制器认了）   NCL_SYNTEC_REPLY_HR
+ *   [20..]   Out 的第二个字段起           NCL_SYNTEC_REPLY_BODY
+ */
+#define NCL_SYNTEC_REPLY_HR 16u
+
 /** The 12 byte packet header, as the server's CTCPCMD_PacketStart. */
 typedef struct {
     uint32_t length;   /**< content bytes, header excluded */
@@ -257,6 +286,19 @@ size_t ncl_syntec_zone_frame(uint8_t *out, size_t cap, unsigned zone,
  */
 #define NCL_SYNTEC_CODE_TOOL_COUNT 0x04C2u
 #define NCL_SYNTEC_CODE_TOOL_GET 0x043Fu
+#define NCL_SYNTEC_CODE_TOOL_PUT 0x0440u
+
+/**
+ * 写一把（`0x0440` `NcPutToolCompensation`，`CODE(1,64)`）：In 是
+ * `{ nToolNo i32, TToolOffset }` = 4 + 224 = **228** 字节（控制器侧
+ * `JMarshal::SizeOfOCK_ToolOffsetArray()` = `sizeof(int) + SizeOfToolOffset()`），
+ * 所以整帧 = 12（包头）+ 16（桩头）+ 228 = **256** 字节。
+ *
+ * 桩头那 16 字节里放不下 228 字节的 In，In 必须**跟在桩头后面**（见 `NCL_SYNTEC_KRML_HEAD`）。
+ */
+#define NCL_SYNTEC_TOOL_IN (4u + NCL_SYNTEC_TOOL_SIZE)
+#define NCL_SYNTEC_TOOL_FRAME                                                  \
+    (NCL_SYNTEC_PACKET_HEADER + NCL_SYNTEC_KRML_HEAD + NCL_SYNTEC_TOOL_IN)
 
 /** 一条刀补的字节数。 */
 #define NCL_SYNTEC_TOOL_SIZE 224u
@@ -276,6 +318,22 @@ typedef struct {
     double  length_wear[NCL_SYNTEC_TOOL_LENGTHS];
     double  tool_angle;
 } ncl_syntec_tool;
+
+/**
+ * 把一条刀补编成线上那 224 字节（`ncl_syntec_tool_decode()` 的反函数）。
+ * @p record 至少 NCL_SYNTEC_TOOL_SIZE 字节，多出来的位置填 0。
+ */
+bool ncl_syntec_tool_encode(const ncl_syntec_tool *tool, uint8_t *record,
+                            size_t cap);
+
+/**
+ * 写一把刀：请求 `0x0440`，帧长 NCL_SYNTEC_TOOL_FRAME（256）字节，
+ * In = `{ nToolNo, TToolOffset }`。@p index 是**刀号（从 1 起）**，
+ * 和读用的是同一个号，也就和 `/CONTROLLER/TOOL` 的 key 一致。
+ */
+size_t ncl_syntec_tool_put_frame(uint8_t *out, size_t cap,
+                                 const ncl_syntec_tool *tool, unsigned index,
+                                 uint8_t serial);
 #define NCL_SYNTEC_CODE_STATE_GET 0x0407u
 
 /** Build one parameter read: request 0x0404, A = 8, B = the parameter number. */
@@ -298,6 +356,14 @@ size_t ncl_syntec_param_schema_frame(uint8_t *out, size_t cap, size_t count,
 
 /** The i32 a parameter answer carries ([20..23], little endian). */
 bool ncl_syntec_reply_i32(const uint8_t *frame, size_t len, int32_t *value);
+
+/**
+ * The Krnl API's own `hr` ([16..19], little endian): 0 means the controller
+ * accepted the call. `ncl_syntec_reply_i32()` reads [20..23], which is the
+ * Out structure's *second* field - right for a read (the value follows the hr)
+ * and meaningless for a write (the Out of a write is just `{ hr }`).
+ */
+bool ncl_syntec_reply_hr(const uint8_t *frame, size_t len, int32_t *hr);
 
 /* ============================================================ state zones == */
 
@@ -414,6 +480,18 @@ ncl_err ncl_syntec_tool_count(ncl_syntec *syntec, size_t *count);
 /** 读第 @p index 把刀的刀补（0x043F，一条 224 字节）。 */
 ncl_err ncl_syntec_tool_get(ncl_syntec *syntec, unsigned index,
                             ncl_syntec_tool *out);
+
+/**
+ * 写一把刀（KrnlAPI 0x0440）。@p index 是**刀号，从 1 起** —— 和读用的是同一个号，
+ * 也就是 /CONTROLLER/TOOL 的 key。
+ *
+ * 一次把整条 224 字节记录写下去：控制器侧自己的
+ * `NcPutToolCompensation(nToolNo, TToolOffset)` 收的就是完整记录
+ * （它的 `SetToolOffsetData()` 把字段分成几组反复写，但每次发的都是整条）。
+ * 控制器回 hr，非 0 返 NCL_ERR_IO，原文在 ncl_syntec_last_error()。
+ */
+ncl_err ncl_syntec_tool_put(ncl_syntec *syntec, unsigned index,
+                            const ncl_syntec_tool *tool);
 
 /** 把那两个读法的帧拼出来（A = 4 + 正文，B = 索引，与状态区同一个形状）。 */
 size_t ncl_syntec_tool_count_frame(uint8_t *out, size_t cap, uint8_t serial);

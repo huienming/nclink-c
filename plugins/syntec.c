@@ -26,9 +26,13 @@
  * SPDL_SPEED / SPDL_OVERRIDE / WARNING。默认采样通道按现场口径放四样：设备状态、
  * 加工计件、程序名称、报警；其余按需读。
  *
- * 只读：现场网关那一侧的新代也只有读（`/SYNTEC/CNC/*` 12 条 = Open/Close/GetResponse
- * + 九项）。写入类（宏、参数、刀补、PLC 写、程序上下行）client 里没有对应调用，
- * 这里就不声明 —— 没有声明的操作走不到，也不会假装能写。
+ * **读**：现场网关那一侧的新代是读（`/SYNTEC/CNC/*` 12 条 = Open/Close/GetResponse
+ * + 九项），这也是这里的主体。
+ *
+ * **写**：参数（`/CONTROLLER/PARAMETER` 的 `set_value`，10 册 §11.6）与刀补
+ * （`/CONTROLLER/TOOL` 的 `set_value`，§11.7）都开了 —— 用户口径是**权限在适配器外面控**，
+ * 这里只提供能力。宏、PLC 写、程序上下行仍旧不声明：client 里没有对应调用，
+ * 没有声明的操作走不到，也不会假装能写。
  */
 #include "nclink/ncl_tool.h"
 
@@ -315,8 +319,10 @@ static size_t syntec_param_key_count(const ncl_json *keys)
  *   get_attributes  按号取元数据：答 `[{"no","title","flags","fallback"}, ...]`
  *
  * 号不在表里回 `NCL_ERR_NOT_FOUND`；一次最多 `SYNTEC_PARAM_BATCH_MAX` 条。
- * **写（set_value / add / delete）不声明**：控制器侧没验过怎么写参数，
- * 没声明的操作由宿主回 "Unsupported Operation"，比给个假写入口诚实。
+ *
+ * **写开 `set_value`**（§11.6，2026-09-22 在 21A 上闭环）：`{"keys":"321","value":111}`
+ * 或直接给字典 `{"321":111}`。`add` / `delete` 不声明：参数表是控制器定的，没有这两个动作。
+ * 权限、白名单、二次确认都在适配器外面（用户口径："权限在外面控制"）。
  */
 static ncl_err syntec_parameter(void *ctx, const ncl_tool_point *self,
                                 ncl_operation op, const ncl_json *params,
@@ -571,8 +577,100 @@ static ncl_json *syntec_tool_json(const ncl_syntec_tool *tool, unsigned no)
 }
 
 /**
+ * 写刀补时把 value 里的字段盖到一条刀补上（key 定刀号，字段按上面的元数据）。
+ *
+ * 只认上面 get_attributes 报出来的那些名字，多一个就报错：CNC 的模型不想改来
+ * 改去，写错了名字（"radiuswear"）应该当场被拒，而不是悄悄什么都没写。
+ * `id` 是只读的，给了也照收（读回来的对象直接改两个字段再写回去就行）。
+ */
+static ncl_err syntec_tool_patch(ncl_syntec_tool *tool, const ncl_json *value,
+                                 char **reason)
+{
+    size_t n = ncl_json_obj_len(value);
+    size_t i;
+
+    if (n == 0) {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                             "value 要是刀补对象，至少给一个字段");
+    }
+    for (i = 0; i < n; i++) {
+        const char *name = ncl_json_obj_key_at(value, i);
+        const ncl_json *item = ncl_json_obj_val_at(value, i);
+        size_t k;
+
+        if (name == NULL || item == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "value 里有坏字段");
+        }
+        if (strcmp(name, "id") == 0) {
+            continue; /* 刀号由 key 定 */
+        }
+        if (strcmp(name, "kind") == 0 || strcmp(name, "tool_nose") == 0) {
+            long long nose = 0;
+
+            /* 线上 ToolNose 是 i16，超了会在控制器那头被截断 */
+            if (!ncl_json_as_int(item, &nose) || nose < -32768 || nose > 32767) {
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "kind 要是 -32768..32767 的整数");
+            }
+            tool->tool_nose = (int32_t)nose;
+            continue;
+        }
+        if (strcmp(name, "radius") == 0) {
+            if (!ncl_json_as_double(item, &tool->radius_geometry)) {
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "radius 要是数");
+            }
+            continue;
+        }
+        if (strcmp(name, "radius_wear") == 0) {
+            if (!ncl_json_as_double(item, &tool->radius_wear)) {
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "radius_wear 要是数");
+            }
+            continue;
+        }
+        if (strcmp(name, "tool_angle") == 0) {
+            if (!ncl_json_as_double(item, &tool->tool_angle)) {
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "tool_angle 要是数");
+            }
+            continue;
+        }
+        if (strcmp(name, "length") == 0) { /* length = 长度几何第 0 组 */
+            if (!ncl_json_as_double(item, &tool->length_geometry[0])) {
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "length 要是数");
+            }
+            continue;
+        }
+        if (strcmp(name, "length_geometry") == 0 ||
+            strcmp(name, "length_wear") == 0) {
+            double *dst = strcmp(name, "length_geometry") == 0
+                              ? tool->length_geometry
+                              : tool->length_wear;
+
+            if (ncl_json_arr_len(item) != NCL_SYNTEC_TOOL_LENGTHS) {
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "%s 要正好 %u 个数", name,
+                                     (unsigned)NCL_SYNTEC_TOOL_LENGTHS);
+            }
+            for (k = 0; k < NCL_SYNTEC_TOOL_LENGTHS; k++) {
+                if (!ncl_json_as_double(ncl_json_arr_get(item, k), &dst[k])) {
+                    return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                         "%s 第 %u 个不是数", name,
+                                         (unsigned)(k + 1));
+                }
+            }
+            continue;
+        }
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "不认识的字段 %s", name);
+    }
+    return NCL_OK;
+}
+
+/**
  * `/CONTROLLER/TOOL`：刀具表（§11.7）。刀号即 key（从 1 起），元素就是那把刀的刀补。
- * 只答读：写刀补（`0x0440`）的帧装不下 224 字节，要先真机抓包（这里不声明 set_value）。
+ *
+ * 读：`0x04C2` 问条数、`0x043F` 读一条（224 字节）。
+ * 写：`0x0440` 一条 **256 字节**的帧 —— 16 字节桩头后面直接跟 228 字节的
+ * `{ nToolNo, TToolOffset }`。set_value 先读回当前值打底、再让给到的字段覆盖，
+ * 所以只想改一个磨损值就只给那一个字段。
  */
 static ncl_err syntec_tool_table(void *ctx, const ncl_tool_point *self,
                                  ncl_operation op, const ncl_json *params,
@@ -680,7 +778,7 @@ static ncl_err syntec_tool_table(void *ctx, const ncl_tool_point *self,
                 return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
                                      "keys 里第 %u 个不是刀号", (unsigned)(i + 1));
             }
-            rc = ncl_syntec_tool_get(syntec, (unsigned)(no - 1), &tool);
+            rc = ncl_syntec_tool_get(syntec, (unsigned)no, &tool); /* 刀号从 1 起，和线上一致 */
             if (rc != NCL_OK) {
                 ncl_json_free(out);
                 return ncl_tool_fail(reason, rc, "%s",
@@ -695,6 +793,56 @@ static ncl_err syntec_tool_table(void *ctx, const ncl_tool_point *self,
             }
         }
         *result = out;
+        return NCL_OK;
+    }
+    case NCL_OP_SET_VALUE: /* 写刀补（§11.7 的 0x0440）；权限在适配器外面控 */
+    {
+        const ncl_json *value = ncl_params_get(params, "value");
+        ncl_syntec_tool tool;
+        long long no = 0;
+
+        if (!syntec_param_key(keys, 0, &no) || no < 1 || no > 0xFFFF) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                 "要 keys=一个刀号（从 1 起）");
+        }
+        if (value == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                 "要 value=一条刀补对象");
+        }
+        /*
+         * 一次写整条记录（控制器侧的 NcPutToolCompensation 收的就是整条 224 字节），
+         * 所以先读回当前值打底、再让给到的字段覆盖：只写一两个字段也不会把
+         * 别的字段抹掉。
+         */
+        rc = ncl_syntec_tool_get(syntec, (unsigned)no, &tool);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
+        }
+        rc = syntec_tool_patch(&tool, value, reason);
+        if (rc != NCL_OK) {
+            return rc;
+        }
+        rc = ncl_syntec_tool_put(syntec, (unsigned)no, &tool);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
+        }
+        {
+            ncl_json *out = ncl_json_new_object();
+            ncl_json *entry;
+            char name[16];
+
+            if (out == NULL) {
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+            entry = syntec_tool_json(&tool, (unsigned)no);
+            snprintf(name, sizeof(name), "%d", (int)no);
+            if (entry == NULL || ncl_json_obj_set(out, name, entry) != NCL_OK) {
+                ncl_json_free(entry);
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+            *result = out;
+        }
         return NCL_OK;
     }
     default:
@@ -720,8 +868,8 @@ static void syntec_last_raw(void *ctx, ncl_tool_frames *out)
 
 /* ------------------------------------------------------------------ 工具 -- */
 
-NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
-               "MACHINE", 1000, 1000, syntec_open, syntec_close)
+NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000)", "MACHINE",
+               1000, 1000, syntec_open, syntec_close)
 
     /* 默认采样通道只放四样（现场口径）：设备状态、加工计件、程序名称、报警。 */
     NCL_DATAITEM_STR_SAMPLED("/STATUS", ncl_syntec_status)
@@ -807,16 +955,18 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
     /* 系统参数（§11.4）：按设备模型摆成**配置对象**（/CONTROLLER/PARAMETER，
      * 册 4 说它归 configs、dataType = HASH），按标准的 Query 操作回答：
      * get_length / get_keys / get_value（按号读值）/ get_attributes（按号取标题）。
-     * 写不声明：控制器侧没验过写参数。 */
+     * 写：set_value（§11.6），权限在适配器外面控。 */
     NCL_CONFIG_OPS("/CONTROLLER/PARAMETER", syntec_parameter, NULL,
                    NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) |
                        NCL_OP_BIT(NCL_OP_GET_LENGTH) | NCL_OP_BIT(NCL_OP_GET_KEYS) |
                        NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
 
     /* 刀具表（§11.7）：一条 config，元素就是那把刀的刀补（TOOLPARAM 是 TOOL 的元素）。
-     * 只读：写刀补 0x0440 的帧装不下 224 字节，待真机抓包。 */
+     * 读（0x04C2 条数 / 0x043F 一条）与写（0x0440，整条 224 字节）都在；
+     * 写权限在适配器外面控（"权限在外面"），这里只提供能力。 */
     NCL_CONFIG_OPS("/CONTROLLER/TOOL", syntec_tool_table, NULL,
-                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) |
+                       NCL_OP_BIT(NCL_OP_GET_LENGTH) |
                        NCL_OP_BIT(NCL_OP_GET_KEYS) |
                        NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
 

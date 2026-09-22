@@ -589,9 +589,13 @@ size_t ncl_syntec_param_frame(uint8_t *out, size_t cap, unsigned param,
 size_t ncl_syntec_param_put_frame(uint8_t *out, size_t cap, unsigned param,
                                   int32_t value, uint8_t serial)
 {
-    /* §11.6：In 是 { nNo, newVal } -> A = 8 + 4，B = 参数号，flag = 新值。 */
+    /*
+     * §11.6：In 是 { nNo, newVal }（8 字节），B = 参数号、flag = 新值。
+     * A 是 **dwSizeOut**，而 `Out_OCK_ParamPutValueParams` 只有 `{ hr }`（4 字节），
+     * 所以 A = 4：原先多要的那 4 个字节只是填充，仿真器不查，真机上白多而已。
+     */
     return syntec_code_frame_flag(out, cap, NCL_SYNTEC_CODE_PARAM_PUT, param,
-                                  sizeof(int32_t), (uint32_t)value, serial);
+                                  0u, (uint32_t)value, serial);
 }
 
 size_t ncl_syntec_param_capacity_frame(uint8_t *out, size_t cap, uint8_t serial)
@@ -619,6 +623,15 @@ bool ncl_syntec_reply_i32(const uint8_t *frame, size_t len, int32_t *value)
         return false;
     }
     *value = (int32_t)get_u32(frame + NCL_SYNTEC_REPLY_BODY);
+    return true;
+}
+
+bool ncl_syntec_reply_hr(const uint8_t *frame, size_t len, int32_t *hr)
+{
+    if (frame == NULL || hr == NULL || len < NCL_SYNTEC_REPLY_HR + 4u) {
+        return false;
+    }
+    *hr = (int32_t)get_u32(frame + NCL_SYNTEC_REPLY_HR);
     return true;
 }
 
@@ -707,4 +720,74 @@ bool ncl_syntec_tool_decode(const uint8_t *frame, size_t len,
     out->radius_wear = syntec_read_f64(frame + NCL_SYNTEC_REPLY_BODY + 16u);
     out->tool_angle = syntec_read_f64(frame + NCL_SYNTEC_REPLY_BODY + 216u);
     return true;
+}
+
+/** С�˰�һ�� u32 / һ�� IEEE754 double д��ȥ */
+static void syntec_write_u32(uint8_t *out, uint32_t v)
+{
+    out[0] = (uint8_t)(v & 0xFFu);
+    out[1] = (uint8_t)((v >> 8) & 0xFFu);
+    out[2] = (uint8_t)((v >> 16) & 0xFFu);
+    out[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static void syntec_write_f64(uint8_t *out, double v)
+{
+    union {
+        uint64_t bits;
+        double   value;
+    } u;
+
+    u.value = v;
+    syntec_write_u32(out, (uint32_t)(u.bits & 0xFFFFFFFFu));
+    syntec_write_u32(out + 4, (uint32_t)(u.bits >> 32));
+}
+
+bool ncl_syntec_tool_encode(const ncl_syntec_tool *tool, uint8_t *record,
+                            size_t cap)
+{
+    size_t i;
+
+    if (tool == NULL || record == NULL || cap < NCL_SYNTEC_TOOL_SIZE) {
+        return false;
+    }
+    /* §11.7 那张偏移表，`[4..7]` 是留白，一定填 0。 */
+    memset(record, 0, NCL_SYNTEC_TOOL_SIZE);
+    syntec_write_u32(record, (uint32_t)tool->tool_nose);
+    syntec_write_f64(record + 8u, tool->radius_geometry);
+    syntec_write_f64(record + 16u, tool->radius_wear);
+    for (i = 0; i < NCL_SYNTEC_TOOL_LENGTHS; i++) {
+        syntec_write_f64(record + 24u + i * 8u, tool->length_geometry[i]);
+        syntec_write_f64(record + 120u + i * 8u, tool->length_wear[i]);
+    }
+    syntec_write_f64(record + 216u, tool->tool_angle);
+    return true;
+}
+
+size_t ncl_syntec_tool_put_frame(uint8_t *out, size_t cap,
+                                 const ncl_syntec_tool *tool, unsigned index,
+                                 uint8_t serial)
+{
+    if (out == NULL || tool == NULL || cap < NCL_SYNTEC_TOOL_FRAME) {
+        return 0;
+    }
+    memset(out, 0, NCL_SYNTEC_TOOL_FRAME);
+    /* Length = 桩头 16 + In 228 */
+    put_u32(out, (uint32_t)(NCL_SYNTEC_KRML_HEAD + NCL_SYNTEC_TOOL_IN));
+    put_u16(out + 4, NCL_SYNTEC_CMD_ITEM);
+    put_u32(out + 8, 0x0700u * 0x10000u + NCL_SYNTEC_CMD_KRML_API); /* 200 */
+    put_u16(out + 12, (uint16_t)NCL_SYNTEC_CMD_KRML_API);
+    out[14] = serial;
+    /* 桩头：[12..15] uFuncID 之后是 dwCode / dwSizeIn / dwSizeOut。 */
+    put_u32(out + NCL_SYNTEC_PACKET_HEADER + 4u, NCL_SYNTEC_CODE_TOOL_PUT);
+    put_u32(out + NCL_SYNTEC_PACKET_HEADER + 8u, NCL_SYNTEC_TOOL_IN);
+    put_u32(out + NCL_SYNTEC_PACKET_HEADER + 12u, sizeof(int32_t));
+    /* In 本体：{ nToolNo, TToolOffset }，紧跟桩头。 */
+    put_u32(out + NCL_SYNTEC_PACKET_HEADER + NCL_SYNTEC_KRML_HEAD, index);
+    if (!ncl_syntec_tool_encode(
+            tool, out + NCL_SYNTEC_PACKET_HEADER + NCL_SYNTEC_KRML_HEAD + 4u,
+            NCL_SYNTEC_TOOL_SIZE)) {
+        return 0;
+    }
+    return NCL_SYNTEC_TOOL_FRAME;
 }
