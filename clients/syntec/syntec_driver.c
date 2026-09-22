@@ -1465,6 +1465,19 @@ ncl_err ncl_syntec_param_find(ncl_syntec *syntec, unsigned no, size_t *index)
     return NCL_ERR_NOT_FOUND;
 }
 
+ncl_err ncl_syntec_command_position(ncl_syntec *syntec, double *value)
+{
+    /*
+     * §11.3.4：交付的客户端里只有 机械/绝对/相对/剩余 四个坐标 getter，没有"指令位置"，
+     * 也没有跟随误差。宁可照实报"这一格还没有来源"，也不拿"实际 + 剩余距离"凑数——
+     * 那两件是不是一回事，还没在真机上验证过。
+     */
+    if (syntec == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    return syntec_note(syntec, NCL_ERR_UNAVAILABLE, "指令位置");
+}
+
 void ncl_syntec_last_raw(const ncl_syntec *syntec, const uint8_t **request,
                          size_t *request_len, const uint8_t **reply,
                          size_t *reply_len)

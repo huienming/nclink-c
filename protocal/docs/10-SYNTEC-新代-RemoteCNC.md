@@ -887,10 +887,10 @@ iNC-BOX 的格子是**按轴 × 驱动链**分层的（`/AXIS@<轴>/MOTOR/POSITI
 | 剩余距离 | `/AXIS@X/MOTOR/VARIABLE@DISTANCE` |
 | 跟随误差（zone 待找） | `/AXIS@X/SERVO_DRIVER/VARIABLE@<名>`（伺服变量口径；FANUC 那条也是 `/AXIS@n/SERVO_DRIVER/VARIABLE@RSHORT`） |
 
-#### 11.3.3 落地：位置四组已实现（2026-09-22）
+#### 11.3.3 落地：位置配全（六格 × 九轴，2026-09-22）
 
-**跟随误差与指令位置不做**（用户口径：跟随误差不要，指令位置随之也不需要）——
-所以只落四组坐标。编码在 21A 上试出来并定死：
+**跟随误差仍然不做**（用户口径）；**指令位置这一轮先占位**（见 §11.3.4）。
+编码在 21A 上试出来并定死：
 
 ```
 读一个状态区：request 0x0407，A = 4 + 2×轴数，B = 区号，flag = 1
@@ -898,31 +898,52 @@ iNC-BOX 的格子是**按轴 × 驱动链**分层的（`/AXIS@<轴>/MOTOR/POSITI
 ```
 
 * 实测：`B=261` 答 **3**（±0.000 的三位小数 ✓ 与画面一致）；`101/141/181/221` 在静止时
-  答案是一串 0（0.000 ✓）；`A=6/8/12/20` 的应答正文字节数恰好是 `A-4` ✓（这条定死了
-  "A = 4 + 2×轴数"）。
+  答案是一串 0（0.000 ✓）；`A=6/8/12/20` 的应答正文字节数恰好是 `A-4` ✓（这条把
+  “A = 4 + 2×轴数”定死了）。
 * 代码：client 侧 `ncl_syntec_read_zone()` / `ncl_syntec_decimals()` /
-  `ncl_syntec_position()`（`clients/include/nclink/clients/syntec.h` +
-  `clients/syntec/`），适配器侧 8 个点位（4 组 × X/Z，轴号 0=X、1=Z，声明顺序即轴序）：
+  `ncl_syntec_position()` / `ncl_syntec_command_position()`；适配器侧 54 个位置点位（9 轴 × 6 格）。
 
-| 点位（每轴一条） | 状态区 |
+| 点位（**九个轴字母** X/Y/Z/A/B/C/U/V/W，每轴六格） | 来源 |
 |---|---|
-| `/AXIS@<轴>/MOTOR/POSITION` | 101（**机械坐标 = 实际位置**） |
-| `/AXIS@<轴>/MOTOR/VARIABLE@ABSOLUTE` | 181 |
-| `/AXIS@<轴>/MOTOR/VARIABLE@RELATIVE` | 141 |
-| `/AXIS@<轴>/MOTOR/VARIABLE@DISTANCE` | 221（剩余距离） |
+| `/AXIS@<轴>/SCREW/POSITION` | **实际位置**（丝杠侧；机械坐标，区 101） |
+| `/AXIS@<轴>/SERVO_DRIVER/POSITION` | **指令位置**（驱动侧）——见 §11.3.4：控制器里还没找到这一项 |
+| `/AXIS@<轴>/MOTOR/POSITION` | 机械坐标（iNC-BOX 格子，与 `SCREW/POSITION` 同源） |
+| `/AXIS@<轴>/MOTOR/VARIABLE@ABSOLUTE` | 绝对坐标（区 181） |
+| `/AXIS@<轴>/MOTOR/VARIABLE@RELATIVE` | 相对坐标（区 141） |
+| `/AXIS@<轴>/MOTOR/VARIABLE@DISTANCE` | 剩余距离（区 221） |
 
-**轴按五轴声明**（`X/Y/Z/A/C`，与 FANUC 适配器同一套格子——
-一个模型就能套各种机型）：4 组 × 5 轴 = **20 个位置点位**。路径写死、
-**轴号在取值时现查**（§11.4）；这台机器没配的轴（控制器轴表里没这个
-名字）照实报错，不会给个数、也不会读到别的轴上。
+实际/指令这一对的摆放照 `examples/device_model.c` 的设备模型：**实际位置在丝杠侧、
+指令位置在驱动侧**。加上原来那几个坐标组（63 个点位 = 9 项 + 9 轴 × 6 格）一次配全，
+以后不再改模型。**路径写死、轴号在取值时现查**（§11.4）：这台机器没配的轴
+（控制器轴表里没这个名字）照实报 `NCL_ERR_NOT_FOUND`，不给数、也不会读到别的轴上。
 
-**实测（21A 模拟器，`--once`）**：**29 个点位**（9 项 + 20 个位置），
-其中 **25 个读得到**（这台模拟器配了 X/Y/Z/C：控制器轴表 port>0 的槽是
-0/1/2/5），**4 个报错**——`/AXIS@A/...` 四组全部 `NotFoundException`（A 没配），
-正是“没有的轴就返回错误”。mock 侧另有断言：状态区摆 `{1234, 777, -500}`，
-`/AXIS@Z/...` 必须落在下标 2 才读到 `-500` ✓（证明轴号是现查的，不是声明顺序）；
-`/AXIS@Y|A|C/...` 在没配的机器上全部报错 ✓。
-（不是只跟 0 对得上）。
+**实测（21A 模拟器，`--once`）**：**63 个点位**——
+- **29 个读得到**：9 项 + X/Y/Z/C 四个轴 × 5 格（这台运行配了 X/Y/Z/C，
+  控制器轴表 `port > 0` 的槽是 0/1/2/5）；
+- **25 个报错**：A/B/U/V/W 五个字母 × 5 格全部 `NotFoundException`
+  （这台机器没配这些轴）——正是“没配的轴就返回错误”；
+- **9 个待抓包**：九个轴的 `SERVO_DRIVER/POSITION`（指令位置，§11.3.4）。
+
+mock 侧断言：状态区摆 `{1234, 777, -500}`，`/AXIS@Z/...` 必须落在下标 2 才读到
+`-500` ✓（轴号是现查的）；`SCREW/POSITION` 与 `MOTOR/POSITION` 同值 ✓；`SERVO_DRIVER/POSITION`
+回 `NCL_ERR_UNAVAILABLE` ✓；没配的字母（A/B/C/U/V/W）每一格都报错 ✓。
+
+#### 11.3.4 指令位置：占位了，但**控制器里还没有这一项**（2026-09-22）
+
+交付的客户端（`Syntec.RemoteCNC.Win32.dll` / `SyntecRemoteObj`）只有四个坐标 getter：
+`get_MachineCoordinate` / `get_AbsoluteCoordinate` / `get_RelativeCoordinate` /
+`get_DistanceCoordinate`——**没有“指令位置”，也没有跟随误差**。所以这一格先占位：
+`ncl_syntec_command_position()` 直接回 `NCL_ERR_UNAVAILABLE`（理由写在 `last_error`）。
+
+两条候选路宄，都**还没验证**，所以没用：
+
+1. `指令 = 实际 + 剩余距离`（区 101 + 区 221）——若 SYNTEC 的“剩余距离”就是 FANUC 那个
+   “distance to go”（即跟随误差），这条成立；但“区 221 到底是不是跟随误差”没有真机数据。
+2. 另找一个状态区号（或走 `READ_SerialStateVar_*` / DAQ）——需要对着真机抓包。
+
+**结论**：模型里先把名字占住（客户端可以提前把路径建好），拿不到就回
+`UnavailableException`；不拿一个没验证过的关系式去凑一个数出来。
+
 
 ### 11.4 轴名：在参数区（ 2026-09-22，21A 实测，**已实现**）
 

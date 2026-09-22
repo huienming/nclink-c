@@ -166,6 +166,16 @@ static ncl_err syntec_distance_position(void *ctx, long long arg, double *out)
     return syntec_axis_zone(ctx, arg, NCL_SYNTEC_ZONE_DISTANCE, out);
 }
 
+/**
+ * 指令位置（`SERVO_DRIVER/POSITION`，§11.3.4）：控制器里还没有这一项，照实报"读不了"。
+ * 名字先占位（模型一次配全），实现等抓到来源再补——不会拿"实际 + 剩余距离"去凑。
+ */
+static ncl_err syntec_command_position(void *ctx, long long arg, double *out)
+{
+    (void)arg;
+    return ncl_syntec_command_position((ncl_syntec *)ctx, out);
+}
+
 /* ------------------------------------------------------------ 现场调试 ---- */
 
 /**
@@ -429,30 +439,70 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
     /* 主轴转速：按 iNC-BOX 的字典 `/SPINDLE_SPEED`（rpm），设备级。 */
     NCL_DATAITEM_F64("/SPINDLE_SPEED", syntec_spindle_speed)
 
-    /* 位置：机械（= 实际位置）、绝对 / 相对 / 剩余，**五轴**各一点
-     * （X/Y/Z/A/C，与 FANUC 适配器同一套格子，这样一个模型就能套各种机型）。
-     * 路径写死、轴号现查（§11.4）：控制器没配这个轴（表里没这个
-     * 名字）就照实报 NCL_ERR_NOT_FOUND，不会读到别的轴上去。 */
+    /* 位置：**九个轴字母都占位**（X/Y/Z/A/B/C/U/V/W），每轴六格（§11.3.3）：
+     *   SCREW/POSITION          实际位置（机械坐标 = 实际位置，区 101）
+     *   SERVO_DRIVER/POSITION   指令位置（对照 examples/device_model.c 的摆放：实际在
+     *                           丝杠侧、指令在驱动侧；**控制器里还没找到这一项**，
+     *                           照实报 NCL_ERR_UNAVAILABLE）
+     *   MOTOR/POSITION          机械坐标（iNC-BOX 格子，与 SCREW/POSITION 同源）
+     *   MOTOR/VARIABLE@ABSOLUTE|RELATIVE|DISTANCE  绝对 / 相对 / 剩余（181/141/221）
+     *
+     * 路径写死、轴号在读值的时候现查（§11.4）：控制器没配这个轴（轴表里没这个名字）
+     * 就报 NCL_ERR_NOT_FOUND，不给数、也不去读别的轴。模型一次配全，不再改。 */
+    NCL_DATAITEM_F64("/AXIS@X/SCREW/POSITION", syntec_machine_position, 'X')
+    NCL_DATAITEM_F64("/AXIS@Y/SCREW/POSITION", syntec_machine_position, 'Y')
+    NCL_DATAITEM_F64("/AXIS@Z/SCREW/POSITION", syntec_machine_position, 'Z')
+    NCL_DATAITEM_F64("/AXIS@A/SCREW/POSITION", syntec_machine_position, 'A')
+    NCL_DATAITEM_F64("/AXIS@B/SCREW/POSITION", syntec_machine_position, 'B')
+    NCL_DATAITEM_F64("/AXIS@C/SCREW/POSITION", syntec_machine_position, 'C')
+    NCL_DATAITEM_F64("/AXIS@U/SCREW/POSITION", syntec_machine_position, 'U')
+    NCL_DATAITEM_F64("/AXIS@V/SCREW/POSITION", syntec_machine_position, 'V')
+    NCL_DATAITEM_F64("/AXIS@W/SCREW/POSITION", syntec_machine_position, 'W')
+    NCL_DATAITEM_F64("/AXIS@X/SERVO_DRIVER/POSITION", syntec_command_position, 'X')
+    NCL_DATAITEM_F64("/AXIS@Y/SERVO_DRIVER/POSITION", syntec_command_position, 'Y')
+    NCL_DATAITEM_F64("/AXIS@Z/SERVO_DRIVER/POSITION", syntec_command_position, 'Z')
+    NCL_DATAITEM_F64("/AXIS@A/SERVO_DRIVER/POSITION", syntec_command_position, 'A')
+    NCL_DATAITEM_F64("/AXIS@B/SERVO_DRIVER/POSITION", syntec_command_position, 'B')
+    NCL_DATAITEM_F64("/AXIS@C/SERVO_DRIVER/POSITION", syntec_command_position, 'C')
+    NCL_DATAITEM_F64("/AXIS@U/SERVO_DRIVER/POSITION", syntec_command_position, 'U')
+    NCL_DATAITEM_F64("/AXIS@V/SERVO_DRIVER/POSITION", syntec_command_position, 'V')
+    NCL_DATAITEM_F64("/AXIS@W/SERVO_DRIVER/POSITION", syntec_command_position, 'W')
     NCL_DATAITEM_F64("/AXIS@X/MOTOR/POSITION", syntec_machine_position, 'X')
     NCL_DATAITEM_F64("/AXIS@Y/MOTOR/POSITION", syntec_machine_position, 'Y')
     NCL_DATAITEM_F64("/AXIS@Z/MOTOR/POSITION", syntec_machine_position, 'Z')
     NCL_DATAITEM_F64("/AXIS@A/MOTOR/POSITION", syntec_machine_position, 'A')
+    NCL_DATAITEM_F64("/AXIS@B/MOTOR/POSITION", syntec_machine_position, 'B')
     NCL_DATAITEM_F64("/AXIS@C/MOTOR/POSITION", syntec_machine_position, 'C')
+    NCL_DATAITEM_F64("/AXIS@U/MOTOR/POSITION", syntec_machine_position, 'U')
+    NCL_DATAITEM_F64("/AXIS@V/MOTOR/POSITION", syntec_machine_position, 'V')
+    NCL_DATAITEM_F64("/AXIS@W/MOTOR/POSITION", syntec_machine_position, 'W')
     NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'X')
     NCL_DATAITEM_F64("/AXIS@Y/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'Y')
     NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'Z')
     NCL_DATAITEM_F64("/AXIS@A/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'A')
+    NCL_DATAITEM_F64("/AXIS@B/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'B')
     NCL_DATAITEM_F64("/AXIS@C/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'C')
+    NCL_DATAITEM_F64("/AXIS@U/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'U')
+    NCL_DATAITEM_F64("/AXIS@V/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'V')
+    NCL_DATAITEM_F64("/AXIS@W/MOTOR/VARIABLE@ABSOLUTE", syntec_absolute_position, 'W')
     NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'X')
     NCL_DATAITEM_F64("/AXIS@Y/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'Y')
     NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'Z')
     NCL_DATAITEM_F64("/AXIS@A/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'A')
+    NCL_DATAITEM_F64("/AXIS@B/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'B')
     NCL_DATAITEM_F64("/AXIS@C/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'C')
+    NCL_DATAITEM_F64("/AXIS@U/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'U')
+    NCL_DATAITEM_F64("/AXIS@V/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'V')
+    NCL_DATAITEM_F64("/AXIS@W/MOTOR/VARIABLE@RELATIVE", syntec_relative_position, 'W')
     NCL_DATAITEM_F64("/AXIS@X/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'X')
     NCL_DATAITEM_F64("/AXIS@Y/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'Y')
     NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'Z')
     NCL_DATAITEM_F64("/AXIS@A/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'A')
+    NCL_DATAITEM_F64("/AXIS@B/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'B')
     NCL_DATAITEM_F64("/AXIS@C/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'C')
+    NCL_DATAITEM_F64("/AXIS@U/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'U')
+    NCL_DATAITEM_F64("/AXIS@V/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'V')
+    NCL_DATAITEM_F64("/AXIS@W/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'W')
 
     NCL_METHOD_CALL("/SESSION", syntec_session)
     /* 轴表的元数据：名字与槽号都从控制器读（§11.4），客户端照着建路径。 */

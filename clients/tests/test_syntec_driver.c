@@ -1128,25 +1128,61 @@ static void test_adapter(void)
         "/MACHINE/CONTROLLER/LINE_NUMBER", "/MACHINE/FEED_OVERRIDE",
         "/MACHINE/SPINDLE_OVERRIDE", "/MACHINE/FEED_SPEED",
         "/MACHINE/SPINDLE_SPEED",
-        /* 五轴（X/Y/Z/A/C）× 四组，格子与 FANUC 适配器一致 */
-        "/MACHINE/AXIS@X/MOTOR/POSITION", "/MACHINE/AXIS@Y/MOTOR/POSITION",
-        "/MACHINE/AXIS@Z/MOTOR/POSITION", "/MACHINE/AXIS@A/MOTOR/POSITION",
+        /* 九个轴字母 × 六格（实际/指令/机械 + 绝对/相对/剩余），模型一次配全 */
+        "/MACHINE/AXIS@X/SCREW/POSITION",
+        "/MACHINE/AXIS@Y/SCREW/POSITION",
+        "/MACHINE/AXIS@Z/SCREW/POSITION",
+        "/MACHINE/AXIS@A/SCREW/POSITION",
+        "/MACHINE/AXIS@B/SCREW/POSITION",
+        "/MACHINE/AXIS@C/SCREW/POSITION",
+        "/MACHINE/AXIS@U/SCREW/POSITION",
+        "/MACHINE/AXIS@V/SCREW/POSITION",
+        "/MACHINE/AXIS@W/SCREW/POSITION",
+        "/MACHINE/AXIS@X/SERVO_DRIVER/POSITION",
+        "/MACHINE/AXIS@Y/SERVO_DRIVER/POSITION",
+        "/MACHINE/AXIS@Z/SERVO_DRIVER/POSITION",
+        "/MACHINE/AXIS@A/SERVO_DRIVER/POSITION",
+        "/MACHINE/AXIS@B/SERVO_DRIVER/POSITION",
+        "/MACHINE/AXIS@C/SERVO_DRIVER/POSITION",
+        "/MACHINE/AXIS@U/SERVO_DRIVER/POSITION",
+        "/MACHINE/AXIS@V/SERVO_DRIVER/POSITION",
+        "/MACHINE/AXIS@W/SERVO_DRIVER/POSITION",
+        "/MACHINE/AXIS@X/MOTOR/POSITION",
+        "/MACHINE/AXIS@Y/MOTOR/POSITION",
+        "/MACHINE/AXIS@Z/MOTOR/POSITION",
+        "/MACHINE/AXIS@A/MOTOR/POSITION",
+        "/MACHINE/AXIS@B/MOTOR/POSITION",
         "/MACHINE/AXIS@C/MOTOR/POSITION",
+        "/MACHINE/AXIS@U/MOTOR/POSITION",
+        "/MACHINE/AXIS@V/MOTOR/POSITION",
+        "/MACHINE/AXIS@W/MOTOR/POSITION",
         "/MACHINE/AXIS@X/MOTOR/VARIABLE@ABSOLUTE",
         "/MACHINE/AXIS@Y/MOTOR/VARIABLE@ABSOLUTE",
         "/MACHINE/AXIS@Z/MOTOR/VARIABLE@ABSOLUTE",
         "/MACHINE/AXIS@A/MOTOR/VARIABLE@ABSOLUTE",
+        "/MACHINE/AXIS@B/MOTOR/VARIABLE@ABSOLUTE",
         "/MACHINE/AXIS@C/MOTOR/VARIABLE@ABSOLUTE",
+        "/MACHINE/AXIS@U/MOTOR/VARIABLE@ABSOLUTE",
+        "/MACHINE/AXIS@V/MOTOR/VARIABLE@ABSOLUTE",
+        "/MACHINE/AXIS@W/MOTOR/VARIABLE@ABSOLUTE",
         "/MACHINE/AXIS@X/MOTOR/VARIABLE@RELATIVE",
         "/MACHINE/AXIS@Y/MOTOR/VARIABLE@RELATIVE",
         "/MACHINE/AXIS@Z/MOTOR/VARIABLE@RELATIVE",
         "/MACHINE/AXIS@A/MOTOR/VARIABLE@RELATIVE",
+        "/MACHINE/AXIS@B/MOTOR/VARIABLE@RELATIVE",
         "/MACHINE/AXIS@C/MOTOR/VARIABLE@RELATIVE",
+        "/MACHINE/AXIS@U/MOTOR/VARIABLE@RELATIVE",
+        "/MACHINE/AXIS@V/MOTOR/VARIABLE@RELATIVE",
+        "/MACHINE/AXIS@W/MOTOR/VARIABLE@RELATIVE",
         "/MACHINE/AXIS@X/MOTOR/VARIABLE@DISTANCE",
         "/MACHINE/AXIS@Y/MOTOR/VARIABLE@DISTANCE",
         "/MACHINE/AXIS@Z/MOTOR/VARIABLE@DISTANCE",
         "/MACHINE/AXIS@A/MOTOR/VARIABLE@DISTANCE",
-        "/MACHINE/AXIS@C/MOTOR/VARIABLE@DISTANCE"};
+        "/MACHINE/AXIS@B/MOTOR/VARIABLE@DISTANCE",
+        "/MACHINE/AXIS@C/MOTOR/VARIABLE@DISTANCE",
+        "/MACHINE/AXIS@U/MOTOR/VARIABLE@DISTANCE",
+        "/MACHINE/AXIS@V/MOTOR/VARIABLE@DISTANCE",
+        "/MACHINE/AXIS@W/MOTOR/VARIABLE@DISTANCE"};
     syntec_mock *mock;
     ncl_module_set *modules;
     ncl_strbuf err;
@@ -1225,7 +1261,7 @@ static void test_adapter(void)
     }
 
     NCL_TEST_CASE("the nine points are the model the device publishes");
-    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 29); /* 9 项 + 5 轴 × 4 组 */
+    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 63); /* 9 项 + 9 轴 × 6 格 */
     for (i = 0; i < sizeof(kPaths) / sizeof(kPaths[0]); i++) {
         NCL_CHECK(host_point_index(host, kPaths[i]) != (size_t)-1);
     }
@@ -1347,8 +1383,22 @@ static void test_adapter(void)
         NCL_CHECK_EQ_INT((long long)(real * 1000.0 + 0.5), 2000);
     }
 
+    NCL_TEST_CASE("11.3.3: the demo's 实际位置 is the screw side, 指令位置 a gap");
+    /* 实际位置（丝杠侧）与 MOTOR/POSITION 同源：都读区 101 的 X。 */
+    NCL_CHECK_EQ_INT(
+        ncl_host_poll_one(host, "/MACHINE/AXIS@X/SCREW/POSITION", &err), NCL_OK);
+    value = ncl_host_point_value(
+        host, host_point_index(host, "/MACHINE/AXIS@X/SCREW/POSITION"));
+    NCL_CHECK(value != NULL && ncl_json_as_double(value, &real));
+    NCL_CHECK_EQ_INT((long long)(real * 1000.0 + 0.5), 1234);
+    /* 指令位置（驱动侧）：控制器里还没有这一项 → 照实报"读不了"，不给个数。 */
+    NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@X/SERVO_DRIVER/POSITION",
+                                &err) != NCL_OK);
+    NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@W/SERVO_DRIVER/POSITION",
+                                &err) != NCL_OK);
+
     NCL_TEST_CASE("11.4: an axis the controller does not have is an error");
-    /* 这台 mock 只配了 X（槽 0）与 Z（槽 2）：Y/A/C 四个组都得报错，不能给个数。 */
+    /* 这台 mock 只配了 X（槽 0）与 Z（槽 2）：别的字母每一格都得报错，不能给数。 */
     NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@A/MOTOR/POSITION", &err) !=
               NCL_OK);
     NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "/MACHINE/AXIS@A/MOTOR/POSITION") !=
@@ -1357,6 +1407,10 @@ static void test_adapter(void)
                                 &err) != NCL_OK);
     NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@C/MOTOR/VARIABLE@DISTANCE",
                                 &err) != NCL_OK);
+    NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@B/SCREW/POSITION", &err) !=
+              NCL_OK);
+    NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@V/SCREW/POSITION", &err) !=
+              NCL_OK);
 
     NCL_TEST_CASE("11.4: /PARAMETER reads a value by parameter number");
     {

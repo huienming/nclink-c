@@ -331,6 +331,14 @@ ncl_err ncl_syntec_decimals(ncl_syntec *syntec, int *decimals);
 ncl_err ncl_syntec_position(ncl_syntec *syntec, unsigned zone, size_t count,
                             double *out);
 
+/**
+ * §11.3.4 指令位置（`SERVO_DRIVER/POSITION` 那一格）：**控制器里还没找到这一项**。
+ * 交付的官方客户端只有 机械 / 绝对 / 相对 / 剩余 四个坐标 getter——既没有"指令位置"，
+ * 也没有跟随误差；所以这里照实回 NCL_ERR_UNAVAILABLE（"待抓包"），
+ * 不拿"实际 + 剩余距离"去凑一个出来。
+ */
+ncl_err ncl_syntec_command_position(ncl_syntec *syntec, double *value);
+
 /* ============================================================== 参数区 == */
 
 /*
