@@ -171,10 +171,21 @@ static ncl_err focas_file_pull(void *user, const char *name, const char *path,
     size_t len = 0;
     ncl_err rc = ncl_focas_program_upload(focas, 0, name, &bytes, &len);
 
-    (void)path;
+    if (rc != NCL_OK) {
+        if (reason != NULL) {
+            *reason = ncl_strdup(ncl_focas_last_error(focas));
+        }
+        return rc;
+    }
+    /*
+     * 取回来的字节要**落到本地** @p path 上 —— 设备侧的 `/CONTROLLER/FILE` 的 `pull`
+     * 就是"从机床取回这个文件"，不写盘等于什么都没做（原来这里 `(void)path;` 把它丢了，
+     * 2026-09-22 按 10 册（新代）那条的写法修好）。
+     */
+    rc = ncl_file_write_all(path, bytes, len);
     ncl_free_safe(bytes);
     if (rc != NCL_OK && reason != NULL) {
-        *reason = ncl_strdup(ncl_focas_last_error(focas));
+        *reason = ncl_strdup("写本地文件失败");
     }
     return rc;
 }

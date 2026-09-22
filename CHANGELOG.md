@@ -5,6 +5,19 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 01 册：拿 10 册（新代）的代码核对 FOCAS 的缺项 + 修掉 pull 不落盘
+
+  * **新增 §11.11 缺项核对**（逐条按代码对，不看注释）：把两边的 client 头文件与适配器
+    点位声明摆在一起，client 落到 `not_yet()` 的算"桩"、适配器没声明的算"没摆出来"。
+  * **结论要点**：① **PLC/寄存器/位整格缺**（新代 `/CONTROLLER/REGISTER@{R,I,O,C,S,A}`
+    读写都在，FOCAS 连 `pmc_*` 都没接）；② 参数/变量/刀补**写**是桩（新代三个都能写）；
+    ③ 三个位置格（机械/相对/剩余）与执行程序段、程序目录、模态**只差声明/接线**；
+    ④ 轴名发现（`cnc_rdaxisname`）client 没有；⑤ G 代码文件只接了 push/pull/remove
+    （新代还有 exist/dir_exist/new/create/delete/copy/move/list），且 `pull` 不落盘。
+  * **顺手修掉真 bug**：`plugins/focas.c` 的 `focas_file_pull()` 原来 `(void)path;` ——
+    取回的程序字节被直接丢掉，本地什么都不写；按新代的写法改成 `ncl_file_write_all(path, …)`。
+  * 纠正三处**注释与代码漂移**：`feed_speed` / `feed_override` / `axis_load` 头注释写着
+    "还没实现"，实现其实都在（已实现 48 条 / 桩 22 条）。
 ### 文档：01 册（FANUC FOCAS）按 10 册（新代）的蓝本重排
 
   * **结构对齐**：01 册从原来的"速查 / 连接（含一大堆解剖档案）/ 函数表 / 类型 / 错误码 /

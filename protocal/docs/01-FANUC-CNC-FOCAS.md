@@ -1264,3 +1264,53 @@ cls=5（速度）** 是好的（`cls=3/5` 见 §10.4.1 那条 8 字节记录）�
 1. **取值形状决定操作**：dict/HASH 答 `get_keys`，list/LIST 答 `get_length`，两者不同时声明。
 2. **没验过的不假装**：帧形状没核出来的点位（报警文本、刀具列表、负载那一族）如实回
    "读不了"或"机床不提供"，不编数值、不猜结构。
+
+### 11.11 缺项核对：以 10 册（新代）的代码为参照（2026-09-22，逐条按代码对）
+
+核对方法：把两边的 **client 头文件 + 适配器点位声明**摆在一起对，**不看注释看代码** ——
+client 里落到 `not_yet()` 的算"桩"，适配器里没声明的算"没摆出来"，两边都没的算"整格缺"。
+（注释与代码已经有漂移：`feed_speed`/`feed_override`/`axis_load` 的头注释写着"还没实现"，
+实现其实在，这一轮一并纠正。）
+
+**A. 新代做了、FOCAS 缺**（按"缺在哪一层"分）
+
+| 能力域 | 新代（10 册）| FOCAS 现状 | 缺在哪一层 |
+|---|---|---|---|
+| **PLC / 寄存器 / 位** | `/CONTROLLER/REGISTER@{R,I,O,C,S,A}` 读 + 写 | 没有 | **整格缺**：`pmc_*` 95 个函数一个没接，client 也没有包装 |
+| 变量（宏变量）| `/CONTROLLER/VARIABLE` 读 + **写** | 点位在，整表是桩；**单条 `ncl_focas_macro_variable` 已实现** | 表可以像新代那样**逐号读**；写要新写 |
+| 参数 | `/CONTROLLER/PARAMETER` 读 + **写** | 点位在，整表是桩；**单条 `ncl_focas_parameter` 已实现** | 同上 |
+| 刀补（TOOLPARAM）| 读 + **写**（读回打底再覆盖）| 点位在，整表桩；单条 `ncl_focas_tool_offset` 已实现 | 同上；写是桩 |
+| 刀具表 `TOOL` | 读 + 写 | 点位在，client 桩（**这台机床也不提供**，§10.4.6）| 口径一致（都答"不提供"）|
+| 位置：机械 / 相对 / 剩余 | 每轴 6 格（实际/指令/机械/相对/剩余…）| `axis_position_machine` / `_relative` / `_distance` **都实现了，只是没声明** | **只差声明** |
+| 轴覆盖 | X/Y/Z/A/B/C/U/V/W 九轴 | client 枚举只有 X/Y/Z/A/C | client 加轴 + 声明 |
+| 轴名 / 轴数 | 参数区动态查轴名（`/AXES`）| 没有（`cnc_rdaxisname` 只在注释里提过）| **client 缺** |
+| **G 代码文件** | exist / dir_exist / file_new / dir_create / delete / copy / move / list + push + pull | 只接了 push / pull / remove | client 缺那六条；**`pull` 还不落盘（见 D）** |
+| 报警历史 | 无（只有当前报警）| 无 | 两边都缺，先不动 |
+
+**B. FOCAS 比新代多**（顺手记下，别只往一边看）：`/WORK_MODE`、`PROGRAM_NUMBER` / `SUBPROGRAM`、
+执行中的程序段、模态（`cnc_rdgcode`）、坐标系、计时器、刀具寿命 / 组数、主轴负载、`/ITEMS` 裸读。
+
+**C. 只差"接线"就能补上的**（client 已实现、模型没摆或写没开）：
+
+1. `/AXIS@<轴>/MOTOR/POSITION`、`MOTOR/VARIABLE@RELATIVE`、`MOTOR/VARIABLE@DISTANCE` 三个位置格；
+2. `/CONTROLLER/PARAMETER`、`/CONTROLLER/VARIABLE`、`/CONTROLLER/TOOLPARAM` 改成**逐号读**
+   （单条读都已实现），这三个"桩点位"立刻变成真点位；
+3. 执行中的程序段 / 程序目录 / 模态（`executed_block` / `program_directory` / `modal` 都在）。
+
+**D. 顺手修掉的一个真 bug**：`focas_file_pull()` 拿到程序字节后是 `(void)path;` +
+`ncl_free_safe(bytes);` —— **根本没往本地写**（新代那条是 `ncl_file_write_all(path, …)`）。
+本轮按新代的写法修好了（`plugins/focas.c`）；程序取回本身还是桩，等 `program_upload` 落地这条就通。
+
+**E. client 里仍是桩的 22 条**（要新写的）：
+
+```
+axis_current  axis_temperature  axis_torque  spindle_load  spindle_override
+macro_variables  macro_write  parameter_table  parameter_write  program_delete
+program_select_main  program_upload  subprogram_number  tool_life  tool_list
+tool_number  tool_offset_write  tool_param  tool_param_table  variable_table
+work_offset  work_offsets
+```
+
+> 其中 **负载 / 电流 / 温度 / 主轴倍率 / 刀具表** 这台机床本来就不提供（§10.4.6），补了也是
+> 继续报"不提供"；真正值得按新代补齐的顺序是：**参数写 → 变量写 → 刀补写 → 程序取回 →
+> PLC/寄存器（要连 `pmc_*` 一起做）**。
