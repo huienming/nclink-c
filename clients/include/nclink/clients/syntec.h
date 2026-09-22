@@ -690,7 +690,14 @@ size_t ncl_syntec_path_body(uint8_t *out, size_t cap, uint16_t func_id,
 #define NCL_SYNTEC_CODE_PLC_GET_COUNTER 0x041Du
 #define NCL_SYNTEC_CODE_PLC_GET_CAPACITY 0x041Eu
 #define NCL_SYNTEC_CODE_GLOBAL_GET_VALUE 0x0421u
+#define NCL_SYNTEC_CODE_GLOBAL_PUT_VALUE 0x0422u
 #define NCL_SYNTEC_CODE_GLOBAL_GET_CAPACITY 0x0423u
+
+/*
+ * 写这一侧（§11.9）：`0x041B` R 寄存器、`0x0413/16/18` I/C/S 位（O 位只能 Force
+ * `0x0494`、A 位没有写）、`0x0422` 变量。In 都是 `{ nNo, 新值 }`，帧长 16 + In。
+ */
+#define NCL_SYNTEC_CODE_PLC_PUT_REGISTER 0x041Bu
 
 /** 位族（`PlcGet?Bit` 之间就差两个数：0x0412/14/15/17/19）。 */
 typedef enum {
@@ -754,6 +761,25 @@ size_t ncl_syntec_variable_frame(uint8_t *out, size_t cap, unsigned no,
 /** `0x0423`：In 空，Out = { hr, nValue }。 */
 size_t ncl_syntec_variable_capacity_frame(uint8_t *out, size_t cap,
                                           uint8_t serial);
+
+/** `0x041B`：In `{ nNo, newVal }`，Out = { hr }。 */
+size_t ncl_syntec_plc_register_put_frame(uint8_t *out, size_t cap, unsigned no,
+                                         uint32_t value, uint8_t serial);
+/** `0x0413/16/18`：I/C/S 位写（O/A 没有写，返 0）。In `{ nNo, newVal u8 }`。 */
+size_t ncl_syntec_plc_bit_put_frame(uint8_t *out, size_t cap,
+                                    ncl_syntec_plc_kind kind, unsigned no,
+                                    bool value, uint8_t serial);
+/** `0x0422`：In `{ nNo, TOcVariant }`（20 字节），Out = { hr }。 */
+size_t ncl_syntec_variable_put_frame(uint8_t *out, size_t cap, unsigned no,
+                                     const ncl_syntec_variant *value,
+                                     uint8_t serial);
+
+ncl_err ncl_syntec_plc_register_put(ncl_syntec *syntec, unsigned no,
+                                    uint32_t value);
+ncl_err ncl_syntec_plc_bit_put(ncl_syntec *syntec, ncl_syntec_plc_kind kind,
+                               unsigned no, bool value);
+ncl_err ncl_syntec_variable_put(ncl_syntec *syntec, unsigned no,
+                                const ncl_syntec_variant *value);
 
 /** 一个 u32 正文（应答 [20..23]，小端）。 */
 bool ncl_syntec_reply_u32(const uint8_t *frame, size_t len, uint32_t *value);

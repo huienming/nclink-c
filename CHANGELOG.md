@@ -5,6 +5,27 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### SYNTEC：寄存器 / 位 / 变量能**写**了（2026-09-22，21A 实测）
+
+  * **写这一侧的码与帧**（都是 `{ nNo, 新值 }`，帧 = 16 字节桩头 + In）：
+    `0x041B` R 寄存器（In 8）、`0x0413`/`0x0416`/`0x0418` I/C/S 位（In 8，u8 值）、
+    `0x0422` 变量（In **20** = `{ nNo i32, TOcVariant 16 }`，值在 `[12..]`，
+    按控制器侧 `OCK_TOcVariantToPtr` 摆）。`A = dwSizeOut = 4`（Out 只有 `hr`）。
+  * **client**：`ncl_syntec_plc_register_put()` / `_plc_bit_put()` / `_variable_put()`，
+    外加通用写帧 `syntec_krnl_frame()`（任意长 In）；顺带把参数写 `0x0403` 的 `dwSizeIn`
+    从 4 纠正成 **8**（`In_OCK_ParamPutValueParams` 就是 8 字节）。
+  * **适配器**：`/CONTROLLER/REGISTER@R|@I|@C|@S` 与 `/CONTROLLER/VARIABLE` 声明 `set_value`
+    （`keys` 给号、`value` 给新值；变量按字面量分整数/浮点变体）。**`@O`、`@A` 不声明写**：
+    O 位只能 Force（`0x0494`）、A 位没有写接口，写了明确回 `NCL_ERR_NOT_SUPPORTED`。
+  * **现场口径（写后一定读回确认）**：`hr = 0` 只代表控制器收下了 —— 这台 21A 上 `#500`、
+    `#2000/#5000/#9999` 写了读回不变（号由控制器自己管）；位归梯形图（C0 连写三次读回
+    0/0xFF/0/0xFF/0，S 位稳定）。所以 `set_value` 答的是"写下去的值"，确认要再查一次 `get_value`。
+  * **21A 实测（本仓库 C 客户端，全部 rc=0）**：`R4000=123456 → 读回 123456 → 还原 0`；
+    `S/C 位写 1 → 读回 0xFF → 还原 0`；`#700=31337 → 读回 type=1 int=31337 → 写回"空"`；
+    `O0=1` 回 `NCL_ERR_NOT_SUPPORTED`（-8）。
+  * **测试**：mock 补三条写分支（寄存器/位/变量）+ 写帧逐字段断言（In 8 / 8 / 20、
+    `dwSizeIn`、值的位置）、写回读、`hr != 0` 回 `NCL_ERR_IO`、O/A 位拒；适配器级 Set 三条
+    （寄存器置数并读回、变量整数、变量浮点）。**ctest 43/43**。
 ### 修正：HASH 才有 get_keys、LIST 才有 get_length；PLC 改成一族一条 REGISTER（2026-09-22）
 
   * **操作按取值形状分**（册 4）：`get_keys` 是 HASH（dict）的操作，`get_length` 是 LIST 的，

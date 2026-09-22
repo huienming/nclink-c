@@ -834,9 +834,69 @@ static ncl_err syntec_register_table(void *ctx, const ncl_tool_point *self,
         *result = out;
         return NCL_OK;
     }
+    case NCL_OP_SET_VALUE: { /* §11.9：R 写 u32、I/C/S 写位（O 只能 Force、A 没有写） */
+        const ncl_json *value = ncl_params_get(params, "value");
+        long long no = 0;
+        ncl_json *out;
+        char name[24];
+
+        if (!syntec_param_key(keys, 0, &no) || no < 0 ||
+            (unsigned long long)no >= (unsigned long long)count) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                 "要 keys=%c 族的一个号（0..%u）", family,
+                                 (unsigned)(count - 1u));
+        }
+        if (value == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "要 value=新值");
+        }
+        if (family == 'R') {
+            long long raw = 0;
+
+            if (!ncl_json_as_int(value, &raw) || raw < 0 ||
+                (unsigned long long)raw > 0xFFFFFFFFull) {
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "R 是 32 位无符号，value 给整数");
+            }
+            rc = ncl_syntec_plc_register_put(syntec, (unsigned)no,
+                                             (uint32_t)raw);
+            if (rc != NCL_OK) {
+                return ncl_tool_fail(reason, rc, "%s",
+                                     ncl_syntec_last_error(syntec));
+            }
+        } else {
+            bool bit = false;
+
+            if (!ncl_json_as_bool(value, &bit)) {
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "位只能写 true / false");
+            }
+            rc = ncl_syntec_plc_bit_put(syntec, syntec_register_kind(family),
+                                        (unsigned)no, bit);
+            if (rc != NCL_OK) {
+                return ncl_tool_fail(reason, rc, "%s",
+                                     ncl_syntec_last_error(syntec));
+            }
+        }
+        /*
+         * 答"我写下去的值"（和参数写一样）。控制器认不认要**自己读回来看**：
+         * 这台 21A 上 I 位由现场/梯形图驱动（写了读回来还是 0）、个别号
+         * （#499/#500）也是写不动的 —— 帧没错，是控制器那边不接。
+         */
+        out = ncl_json_new_object();
+        if (out == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        snprintf(name, sizeof(name), "%d", (int)no);
+        if (ncl_json_obj_set(out, name, ncl_json_clone(value)) != NCL_OK) {
+            ncl_json_free(out);
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        *result = out;
+        return NCL_OK;
+    }
     default:
         return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
-                             "寄存器表答 get_length / get_value / get_attributes");
+                             "寄存器表答 get_length / get_value / set_value / get_attributes");
     }
 }
 /**
@@ -945,9 +1005,70 @@ static ncl_err syntec_variable_table(void *ctx, const ncl_tool_point *self,
         *result = out;
         return NCL_OK;
     }
+    case NCL_OP_SET_VALUE: { /* §11.9：写变量（0x0422）。整数写 INT 变体，带小数点/指数的写 DOUBLE */
+        const ncl_json *value = ncl_params_get(params, "value");
+        ncl_syntec_variant variant;
+        const char *raw;
+        double dbl = 0.0;
+        long long no = 0;
+        ncl_json *out;
+        char name[24];
+
+        if (!syntec_param_key(keys, 0, &no) || no < 0 || no > 0xFFFF) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                 "要 keys=一个变量号（程序里的 #号）");
+        }
+        if (value == NULL || !ncl_json_as_double(value, &dbl)) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "要 value=新值（数）");
+        }
+        memset(&variant, 0, sizeof(variant));
+        /*
+         * 整数还是浮点：先看字面量里有没有小数点/指数（"2.5" 与 "2" 分得开），
+         * 程序里 new_double(2.5) 这种没有字面量的，就看值本身有没有小数部分。
+         */
+        {
+            long long as_int = 0;
+            bool is_double = !(ncl_json_as_int(value, &as_int) &&
+                               (double)as_int == dbl);
+
+            raw = ncl_json_number_raw(value);
+            if (raw != NULL) {
+                is_double = strpbrk(raw, ".eE") != NULL;
+            }
+            if (is_double) {
+                variant.type = 2; /* 控制器侧也有 DOUBLE 变体 */
+                variant.double_value = dbl;
+                variant.int_value = (int32_t)dbl;
+            } else {
+                if (dbl > 2147483647.0 || dbl < -2147483648.0) {
+                    return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                         "整数变体是 32 位，超了就用浮点写");
+                }
+                variant.type = 1;
+                variant.int_value = (int32_t)dbl;
+                variant.double_value = dbl;
+            }
+        }
+        rc = ncl_syntec_variable_put(syntec, (unsigned)no, &variant);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
+        }
+        /* 答我写下去的值；控制器认不认要读回来才知道（见寄存器那条注释）。 */
+        out = ncl_json_new_object();
+        if (out == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        snprintf(name, sizeof(name), "%d", (int)no);
+        if (ncl_json_obj_set(out, name, ncl_json_clone(value)) != NCL_OK) {
+            ncl_json_free(out);
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        *result = out;
+        return NCL_OK;
+    }
     default:
         return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
-                             "变量表只答 get_length / get_keys / get_value / get_attributes");
+                             "变量表答 get_length / get_value / set_value / get_attributes");
     }
 }
 
@@ -1233,26 +1354,30 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000)", "MACHINE",
 
     /* PLC（§11.9）：REGISTER 一类、**一族一条**，族在 number 上（@R / @I / …）。
      * 取值形状是按号排的表（LIST）：答 get_length，不答 get_keys。只答读。 */
+/* R 与 I/C/S 能写（0x041B / 0x0413/16/18）；O 只能 Force、A 没有写，后两条只给读。 */
 #define SYNTEC_REGISTER_OPS                                                     \
     (NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |            \
      NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
+#define SYNTEC_REGISTER_RW_OPS                                                  \
+    (SYNTEC_REGISTER_OPS | NCL_OP_BIT(NCL_OP_SET_VALUE))
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@R", syntec_register_table, "R",
-                   SYNTEC_REGISTER_OPS)
+                   SYNTEC_REGISTER_RW_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@I", syntec_register_table, "I",
-                   SYNTEC_REGISTER_OPS)
+                   SYNTEC_REGISTER_RW_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@O", syntec_register_table, "O",
                    SYNTEC_REGISTER_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@C", syntec_register_table, "C",
-                   SYNTEC_REGISTER_OPS)
+                   SYNTEC_REGISTER_RW_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@S", syntec_register_table, "S",
-                   SYNTEC_REGISTER_OPS)
+                   SYNTEC_REGISTER_RW_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@A", syntec_register_table, "A",
                    SYNTEC_REGISTER_OPS)
 #undef SYNTEC_REGISTER_OPS
     /* 变量表（§11.9）：册 4 表 7 的 VARIABLE（list，configs），key = 变量号（#号）。 */
     /* 变量表是 list（LIST）：答 get_length（多少个号），不答 get_keys。 */
     NCL_CONFIG_OPS("/CONTROLLER/VARIABLE", syntec_variable_table, NULL,
-                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) |
+                       NCL_OP_BIT(NCL_OP_GET_LENGTH) |
                        NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
 
 NCL_TOOL_END_WITH_RAW(syntec_last_raw)

@@ -125,6 +125,14 @@ typedef struct {
     double   var_double[8];
     uint32_t last_plc_bit_code;
     uint32_t last_var_no;
+    /* 写这一侧：记住写了什么、桩头里报的 dwSizeIn */
+    uint32_t last_plc_register_put;
+    uint32_t last_plc_register_value;
+    uint32_t last_plc_bit_put;
+    uint8_t  last_plc_bit_value;
+    uint32_t last_var_put;
+    int16_t  last_var_put_type;
+    size_t   plc_put_in_len;
 } syntec_mock;
 
 /** 小端写一个 IEEE754 double（mock 侧造 224 字节记录用）。 */
@@ -398,11 +406,16 @@ static void mock_main(void *arg)
                 }
 
                 /* §11.9 位（0x0412/14/15/17/19）：B = 号，答 { hr, u8 }。 */
-                if (request == NCL_SYNTEC_CODE_PLC_GET_BIT ||
-                    (request >= NCL_SYNTEC_CODE_PLC_GET_BIT + 2u &&
-                     request <= NCL_SYNTEC_CODE_PLC_GET_ABIT &&
-                     (request - NCL_SYNTEC_CODE_PLC_GET_BIT) % 2u == 0u)) {
-                    size_t k = (size_t)((request - NCL_SYNTEC_CODE_PLC_GET_BIT) / 2u);
+                /* 读的五个码：I 0x0412、O 0x0414、C 0x0415、S 0x0417、A 0x0419 */
+                if (request == 0x0412u || request == 0x0414u || request == 0x0415u ||
+                    request == 0x0417u || request == 0x0419u) {
+                    static const uint32_t k_get_codes[] = {0x0412u, 0x0414u, 0x0415u,
+                                                           0x0417u, 0x0419u};
+                    size_t k = 0;
+
+                    while (k < 5u && k_get_codes[k] != request) {
+                        k++;
+                    }
                     uint8_t bit = (param_b == 0u && k < 5u) ? mock->plc_bit[k] : 0u;
 
                     mock->last_plc_bit_code = request;
@@ -453,6 +466,98 @@ static void mock_main(void *arg)
                     put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + 16u));
                     if (ncl_socket_send(peer, reply,
                                         NCL_SYNTEC_REPLY_BODY + 16u) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /*
+                 * §11.9 写这一侧：R 寄存器（0x041B）/ 位（0x0413/16/18）/ 变量（0x0422）。
+                 * In 都在桩头后面，dwSizeIn = 8（变量 20），Out 是 { hr }。
+                 */
+                if (request == NCL_SYNTEC_CODE_PLC_PUT_REGISTER) {
+                    uint32_t index = get_u32(frame + NCL_SYNTEC_PACKET_HEADER +
+                                             NCL_SYNTEC_KRML_HEAD);
+                    uint32_t value = get_u32(frame + NCL_SYNTEC_PACKET_HEADER +
+                                             NCL_SYNTEC_KRML_HEAD + 4u);
+                    uint32_t raw = (uint32_t)mock->put_hr;
+
+                    mock->last_plc_register_put = index;
+                    mock->last_plc_register_value = value;
+                    mock->plc_put_in_len =
+                        (size_t)get_u32(frame + NCL_SYNTEC_PACKET_HEADER + 8u);
+                    if (mock->put_hr == 0 && index < 8u) {
+                        mock->plc_register[index] = value;
+                    }
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
+                    put_u32(reply + NCL_SYNTEC_REPLY_HR, raw);
+                    put_u32(reply, (uint32_t)(4u + sizeof(int32_t)));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_HR + 4u) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                if (request == 0x0413u || request == 0x0416u || request == 0x0418u) {
+                    uint32_t index = get_u32(frame + NCL_SYNTEC_PACKET_HEADER +
+                                             NCL_SYNTEC_KRML_HEAD);
+                    uint8_t bit = frame[NCL_SYNTEC_PACKET_HEADER +
+                                        NCL_SYNTEC_KRML_HEAD + 4u];
+                    uint32_t raw = (uint32_t)mock->put_hr;
+
+                    mock->last_plc_bit_put = request;
+                    mock->last_plc_bit_value = bit != 0 ? 0xFFu : 0u;
+                    mock->plc_put_in_len =
+                        (size_t)get_u32(frame + NCL_SYNTEC_PACKET_HEADER + 8u);
+                    if (mock->put_hr == 0 && index == 0u) {
+                        size_t k = request == 0x0413u ? NCL_SYNTEC_PLC_I
+                                 : request == 0x0416u ? NCL_SYNTEC_PLC_C
+                                                      : NCL_SYNTEC_PLC_S;
+
+                        mock->plc_bit[k] = bit != 0 ? 0xFFu : 0u;
+                    }
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
+                    put_u32(reply + NCL_SYNTEC_REPLY_HR, raw);
+                    put_u32(reply, (uint32_t)(4u + sizeof(int32_t)));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_HR + 4u) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                if (request == NCL_SYNTEC_CODE_GLOBAL_PUT_VALUE) {
+                    uint32_t index = get_u32(frame + NCL_SYNTEC_PACKET_HEADER +
+                                             NCL_SYNTEC_KRML_HEAD);
+                    const uint8_t *at = frame + NCL_SYNTEC_PACKET_HEADER +
+                                        NCL_SYNTEC_KRML_HEAD + 4u;
+                    int16_t type = (int16_t)get_u16(at);
+                    uint32_t raw = (uint32_t)mock->put_hr;
+
+                    mock->last_var_put = index;
+                    mock->last_var_put_type = type;
+                    mock->plc_put_in_len =
+                        (size_t)get_u32(frame + NCL_SYNTEC_PACKET_HEADER + 8u);
+                    if (mock->put_hr == 0 && index < 8u) {
+                        mock->var_type[index] = type;
+                        if (type == 1) {
+                            mock->var_int[index] =
+                                (int32_t)get_u32(at + 8u);
+                            mock->var_double[index] = (double)mock->var_int[index];
+                        } else if (type == 2) {
+                            mock->var_double[index] = get_f64(at + 8u);
+                            mock->var_int[index] = (int32_t)mock->var_double[index];
+                        }
+                    }
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
+                    put_u32(reply + NCL_SYNTEC_REPLY_HR, raw);
+                    put_u32(reply, (uint32_t)(4u + sizeof(int32_t)));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_HR + 4u) != NCL_OK) {
                         break;
                     }
                     continue;
@@ -632,11 +737,14 @@ static void mock_main(void *arg)
                     /*
                      * §11.9：PART_COUNT/SPDL_SPEED 用的就是这个码 —— 它本来就是
                      * **R 寄存器**读，应答是 u32；条目的 u16 只是取低半。
+                     * mock 摆的那 8 个号走后一张表（写进去的能读回来），
+                     * 别的号还是走条目表。
                      */
-                    uint16_t value = mock_item_value(mock, param_b);
+                    uint32_t value = param_b < 8u
+                                         ? mock->plc_register[param_b]
+                                         : (uint32_t)mock_item_value(mock, param_b);
 
-                    reply[NCL_SYNTEC_REPLY_BODY] = (uint8_t)(value & 0xFF);
-                    reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)(value >> 8);
+                    put_u32(reply + NCL_SYNTEC_REPLY_BODY, value);
                     item_body = 4;
                 } else {                        /* a u16 at [20..21]          */
                     uint16_t value = mock_item_value(mock, param_b);
@@ -1503,6 +1611,98 @@ static void test_param_table(void)
         NCL_CHECK_EQ_INT(get_u32(frame + 28), 500u);
     }
 
+    NCL_TEST_CASE("11.9: a register write is In 8 (dwSizeIn 8, Out { hr })");
+    {
+        uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+        uint32_t back = 0;
+
+        mock->put_hr = 0;
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_register_put(session, 3u, 123456u),
+                         NCL_OK);
+        NCL_CHECK_EQ_INT(mock->last_plc_register_put, 3u);
+        NCL_CHECK_EQ_INT(mock->last_plc_register_value, 123456u);
+        NCL_CHECK_EQ_INT(mock->plc_put_in_len, 8u); /* In = { nNo, newVal } */
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_register(session, 3u, &back), NCL_OK);
+        NCL_CHECK_EQ_INT(back, 123456u);
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_register_put_frame(frame, sizeof(frame),
+                                                          3u, 123456u, 0u),
+                         NCL_SYNTEC_ITEM_FRAME);
+        NCL_CHECK_EQ_INT(get_u32(frame), 16u + 8u); /* Length */
+        NCL_CHECK_EQ_INT(get_u32(frame + 16), NCL_SYNTEC_CODE_PLC_PUT_REGISTER);
+        NCL_CHECK_EQ_INT(get_u32(frame + 20), 8u);  /* dwSizeIn */
+        NCL_CHECK_EQ_INT(get_u32(frame + 24), 4u);  /* dwSizeOut */
+        NCL_CHECK_EQ_INT(get_u32(frame + 28), 3u);
+        NCL_CHECK_EQ_INT(get_u32(frame + 32), 123456u);
+    }
+
+    NCL_TEST_CASE("11.9: a bit write lands, O/A have no write");
+    {
+        uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+        bool bit = false;
+
+        mock->put_hr = 0;
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_bit_put(session, NCL_SYNTEC_PLC_C, 0u,
+                                                true),
+                         NCL_OK);
+        NCL_CHECK_EQ_INT(mock->last_plc_bit_put, 0x0416u); /* PutCBit */
+        NCL_CHECK_EQ_INT(mock->plc_bit[NCL_SYNTEC_PLC_C], 0xFFu);
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_bit(session, NCL_SYNTEC_PLC_C, 0u, &bit),
+                         NCL_OK);
+        NCL_CHECK(bit); /* 0xFF 也是 true */
+        NCL_CHECK_EQ_INT(mock->plc_put_in_len, 8u);
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_bit_put_frame(frame, sizeof(frame),
+                                                      NCL_SYNTEC_PLC_S, 0u, true,
+                                                      0u),
+                         NCL_SYNTEC_ITEM_FRAME);
+        NCL_CHECK_EQ_INT(get_u32(frame + 16), 0x0418u); /* PutSBit */
+        NCL_CHECK_EQ_INT(get_u32(frame + 32), 1u);
+        /* O 位只能 Force、A 位没有写：这里必须老实说"不支持" */
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_bit_put(session, NCL_SYNTEC_PLC_O, 0u, true),
+                         NCL_ERR_NOT_SUPPORTED);
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_bit_put(session, NCL_SYNTEC_PLC_A, 0u, true),
+                         NCL_ERR_NOT_SUPPORTED);
+    }
+
+    NCL_TEST_CASE("11.9: a variable write carries { nNo, TOcVariant } (20 bytes)");
+    {
+        ncl_syntec_variant value;
+        uint8_t frame[NCL_SYNTEC_PACKET_HEADER + NCL_SYNTEC_KRML_HEAD + 20u];
+
+        mock->put_hr = 0;
+        memset(&value, 0, sizeof(value));
+        value.type = 1;
+        value.int_value = 31337;
+        NCL_CHECK_EQ_INT(ncl_syntec_variable_put(session, 5u, &value), NCL_OK);
+        NCL_CHECK_EQ_INT(mock->last_var_put, 5u);
+        NCL_CHECK_EQ_INT(mock->last_var_put_type, 1);
+        NCL_CHECK_EQ_INT(mock->plc_put_in_len, 20u);
+        NCL_CHECK_EQ_INT(mock->var_int[5], 31337);
+        /* 浮点走 DOUBLE 变体（类型 2），值在 [12..19] */
+        value.type = 2;
+        value.double_value = 2.5;
+        NCL_CHECK_EQ_INT(ncl_syntec_variable_put(session, 6u, &value), NCL_OK);
+        NCL_CHECK_EQ_INT(mock->last_var_put_type, 2);
+        NCL_CHECK(mock->var_double[6] == 2.5);
+        /* 帧：48 字节，A = 4，In 20 */
+        NCL_CHECK_EQ_INT(ncl_syntec_variable_put_frame(frame, sizeof(frame), 5u,
+                                                       &value, 0u),
+                         sizeof(frame));
+        NCL_CHECK_EQ_INT(get_u32(frame), 16u + 20u);
+        NCL_CHECK_EQ_INT(get_u32(frame + 16), NCL_SYNTEC_CODE_GLOBAL_PUT_VALUE);
+        NCL_CHECK_EQ_INT(get_u32(frame + 20), 20u);
+        NCL_CHECK_EQ_INT(get_u32(frame + 24), 4u);
+        NCL_CHECK_EQ_INT(get_u32(frame + 28), 5u);
+        NCL_CHECK_EQ_INT(get_u16(frame + 32), 2u); /* 类型在 In 的 [4..5] */
+    }
+
+    NCL_TEST_CASE("11.9: a refused register write is NCL_ERR_IO");
+    {
+        mock->put_hr = 0x1234;
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_register_put(session, 3u, 1u), NCL_ERR_IO);
+        NCL_CHECK(strstr(ncl_syntec_last_error(session), "0x00001234") != NULL);
+        mock->put_hr = 0;
+    }
+
     NCL_TEST_CASE("11.7: a refused tool write is NCL_ERR_IO, tool 0 is invalid");
     {
         ncl_syntec_tool want;
@@ -2189,6 +2389,108 @@ static void test_adapter(void)
         NCL_CHECK_EQ_INT(mock->tools[1].tool_nose, 5);
         NCL_CHECK(mock->tools[1].radius_wear == 0.02);
         NCL_CHECK(mock->tools[1].radius_geometry == 0.8);
+    }
+
+    NCL_TEST_CASE("11.9: a Set writes a register and a variable");
+    {
+        ncl_message *write = ncl_message_new(NCL_MSG_SET_REQUEST);
+        ncl_set_request_item *item =
+            ncl_set_request_item_new("/MACHINE/CONTROLLER/REGISTER@R");
+        ncl_message *response;
+
+        NCL_CHECK(write != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "set_value");
+        (void)ncl_params_set_int(&item->params, "keys", 2);
+        (void)ncl_params_set_int(&item->params, "value", 4242);
+        (void)ncl_message_set_message_id(write, "s4");
+        (void)ncl_message_add_set_request_item(write, item);
+        mock->put_hr = 0;
+        response = ncl_server_invoke_set(ncl_host_server(host), write);
+        ncl_message_free(write);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_set_response_item *row =
+                ncl_ptrvec_at(&response->as.set_response.items, 0);
+
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            ncl_message_free(response);
+        }
+        NCL_CHECK_EQ_INT(mock->last_plc_register_put, 2u);
+        NCL_CHECK_EQ_INT(mock->last_plc_register_value, 4242u);
+        /* 读回来确认（走同一个宿主） */
+        {
+            ncl_message *q = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+            ncl_query_request_item *qi =
+                ncl_query_request_item_new("/MACHINE/CONTROLLER/REGISTER@R");
+            ncl_message *qr;
+
+            NCL_CHECK(q != NULL && qi != NULL);
+            (void)ncl_params_set_string(&qi->params, "operation", "get_value");
+            (void)ncl_params_set_string(&qi->params, "keys", "2");
+            (void)ncl_message_set_message_id(q, "q8");
+            (void)ncl_message_add_query_request_item(q, qi);
+            qr = ncl_server_invoke_query(ncl_host_server(host), q);
+            ncl_message_free(q);
+            NCL_CHECK(qr != NULL);
+            if (qr != NULL) {
+                ncl_query_response_item *row =
+                    ncl_ptrvec_at(&qr->as.query_response.items, 0);
+                const ncl_json *values = row != NULL ? row->values : NULL;
+
+                NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+                if (values != NULL && ncl_json_arr_len(values) == 1) {
+                    NCL_CHECK_EQ_INT(ncl_json_obj_get_int(
+                                         ncl_json_arr_get(values, 0), "2", -1),
+                                     4242);
+                }
+                ncl_message_free(qr);
+            }
+        }
+
+        /* 变量：写整数 */
+        write = ncl_message_new(NCL_MSG_SET_REQUEST);
+        item = ncl_set_request_item_new("/MACHINE/CONTROLLER/VARIABLE");
+        NCL_CHECK(write != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "set_value");
+        (void)ncl_params_set_int(&item->params, "keys", 7);
+        (void)ncl_params_set_int(&item->params, "value", 31337);
+        (void)ncl_message_set_message_id(write, "s5");
+        (void)ncl_message_add_set_request_item(write, item);
+        response = ncl_server_invoke_set(ncl_host_server(host), write);
+        ncl_message_free(write);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_set_response_item *row =
+                ncl_ptrvec_at(&response->as.set_response.items, 0);
+
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            ncl_message_free(response);
+        }
+        NCL_CHECK_EQ_INT(mock->last_var_put, 7u);
+        NCL_CHECK_EQ_INT(mock->last_var_put_type, 1); /* 整数 -> INT 变体 */
+        NCL_CHECK_EQ_INT(mock->var_int[7], 31337);
+
+        /* 变量：带小数点 -> DOUBLE 变体 */
+        write = ncl_message_new(NCL_MSG_SET_REQUEST);
+        item = ncl_set_request_item_new("/MACHINE/CONTROLLER/VARIABLE");
+        NCL_CHECK(write != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "set_value");
+        (void)ncl_params_set_int(&item->params, "keys", 6);
+        (void)ncl_params_set(&item->params, "value", ncl_json_new_double(2.5));
+        (void)ncl_message_set_message_id(write, "s6");
+        (void)ncl_message_add_set_request_item(write, item);
+        response = ncl_server_invoke_set(ncl_host_server(host), write);
+        ncl_message_free(write);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_set_response_item *row =
+                ncl_ptrvec_at(&response->as.set_response.items, 0);
+
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            ncl_message_free(response);
+        }
+        NCL_CHECK_EQ_INT(mock->last_var_put_type, 2);
+        NCL_CHECK(mock->var_double[6] == 2.5);
     }
 
     NCL_TEST_CASE("11.7: a Set refuses a field the tool does not have");

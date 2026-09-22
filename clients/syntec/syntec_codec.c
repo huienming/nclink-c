@@ -586,16 +586,25 @@ size_t ncl_syntec_param_frame(uint8_t *out, size_t cap, unsigned param,
                              sizeof(int32_t), serial);
 }
 
+/** §11.8 的通用写帧（16 字节桩头 + 跟在后面的 In）；定义在文件后面。 */
+static size_t syntec_krnl_frame(uint8_t *out, size_t cap, uint32_t code,
+                                size_t size_out, const uint8_t *in,
+                                size_t in_len, uint8_t serial);
+
 size_t ncl_syntec_param_put_frame(uint8_t *out, size_t cap, unsigned param,
                                   int32_t value, uint8_t serial)
 {
+    uint8_t in[8];
+
     /*
-     * §11.6：In 是 { nNo, newVal }（8 字节），B = 参数号、flag = 新值。
-     * A 是 **dwSizeOut**，而 `Out_OCK_ParamPutValueParams` 只有 `{ hr }`（4 字节），
-     * 所以 A = 4：原先多要的那 4 个字节只是填充，仿真器不查，真机上白多而已。
+     * §11.6：In 是 { nNo, newVal } = 8 字节（`Marshal::SizeOf(In_OCK_ParamPutValueParams)`），
+     * 所以 dwSizeIn = 8、两个格子都在 In 里；A 是 **dwSizeOut**，而
+     * `Out_OCK_ParamPutValueParams` 只有 `{ hr }`（4 字节），所以 A = 4。
      */
-    return syntec_code_frame_flag(out, cap, NCL_SYNTEC_CODE_PARAM_PUT, param,
-                                  0u, (uint32_t)value, serial);
+    put_u32(in, param);
+    put_u32(in + 4u, (uint32_t)value);
+    return syntec_krnl_frame(out, cap, NCL_SYNTEC_CODE_PARAM_PUT,
+                             sizeof(int32_t), in, sizeof(in), serial);
 }
 
 size_t ncl_syntec_param_capacity_frame(uint8_t *out, size_t cap, uint8_t serial)
@@ -877,6 +886,104 @@ bool ncl_syntec_tool_encode(const ncl_syntec_tool *tool, uint8_t *record,
     return true;
 }
 
+/**
+ * 写这一侧的通用帧（§11.8）：12 字节包头 + 16 字节 KrnlAPI 桩头 + **任意长的 In**。
+ *
+ *   [0..3]  Length = 16 + in_len     [4..5] CmdID = 16
+ *   [8..11] Reserved (0x0700<<16|200)
+ *   [12..15] uFuncID = 200（[14] 是 serial）
+ *   [16..19] dwCode   [20..23] dwSizeIn = in_len   [24..27] dwSizeOut = size_out
+ *   [28..]   In
+ *
+ * in_len = 8 时（`{ nNo, newVal }` 那一族）帧长正好 36，和读的短帧同形。
+ */
+static size_t syntec_krnl_frame(uint8_t *out, size_t cap, uint32_t code,
+                                size_t size_out, const uint8_t *in,
+                                size_t in_len, uint8_t serial)
+{
+    size_t frame_len = NCL_SYNTEC_PACKET_HEADER + NCL_SYNTEC_KRML_HEAD + in_len;
+
+    if (out == NULL || in == NULL || in_len == 0 || cap < frame_len ||
+        frame_len > 0xFFFFFFFFu) {
+        return 0;
+    }
+    memset(out, 0, frame_len);
+    put_u32(out, (uint32_t)(NCL_SYNTEC_KRML_HEAD + in_len));
+    put_u16(out + 4, NCL_SYNTEC_CMD_ITEM);
+    put_u32(out + 8, 0x0700u * 0x10000u + NCL_SYNTEC_CMD_KRML_API);
+    put_u16(out + 12, (uint16_t)NCL_SYNTEC_CMD_KRML_API);
+    out[14] = serial;
+    put_u32(out + NCL_SYNTEC_PACKET_HEADER + 4u, code);
+    put_u32(out + NCL_SYNTEC_PACKET_HEADER + 8u, (uint32_t)in_len);
+    put_u32(out + NCL_SYNTEC_PACKET_HEADER + 12u, (uint32_t)size_out);
+    memcpy(out + NCL_SYNTEC_PACKET_HEADER + NCL_SYNTEC_KRML_HEAD, in, in_len);
+    return frame_len;
+}
+
+/** `{ nNo i32, newVal u32 }`：R 寄存器写（`0x041B`）。 */
+size_t ncl_syntec_plc_register_put_frame(uint8_t *out, size_t cap, unsigned no,
+                                         uint32_t value, uint8_t serial)
+{
+    uint8_t in[8];
+
+    put_u32(in, no);
+    put_u32(in + 4u, value);
+    return syntec_krnl_frame(out, cap, NCL_SYNTEC_CODE_PLC_PUT_REGISTER,
+                             sizeof(int32_t), in, sizeof(in), serial);
+}
+
+/** `{ nNo i32, newVal u8 (3 填) }`：位写（I `0x0413` / C `0x0416` / S `0x0418`）。 */
+size_t ncl_syntec_plc_bit_put_frame(uint8_t *out, size_t cap,
+                                    ncl_syntec_plc_kind kind, unsigned no,
+                                    bool value, uint8_t serial)
+{
+    static const uint32_t k_codes[] = {0x0413u, 0u, 0x0416u, 0x0418u, 0u};
+    size_t k = (size_t)kind;
+    uint8_t in[8];
+
+    if (k >= sizeof(k_codes) / sizeof(k_codes[0]) || k_codes[k] == 0u) {
+        /* O 位只能 Force（0x0494）、A 位没有写；这两种不在这里假装能写。 */
+        return 0;
+    }
+    memset(in, 0, sizeof(in));
+    put_u32(in, no);
+    in[4] = value ? 1u : 0u;
+    return syntec_krnl_frame(out, cap, k_codes[k], sizeof(int32_t), in,
+                             sizeof(in), serial);
+}
+
+/**
+ * `{ nNo i32, TOcVariant 16 }`：变量写（`0x0422`）。
+ *
+ * 变体按控制器侧 `TOcVariant` 摆：`[4..5]` 类型（i16）、**值在 [12..]**
+ * （`JMarshal::OCK_TOcVariantToPtr` 就是这么写的）。`type` 0 表示写"空"。
+ */
+size_t ncl_syntec_variable_put_frame(uint8_t *out, size_t cap, unsigned no,
+                                     const ncl_syntec_variant *value,
+                                     uint8_t serial)
+{
+    uint8_t in[20];
+    int16_t type;
+
+    if (value == NULL) {
+        return 0;
+    }
+    memset(in, 0, sizeof(in));
+    put_u32(in, no);
+    type = value->type;
+    if (type != 1 && type != 2) {
+        type = 0; /* 只写整数/浮点；其它一律写"空" */
+    }
+    in[4] = (uint8_t)((uint16_t)type & 0xFFu);
+    in[5] = (uint8_t)(((uint16_t)type >> 8) & 0xFFu);
+    if (type == 1) {
+        put_u32(in + 12u, (uint32_t)value->int_value);
+    } else if (type == 2) {
+        syntec_write_f64(in + 12u, value->double_value);
+    }
+    return syntec_krnl_frame(out, cap, NCL_SYNTEC_CODE_GLOBAL_PUT_VALUE,
+                             sizeof(int32_t), in, sizeof(in), serial);
+}
 size_t ncl_syntec_tool_put_frame(uint8_t *out, size_t cap,
                                  const ncl_syntec_tool *tool, unsigned index,
                                  uint8_t serial)

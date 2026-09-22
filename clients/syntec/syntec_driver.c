@@ -1329,6 +1329,135 @@ ncl_err ncl_syntec_variable(ncl_syntec *syntec, unsigned no,
     return NCL_OK;
 }
 /*
+ * §11.9 写这一侧：R 寄存器（`0x041B`）、I/C/S 位（`0x0413/16/18`）、变量（`0x0422`）。
+ * 应答都是 `{ hr }`，所以看 [16..19] 那个 hr —— 和刀补写一样。
+ */
+ncl_err ncl_syntec_plc_register_put(ncl_syntec *syntec, unsigned no,
+                                    uint32_t value)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    const char *what = "寄存器写不了";
+    uint8_t serial;
+    ncl_syntec_view view;
+    int32_t hr = -1;
+    ncl_err err;
+
+    if (syntec == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_plc_register_put_frame(frame, sizeof(frame), no, value,
+                                              serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_reply_hr(syntec->rx, syntec->last_rx_len, &hr)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, what);
+    }
+    if (hr != 0) {
+        snprintf(syntec->error, sizeof(syntec->error),
+                 "R%u 写 %u 被拒绝（hr=0x%08X）", no, (unsigned)value,
+                 (unsigned)hr);
+        return NCL_ERR_IO;
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_plc_bit_put(ncl_syntec *syntec, ncl_syntec_plc_kind kind,
+                               unsigned no, bool value)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    int32_t hr = -1;
+    ncl_err err;
+
+    if (syntec == NULL || kind < NCL_SYNTEC_PLC_I || kind > NCL_SYNTEC_PLC_A) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_plc_bit_put_frame(frame, sizeof(frame), kind, no, value,
+                                         serial) == 0) {
+            /* O 位只能 Force、A 位没有写：这里不假装能写。 */
+            err = NCL_ERR_NOT_SUPPORTED;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_reply_hr(syntec->rx, syntec->last_rx_len, &hr)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "位写不了");
+    }
+    if (hr != 0) {
+        snprintf(syntec->error, sizeof(syntec->error),
+                 "位 %u 写被拒绝（hr=0x%08X）", no, (unsigned)hr);
+        return NCL_ERR_IO;
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_variable_put(ncl_syntec *syntec, unsigned no,
+                                const ncl_syntec_variant *value)
+{
+    uint8_t frame[NCL_SYNTEC_PACKET_HEADER + NCL_SYNTEC_KRML_HEAD + 20u];
+    uint8_t serial;
+    ncl_syntec_view view;
+    int32_t hr = -1;
+    ncl_err err;
+
+    if (syntec == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_variable_put_frame(frame, sizeof(frame), no, value,
+                                          serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_reply_hr(syntec->rx, syntec->last_rx_len, &hr)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "变量写不了");
+    }
+    if (hr != 0) {
+        snprintf(syntec->error, sizeof(syntec->error),
+                 "#%u 写被拒绝（hr=0x%08X）", no, (unsigned)hr);
+        return NCL_ERR_IO;
+    }
+    return NCL_OK;
+}
+/*
  * §11.7 写一把刀：`0x0440`，In 是 `{ nToolNo, TToolOffset }` 228 字节，跟着
  * 16 字节桩头走（`ncl_syntec_tool_put_frame()`）。索引是**刀号（从 1 起）**，
  * 和读用的是同一个号，也就和 `/CONTROLLER/TOOL` 的 key 一致。
