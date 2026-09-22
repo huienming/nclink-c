@@ -217,6 +217,12 @@ static bool tool_is_config_type(const char *type)
         /* 表 7：成表、成结构、不常变的那几项 */
         "COORDINATE", "FILE", "SHELF_UNIT", "TOOL", "TOOLPARAM", "TYPE",
         "VARIABLE",
+        /*
+         * 册 4 表 7 里没有 REGISTER：PLC 的寄存器/位（新代的 R / I / O / C / S / A）
+         * 落不进已有的任何一格，这一格是扩展（现场口径："PLC 都是 REGISTER，number
+         * 是 R / I / …"）。一类、一族一条，表按号排（LIST）。
+         */
+        "REGISTER",
     };
     size_t i;
 
@@ -538,6 +544,7 @@ static const tool_label k_labels[] = {
     {"SHELF", "货架系统"},
     {"SERVO", "伺服"},
     {"TOOL_MAGAZINE", "刀库"},
+    {"REGISTER", "寄存器"}, /* 扩展：PLC 寄存器/位 */
 };
 
 /** number 是我们自己的约定后缀，能译就译成可读的词（表 8 里没有它）。 */
@@ -591,6 +598,7 @@ static const struct {
     {"TOOL", "LIST"},       /* list：刀具（刀具列表） */
     {"TOOLPARAM", "HASH"},  /* JSON 对象：刀具参数 */
     {"VARIABLE", "LIST"},   /* list：运行变量 */
+    {"REGISTER", "LIST"},  /* 扩展：PLC 寄存器/位，一族一张表（@R / @I …），按号取 */
 };
 
 /** The "类型" of @p type as the model writes it ("HASH"/"LIST"), NULL for scalars. */
@@ -858,6 +866,29 @@ ncl_json *ncl_tool_model(const ncl_tool_decl *decl, const ncl_json *device,
             ncl_log_warn("点位 %s 的类型 %s 在数据字典里属配置型，却被声明成 "
                          "dataItem（会进采样候选）——确认一下",
                          point->path, type);
+        }
+        /*
+         * 集合类数据对象的两条操作是**按取值形状分**的（册 4）：
+         *
+         *   HASH（dict / JSON 对象）  答 get_keys      —— 键是名字，枚举靠 get_keys
+         *   LIST（list）              答 get_length    —— 元素按序号，长度靠 get_length
+         *
+         * 声明反了不会崩（宿主只调声明过的操作），但客户端会照 dataType 去问，
+         * 问到的就是"不支持"——所以在这里点出来。
+         */
+        if (config_kind) {
+            const char *shape = tool_data_type_of(type);
+            bool keys_op = ncl_tool_point_handles(point, NCL_OP_GET_KEYS);
+            bool length_op = ncl_tool_point_handles(point, NCL_OP_GET_LENGTH);
+
+            if (shape != NULL && keys_op && strcmp(shape, "HASH") != 0) {
+                ncl_log_warn("点位 %s：%s 是 %s，只有 HASH 答 get_keys", point->path,
+                             type, shape);
+            }
+            if (shape != NULL && length_op && strcmp(shape, "LIST") != 0) {
+                ncl_log_warn("点位 %s：%s 是 %s，只有 LIST 答 get_length", point->path,
+                             type, shape);
+            }
         }
         if (component == NULL) {
             /* 设备自己那两层：dataItems 放感知量，configs 放配置型数据。 */

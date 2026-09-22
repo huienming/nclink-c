@@ -1453,9 +1453,7 @@ static void test_param_table(void)
         mock->plc_registers = 65536;
         mock->plc_bit[NCL_SYNTEC_PLC_I] = 1;
         /* R 寄存器读的就是 0x041A，和条目那条路同源：值放在条目表里 */
-        mock->items[mock->item_count].key = 771u;
-        mock->items[mock->item_count].value = 1000u;
-        mock->item_count++;
+        mock_set_value(mock, 771u, 1000u);
         NCL_CHECK_EQ_INT(ncl_syntec_plc_capacity(session, &slots), NCL_OK);
         NCL_CHECK_EQ_INT(slots.ibits, 512);
         NCL_CHECK_EQ_INT(slots.abits, 512);
@@ -1690,7 +1688,7 @@ static void test_adapter(void)
     }
 
     NCL_TEST_CASE("the nine points are the model the device publishes");
-    /* 9 项 + 9 轴 × 6 格(54) + 参数表 + 刀具表 + PLC 6 张表 + 变量表 = 72 */
+    /* 9 项 + 9 轴 × 6 格(54) + 参数表 + 刀具表 + 寄存器 6 族 + 变量表 = 72 */
     NCL_CHECK_EQ_INT(ncl_host_point_count(host), 72);
     for (i = 0; i < sizeof(kPaths) / sizeof(kPaths[0]); i++) {
         NCL_CHECK(host_point_index(host, kPaths[i]) != (size_t)-1);
@@ -1827,11 +1825,10 @@ static void test_adapter(void)
     NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@W/SERVO_DRIVER/POSITION",
                                 &err) != NCL_OK);
 
-    NCL_TEST_CASE("11.9: PLC tables and the variable table are declared too");
-    NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/PLC/REGISTER") !=
-              (size_t)-1);
-    NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/PLC/IBIT") != (size_t)-1);
-    NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/PLC/ABIT") != (size_t)-1);
+    NCL_TEST_CASE("11.9: one REGISTER per family, and the variable table");
+    NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/REGISTER@R") != (size_t)-1);
+    NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/REGISTER@I") != (size_t)-1);
+    NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/REGISTER@A") != (size_t)-1);
     NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/VARIABLE") != (size_t)-1);
 
     NCL_TEST_CASE("11.4: parameters are a config object (dict), not a method");
@@ -1848,6 +1845,113 @@ static void test_adapter(void)
             ncl_mem_free(text);
         }
         ncl_json_free(model);
+    }
+
+    NCL_TEST_CASE("11.9: a Query reads REGISTER@R by number");
+    {
+        ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+        ncl_query_request_item *item =
+            ncl_query_request_item_new("/MACHINE/CONTROLLER/REGISTER@R");
+        ncl_message *response;
+
+        /* mock：容量 65536（REGISTER 是 LIST，长度走 get_length），R771 = 1000 */
+        mock->plc_registers = 65536;
+        mock_set_value(mock, 771u, 1000u);
+
+        NCL_CHECK(request != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "get_length");
+        (void)ncl_message_set_message_id(request, "q6");
+        (void)ncl_message_add_query_request_item(request, item);
+        response = ncl_server_invoke_query(ncl_host_server(host), request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_query_response_item *row =
+                ncl_ptrvec_at(&response->as.query_response.items, 0);
+            long long length = -1;
+
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            NCL_CHECK(row->values != NULL &&
+                      ncl_json_as_int(ncl_json_arr_get(row->values, 0), &length));
+            NCL_CHECK_EQ_INT(length, 65536);
+            ncl_message_free(response);
+        }
+
+        request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+        item = ncl_query_request_item_new("/MACHINE/CONTROLLER/REGISTER@R");
+        NCL_CHECK(request != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "get_value");
+        (void)ncl_params_set_string(&item->params, "keys", "771");
+        (void)ncl_message_set_message_id(request, "q6b");
+        (void)ncl_message_add_query_request_item(request, item);
+        response = ncl_server_invoke_query(ncl_host_server(host), request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_query_response_item *row =
+                ncl_ptrvec_at(&response->as.query_response.items, 0);
+            const ncl_json *values = row != NULL ? row->values : NULL;
+
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            if (values != NULL && ncl_json_arr_len(values) == 1) {
+                NCL_CHECK_EQ_INT(
+                    ncl_json_obj_get_int(ncl_json_arr_get(values, 0), "771", -1),
+                    1000);
+            }
+
+            NCL_TEST_CASE("11.9: REGISTER@R refuses a number past its length");
+            if (response != NULL) {
+                ncl_message_free(response);
+            }
+            request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+            item = ncl_query_request_item_new("/MACHINE/CONTROLLER/REGISTER@R");
+            NCL_CHECK(request != NULL && item != NULL);
+            (void)ncl_params_set_string(&item->params, "operation", "get_value");
+            (void)ncl_params_set_string(&item->params, "keys", "99999");
+            (void)ncl_message_set_message_id(request, "q6c");
+            (void)ncl_message_add_query_request_item(request, item);
+            response = ncl_server_invoke_query(ncl_host_server(host), request);
+            ncl_message_free(request);
+            NCL_CHECK(response != NULL);
+            if (response != NULL) {
+                ncl_query_response_item *bad =
+                    ncl_ptrvec_at(&response->as.query_response.items, 0);
+
+                NCL_CHECK(bad != NULL && !ncl_check_is_code_ok(bad->code));
+                ncl_message_free(response);
+            }
+        }
+    }
+
+    NCL_TEST_CASE("11.9: a Query reads a bit out of REGISTER@I");
+    {
+        ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+        ncl_query_request_item *item =
+            ncl_query_request_item_new("/MACHINE/CONTROLLER/REGISTER@I");
+        ncl_message *response;
+
+        mock->plc_bits[0] = 512;
+        mock->plc_bit[NCL_SYNTEC_PLC_I] = 1;
+        NCL_CHECK(request != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "get_value");
+        (void)ncl_params_set_string(&item->params, "keys", "0");
+        (void)ncl_message_set_message_id(request, "q7");
+        (void)ncl_message_add_query_request_item(request, item);
+        response = ncl_server_invoke_query(ncl_host_server(host), request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_query_response_item *row =
+                ncl_ptrvec_at(&response->as.query_response.items, 0);
+            const ncl_json *values = row != NULL ? row->values : NULL;
+
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            if (values != NULL && ncl_json_arr_len(values) == 1) {
+                NCL_CHECK(ncl_json_obj_get_bool(ncl_json_arr_get(values, 0), "0",
+                                                false));
+            }
+            ncl_message_free(response);
+        }
     }
 
     NCL_TEST_CASE("11.4: a Query reads a parameter by key");
@@ -1963,7 +2067,9 @@ static void test_adapter(void)
         }
     }
 
-    NCL_TEST_CASE("11.4: get_attributes answers the row, get_length the count");
+    /* 册 4：get_keys 是 HASH（dict）的操作，get_length 是 LIST 的 —— 两边都验，
+     * 并且都要能看出"另一个操作没声明"。 */
+    NCL_TEST_CASE("11.4: a HASH answers get_keys (and not get_length)");
     {
         ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
         ncl_query_request_item *item =
@@ -1971,7 +2077,7 @@ static void test_adapter(void)
         ncl_message *response;
 
         NCL_CHECK(request != NULL && item != NULL);
-        (void)ncl_params_set_string(&item->params, "operation", "get_length");
+        (void)ncl_params_set_string(&item->params, "operation", "get_keys");
         (void)ncl_message_set_message_id(request, "q2");
         (void)ncl_message_add_query_request_item(request, item);
         response = ncl_server_invoke_query(ncl_host_server(host), request);
@@ -1981,13 +2087,68 @@ static void test_adapter(void)
             ncl_query_response_item *row = ncl_ptrvec_at(&response->as.query_response.items, 0);
 
             NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
-            {
-                long long length = -1;
+            /* mock 的参数表里只有 321 一条 */
+            NCL_CHECK(row->values != NULL && ncl_json_arr_len(row->values) == 1);
+            ncl_message_free(response);
+        }
 
-                /* 答的是裸数字（一页一条：mock 的表里只有一条） */
-                NCL_CHECK(ncl_json_as_int(ncl_json_arr_get(row->values, 0), &length));
-                NCL_CHECK_EQ_INT(length, 1);
-            }
+        NCL_TEST_CASE("11.4: the same HASH does not answer get_length");
+        request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+        item = ncl_query_request_item_new("/MACHINE/CONTROLLER/PARAMETER");
+        NCL_CHECK(request != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "get_length");
+        (void)ncl_message_set_message_id(request, "q2b");
+        (void)ncl_message_add_query_request_item(request, item);
+        response = ncl_server_invoke_query(ncl_host_server(host), request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_query_response_item *row = ncl_ptrvec_at(&response->as.query_response.items, 0);
+
+            NCL_CHECK(row != NULL && !ncl_check_is_code_ok(row->code));
+            ncl_message_free(response);
+        }
+    }
+
+    NCL_TEST_CASE("11.7: a LIST answers get_length (and not get_keys)");
+    {
+        ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+        ncl_query_request_item *item =
+            ncl_query_request_item_new("/MACHINE/CONTROLLER/TOOL");
+        ncl_message *response;
+
+        NCL_CHECK(request != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "get_length");
+        (void)ncl_message_set_message_id(request, "q5");
+        (void)ncl_message_add_query_request_item(request, item);
+        response = ncl_server_invoke_query(ncl_host_server(host), request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_query_response_item *row = ncl_ptrvec_at(&response->as.query_response.items, 0);
+            long long length = -1;
+
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            NCL_CHECK(row->values != NULL &&
+                      ncl_json_as_int(ncl_json_arr_get(row->values, 0), &length));
+            NCL_CHECK_EQ_INT(length, 2); /* mock 摆了两把刀 */
+            ncl_message_free(response);
+        }
+
+        NCL_TEST_CASE("11.7: the same LIST does not answer get_keys");
+        request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+        item = ncl_query_request_item_new("/MACHINE/CONTROLLER/TOOL");
+        NCL_CHECK(request != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "get_keys");
+        (void)ncl_message_set_message_id(request, "q5b");
+        (void)ncl_message_add_query_request_item(request, item);
+        response = ncl_server_invoke_query(ncl_host_server(host), request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_query_response_item *row = ncl_ptrvec_at(&response->as.query_response.items, 0);
+
+            NCL_CHECK(row != NULL && !ncl_check_is_code_ok(row->code));
             ncl_message_free(response);
         }
     }

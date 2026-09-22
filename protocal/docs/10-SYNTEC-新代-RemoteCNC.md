@@ -1034,8 +1034,8 @@ UNAVAILABLE”。
 ```
 
 * **操作**（册 5 的 Query 一族）：
-  * `get_length` —— 参数表有多少条（21A = **3784**）；
-  * `get_keys` —— 参数号清单（按表里的顺序，字符串数组）；
+  * `get_keys` —— 参数号清单（按表里的顺序，字符串数组；21A 有 **3784** 条）。
+    **参数是 dict（HASH），所以答 get_keys、不答 get_length**（册 4 的口径，见 §11.9）；
   * `get_value` —— `params.keys` 给号（数组或单个），答 `{"321":100,...}`；
   * `get_attributes` —— `params.keys` 给号，答 `[{"no","title","flags","fallback"}, ...]`。
   * **写**只开 `set_value`（§11.6）：`{"keys":"321","value":111}` 或直接给字典 `{"321":111}`。
@@ -1092,7 +1092,7 @@ UNAVAILABLE”。
 ### 11.7 刀具表：一条 `/CONTROLLER/TOOL`（ 2026-09-22，21A 实测）
 
 **只声明一个 `TOOL`**（刀具列表，list），**刀补就是 tool 的元素**（用户口径）——
-不再单开 `TOOLPARAM`。操作与参数那一格同形状：`get_length` / `get_keys` / `get_value` / `get_attributes`。
+不再单开 `TOOLPARAM`。操作按取值形状给：**刀具表是 list（LIST）→ `get_length`**（21A = 96 把）+ `get_value` / `get_attributes`（不答 `get_keys`，见 §11.9）。
 
 | 用途 | 码 | 帧 | 21A |
 |---|---|---|---|
@@ -1238,15 +1238,23 @@ CKrnlAPI::MultiTCPNcPutToolCompensation(link, nToolNo, TToolOffset)
 
 **进模型的两样**（都只答读）：
 
-| 模型路径 | 是什么 | key |
-|---|---|---|
-| `/CONTROLLER/PLC/REGISTER` | R 寄存器表 | 寄存器号（0..65535）|
-| `/CONTROLLER/PLC/{I,O,C,S,A}BIT` | 五种位表 | 位号（0..511）|
-| `/CONTROLLER/VARIABLE` | 变量表（册 4 表 7 的 `VARIABLE`，list）| 变量号（就是程序里的 `#号`）|
+| 模型路径 | 类型 / 取值形状 | 按什么取 | 操作 |
+|---|---|---|---|
+| `/CONTROLLER/REGISTER@R` | `REGISTER` / LIST | 寄存器号（0..65535）| `get_length`（65536）、`get_value`、`get_attributes` |
+| `/CONTROLLER/REGISTER@I` | `REGISTER` / LIST | 位号（0..511）| 同上（512）|
+| `/CONTROLLER/REGISTER@O` `@C` `@S` `@A` | `REGISTER` / LIST | 同上 | 同上 |
+| `/CONTROLLER/VARIABLE` | `VARIABLE` / LIST（册 4 表 7）| 变量号（程序里的 `#号`）| `get_length`（14096）、`get_value`、`get_attributes` |
 
-> **PLC 那两个名字是扩展**：册 4 的表 7 里没有 PLC 这一格（只有 TOOL / TOOLPARAM /
-> VARIABLE / PARAMETER / COORDINATE…），现场网关那侧也没有对应路由。用它的人要知道这一点；
-> `/CONTROLLER/VARIABLE` 是标准名，和 FANUC 的宏变量表同一个位置。
+> **`REGISTER` 这一类是扩展**：册 4 的表 7 里没有 PLC 这一格（只有 TOOL / TOOLPARAM /
+> VARIABLE / PARAMETER / COORDINATE…），现场网关那侧也没有对应路由。摆法是**一类、一族一条**，
+> 族写在 `number` 上（`@R`/`@I`/`@O`/`@C`/`@S`/`@A`）——现场口径："PLC 都是 REGISTER，number 是
+> R / I / …"。`C` 是新代自己的 C 位（不是计数器）。`/CONTROLLER/VARIABLE` 是标准名，
+> 和 FANUC 的宏变量表同一个位置。
+
+> **操作按取值形状分**（册 4）：HASH（dict）答 `get_keys`，LIST 答 `get_length`，
+> 两者**不是**同一件事、也不该同时声明。参数表是 dict（HASH）→ 只答 `get_keys`；
+> 刀具表 / 变量表 / 寄存器表都是 list（LIST）→ 只答 `get_length`。这条规则已经在
+> `src/tool/tool.c` 里做成装载时的告警（声明反了会点出来）。
 
 **现场核对记录（21A，2026-09-22）**：
 

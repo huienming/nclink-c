@@ -339,13 +339,6 @@ static ncl_err syntec_parameter(void *ctx, const ncl_tool_point *self,
 
     (void)self;
     switch (op) {
-    case NCL_OP_GET_LENGTH: /* 参数表有多少条 */
-        rc = ncl_syntec_param_table(syntec, 0, 1, page, &got, &total);
-        if (rc != NCL_OK) {
-            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
-        }
-        return ncl_tool_reply_int(result, (long long)total);
-
     case NCL_OP_GET_KEYS: /* 参数号清单，按表里的顺序 */
         rc = ncl_syntec_param_table(syntec, 0, 1, page, &got, &total);
         if (rc != NCL_OK) {
@@ -667,80 +660,109 @@ static ncl_err syntec_tool_patch(ncl_syntec_tool *tool, const ncl_json *value,
 /* ------------------------------------------------------------ PLC / 变量 -- */
 
 /**
- * `/CONTROLLER/PLC/REGISTER` 与 `/CONTROLLER/PLC/{I,O,C,S,A}BIT`（§11.9）：**扩展对象**。
+ * `/CONTROLLER/REGISTER@<族>`：PLC 的寄存器与位（§11.9）。**一个族一条**，族在 `number` 上：
  *
- * 册 4 的表 7 里没有 PLC 这一格（只有 TOOL / TOOLPARAM / VARIABLE / PARAMETER /
- * COORDINATE…），所以这两个名字是按 `CONTROLLER` 下"编号表"的惯例起的，现场网关
- * 那一侧也没有对应路由 —— 用它的人要知道这是扩展。
+ *   REGISTER@R   R 寄存器（u32）  0 .. 65535（21A）
+ *   REGISTER@I   I 位（输入）    0 .. 511
+ *   REGISTER@O   O 位（输出）
+ *   REGISTER@C   C 位（新代自己的叫法，不是计数器）
+ *   REGISTER@S   S 位
+ *   REGISTER@A   A 位
  *
- * `ctx` 选族：`"R"` 是 R 寄存器（u32），`"I"/"O"/"C"/"S"/"A"` 是位（0/1）。
- * keys 是号（从 0 起），get_length = 容量（21A：R 65536 个、I/O/C/S/A 各 512 个）。
- * 只答读：位/寄存器写（`0x0413/0x041B`）控制器侧有，但这一轮没开。
+ * 取值形状是一段**按号排的表**（LIST）：答 `get_length`（这一族有多少个），
+ * 元素按号取（`keys` 给号，0 起），所以不答 `get_keys`。定时器/计数器
+ * （`PlcGetTimer`/`Counter`）是四个字段的结构体，先不进这一格。
+ *
+ * 只答读：位写（`0x0413` 等）与寄存器写（`0x041B`）控制器侧有，权限在适配器外面，
+ * 这一轮没开。
  */
-static ncl_err syntec_plc_table(void *ctx, const ncl_tool_point *self,
-                                ncl_operation op, const ncl_json *params,
-                                ncl_json **result, char **reason)
+static uint32_t syntec_register_slots(const ncl_syntec_plc_slots *slots,
+                                      char family)
+{
+    switch (family) {
+    case 'R':
+        return slots->registers;
+    case 'I':
+        return slots->ibits;
+    case 'O':
+        return slots->obits;
+    case 'C':
+        return slots->cbits;
+    case 'S':
+        return slots->sbits;
+    case 'A':
+        return slots->abits;
+    default:
+        return 0;
+    }
+}
+
+/** 族 -> 位族的枚举（R 不是位，调用前先分开）。 */
+static ncl_syntec_plc_kind syntec_register_kind(char family)
+{
+    switch (family) {
+    case 'I':
+        return NCL_SYNTEC_PLC_I;
+    case 'O':
+        return NCL_SYNTEC_PLC_O;
+    case 'C':
+        return NCL_SYNTEC_PLC_C;
+    case 'S':
+        return NCL_SYNTEC_PLC_S;
+    default:
+        return NCL_SYNTEC_PLC_A;
+    }
+}
+
+static ncl_err syntec_register_table(void *ctx, const ncl_tool_point *self,
+                                     ncl_operation op, const ncl_json *params,
+                                     ncl_json **result, char **reason)
 {
     ncl_syntec *syntec = (ncl_syntec *)ctx;
-    const char *family = (const char *)self->arg; /* 声明里给的那一族 */
     const ncl_json *keys = ncl_params_get(params, "keys");
-    ncl_syntec_plc_slots cap;
-    size_t capacity = 0;
-    size_t i;
+    const char *family_text = (const char *)self->arg; /* 声明里给的那一族 */
+    ncl_syntec_plc_slots slots;
+    char family;
+    uint32_t count;
     ncl_err rc;
+    size_t i;
 
-    (void)self;
-    rc = ncl_syntec_plc_capacity(syntec, &cap);
+    if (family_text == NULL || family_text[0] == '\0') {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "这条点位没带族（@R/@I…）");
+    }
+    family = family_text[0];
+    if (family >= 'a' && family <= 'z') {
+        family = (char)(family - 'a' + 'A');
+    }
+    rc = ncl_syntec_plc_capacity(syntec, &slots);
     if (rc != NCL_OK) {
         return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
     }
-    capacity = family[0] == 'R' ? cap.registers
-                                  : (family[0] == 'I'   ? cap.ibits
-                                     : family[0] == 'O' ? cap.obits
-                                     : family[0] == 'C' ? cap.cbits
-                                     : family[0] == 'S' ? cap.sbits
-                                                          : cap.abits);
-    switch (op) {
-    case NCL_OP_GET_LENGTH:
-        return ncl_tool_reply_int(result, (long long)capacity);
-    case NCL_OP_GET_KEYS: { /* 号就是 key，从 0 起，一整段 */
-        ncl_json *array = ncl_json_new_array();
-
-        if (array == NULL) {
-            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
-        }
-        for (i = 0; i < capacity; i++) {
-            char text[24];
-            ncl_json *item;
-
-            snprintf(text, sizeof(text), "%u", (unsigned)i);
-            item = ncl_json_new_string(text);
-            if (item == NULL || ncl_json_arr_push(array, item) != NCL_OK) {
-                ncl_json_free(item);
-                ncl_json_free(array);
-                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
-            }
-        }
-        *result = array;
-        return NCL_OK;
+    count = syntec_register_slots(&slots, family);
+    if (count == 0) {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                             "不认识的族 %c（R/I/O/C/S/A）", family);
     }
+    switch (op) {
+    case NCL_OP_GET_LENGTH: /* LIST：这一族有多少个 */
+        return ncl_tool_reply_int(result, (long long)count);
     case NCL_OP_GET_ATTRIBUTES: {
-        /* 族的说明要从 arg 算，不能放进 static 初始化式 */
-        const char *const k_fields[][2] = {
-            {"id", "号（key）"},
-            {"value", family[0] == 'R' ? "寄存器值（u32）" : "位（0/1）"},
-        };
         ncl_json *array = ncl_json_new_array();
+        const char *const fields[][2] = {
+            {"number", "号（从 0 起，就是 keys）"},
+            {"value", family == 'R' ? "寄存器值（u32）" : "位（true/false）"},
+            {"count", "这一族有多少个（= get_length）"},
+        };
 
         if (array == NULL) {
             return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
         }
-        for (i = 0; i < sizeof(k_fields) / sizeof(k_fields[0]); i++) {
+        for (i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
             ncl_json *entry = ncl_json_new_object();
 
             if (entry == NULL ||
-                ncl_json_obj_set_string(entry, "name", k_fields[i][0]) != NCL_OK ||
-                ncl_json_obj_set_string(entry, "meaning", k_fields[i][1]) != NCL_OK ||
+                ncl_json_obj_set_string(entry, "name", fields[i][0]) != NCL_OK ||
+                ncl_json_obj_set_string(entry, "meaning", fields[i][1]) != NCL_OK ||
                 ncl_json_arr_push(array, entry) != NCL_OK) {
                 ncl_json_free(entry);
                 ncl_json_free(array);
@@ -757,7 +779,7 @@ static ncl_err syntec_plc_table(void *ctx, const ncl_tool_point *self,
         if (out == NULL) {
             return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
         }
-        if (n == 0) {
+        if (n == 0) { /* 空 keys：不猜，答空的 */
             *result = out;
             return NCL_OK;
         }
@@ -769,54 +791,44 @@ static ncl_err syntec_plc_table(void *ctx, const ncl_tool_point *self,
         for (i = 0; i < n; i++) {
             long long no = 0;
             char name[24];
-            ncl_json *entry;
 
             if (!syntec_param_key(keys, i, &no) || no < 0 ||
-                (size_t)no >= capacity) {
+                (unsigned long long)no >= (unsigned long long)count) {
                 ncl_json_free(out);
                 return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
-                                     "keys 第 %u 个不是本族的号（0..%u）",
-                                     (unsigned)(i + 1), (unsigned)(capacity - 1));
+                                     "keys 第 %u 个不是 %c 族的号（0..%u）",
+                                     (unsigned)(i + 1), family,
+                                     (unsigned)(count - 1u));
             }
-            entry = ncl_json_new_object();
-            if (entry == NULL) {
-                ncl_json_free(out);
-                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
-            }
-            (void)ncl_json_obj_set_int(entry, "id", no);
-            if (family[0] == 'R') {
+            if (family == 'R') {
                 uint32_t value = 0;
 
                 rc = ncl_syntec_plc_register(syntec, (unsigned)no, &value);
                 if (rc != NCL_OK) {
-                    ncl_json_free(entry);
                     ncl_json_free(out);
                     return ncl_tool_fail(reason, rc, "%s",
                                          ncl_syntec_last_error(syntec));
                 }
-                (void)ncl_json_obj_set_int(entry, "value", (long long)value);
+                snprintf(name, sizeof(name), "%d", (int)no);
+                if (ncl_json_obj_set_int(out, name, (long long)value) != NCL_OK) {
+                    ncl_json_free(out);
+                    return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+                }
             } else {
-                ncl_syntec_plc_kind kind = family[0] == 'I'   ? NCL_SYNTEC_PLC_I
-                                       : family[0] == 'O' ? NCL_SYNTEC_PLC_O
-                                       : family[0] == 'C' ? NCL_SYNTEC_PLC_C
-                                       : family[0] == 'S' ? NCL_SYNTEC_PLC_S
-                                                           : NCL_SYNTEC_PLC_A;
                 bool bit = false;
 
-                rc = ncl_syntec_plc_bit(syntec, kind, (unsigned)no, &bit);
+                rc = ncl_syntec_plc_bit(syntec, syntec_register_kind(family),
+                                        (unsigned)no, &bit);
                 if (rc != NCL_OK) {
-                    ncl_json_free(entry);
                     ncl_json_free(out);
                     return ncl_tool_fail(reason, rc, "%s",
                                          ncl_syntec_last_error(syntec));
                 }
-                (void)ncl_json_obj_set_bool(entry, "value", bit);
-            }
-            snprintf(name, sizeof(name), "%d", (int)no);
-            if (ncl_json_obj_set(out, name, entry) != NCL_OK) {
-                ncl_json_free(entry);
-                ncl_json_free(out);
-                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+                snprintf(name, sizeof(name), "%d", (int)no);
+                if (ncl_json_obj_set_bool(out, name, bit) != NCL_OK) {
+                    ncl_json_free(out);
+                    return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+                }
             }
         }
         *result = out;
@@ -824,10 +836,9 @@ static ncl_err syntec_plc_table(void *ctx, const ncl_tool_point *self,
     }
     default:
         return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
-                             "PLC 表只答 get_length / get_keys / get_value / get_attributes");
+                             "寄存器表答 get_length / get_value / get_attributes");
     }
 }
-
 /**
  * `/CONTROLLER/VARIABLE`：变量表（§11.9），册 4 表 7 的 `VARIABLE`（list，归 configs）。
  *
@@ -853,32 +864,6 @@ static ncl_err syntec_variable_table(void *ctx, const ncl_tool_point *self,
             return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
         }
         return ncl_tool_reply_int(result, (long long)count);
-    case NCL_OP_GET_KEYS: { /* 号就是 key，从 0 起 */
-        ncl_json *array;
-
-        rc = ncl_syntec_variable_capacity(syntec, &count);
-        if (rc != NCL_OK) {
-            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
-        }
-        array = ncl_json_new_array();
-        if (array == NULL) {
-            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
-        }
-        for (i = 0; i < count; i++) {
-            char text[24];
-            ncl_json *item;
-
-            snprintf(text, sizeof(text), "%u", (unsigned)i);
-            item = ncl_json_new_string(text);
-            if (item == NULL || ncl_json_arr_push(array, item) != NCL_OK) {
-                ncl_json_free(item);
-                ncl_json_free(array);
-                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
-            }
-        }
-        *result = array;
-        return NCL_OK;
-    }
     case NCL_OP_GET_ATTRIBUTES: {
         static const char *const k_fields[][2] = {
             {"id", "变量号（就是程序里的 #号）"},
@@ -992,33 +977,6 @@ static ncl_err syntec_tool_table(void *ctx, const ncl_tool_point *self,
             return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
         }
         return ncl_tool_reply_int(result, (long long)count);
-
-    case NCL_OP_GET_KEYS: { /* 刀号从 1 起（线上索引是刀号 - 1） */
-        ncl_json *array;
-
-        rc = ncl_syntec_tool_count(syntec, &count);
-        if (rc != NCL_OK) {
-            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
-        }
-        array = ncl_json_new_array();
-        if (array == NULL) {
-            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
-        }
-        for (i = 0; i < count; i++) {
-            char text[16];
-            ncl_json *item;
-
-            snprintf(text, sizeof(text), "%u", (unsigned)(i + 1));
-            item = ncl_json_new_string(text);
-            if (item == NULL || ncl_json_arr_push(array, item) != NCL_OK) {
-                ncl_json_free(item);
-                ncl_json_free(array);
-                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
-            }
-        }
-        *result = array;
-        return NCL_OK;
-    }
 
     case NCL_OP_GET_ATTRIBUTES: { /* 元素里有哪些字段（不用问控制器） */
         static const char *const k_fields[][2] = {
@@ -1258,51 +1216,43 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000)", "MACHINE",
      * 册 4 说它归 configs、dataType = HASH），按标准的 Query 操作回答：
      * get_length / get_keys / get_value（按号读值）/ get_attributes（按号取标题）。
      * 写：set_value（§11.6），权限在适配器外面控。 */
+    /* 取值形状是 dict（HASH）：答 get_keys（号清单），不答 get_length。 */
     NCL_CONFIG_OPS("/CONTROLLER/PARAMETER", syntec_parameter, NULL,
                    NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) |
-                       NCL_OP_BIT(NCL_OP_GET_LENGTH) | NCL_OP_BIT(NCL_OP_GET_KEYS) |
+                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
                        NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
 
     /* 刀具表（§11.7）：一条 config，元素就是那把刀的刀补（TOOLPARAM 是 TOOL 的元素）。
      * 读（0x04C2 条数 / 0x043F 一条）与写（0x0440，整条 224 字节）都在；
      * 写权限在适配器外面控（"权限在外面"），这里只提供能力。 */
+    /* 取值形状是 list（LIST）：答 get_length（有几把），不答 get_keys。 */
     NCL_CONFIG_OPS("/CONTROLLER/TOOL", syntec_tool_table, NULL,
                    NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) |
                        NCL_OP_BIT(NCL_OP_GET_LENGTH) |
-                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
                        NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
 
-    /* PLC（§11.9）：R 寄存器与五种位，按号读。**册 4 没有 PLC 这一格**，这两个名字是
-     * 本仓库的扩展（见 syntec_plc_table 的注释）。只答读。 */
-    NCL_CONFIG_OPS("/CONTROLLER/PLC/REGISTER", syntec_plc_table, "R",
-                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
-                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
-                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
-    NCL_CONFIG_OPS("/CONTROLLER/PLC/IBIT", syntec_plc_table, "I",
-                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
-                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
-                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
-    NCL_CONFIG_OPS("/CONTROLLER/PLC/OBIT", syntec_plc_table, "O",
-                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
-                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
-                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
-    NCL_CONFIG_OPS("/CONTROLLER/PLC/CBIT", syntec_plc_table, "C",
-                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
-                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
-                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
-    NCL_CONFIG_OPS("/CONTROLLER/PLC/SBIT", syntec_plc_table, "S",
-                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
-                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
-                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
-    NCL_CONFIG_OPS("/CONTROLLER/PLC/ABIT", syntec_plc_table, "A",
-                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
-                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
-                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
-
+    /* PLC（§11.9）：REGISTER 一类、**一族一条**，族在 number 上（@R / @I / …）。
+     * 取值形状是按号排的表（LIST）：答 get_length，不答 get_keys。只答读。 */
+#define SYNTEC_REGISTER_OPS                                                     \
+    (NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |            \
+     NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@R", syntec_register_table, "R",
+                   SYNTEC_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@I", syntec_register_table, "I",
+                   SYNTEC_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@O", syntec_register_table, "O",
+                   SYNTEC_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@C", syntec_register_table, "C",
+                   SYNTEC_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@S", syntec_register_table, "S",
+                   SYNTEC_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@A", syntec_register_table, "A",
+                   SYNTEC_REGISTER_OPS)
+#undef SYNTEC_REGISTER_OPS
     /* 变量表（§11.9）：册 4 表 7 的 VARIABLE（list，configs），key = 变量号（#号）。 */
+    /* 变量表是 list（LIST）：答 get_length（多少个号），不答 get_keys。 */
     NCL_CONFIG_OPS("/CONTROLLER/VARIABLE", syntec_variable_table, NULL,
                    NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
-                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
                        NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
 
 NCL_TOOL_END_WITH_RAW(syntec_last_raw)

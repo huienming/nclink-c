@@ -5,6 +5,23 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 修正：HASH 才有 get_keys、LIST 才有 get_length；PLC 改成一族一条 REGISTER（2026-09-22）
+
+  * **操作按取值形状分**（册 4）：`get_keys` 是 HASH（dict）的操作，`get_length` 是 LIST 的，
+    两者不是同一件事、也不该同时声明。于是：
+    `/CONTROLLER/PARAMETER`（dict/HASH）= `get_keys` + `get_value` + `get_attributes` + `set_value`
+    （去掉 get_length）；`/CONTROLLER/TOOL`、`/CONTROLLER/VARIABLE`（list/LIST）= `get_length`
+    + `get_value`（+ 刀具的 `set_value`）+ `get_attributes`（去掉 get_keys）。
+  * **这条规则进了核心**：`src/tool/tool.c` 装载时按 dataType 核对声明的操作，声明反了会
+    警告（"只有 HASH 答 get_keys" / "只有 LIST 答 get_length"）。
+  * **PLC 改成"一类、一族一条"**：新增数据对象类型 `REGISTER`（册 4 表 7 没有这一格，
+    是扩展；`k_data_types` 里按 LIST 摆：按号排的表），六个点位
+    `/CONTROLLER/REGISTER@{R,I,O,C,S,A}` —— R 寄存器（0..65535）与五种位（各 0..511），
+    族写在 `number` 上（现场口径："PLC 都是 REGISTER，number 是 R / I / …"）。
+    每一族答 `get_length`（这一族有多少个）+ `get_value`（keys 给号）+ `get_attributes`。
+  * **测试**：新增"HASH 答 get_keys 且不答 get_length"/"LIST 答 get_length 且不答 get_keys"
+    两组黑盒用例，以及 REGISTER@R 的 get_length（65536）/ get_value（771 → 1000）/ 越界拒、
+    REGISTER@I 的取位；模型 72 个点位。**ctest 43/43**。
 ### SYNTEC：PLC（位 / R 寄存器 / 定时器 / 计数器）与变量能读了（2026-09-22，21A 实测）
 
   * **码表补齐**：控制器侧 `Syntec.OpenCNC.OCK_CODE` 的静态构造里 433 个 code 全取出来了
