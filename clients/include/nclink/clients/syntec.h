@@ -399,6 +399,7 @@ bool ncl_syntec_reply_hr(const uint8_t *frame, size_t len, int32_t *hr);
 typedef struct {
     const char *host;              /**< required                             */
     unsigned    port;              /**< 8000 (the OCAPIServer's port)        */
+    unsigned    file_port;         /**< 5572: the file service (搂11.11)      */
     unsigned    connect_timeout_ms;/**< 3000                                 */
     unsigned    timeout_ms;        /**< 3000                                 */
     unsigned    retries;           /**< 0: re-send after a transport failure  */
@@ -622,6 +623,94 @@ void ncl_syntec_last_raw(const ncl_syntec *syntec, const uint8_t **request,
                          size_t *request_len, const uint8_t **reply,
                          size_t *reply_len);
 
+/* ========================================================= file service == */
+
+/*
+ * §11.11：文件服务（G 代码上下行）。**独立端口**（21A 上是 5572），与会话那条连接分开，
+ * 而且**带状态**：`FileSendStart` 把路径记在这条连接上，后面的 `FileSending` 往它追加；
+ * 下载同理。所以一次传输必须共用一条连接。
+ *
+ * 帧：12 字节包头 `{Length u32, CmdID u32, Reserved u32}` + `{ uFuncID u32, ... }`，
+ * dispatch 在 uFuncID 上（= FileTransferCmd 的值）。路径 **UTF-16LE**，长度字段是**字符数**。
+ *
+ *   1  发送开始  { uFuncID, nFilePathLength, szFilePath }   -> { hr }
+ *   2  发送中    { uFuncID, nFileLength, pBufferIn }        -> { hr }   （追加）
+ *   3  接收开始  { uFuncID, nFilePathLength, szFilePath }   -> { hr, nFileLength }
+ *   4  接收中    { uFuncID, nFileOffset, nReqLength }       -> 裸数据（长度 = nReqLength）
+ *   8  列目录    { uFuncID, nDirPathLength, szDirPath }     -> { nFileListLength, 列表 }
+ *   11 文件存在 / 12 目录存在 / 13 新建 / 14 删除 / 17 建目录 -> { bool }
+ *   15 复制 / 16 移动  { uFuncID, nTwoFilePathLength, 两个路径 }
+ */
+#define NCL_SYNTEC_FILE_PORT 5572u
+/** 一次传输里每个块的大小（FileSending / FileRecving）。 */
+#define NCL_SYNTEC_FILE_CHUNK 4096u
+/** 路径的字符数上限（含结尾的 NUL；Windows MAX_PATH 那一套）。 */
+#define NCL_SYNTEC_FILE_PATH_MAX 260u
+
+#define NCL_SYNTEC_FILE_SEND_START 1u /**< FileTransferCmd.FileSendStart  */
+#define NCL_SYNTEC_FILE_SENDING 2u    /**< FileTransferCmd.FileSending    */
+#define NCL_SYNTEC_FILE_RECV_START 3u /**< FileTransferCmd.FileRecvStart  */
+#define NCL_SYNTEC_FILE_RECVING 4u    /**< FileTransferCmd.FileRecving    */
+#define NCL_SYNTEC_FILE_LIST_ALL 8u   /**< FileTransferCmd.GetAllFileList */
+#define NCL_SYNTEC_FILE_EXIST 11u     /**< FileTransferCmd.FileExist      */
+#define NCL_SYNTEC_DIR_EXIST 12u      /**< FileTransferCmd.DirExist       */
+#define NCL_SYNTEC_FILE_NEW 13u       /**< FileTransferCmd.FileNew        */
+#define NCL_SYNTEC_FILE_DELETE 14u    /**< FileTransferCmd.FileDelete     */
+#define NCL_SYNTEC_FILE_COPY 15u      /**< FileTransferCmd.FileCopy       */
+#define NCL_SYNTEC_FILE_MOVE 16u      /**< FileTransferCmd.FileMove       */
+#define NCL_SYNTEC_DIR_CREATE 17u     /**< FileTransferCmd.DirCreate      */
+
+/** 一帧文件服务报文的字节数上限（路径 260 字符 × 2 + 桩头）。 */
+#define NCL_SYNTEC_FILE_FRAME (NCL_SYNTEC_PACKET_HEADER + 8u +                 \
+                               NCL_SYNTEC_FILE_PATH_MAX * 2u)
+
+/** 一个路径帧：`{ uFuncID, nPathLength（字符数）, path（UTF-16LE） }`。 */
+size_t ncl_syntec_file_path_frame(uint8_t *out, size_t cap, uint32_t func_id,
+                                  const char *path);
+/** 两个路径（复制/移动）：`{ uFuncID, nTwoPathLength, "from\\0to"（UTF-16LE） }`。 */
+size_t ncl_syntec_file_two_path_frame(uint8_t *out, size_t cap, uint32_t func_id,
+                                      const char *from, const char *to);
+/** 一个数据块：`{ uFuncID = FileSending, nFileLength, 数据 }`。 */
+size_t ncl_syntec_file_sending_frame(uint8_t *out, size_t cap,
+                                     const uint8_t *data, size_t len);
+/** 取一块：`{ uFuncID = FileRecving, nFileOffset, nReqLength }`。 */
+size_t ncl_syntec_file_recving_frame(uint8_t *out, size_t cap, uint32_t offset,
+                                     uint32_t want);
+
+/** 文件服务的应答：`{ hr }`（发送开始/发送中）。 */
+bool ncl_syntec_file_reply_hr(const uint8_t *reply, size_t len, int32_t *hr);
+/** 文件服务的应答：`{ bool }`（存在/删除/新建/建目录）。 */
+bool ncl_syntec_file_reply_bool(const uint8_t *reply, size_t len, bool *value);
+/** 接收开始的应答：`{ hr, nFileLength }`。 */
+bool ncl_syntec_file_reply_size(const uint8_t *reply, size_t len,
+                                uint32_t *size);
+
+/** 文件（或目录）在不在。 */
+ncl_err ncl_syntec_file_exist(ncl_syntec *syntec, const char *path, bool *exists);
+ncl_err ncl_syntec_dir_exist(ncl_syntec *syntec, const char *path, bool *exists);
+/** 新建一个空文件 / 建一个目录 / 删一个文件。 */
+ncl_err ncl_syntec_file_new(ncl_syntec *syntec, const char *path);
+ncl_err ncl_syntec_dir_create(ncl_syntec *syntec, const char *path);
+ncl_err ncl_syntec_file_delete(ncl_syntec *syntec, const char *path);
+ncl_err ncl_syntec_file_copy(ncl_syntec *syntec, const char *from, const char *to);
+ncl_err ncl_syntec_file_move(ncl_syntec *syntec, const char *from, const char *to);
+/**
+ * 列一个目录：控制器给的是它自己拼的 UTF-16 文本，这里**转成 UTF-8** 放进 @p out。
+ * （21A 上 `C:/CNC/` 回空的列表 —— 列表的拼法还要真机再看。）
+ */
+ncl_err ncl_syntec_file_list(ncl_syntec *syntec, const char *dir, char *out,
+                             size_t cap);
+/**
+ * 上传（下发）：把 @p data/@p len 写到控制器上的 @p path。
+ * 一帧一块（≤ NCL_SYNTEC_FILE_CHUNK），都在**同一条连接**上。
+ */
+ncl_err ncl_syntec_file_push(ncl_syntec *syntec, const char *path,
+                             const uint8_t *data, size_t len);
+/**
+ * 下载（取回）：把控制器上的 @p path 读出来。@p data 由调用者 `ncl_mem_free()`。
+ */
+ncl_err ncl_syntec_file_pull(ncl_syntec *syntec, const char *path,
+                             uint8_t **data, size_t *len);
 /* ================================================================= data == */
 
 /** CRC-16 with the reversed 0xA001 polynomial, as the client library has it. */

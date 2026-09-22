@@ -67,6 +67,16 @@ struct ncl_syntec {
     uint8_t *param_schema;
     size_t   param_schema_len;
     size_t   params_count;
+    /*
+     * 文件服务（§11.11）：**另一条连接**（默认 5572）而且是**带状态**的 ——
+     * FileSendStart / FileRecvStart 把路径记在这条连接上，后续的块都往它接，
+     * 所以一次传输里所有帧共用 file_socket。
+     */
+    unsigned     file_port;
+    ncl_socket  *file_socket;
+    bool         file_shared; /**< true = file_socket 就是会话那条（同端口） */
+    uint8_t      file_tx[NCL_SYNTEC_PACKET_HEADER + 8u + NCL_SYNTEC_FILE_CHUNK];
+    uint8_t      file_rx[NCL_SYNTEC_PACKET_HEADER + 4u + NCL_SYNTEC_FILE_CHUNK];
 };
 
 /** The driver ops carry the session; the old name keeps the diff small. */
@@ -630,6 +640,7 @@ void ncl_syntec_config_default(ncl_syntec_config *config)
     }
     memset(config, 0, sizeof(*config));
     config->port = 8000; /* §10.1 */
+    config->file_port = NCL_SYNTEC_FILE_PORT; /* §11.11：文件服务 5572 */
     config->connect_timeout_ms = 3000;
     config->timeout_ms = 3000;
 }
@@ -642,6 +653,8 @@ static ncl_syntec *syntec_alloc(const ncl_syntec_config *config)
         return NULL;
     }
     ctx->port = config->port != 0 ? config->port : 8000u;
+    ctx->file_port = config->file_port != 0 ? config->file_port
+                                          : NCL_SYNTEC_FILE_PORT;
     ctx->connect_timeout_ms = config->connect_timeout_ms != 0
                                   ? config->connect_timeout_ms
                                   : 3000u;
@@ -690,6 +703,12 @@ void ncl_syntec_close(ncl_syntec *syntec)
         return;
     }
     syntec_close_session(syntec);
+    if (syntec->file_socket != NULL && !syntec->file_shared) {
+        ncl_socket_shutdown(syntec->file_socket);
+        ncl_socket_close(syntec->file_socket);
+    }
+    syntec->file_socket = NULL;
+    syntec->file_shared = false;
     ncl_free_safe(syntec->host);
     ncl_mem_free(syntec->param_schema);
     if (syntec->mutex != NULL) {
@@ -1455,6 +1474,397 @@ ncl_err ncl_syntec_variable_put(ncl_syntec *syntec, unsigned no,
                  "#%u 写被拒绝（hr=0x%08X）", no, (unsigned)hr);
         return NCL_ERR_IO;
     }
+    return NCL_OK;
+}
+/* ========================================================= file service == */
+
+static void syntec_file_disconnect(syntec_ctx *ctx);
+
+/**
+ * 文件服务那条连接（§11.11）。它和会话那条分开、而且**带状态**：
+ * 一次传输（Start + 若干块）必须走同一条连接，所以这里只在需要时连一次，
+ * 之后一直到会话关掉都留着。
+ */
+static ncl_err syntec_file_connect(syntec_ctx *ctx)
+{
+    char err[256];
+
+    if (ctx->file_socket != NULL) {
+        return NCL_OK;
+    }
+    err[0] = '\0';
+    if (ctx->file_port == ctx->port) {
+        /*
+         * 同一个端口（有的部署就是这样，测试里的 mock 也是）：**共用会话那条连接**。
+         * 两个端口不同的机器上（21A 就是 5566 / 5572）才另开一条。
+         */
+        ncl_err rc = syntec_open_session(ctx);
+
+        if (rc != NCL_OK) {
+            return rc;
+        }
+        ctx->file_socket = ctx->socket;
+        ctx->file_shared = true;
+        return NCL_OK;
+    }
+    ctx->file_socket = ncl_socket_connect(ctx->host, ctx->file_port,
+                                          ctx->connect_timeout_ms, err,
+                                          sizeof(err));
+    if (ctx->file_socket == NULL) {
+        return NCL_DRV_ERR_TRANSPORT(0x95);
+    }
+    return NCL_OK;
+}
+
+/**
+ * 一个文件服务帧出去，一个包回来（12 字节包头说后面有多少字节，和 KrnlAPI 一样）。
+ * 回来的字节放在 `file_rx` 里，长度由 @p reply_len 给出（含包头）。
+ */
+static ncl_err syntec_file_exchange(syntec_ctx *ctx, const uint8_t *frame,
+                                   size_t frame_len, size_t *reply_len)
+{
+    size_t content;
+    ncl_err err;
+
+    if (reply_len != NULL) {
+        *reply_len = 0;
+    }
+    if (frame == NULL || frame_len > sizeof(ctx->file_tx)) {
+        return NCL_ERR_RANGE;
+    }
+    err = syntec_file_connect(ctx);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (frame != ctx->file_tx) {
+        memcpy(ctx->file_tx, frame, frame_len);
+    }
+    if (ncl_socket_send(ctx->file_socket, ctx->file_tx, frame_len) != NCL_OK) {
+        return NCL_DRV_ERR_TRANSPORT(0x96);
+    }
+    if (ncl_socket_recv_exact(ctx->file_socket, ctx->file_rx,
+                              NCL_SYNTEC_PACKET_HEADER,
+                              ctx->timeout_ms) != NCL_OK) {
+        syntec_file_disconnect(ctx);
+        return NCL_DRV_ERR_TRANSPORT(0x97);
+    }
+    content = (size_t)ctx->file_rx[0] | ((size_t)ctx->file_rx[1] << 8) |
+              ((size_t)ctx->file_rx[2] << 16) | ((size_t)ctx->file_rx[3] << 24);
+    if (content > sizeof(ctx->file_rx) - NCL_SYNTEC_PACKET_HEADER) {
+        syntec_file_disconnect(ctx);
+        return NCL_DRV_ERR_PROTOCOL(0x92);
+    }
+    if (content > 0u &&
+        ncl_socket_recv_exact(ctx->file_socket, ctx->file_rx + NCL_SYNTEC_PACKET_HEADER,
+                              content, ctx->timeout_ms) != NCL_OK) {
+        syntec_file_disconnect(ctx);
+        return NCL_DRV_ERR_TRANSPORT(0x98);
+    }
+    if (reply_len != NULL) {
+        *reply_len = NCL_SYNTEC_PACKET_HEADER + content;
+    }
+    return NCL_OK;
+}
+
+/** 一个"给路径、答 {bool}"的调用（存在 / 新建 / 删除 / 建目录 / 目录存在）。 */
+static ncl_err syntec_file_bool_call(ncl_syntec *syntec, const char *what,
+                                     uint32_t func_id, const char *path,
+                                     bool *value)
+{
+    uint8_t frame[NCL_SYNTEC_FILE_FRAME];
+    size_t frame_len = 0;
+    size_t reply_len = 0;
+    bool ok = false;
+    ncl_err err;
+
+    if (syntec == NULL || ncl_str_is_blank(path)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    frame_len = ncl_syntec_file_path_frame(frame, sizeof(frame), func_id, path);
+    if (frame_len == 0) {
+        return NCL_ERR_RANGE;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_file_exchange(syntec, frame, frame_len, &reply_len);
+    if (err == NCL_OK &&
+        !ncl_syntec_file_reply_bool(syntec->file_rx, reply_len, &ok)) {
+        err = NCL_ERR_RANGE;
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_file_disconnect(syntec);
+        return syntec_note(syntec, err, what);
+    }
+    if (value != NULL) {
+        *value = ok;
+    }
+    return NCL_OK;
+}
+
+/** 断掉文件服务那条连接（出错时用：状态错乱重来一条更干净）。 */
+static void syntec_file_disconnect(syntec_ctx *ctx)
+{
+    if (ctx->file_socket != NULL) {
+        if (!ctx->file_shared) { /* 共用的那条留给会话自己关 */
+            ncl_socket_shutdown(ctx->file_socket);
+            ncl_socket_close(ctx->file_socket);
+        }
+        ctx->file_socket = NULL;
+        ctx->file_shared = false;
+    }
+}
+
+ncl_err ncl_syntec_file_exist(ncl_syntec *syntec, const char *path, bool *exists)
+{
+    return syntec_file_bool_call(syntec, "文件存在性问不了", NCL_SYNTEC_FILE_EXIST,
+                                 path, exists);
+}
+
+ncl_err ncl_syntec_dir_exist(ncl_syntec *syntec, const char *path, bool *exists)
+{
+    return syntec_file_bool_call(syntec, "目录存在性问不了", NCL_SYNTEC_DIR_EXIST,
+                                 path, exists);
+}
+
+ncl_err ncl_syntec_file_new(ncl_syntec *syntec, const char *path)
+{
+    return syntec_file_bool_call(syntec, "新建文件失败", NCL_SYNTEC_FILE_NEW, path,
+                                 NULL);
+}
+
+ncl_err ncl_syntec_dir_create(ncl_syntec *syntec, const char *path)
+{
+    return syntec_file_bool_call(syntec, "建目录失败", NCL_SYNTEC_DIR_CREATE, path,
+                                 NULL);
+}
+
+ncl_err ncl_syntec_file_delete(ncl_syntec *syntec, const char *path)
+{
+    return syntec_file_bool_call(syntec, "删文件失败", NCL_SYNTEC_FILE_DELETE,
+                                 path, NULL);
+}
+
+/** 两个路径的那些（复制 / 移动）。 */
+static ncl_err syntec_file_two_path_call(ncl_syntec *syntec, const char *what,
+                                         uint32_t func_id, const char *from,
+                                         const char *to)
+{
+    uint8_t frame[NCL_SYNTEC_FILE_FRAME * 2u];
+    size_t frame_len;
+    size_t reply_len = 0;
+    bool ok = false;
+    ncl_err err;
+
+    if (syntec == NULL || ncl_str_is_blank(from) || ncl_str_is_blank(to)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    frame_len = ncl_syntec_file_two_path_frame(frame, sizeof(frame), func_id, from,
+                                               to);
+    if (frame_len == 0) {
+        return NCL_ERR_RANGE;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_file_exchange(syntec, frame, frame_len, &reply_len);
+    if (err == NCL_OK &&
+        !ncl_syntec_file_reply_bool(syntec->file_rx, reply_len, &ok)) {
+        err = NCL_ERR_RANGE;
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_file_disconnect(syntec);
+        return syntec_note(syntec, err, what);
+    }
+    if (!ok) {
+        return syntec_note(syntec, NCL_ERR_IO, what);
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_file_copy(ncl_syntec *syntec, const char *from, const char *to)
+{
+    return syntec_file_two_path_call(syntec, "复制失败", NCL_SYNTEC_FILE_COPY, from,
+                                     to);
+}
+
+ncl_err ncl_syntec_file_move(ncl_syntec *syntec, const char *from, const char *to)
+{
+    return syntec_file_two_path_call(syntec, "移动失败", NCL_SYNTEC_FILE_MOVE, from,
+                                     to);
+}
+
+ncl_err ncl_syntec_file_list(ncl_syntec *syntec, const char *dir, char *out,
+                             size_t cap)
+{
+    uint8_t frame[NCL_SYNTEC_FILE_FRAME];
+    size_t frame_len;
+    size_t reply_len = 0;
+    ncl_err err;
+
+    if (syntec == NULL || out == NULL || cap == 0u) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    frame_len = ncl_syntec_file_path_frame(frame, sizeof(frame),
+                                           NCL_SYNTEC_FILE_LIST_ALL, dir);
+    if (frame_len == 0) {
+        return NCL_ERR_RANGE;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_file_exchange(syntec, frame, frame_len, &reply_len);
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_file_disconnect(syntec);
+        return syntec_note(syntec, err, "列目录失败");
+    }
+    /* 应答 = { nFileListLength u32, 列表（UTF-16LE） }；这里转成 UTF-8 给出去。 */
+    if (reply_len > NCL_SYNTEC_PACKET_HEADER + 4u) {
+        const uint8_t *list = syntec->file_rx + NCL_SYNTEC_PACKET_HEADER + 4u;
+        size_t i;
+        size_t used = 0;
+
+        for (i = 0; i + 1u < reply_len - (NCL_SYNTEC_PACKET_HEADER + 4u) &&
+             used + 1u < cap; i += 2u) {
+            uint8_t lo = list[i];
+
+            if (lo == 0u && list[i + 1u] == 0u) {
+                out[used++] = '\n'; /* 控制器用 UTF-16 的 0 分隔文件名 */
+                continue;
+            }
+            out[used++] = (char)lo; /* ASCII 直通：文件名本来就是 ASCII */
+        }
+        while (used > 0u && (out[used - 1u] == '\n' || out[used - 1u] == '\0')) {
+            used--;
+        }
+        out[used] = '\0';
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_file_push(ncl_syntec *syntec, const char *path,
+                             const uint8_t *data, size_t len)
+{
+    /* 一块就 4 KiB，帧缓冲要按块算（路径帧那点大小装不下一块）。 */
+    uint8_t frame[NCL_SYNTEC_PACKET_HEADER + 8u + NCL_SYNTEC_FILE_CHUNK];
+    size_t frame_len;
+    size_t reply_len = 0;
+    size_t sent = 0;
+    ncl_err err;
+
+    if (syntec == NULL || ncl_str_is_blank(path)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (data == NULL && len > 0u) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    frame_len = ncl_syntec_file_path_frame(frame, sizeof(frame),
+                                           NCL_SYNTEC_FILE_SEND_START, path);
+    if (frame_len == 0) {
+        err = NCL_ERR_RANGE;
+    } else {
+        err = syntec_file_exchange(syntec, frame, frame_len, &reply_len);
+    }
+    while (err == NCL_OK && sent < len) {
+        size_t want = len - sent < NCL_SYNTEC_FILE_CHUNK ? len - sent
+                                                        : NCL_SYNTEC_FILE_CHUNK;
+        int32_t hr = -1;
+
+        frame_len = ncl_syntec_file_sending_frame(frame, sizeof(frame),
+                                                  data + sent, want);
+        if (frame_len == 0) {
+            err = NCL_ERR_RANGE;
+            break;
+        }
+        err = syntec_file_exchange(syntec, frame, frame_len, &reply_len);
+        if (err == NCL_OK &&
+            !ncl_syntec_file_reply_hr(syntec->file_rx, reply_len, &hr)) {
+            err = NCL_ERR_RANGE;
+        }
+        if (err == NCL_OK && hr != 0) {
+            /* 控制器没收下这一块（多半是 Start 没落或者路径不对） */
+            err = NCL_ERR_IO;
+            break;
+        }
+        sent += want;
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_file_disconnect(syntec);
+        return syntec_note(syntec, err, "上传（下发）失败");
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_file_pull(ncl_syntec *syntec, const char *path,
+                             uint8_t **data, size_t *len)
+{
+    uint8_t frame[NCL_SYNTEC_FILE_FRAME];
+    uint8_t *buffer = NULL;
+    size_t frame_len;
+    size_t reply_len = 0;
+    uint32_t file_size = 0;
+    size_t total = 0;
+    size_t got = 0;
+    ncl_err err;
+
+    if (syntec == NULL || ncl_str_is_blank(path) || data == NULL || len == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *data = NULL;
+    *len = 0;
+    ncl_mutex_lock(syntec->mutex);
+    frame_len = ncl_syntec_file_path_frame(frame, sizeof(frame),
+                                           NCL_SYNTEC_FILE_RECV_START, path);
+    if (frame_len == 0) {
+        err = NCL_ERR_RANGE;
+    } else {
+        err = syntec_file_exchange(syntec, frame, frame_len, &reply_len);
+    }
+    if (err == NCL_OK &&
+        !ncl_syntec_file_reply_size(syntec->file_rx, reply_len, &file_size)) {
+        err = NCL_ERR_RANGE;
+    }
+    total = (size_t)file_size;
+    if (err == NCL_OK && total > 0u) {
+        buffer = (uint8_t *)ncl_mem_alloc(total + 1u);
+        if (buffer == NULL) {
+            err = NCL_ERR_NOMEM;
+        }
+    }
+    /* 一块一块取：**请求长度不能超过剩下的**，超了服务器那边会扑空。 */
+    while (err == NCL_OK && got < total) {
+        size_t want = total - got < NCL_SYNTEC_FILE_CHUNK ? total - got
+                                                          : NCL_SYNTEC_FILE_CHUNK;
+
+        frame_len = ncl_syntec_file_recving_frame(frame, sizeof(frame),
+                                                  (uint32_t)got, (uint32_t)want);
+        if (frame_len == 0) {
+            err = NCL_ERR_RANGE;
+            break;
+        }
+        err = syntec_file_exchange(syntec, frame, frame_len, &reply_len);
+        if (err != NCL_OK) {
+            break;
+        }
+        if (reply_len <= NCL_SYNTEC_PACKET_HEADER ||
+            reply_len - NCL_SYNTEC_PACKET_HEADER < want) {
+            err = NCL_ERR_RANGE; /* 应答里就是裸数据，少给就是错 */
+            break;
+        }
+        memcpy(buffer + got, syntec->file_rx + NCL_SYNTEC_PACKET_HEADER, want);
+        got += want;
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_file_disconnect(syntec);
+        ncl_mem_free(buffer);
+        return syntec_note(syntec, err, "下载（取回）失败");
+    }
+    if (buffer != NULL) {
+        buffer[total] = '\0'; /* 程序是文本，多个结尾的 0 方便调用者 */
+    }
+    *data = buffer;
+    *len = total;
     return NCL_OK;
 }
 /*

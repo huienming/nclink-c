@@ -29,6 +29,9 @@
  * **读**：现场网关那一侧的新代是读（`/SYNTEC/CNC/*` 12 条 = Open/Close/GetResponse
  * + 九项），这也是这里的主体。
  *
+ * **文件**：G 代码上下行走**另一套服务**（§11.11，端口 5572），插件把它接到仓库的文件工具上
+ * （`/CONTROLLER/FILE` 的 push / pull / remove）—— 下发、取回、删程序三条都可用，参数名 `filePort`。
+ *
  * **写**：参数（`/CONTROLLER/PARAMETER` 的 `set_value`，10 册 §11.6）与刀补
  * （`/CONTROLLER/TOOL` 的 `set_value`，§11.7）都开了 —— 用户口径是**权限在适配器外面控**，
  * 这里只提供能力。宏、PLC 写、程序上下行仍旧不声明：client 里没有对应调用，
@@ -41,6 +44,7 @@
 
 #include "nclink/clients/syntec.h"
 #include "nclink/ncl_env.h"
+#include "nclink/ncl_file.h"
 #include "nclink/ncl_json.h"
 
 /* ---------------------------------------------------------------- 连接 ---- */
@@ -49,6 +53,13 @@
  * 配置里的 parameters 交给 client。会话是懒的：机床没开机不影响设备程序启动，
  * 谁问值，谁拿到一条明确的"读不到"。
  */
+/* 文件后端（§11.11）：设备那侧的 `/CONTROLLER/FILE` 靠这三个回调进出。 */
+static ncl_err syntec_file_push(void *user, const char *name, const char *path,
+                               char **reason);
+static ncl_err syntec_file_pull(void *user, const char *name, const char *path,
+                               char **reason);
+static ncl_err syntec_file_remove(void *user, const char *name, char **reason);
+
 static void *syntec_open(const ncl_json *params, char **err)
 {
     ncl_syntec_config config;
@@ -61,12 +72,89 @@ static void *syntec_open(const ncl_json *params, char **err)
     config.timeout_ms = (unsigned)ncl_tool_param_int(
         params, "timeoutMs", (long long)config.timeout_ms);
     config.retries = (unsigned)ncl_tool_param_int(params, "retries", 0);
-    return ncl_syntec_open(&config, err);
+    /* §11.11：文件服务走另一条连接（默认 5572），可以单独指一个端口。 */
+    config.file_port = (unsigned)ncl_tool_param_int(
+        params, "filePort", (long long)config.file_port);
+    {
+        static ncl_file_backend backend;
+        ncl_syntec *syntec = ncl_syntec_open(&config, err);
+
+        if (syntec == NULL) {
+            return NULL;
+        }
+        /* 文件工具（设备侧的 `/CONTROLLER/FILE`）接上这三个回调，像 FOCAS 那样。 */
+        memset(&backend, 0, sizeof(backend));
+        backend.user = syntec;
+        backend.push = syntec_file_push;
+        backend.pull = syntec_file_pull;
+        backend.remove = syntec_file_remove;
+        (void)ncl_file_tool_set_backend(&backend);
+        return syntec;
+    }
 }
 
 static void syntec_close(void *ctx)
 {
+    /* 会话走了就把文件后端撤掉（不然会留一个指向已释放会话的指针）。 */
+    (void)ncl_file_tool_set_backend(NULL);
     ncl_syntec_close((ncl_syntec *)ctx);
+}
+
+/** 下发：本地 @p path 的文件 -> 控制器上的 @p name（一帧一块的 FileSending）。 */
+static ncl_err syntec_file_push(void *user, const char *name, const char *path,
+                               char **reason)
+{
+    ncl_syntec *syntec = (ncl_syntec *)user;
+    char *bytes = NULL;
+    size_t len = 0;
+    ncl_err rc = ncl_file_read_all(path, &bytes, &len);
+
+    if (rc != NCL_OK) {
+        if (reason != NULL) {
+            *reason = ncl_strdup("读本地文件失败");
+        }
+        return rc;
+    }
+    rc = ncl_syntec_file_push(syntec, name, (const uint8_t *)bytes, len);
+    ncl_free_safe(bytes);
+    if (rc != NCL_OK && reason != NULL) {
+        *reason = ncl_strdup(ncl_syntec_last_error(syntec));
+    }
+    return rc;
+}
+
+/** 取回：控制器上的 @p name -> 本地 @p path。 */
+static ncl_err syntec_file_pull(void *user, const char *name, const char *path,
+                               char **reason)
+{
+    ncl_syntec *syntec = (ncl_syntec *)user;
+    uint8_t *bytes = NULL;
+    size_t len = 0;
+    ncl_err rc = ncl_syntec_file_pull(syntec, name, &bytes, &len);
+
+    if (rc != NCL_OK) {
+        if (reason != NULL) {
+            *reason = ncl_strdup(ncl_syntec_last_error(syntec));
+        }
+        return rc;
+    }
+    rc = ncl_file_write_all(path, bytes, len);
+    ncl_mem_free(bytes);
+    if (rc != NCL_OK && reason != NULL) {
+        *reason = ncl_strdup("写本地文件失败");
+    }
+    return rc;
+}
+
+static ncl_err syntec_file_remove(void *user, const char *name, char **reason)
+{
+    ncl_syntec *syntec = (ncl_syntec *)user;
+    ncl_err rc = ncl_syntec_file_delete(syntec, name);
+
+    if (rc != NCL_OK && reason != NULL) {
+        *reason = ncl_strdup(ncl_syntec_last_error(syntec));
+    }
+    return rc;
 }
 
 /* -------------------------------------------------------------- 覆盖档 ---- */

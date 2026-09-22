@@ -865,6 +865,157 @@ static void syntec_write_f64(uint8_t *out, double v)
     syntec_write_u32(out + 4, (uint32_t)(u.bits >> 32));
 }
 
+/* ========================================================= file service == */
+
+/** UTF-16LE 编码一个路径；长度字段是**字符数**，返回值也是字符数。 */
+static size_t syntec_file_utf16(const char *path, uint8_t *out, size_t cap)
+{
+    size_t i = 0;
+
+    if (path == NULL || out == NULL) {
+        return 0;
+    }
+    for (; path[i] != '\0'; i++) {
+        if ((i + 1u) * 2u > cap) { /* 留一个结尾的 0 */
+            return 0;
+        }
+        out[i * 2u] = (uint8_t)path[i]; /* ASCII 直接铺；非 ASCII 按字节铺 */
+        out[i * 2u + 1u] = 0;
+    }
+    return i;
+}
+
+/** 文件服务的通用帧：12 字节包头 + `{ uFuncID u32, ... }`。 */
+static size_t syntec_file_frame(uint8_t *out, size_t cap, uint32_t func_id,
+                                const uint8_t *payload, size_t payload_len)
+{
+    size_t total = NCL_SYNTEC_PACKET_HEADER + 4u + payload_len;
+
+    if (out == NULL || cap < total || total - NCL_SYNTEC_PACKET_HEADER > 0xFFFFFFFFu) {
+        return 0;
+    }
+    put_u32(out, (uint32_t)(total - NCL_SYNTEC_PACKET_HEADER));
+    put_u32(out + 4u, func_id); /* CmdID 也填同一号（服务器只看 uFuncID） */
+    put_u32(out + 8u, 0u);
+    put_u32(out + NCL_SYNTEC_PACKET_HEADER, func_id);
+    if (payload_len > 0u) {
+        memcpy(out + NCL_SYNTEC_PACKET_HEADER + 4u, payload, payload_len);
+    }
+    return total;
+}
+
+size_t ncl_syntec_file_path_frame(uint8_t *out, size_t cap, uint32_t func_id,
+                                  const char *path)
+{
+    uint8_t payload[4u + NCL_SYNTEC_FILE_PATH_MAX * 2u];
+    size_t chars;
+
+    if (path == NULL) {
+        return 0;
+    }
+    chars = syntec_file_utf16(path, payload + 4u, sizeof(payload) - 4u);
+    if (chars == 0) {
+        return 0;
+    }
+    put_u32(payload, (uint32_t)chars);
+    return syntec_file_frame(out, cap, func_id, payload,
+                             4u + chars * 2u);
+}
+
+size_t ncl_syntec_file_two_path_frame(uint8_t *out, size_t cap, uint32_t func_id,
+                                      const char *from, const char *to)
+{
+    uint8_t payload[4u + NCL_SYNTEC_FILE_PATH_MAX * 4u];
+    size_t used = 0;
+    size_t i;
+
+    if (from == NULL || to == NULL) {
+        return 0;
+    }
+    for (i = 0; from[i] != '\0'; i++) {
+        if ((used + 1u) * 2u > sizeof(payload) - 8u) {
+            return 0;
+        }
+        payload[4u + used * 2u] = (uint8_t)from[i];
+        payload[4u + used * 2u + 1u] = 0;
+        used++;
+    }
+    payload[4u + used * 2u] = 0; /* 分隔的那个 0 */
+    payload[4u + used * 2u + 1u] = 0;
+    used++;
+    for (i = 0; to[i] != '\0'; i++) {
+        if ((used + 1u) * 2u > sizeof(payload) - 8u) {
+            return 0;
+        }
+        payload[4u + used * 2u] = (uint8_t)to[i];
+        payload[4u + used * 2u + 1u] = 0;
+        used++;
+    }
+    put_u32(payload, (uint32_t)used);
+    return syntec_file_frame(out, cap, func_id, payload, 4u + used * 2u);
+}
+
+size_t ncl_syntec_file_sending_frame(uint8_t *out, size_t cap,
+                                     const uint8_t *data, size_t len)
+{
+    if (data == NULL || len == 0 || len > 0xFFFFFFFFu) {
+        return 0;
+    }
+    {
+        size_t total = NCL_SYNTEC_PACKET_HEADER + 4u + 4u + len;
+
+        if (cap < total) {
+            return 0;
+        }
+        put_u32(out, (uint32_t)(total - NCL_SYNTEC_PACKET_HEADER));
+        put_u32(out + 4u, NCL_SYNTEC_FILE_SENDING);
+        put_u32(out + 8u, 0u);
+        put_u32(out + NCL_SYNTEC_PACKET_HEADER, NCL_SYNTEC_FILE_SENDING);
+        put_u32(out + NCL_SYNTEC_PACKET_HEADER + 4u, (uint32_t)len);
+        memcpy(out + NCL_SYNTEC_PACKET_HEADER + 8u, data, len);
+        return total;
+    }
+}
+
+size_t ncl_syntec_file_recving_frame(uint8_t *out, size_t cap, uint32_t offset,
+                                     uint32_t want)
+{
+    uint8_t payload[8];
+
+    put_u32(payload, offset);
+    put_u32(payload + 4u, want);
+    return syntec_file_frame(out, cap, NCL_SYNTEC_FILE_RECVING, payload,
+                             sizeof(payload));
+}
+
+bool ncl_syntec_file_reply_hr(const uint8_t *reply, size_t len, int32_t *hr)
+{
+    if (reply == NULL || hr == NULL || len < NCL_SYNTEC_PACKET_HEADER + 4u) {
+        return false;
+    }
+    *hr = (int32_t)get_u32(reply + NCL_SYNTEC_PACKET_HEADER);
+    return true;
+}
+
+bool ncl_syntec_file_reply_bool(const uint8_t *reply, size_t len, bool *value)
+{
+    if (reply == NULL || value == NULL || len < NCL_SYNTEC_PACKET_HEADER + 4u) {
+        return false;
+    }
+    *value = get_u32(reply + NCL_SYNTEC_PACKET_HEADER) != 0u;
+    return true;
+}
+
+bool ncl_syntec_file_reply_size(const uint8_t *reply, size_t len,
+                                uint32_t *size)
+{
+    if (reply == NULL || size == NULL ||
+        len < NCL_SYNTEC_PACKET_HEADER + 8u) {
+        return false;
+    }
+    *size = get_u32(reply + NCL_SYNTEC_PACKET_HEADER + 4u);
+    return true;
+}
 bool ncl_syntec_tool_encode(const ncl_syntec_tool *tool, uint8_t *record,
                             size_t cap)
 {

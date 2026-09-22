@@ -133,6 +133,15 @@ typedef struct {
     uint32_t last_var_put;
     int16_t  last_var_put_type;
     size_t   plc_put_in_len;
+    /* §11.11 文件服务：一个极小的"控制器文件系统" */
+    char     file_name[160];   /**< FileSendStart 记下来的路径        */
+    bool     file_open;        /**< 上面那个路径正开着（等 FileSending）*/
+    uint8_t  file_data[NCL_SYNTEC_FILE_CHUNK * 2u]; /**< 传上来的内容（够放两块） */
+    size_t   file_written;
+    uint32_t last_file_func;   /**< 最后一条文件命令（uFuncID/CmdID）  */
+    uint32_t last_file_path_chars; /**< 路径帧里报的字符数             */
+    size_t   file_path_bytes;  /**< 路径帧里实际的 UTF-16 字节数       */
+    uint32_t last_file_chunk;  /**< 最后一个 FileSending 的字节数      */
 } syntec_mock;
 
 /** 小端写一个 IEEE754 double（mock 侧造 224 字节记录用）。 */
@@ -171,6 +180,48 @@ static uint16_t mock_item_value(const syntec_mock *mock, uint32_t key)
         }
     }
     return 0;
+}
+
+/** §11.11：这几个号才是文件服务的命令（`FileTransferCmd`）。 */
+static bool mock_is_file_func(uint32_t fid)
+{
+    return fid == NCL_SYNTEC_FILE_SEND_START || fid == NCL_SYNTEC_FILE_SENDING ||
+           fid == NCL_SYNTEC_FILE_RECV_START || fid == NCL_SYNTEC_FILE_RECVING ||
+           fid == NCL_SYNTEC_FILE_LIST_ALL || fid == NCL_SYNTEC_FILE_EXIST ||
+           fid == NCL_SYNTEC_DIR_EXIST || fid == NCL_SYNTEC_FILE_NEW ||
+           fid == NCL_SYNTEC_FILE_DELETE || fid == NCL_SYNTEC_FILE_COPY ||
+           fid == NCL_SYNTEC_FILE_MOVE || fid == NCL_SYNTEC_DIR_CREATE;
+}
+
+/**
+ * §11.11：解析一个路径帧（`nChars` 在 [16..19]、UTF-16LE 路径在 [20..]），
+ * 顺手把"报了几个字符 / 实际几个字节"记下来给用例断言。
+ */
+static void mock_take_path(syntec_mock *mock, const uint8_t *frame)
+{
+    uint32_t chars = get_u32(frame + NCL_SYNTEC_PACKET_HEADER + 4u);
+    size_t i;
+
+    mock->last_file_path_chars = chars;
+    mock->file_path_bytes = (size_t)chars * 2u;
+    mock->file_name[0] = '\0';
+    for (i = 0; i < chars && i + 1u < sizeof(mock->file_name); i++) {
+        mock->file_name[i] =
+            (char)frame[NCL_SYNTEC_PACKET_HEADER + 8u + i * 2u]; /* ASCII 直通 */
+    }
+    mock->file_name[i] = '\0';
+}
+
+/** 文件服务的应答：12 字节包头 + 正文（正文前面没有别的头）。 */
+static bool mock_file_reply(ncl_socket *peer, const uint8_t *request,
+                            uint8_t *reply, const void *body, size_t len)
+{
+    memcpy(reply, request, NCL_SYNTEC_PACKET_HEADER);
+    put_u32(reply, (uint32_t)len);
+    if (len > 0u) {
+        memcpy(reply + NCL_SYNTEC_PACKET_HEADER, body, len);
+    }
+    return ncl_socket_send(peer, reply, NCL_SYNTEC_PACKET_HEADER + len) == NCL_OK;
 }
 
 /** Script one answer: "when the request asks for @p key, answer @p value". */
@@ -256,9 +307,14 @@ static void mock_main(void *arg)
         }
         for (;;) {
             uint8_t header[NCL_SYNTEC_PACKET_HEADER];
-            uint8_t frame[256];
-            /* 参数表一页最多 4 条 × 268 字节（§11.4），加 20 字节头。 */
-            uint8_t reply[NCL_SYNTEC_REPLY_BODY + 4 * NCL_SYNTEC_PARAM_SPEC_SIZE];
+            /* 一块文件数据帧就是 12 + 8 + 4 KiB（§11.11），要装得下整块 */
+            uint8_t frame[NCL_SYNTEC_PACKET_HEADER + 8u + NCL_SYNTEC_FILE_CHUNK];
+            /*
+             * 参数表一页最多 4 条 × 268 字节（§11.4）加 20 字节头；文件服务那边
+             * 的应答还要装下一块**裸数据**（FileRecving，§11.11），所以取大的那个。
+             */
+            uint8_t reply[NCL_SYNTEC_PACKET_HEADER + NCL_SYNTEC_FILE_CHUNK +
+                          NCL_SYNTEC_REPLY_BODY];
             ncl_syntec_view view;
             size_t content;
             size_t total;
@@ -290,6 +346,99 @@ static void mock_main(void *arg)
             mock->last_cmd = view.packet.cmd_id;
             mock->last_func = view.function.func_id;
             mock->last_serial = view.function.serial;
+            /*
+             * §11.11 文件服务：mock 只有一条监听，靠 **uFuncID** 分流 ——
+             * 文件命令是 `FileTransferCmd`（1..17/48），item 那条固定 16。
+             * 只认那几个号：老的 KrnlAPI 通道（CmdID 200）也走这条监听。
+             */
+            if (view.packet.cmd_id != NCL_SYNTEC_CMD_ITEM && content >= 4u &&
+                mock_is_file_func(get_u32(frame + NCL_SYNTEC_PACKET_HEADER))) {
+                uint32_t fid = get_u32(frame + NCL_SYNTEC_PACKET_HEADER);
+                uint8_t body[8];
+                bool ok = true;
+                bool send_ok = true;
+
+                mock->last_file_func = fid;
+                switch (fid) {
+                case NCL_SYNTEC_FILE_SEND_START: /* 1：开一个文件等数据 */
+                    mock_take_path(mock, frame);
+                    mock->file_open = true;
+                    mock->file_written = 0;
+                    put_u32(body, 0u); /* hr = 0 */
+                    send_ok = mock_file_reply(peer, frame, reply, body, 4u);
+                    break;
+                case NCL_SYNTEC_FILE_SENDING: { /* 2：追加一块 */
+                    uint32_t len = get_u32(frame + NCL_SYNTEC_PACKET_HEADER + 4u);
+                    const uint8_t *src = frame + NCL_SYNTEC_PACKET_HEADER + 8u;
+
+                    mock->last_file_chunk = len;
+                    if (mock->file_open &&
+                        mock->file_written + len <= sizeof(mock->file_data)) {
+                        memcpy(mock->file_data + mock->file_written, src, len);
+                        mock->file_written += len;
+                        put_u32(body, 0u);
+                    } else {
+                        put_u32(body, 0xFFFFFFFFu); /* hr = -1 */
+                    }
+                    send_ok = mock_file_reply(peer, frame, reply, body, 4u);
+                    break;
+                }
+                case NCL_SYNTEC_FILE_RECV_START: /* 3：报文件大小 */
+                    mock_take_path(mock, frame);
+                    put_u32(body, 0u);
+                    put_u32(body + 4u, (uint32_t)mock->file_written);
+                    send_ok = mock_file_reply(peer, frame, reply, body, 8u);
+                    break;
+                case NCL_SYNTEC_FILE_RECVING: { /* 4：给一段**裸数据** */
+                    uint32_t off = get_u32(frame + NCL_SYNTEC_PACKET_HEADER + 4u);
+                    uint32_t want = get_u32(frame + NCL_SYNTEC_PACKET_HEADER + 8u);
+                    size_t have = off < mock->file_written
+                                      ? mock->file_written - off
+                                      : 0u;
+                    size_t give = want < have ? want : have;
+
+                    send_ok = mock_file_reply(peer, frame, reply,
+                                              mock->file_data + off, give);
+                    break;
+                }
+                case NCL_SYNTEC_FILE_LIST_ALL: /* 8：空的列表 */
+                    mock_take_path(mock, frame);
+                    put_u32(body, 0u);
+                    send_ok = mock_file_reply(peer, frame, reply, body, 4u);
+                    break;
+                case NCL_SYNTEC_FILE_EXIST: /* 11 */
+                    mock_take_path(mock, frame);
+                    ok = strcmp(mock->file_name, "C:/CNC/MTEST") == 0 &&
+                         mock->file_written > 0u;
+                    put_u32(body, ok ? 1u : 0u);
+                    send_ok = mock_file_reply(peer, frame, reply, body, 4u);
+                    break;
+                case NCL_SYNTEC_DIR_EXIST: /* 12 */
+                    mock_take_path(mock, frame);
+                    ok = strcmp(mock->file_name, "C:/CNC") == 0;
+                    put_u32(body, ok ? 1u : 0u);
+                    send_ok = mock_file_reply(peer, frame, reply, body, 4u);
+                    break;
+                case NCL_SYNTEC_FILE_DELETE: /* 14 */
+                    mock_take_path(mock, frame);
+                    ok = mock->file_written > 0u;
+                    mock->file_written = 0u;
+                    mock->file_open = false;
+                    put_u32(body, ok ? 1u : 0u);
+                    send_ok = mock_file_reply(peer, frame, reply, body, 4u);
+                    break;
+                default: /* 别的文件命令：mock 不回，用例也不会用 */
+                    break;
+                }
+                if (!send_ok) {
+                    break;
+                }
+                if (fid == NCL_SYNTEC_FILE_SEND_START ||
+                    fid == NCL_SYNTEC_FILE_SENDING) {
+                    /* 传输是同一条连接上的连续帧，继续读下一帧 */
+                }
+                continue;
+            }
             if (view.packet.cmd_id == NCL_SYNTEC_CMD_ITEM &&
                 view.body_len >= NCL_SYNTEC_ITEM_BODY) {
                 /* §3.1: type | param A | param B | flag at [20..35]. */
@@ -1419,6 +1568,7 @@ static void test_param_table(void)
     ncl_syntec_config_default(&config);
     config.host = "127.0.0.1";
     config.port = mock->port;
+    config.file_port = mock->port; /* §11.11：mock 同一条监听也当文件服务 */
     config.timeout_ms = 800;
     session = ncl_syntec_open(&config, &err);
     NCL_CHECK(session != NULL);
@@ -1497,6 +1647,12 @@ static void test_param_table(void)
     NCL_CHECK_EQ_INT(ncl_syntec_param_put(session, 321u, 222), NCL_ERR_IO);
     NCL_CHECK(strstr(ncl_syntec_last_error(session), "0x00001234") != NULL);
     mock->put_hr = 0;
+
+    /*
+     * §11.11 文件服务：mock 的文件服务就是在**同一个端口**上（`file_port == port`），
+     * 客户端这时**共用会话那条连接** —— 真机上两个端口分开（5566 / 5572）才另开一条。
+     */
+
 
     /*
      * §11.7 写刀：帧是 256 字节，In 是 228 字节的 { nToolNo, TToolOffset }，
@@ -1716,6 +1872,93 @@ static void test_param_table(void)
         NCL_CHECK_EQ_INT(ncl_syntec_tool_put(session, 0u, &want),
                          NCL_ERR_INVALID_ARG); /* 刀号从 1 起 */
     }
+
+    /* §11.11 文件服务（G 代码上下行）：帧形状 + 上传/取回/删除一条龙 */
+    NCL_TEST_CASE("11.11: a path frame is UTF-16 with a **character** count");
+    {
+        uint8_t frame[NCL_SYNTEC_FILE_FRAME];
+        size_t len = ncl_syntec_file_path_frame(frame, sizeof(frame),
+                                                NCL_SYNTEC_FILE_EXIST,
+                                                "C:/CNC/MTEST");
+
+        /* 12 包头 + 4 uFuncID + 4 字符数 + 12×2 路径 */
+        NCL_CHECK_EQ_INT(len, NCL_SYNTEC_PACKET_HEADER + 4u + 4u + 12u * 2u);
+        NCL_CHECK_EQ_INT(get_u32(frame), (uint32_t)(len - NCL_SYNTEC_PACKET_HEADER));
+        NCL_CHECK_EQ_INT(get_u32(frame + 4u), NCL_SYNTEC_FILE_EXIST); /* CmdID */
+        NCL_CHECK_EQ_INT(get_u32(frame + 12u), NCL_SYNTEC_FILE_EXIST); /* uFuncID */
+        NCL_CHECK_EQ_INT(get_u32(frame + 16u), 12u); /* **字符数**，不是字节数 */
+        NCL_CHECK_EQ_INT(frame[20], (uint8_t)'C');
+        NCL_CHECK_EQ_INT(frame[21], 0); /* UTF-16LE */
+        NCL_CHECK_EQ_INT(frame[20 + 11u * 2u], (uint8_t)'T');
+    }
+
+    NCL_TEST_CASE("11.11: push -> exist -> pull -> delete against the mock");
+    {
+        static const char code[] = "O3000\nG0 X0 Z0\nM30\n";
+        uint8_t *back = NULL;
+        size_t back_len = 0;
+        bool exists = false;
+        bool dir = false;
+
+        NCL_CHECK_EQ_INT(ncl_syntec_dir_exist(session, "C:/CNC", &dir), NCL_OK);
+        NCL_CHECK(dir);
+        NCL_CHECK_EQ_INT(ncl_syntec_file_exist(session, "C:/CNC/MTEST", &exists),
+                         NCL_OK);
+        NCL_CHECK(!exists); /* 还没传 */
+        NCL_CHECK_EQ_INT(mock->last_file_path_chars, 12u); /* 路径按字符数报 */
+
+        NCL_CHECK_EQ_INT(ncl_syntec_file_push(session, "C:/CNC/MTEST",
+                                              (const uint8_t *)code,
+                                              sizeof(code) - 1u),
+                         NCL_OK);
+        NCL_CHECK_EQ_INT(mock->last_file_func, NCL_SYNTEC_FILE_SENDING);
+        NCL_CHECK_EQ_INT(mock->last_file_chunk, sizeof(code) - 1u);
+        NCL_CHECK_EQ_INT(mock->file_written, sizeof(code) - 1u);
+
+        NCL_CHECK_EQ_INT(ncl_syntec_file_exist(session, "C:/CNC/MTEST", &exists),
+                         NCL_OK);
+        NCL_CHECK(exists); /* 传上去了 */
+
+        NCL_CHECK_EQ_INT(ncl_syntec_file_pull(session, "C:/CNC/MTEST", &back,
+                                              &back_len),
+                         NCL_OK);
+        NCL_CHECK(back != NULL && back_len == sizeof(code) - 1u);
+        if (back != NULL) {
+            NCL_CHECK(memcmp(back, code, sizeof(code) - 1u) == 0); /* 逐字节一致 */
+        }
+        ncl_mem_free(back);
+
+        NCL_CHECK_EQ_INT(ncl_syntec_file_delete(session, "C:/CNC/MTEST"), NCL_OK);
+        NCL_CHECK_EQ_INT(ncl_syntec_file_exist(session, "C:/CNC/MTEST", &exists),
+                         NCL_OK);
+        NCL_CHECK(!exists);
+    }
+
+    NCL_TEST_CASE("11.11: a big file goes up and comes back in chunks");
+    {
+        uint8_t big[NCL_SYNTEC_FILE_CHUNK + 100u];
+        uint8_t *back = NULL;
+        size_t back_len = 0;
+        size_t i;
+
+        for (i = 0; i < sizeof(big); i++) {
+            big[i] = (uint8_t)('A' + (i % 26u));
+        }
+        NCL_CHECK_EQ_INT(ncl_syntec_file_push(session, "C:/CNC/MTEST", big,
+                                              sizeof(big)),
+                         NCL_OK);
+        NCL_CHECK_EQ_INT(mock->file_written, sizeof(big)); /* 两块都到了 */
+        NCL_CHECK_EQ_INT(ncl_syntec_file_pull(session, "C:/CNC/MTEST", &back,
+                                              &back_len),
+                         NCL_OK);
+        NCL_CHECK(back != NULL && back_len == sizeof(big));
+        if (back != NULL) {
+            NCL_CHECK(memcmp(back, big, sizeof(big)) == 0);
+        }
+        ncl_mem_free(back);
+        (void)ncl_syntec_file_delete(session, "C:/CNC/MTEST");
+    }
+
 
     ncl_syntec_close(session);
     mock_stop(mock);

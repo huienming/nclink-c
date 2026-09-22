@@ -5,6 +5,22 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### SYNTEC：G 代码上下行落地（文件服务接进 client 与适配器）
+
+  * **client**：新增文件服务的一整套 —— `ncl_syntec_file_exist/dir_exist/file_new/dir_create/
+    file_delete/file_copy/file_move/file_list`，以及 `ncl_syntec_file_push()`（下发，一帧一块
+    ≤ 4 KiB 的 `FileSending`）与 `ncl_syntec_file_pull()`（取回，按 `min(块, 剩余)` 分块）。
+    会话多了 `config.file_port`（默认 5572），**`file_port == port` 时共用会话那条连接**。
+  * **适配器**：接上仓库的文件工具（像 FOCAS 那样 `ncl_file_tool_set_backend()`），设备侧的
+    `/CONTROLLER/FILE` 于是有了 `push`（下发 G 代码）/ `pull`（取回）/ `remove`（删程序）；
+    新增参数 `filePort`。
+  * **测试**：mock 补文件服务（同一条监听按 uFuncID 分流，且记住 Start 之后的路径与已收字节），
+    用例覆盖路径帧是 UTF-16 且**长度按字符数**、上传→存在性→取回→逐字节比对→删除，
+    以及跨块的大文件（4 KiB + 100 字节）。
+  * **21A 实测（本仓库 C 客户端，全部 rc=0）**：`DirExist(C:/CNC)` → true、push 50 字节 →
+    `FileExist` true → pull 50 字节**逐字节一致** → delete → false。
+  * 还留着：`GetAllFileList` 在这台上回 0 个（列表语义待真机再核）；程序下发按 10 册 §6.2
+    是危险操作，权限照旧在适配器外面。
 ### 新代：G 代码上下行的协议打通了（文件服务在 5572，还在等接进 client）
 
   * **先把服务找出来**：§4.7/§6.2 那 12 个程序/文件 API 不走 KrnlAPI，而是一套**独立的文件服务**。

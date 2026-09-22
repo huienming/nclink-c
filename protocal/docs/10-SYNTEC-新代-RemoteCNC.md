@@ -1356,10 +1356,20 @@ FileRecving(offset, min(块, 剩余)) * 3  -> 49 字节，**与上传的逐字�
 FileDelete                    -> true,   FileExist -> false
 ```
 
-**还没落地的部分**（这一轮只把协议打通、出了探针）：
+**已经落地（2026-09-22）**：
 
-1. client 侧没有文件服务：要加一条到 5572 的连接（与会话分开、**带状态**）+ 上面这些命令；
-2. 适配器没接仓库的文件工具（`nclink/ncl_file.h` 的 `/CONTROLLER/FILE`，FOCAS 已经接了），
-   接上之后 `push`（下发）/ `pull`（取回）/ `remove` 三条就是现成的；
-3. `GetAllFileList` 在这台上回 0 个（列表的路径语义还没吃透），真机上要再看一眼；
-4. 程序下发按 §6.2 是**危险操作**，权限照旧在适配器外面（`NCL_OP_SET_VALUE` 那一套门槛）。
+1. **client**：`ncl_syntec_file_exist()` / `_dir_exist()` / `_file_new()` / `_dir_create()` /
+   `_file_delete()` / `_file_copy()` / `_file_move()` / `_file_list()` / `_file_push()`（下发，
+   一帧一块 ≤ 4 KiB）/ `_file_pull()`（取回，按 `min(块, 剩余)` 分块） + 各自的帧构造与应答解析。
+   会话里多一条文件连接（`config.file_port`，默认 5572）；**`file_port == port` 时共用会话那条**
+   （有的部署把两个服务放同一个端口，测试 mock 就是这样）。
+2. **适配器**：接上仓库的文件工具（`nclink/ncl_file.h` 的 `/CONTROLLER/FILE`，和 FOCAS 一样
+   调 `ncl_file_tool_set_backend()`），所以 `push`（下发 G 代码）/ `pull`（取回）/ `remove`
+   （删程序）三条直接可用；参数名 `filePort`（默认 5572）。
+3. **测试**：mock 里补了文件服务（同一条监听按 uFuncID 分流），用例覆盖"路径帧是 UTF-16 且
+   长度按**字符数**"、上传→问在不在→取回→逐字节比对→删除，以及**跨块**（4 KiB + 100 字节）的大文件。
+4. **现场**：本仓库 C 客户端在 21A 上跑完整套（`DirExist` / `push 50 字节` / `FileExist` /
+   `pull` 逐字节一致 / `delete`），全部 `rc = 0`。
+
+**还留着**：`GetAllFileList` 在这台上回 0 个（列表的路径语义还没吃透），真机上要再看一眼；
+程序下发按 §6.2 是**危险操作**，权限照旧在适配器外面（谁可以下发由部署侧的白名单/授权决定）。
