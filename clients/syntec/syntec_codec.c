@@ -541,8 +541,9 @@ bool ncl_syntec_item_i16(const uint8_t *frame, size_t len, size_t index,
  * §11.4：状态区与参数区共用同一种帧，只有请求号（§3.1 的 [16..19]）不同。
  * 把"请求号 + 索引 + 要几个字节"抽出来，两个读法都是它的一行调用。
  */
-static size_t syntec_code_frame(uint8_t *out, size_t cap, uint32_t request,
-                                unsigned index, size_t bytes, uint8_t serial)
+static size_t syntec_code_frame_flag(uint8_t *out, size_t cap, uint32_t request,
+                                     unsigned index, size_t bytes, uint32_t flag,
+                                     uint8_t serial)
 {
     size_t answer = 4u + bytes; /* 回答里的那个 4 字节字 + 正文 */
     ncl_syntec_item item;
@@ -557,8 +558,15 @@ static size_t syntec_code_frame(uint8_t *out, size_t cap, uint32_t request,
     item.request = request;
     item.param_a = (uint32_t)answer;
     item.param_b = (uint32_t)index;
-    item.flag = 1u;
+    item.flag = flag;
     return ncl_syntec_item_frame(out, cap, &item, (uint32_t)index, serial);
+}
+
+/** 读的那一家：flag 固定是 1。 */
+static size_t syntec_code_frame(uint8_t *out, size_t cap, uint32_t request,
+                                unsigned index, size_t bytes, uint8_t serial)
+{
+    return syntec_code_frame_flag(out, cap, request, index, bytes, 1u, serial);
 }
 
 size_t ncl_syntec_zone_frame(uint8_t *out, size_t cap, unsigned zone,
@@ -576,6 +584,14 @@ size_t ncl_syntec_param_frame(uint8_t *out, size_t cap, unsigned param,
     /* §11.4：一个参数是一个 i32，所以 A = 4 + 4，B = 参数号。 */
     return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_PARAM_GET, param,
                              sizeof(int32_t), serial);
+}
+
+size_t ncl_syntec_param_put_frame(uint8_t *out, size_t cap, unsigned param,
+                                  int32_t value, uint8_t serial)
+{
+    /* §11.6：In 是 { nNo, newVal } -> A = 8 + 4，B = 参数号，flag = 新值。 */
+    return syntec_code_frame_flag(out, cap, NCL_SYNTEC_CODE_PARAM_PUT, param,
+                                  sizeof(int32_t), (uint32_t)value, serial);
 }
 
 size_t ncl_syntec_param_capacity_frame(uint8_t *out, size_t cap, uint8_t serial)

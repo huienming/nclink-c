@@ -243,11 +243,20 @@ size_t ncl_syntec_zone_frame(uint8_t *out, size_t cap, unsigned zone,
 #define NCL_SYNTEC_CODE_PARAM_CAPACITY 0x0401u
 #define NCL_SYNTEC_CODE_PARAM_SCHEMA 0x0402u
 #define NCL_SYNTEC_CODE_PARAM_GET 0x0404u
+/**
+ * §11.6 写一个参数：In `{ nNo, newVal }`，A = 8 + 4，B = 参数号，
+ * **flag 装的是新值**（读的那一家 flag 固定是 1）。
+ */
+#define NCL_SYNTEC_CODE_PARAM_PUT 0x0403u
 #define NCL_SYNTEC_CODE_STATE_GET 0x0407u
 
 /** Build one parameter read: request 0x0404, A = 8, B = the parameter number. */
 size_t ncl_syntec_param_frame(uint8_t *out, size_t cap, unsigned param,
                               uint8_t serial);
+
+/** One parameter write: request 0x0403, A = 12, B = the number, flag = the value. */
+size_t ncl_syntec_param_put_frame(uint8_t *out, size_t cap, unsigned param,
+                                  int32_t value, uint8_t serial);
 
 /** The parameter table's capacity: request 0x0401, In empty, A = 8. */
 size_t ncl_syntec_param_capacity_frame(uint8_t *out, size_t cap,
@@ -361,6 +370,16 @@ ncl_err ncl_syntec_command_position(ncl_syntec *syntec, double *value);
 
 /** Read one system parameter (KrnlAPI 0x0404, one i32). */
 ncl_err ncl_syntec_param(ncl_syntec *syntec, unsigned param, int32_t *value);
+
+/**
+ * 写一个系统参数（KrnlAPI 0x0403，§11.6）。应答是一个 i32 的 `hr`，0 = 成功，
+ * 非 0 回 NCL_ERR_IO 并把 hr 写进 ncl_syntec_last_error()。
+ *
+ * **写是持久化的**：控制器侧会落到 `OpenCNC/Data/param.dat`（实测：写完文件
+ * mtime 变了，逐字节比只有文件头的时间戳与那个参数的值不同）。**权限、白名单、
+ * 二次确认都在外面控制**——这里只负责把值写下去，不做判断。
+ */
+ncl_err ncl_syntec_param_put(ncl_syntec *syntec, unsigned param, int32_t value);
 
 /**
  * §11.4 的参数表：线上一条 `TParamSpec` **268 字节**——

@@ -88,6 +88,10 @@ typedef struct {
     } params[48];
     size_t param_count;
     uint32_t last_param;
+    /* 参数写入（§11.6）：答什么 hr、上一次收到的号与值 */
+    int32_t  put_hr;
+    uint32_t last_put_param;
+    uint32_t last_put_value;
     /* 参数表（§11.4）：0x0401 答条数，0x0402 答这么多条 268 字节的记录 */
     struct {
         int32_t no;
@@ -285,6 +289,29 @@ static void mock_main(void *arg)
                             raw = (uint32_t)mock->params[p].value;
                             break;
                         }
+                    }
+                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    reply[NCL_SYNTEC_REPLY_BODY + 0] = (uint8_t)(raw & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)((raw >> 8) & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 2] = (uint8_t)((raw >> 16) & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 3] = (uint8_t)((raw >> 24) & 0xFFu);
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + 4u));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_BODY + 4u) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /* 参数写入（§11.6）：A = 12、B = 参数号、flag = 新值，答 4 字节 hr。 */
+                if (request == NCL_SYNTEC_CODE_PARAM_PUT) {
+                    uint32_t new_value = get_u32(view.body + 12);
+                    uint32_t raw = (uint32_t)mock->put_hr;
+
+                    mock->last_put_param = param_b;
+                    mock->last_put_value = new_value;
+                    if (mock->put_hr == 0) {
+                        mock_set_param(mock, param_b, (int32_t)new_value);
                     }
                     memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
                     reply[NCL_SYNTEC_REPLY_BODY + 0] = (uint8_t)(raw & 0xFFu);
@@ -1095,6 +1122,20 @@ static void test_param_table(void)
     NCL_CHECK_EQ_INT(ncl_syntec_param(session, 321u, &value), NCL_OK);
     NCL_CHECK_EQ_INT(value, 100);
 
+    NCL_TEST_CASE("11.6: a write lands (A=12, B=the number, flag=the value)");
+    mock->put_hr = 0;
+    NCL_CHECK_EQ_INT(ncl_syntec_param_put(session, 321u, 111), NCL_OK);
+    NCL_CHECK_EQ_INT(mock->last_put_param, 321u);
+    NCL_CHECK_EQ_INT(mock->last_put_value, 111u); /* flag 那一位装的是新值 */
+    NCL_CHECK_EQ_INT(ncl_syntec_param(session, 321u, &value), NCL_OK);
+    NCL_CHECK_EQ_INT(value, 111);
+
+    NCL_TEST_CASE("11.6: a refused write is NCL_ERR_IO with the hr in last_error");
+    mock->put_hr = 0x1234;
+    NCL_CHECK_EQ_INT(ncl_syntec_param_put(session, 321u, 222), NCL_ERR_IO);
+    NCL_CHECK(strstr(ncl_syntec_last_error(session), "0x00001234") != NULL);
+    mock->put_hr = 0;
+
     ncl_syntec_close(session);
     mock_stop(mock);
 }
@@ -1438,6 +1479,45 @@ static void test_adapter(void)
                 NCL_CHECK_EQ_INT(ncl_json_obj_get_int(v, "321", -1), 100);
             }
             ncl_message_free(response);
+        }
+    }
+
+    NCL_TEST_CASE("11.6: a Set writes the parameter (permissions live outside)");
+    {
+        ncl_message *write = ncl_message_new(NCL_MSG_SET_REQUEST);
+        ncl_set_request_item *item =
+            ncl_set_request_item_new("/MACHINE/CONTROLLER/PARAMETER");
+        ncl_message *response;
+
+        NCL_CHECK(write != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "set_value");
+        (void)ncl_params_set_string(&item->params, "keys", "321");
+        (void)ncl_params_set_int(&item->params, "value", 111);
+        (void)ncl_message_set_message_id(write, "s1");
+        (void)ncl_message_add_set_request_item(write, item);
+        mock->put_hr = 0;
+        response = ncl_server_invoke_set(ncl_host_server(host), write);
+        ncl_message_free(write);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_set_response_item *row =
+                ncl_ptrvec_at(&response->as.set_response.items, 0);
+
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            ncl_message_free(response);
+        }
+        NCL_CHECK_EQ_INT(mock->last_put_param, 321u);
+        NCL_CHECK_EQ_INT(mock->last_put_value, 111u);
+        {
+            size_t k;
+            long long stored = -1;
+
+            for (k = 0; k < mock->param_count; k++) {
+                if (mock->params[k].number == 321u) {
+                    stored = mock->params[k].value;
+                }
+            }
+            NCL_CHECK_EQ_INT(stored, 111); /* 值落到了 mock 的表里 */
         }
     }
 

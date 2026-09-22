@@ -1078,6 +1078,47 @@ ncl_err ncl_syntec_param(ncl_syntec *syntec, unsigned param, int32_t *value)
     return NCL_OK;
 }
 
+ncl_err ncl_syntec_param_put(ncl_syntec *syntec, unsigned param, int32_t value)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    int32_t hr = -1;
+    ncl_err err;
+
+    if (syntec == NULL || param == 0 || param > 0xFFFFu) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_param_put_frame(frame, sizeof(frame), param, value,
+                                       serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_reply_i32(syntec->rx, syntec->last_rx_len, &hr)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "参数写入");
+    }
+    if (hr != 0) {
+        /* 控制器拒绝（比如这个号不让写）：原样报出来，不猜原因。 */
+        snprintf(syntec->error, sizeof(syntec->error),
+                 "参数 %u 写入被拒绝（hr=0x%08X）", param, (unsigned)hr);
+        return NCL_ERR_IO;
+    }
+    return NCL_OK;
+}
+
 bool ncl_syntec_axis_name_decode(int32_t code, char *out, size_t cap)
 {
     /* 客户端的 get_AllAxisName()：字母表就是这九个，1 起数。 */

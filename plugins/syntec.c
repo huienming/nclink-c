@@ -325,6 +325,7 @@ static ncl_err syntec_parameter(void *ctx, const ncl_tool_point *self,
     ncl_syntec *syntec = (ncl_syntec *)ctx;
     const ncl_json *keys = ncl_params_get(params, "keys");
     ncl_syntec_param_spec page[SYNTEC_PARAM_PAGE];
+    ncl_json *out = NULL; /* 读（get_value/get_attributes）与写（set_value）都用它 */
     size_t total = 0;
     size_t got = 0;
     size_t i;
@@ -381,7 +382,6 @@ static ncl_err syntec_parameter(void *ctx, const ncl_tool_point *self,
     case NCL_OP_GET_VALUE: /* 按号读值 */
     case NCL_OP_GET_ATTRIBUTES: { /* 按号取元数据 */
         size_t count = syntec_param_key_count(keys);
-        ncl_json *out;
 
         if (count == 0) {
             /*
@@ -462,9 +462,77 @@ static ncl_err syntec_parameter(void *ctx, const ncl_tool_point *self,
         *result = out;
         return NCL_OK;
     }
+    case NCL_OP_SET_VALUE: /* 写参数（§11.6）：权限在外面控制，这里只管写 */
+    {
+        const ncl_json *value = ncl_params_get(params, "value");
+
+        if (value != NULL) { /* {"keys":"321","value":100} */
+            long long no = 0;
+            long long new_value = 0;
+
+            if (!syntec_param_key(keys, 0, &no) ||
+                !ncl_json_as_int(value, &new_value) || no < 1 || no > 0xFFFF) {
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "要 keys（一个号）+ value（新值）");
+            }
+            rc = ncl_syntec_param_put(syntec, (unsigned)no, (int32_t)new_value);
+            if (rc != NCL_OK) {
+                return ncl_tool_fail(reason, rc, "%s",
+                                     ncl_syntec_last_error(syntec));
+            }
+            out = ncl_json_new_object();
+            if (out == NULL) {
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+            {
+                char name[16];
+
+                snprintf(name, sizeof(name), "%d", (int)no);
+                (void)ncl_json_obj_set_int(out, name, new_value);
+            }
+            *result = out;
+            return NCL_OK;
+        }
+        /* 也可以直接给字典：params 本身就是 {"321":100,...} */
+        out = ncl_json_new_object();
+        if (out == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        for (i = 0; i < ncl_json_obj_len(params); i++) {
+            const char *name = ncl_json_obj_key_at(params, i);
+            long long no = 0;
+            long long new_value = 0;
+
+            if (name == NULL || strcmp(name, "operation") == 0 ||
+                strcmp(name, "keys") == 0 || strcmp(name, "check") == 0 ||
+                strcmp(name, "token") == 0 || strcmp(name, "async") == 0) {
+                continue; /* 这几个是框架自己的成员 */
+            }
+            if (i >= SYNTEC_PARAM_BATCH_MAX) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "一次最多 %u 个号",
+                                     (unsigned)SYNTEC_PARAM_BATCH_MAX);
+            }
+            if (!ncl_json_as_int(ncl_json_obj_get(params, name), &new_value) ||
+                sscanf(name, "%lld", &no) != 1 || no < 1 || no > 0xFFFF) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "写法是 {参数号:新值} 或 {\"keys\":...,\"value\":...}");
+            }
+            rc = ncl_syntec_param_put(syntec, (unsigned)no, (int32_t)new_value);
+            if (rc != NCL_OK) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, rc, "%s",
+                                     ncl_syntec_last_error(syntec));
+            }
+            (void)ncl_json_obj_set_int(out, name, new_value);
+        }
+        *result = out;
+        return NCL_OK;
+    }
     default:
         return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
-                             "参数只答 get_length / get_keys / get_value / get_attributes");
+                             "参数只答 get_length / get_keys / get_value / get_attributes / set_value");
     }
 }
 
@@ -575,8 +643,8 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
      * get_length / get_keys / get_value（按号读值）/ get_attributes（按号取标题）。
      * 写不声明：控制器侧没验过写参数。 */
     NCL_CONFIG_OPS("/CONTROLLER/PARAMETER", syntec_parameter, NULL,
-                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
-                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) |
+                       NCL_OP_BIT(NCL_OP_GET_LENGTH) | NCL_OP_BIT(NCL_OP_GET_KEYS) |
                        NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
 
 NCL_TOOL_END_WITH_RAW(syntec_last_raw)
