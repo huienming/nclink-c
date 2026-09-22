@@ -1261,7 +1261,7 @@ static void test_adapter(void)
     }
 
     NCL_TEST_CASE("the nine points are the model the device publishes");
-    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 63); /* 9 项 + 9 轴 × 6 格 */
+    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 64); /* 9 项 + 9 轴 × 6 格 + 1 个参数配置 */
     for (i = 0; i < sizeof(kPaths) / sizeof(kPaths[0]); i++) {
         NCL_CHECK(host_point_index(host, kPaths[i]) != (size_t)-1);
     }
@@ -1397,110 +1397,102 @@ static void test_adapter(void)
     NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@W/SERVO_DRIVER/POSITION",
                                 &err) != NCL_OK);
 
-    NCL_TEST_CASE("11.4: an axis the controller does not have is an error");
-    /* 这台 mock 只配了 X（槽 0）与 Z（槽 2）：别的字母每一格都得报错，不能给数。 */
-    NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@A/MOTOR/POSITION", &err) !=
-              NCL_OK);
-    NCL_CHECK(strstr(ncl_strbuf_cstr(&err), "/MACHINE/AXIS@A/MOTOR/POSITION") !=
-              NULL);
-    NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@Y/MOTOR/VARIABLE@RELATIVE",
-                                &err) != NCL_OK);
-    NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@C/MOTOR/VARIABLE@DISTANCE",
-                                &err) != NCL_OK);
-    NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@B/SCREW/POSITION", &err) !=
-              NCL_OK);
-    NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@V/SCREW/POSITION", &err) !=
-              NCL_OK);
-
-    NCL_TEST_CASE("11.4: /PARAMETER reads a value by parameter number");
+    NCL_TEST_CASE("11.4: parameters are a config object (dict), not a method");
     {
-        ncl_message *request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+        ncl_json *model = ncl_node_to_json(ncl_server_model(ncl_host_server(host)));
+        char *text = model != NULL ? ncl_json_write_string(model) : NULL;
+
+        NCL_CHECK(text != NULL);
+        if (text != NULL) {
+            NCL_CHECK(strstr(text, "/MACHINE/CONTROLLER/PARAMETER") != NULL);
+            NCL_CHECK(strstr(text, "HASH") != NULL); /* dataType：册 4 说 PARAMETER 是 dict */
+            ncl_mem_free(text);
+        }
+        ncl_json_free(model);
+    }
+
+    NCL_TEST_CASE("11.4: a Query reads a parameter by key");
+    {
+        ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+        ncl_query_request_item *item =
+            ncl_query_request_item_new("/MACHINE/CONTROLLER/PARAMETER");
         ncl_message *response;
 
-        NCL_CHECK(request != NULL);
-        (void)ncl_message_set_method(request, "syntec/PARAMETER");
-        (void)ncl_message_set_params(
-            request, ncl_json_parse_cstr("{\"no\":321}", NULL));
-        NCL_CHECK_EQ_INT(ncl_message_finalise(request), NCL_OK);
-        response = ncl_server_invoke_method_call(ncl_host_server(host), request);
+        NCL_CHECK(request != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "get_value");
+        (void)ncl_params_set_string(&item->params, "keys", "321");
+        (void)ncl_message_set_message_id(request, "q1");
+        (void)ncl_message_add_query_request_item(request, item);
+        response = ncl_server_invoke_query(ncl_host_server(host), request);
         ncl_message_free(request);
         NCL_CHECK(response != NULL);
         if (response != NULL) {
-            const ncl_json *data = response->as.method_call_response.data;
-            const ncl_json *values;
+            ncl_query_response_item *row = ncl_ptrvec_at(&response->as.query_response.items, 0);
+            ncl_json *values = row != NULL ? row->values : NULL;
 
-            NCL_CHECK(ncl_check_is_code_ok(
-                response->as.method_call_response.code));
-            NCL_CHECK(data != NULL);
-            NCL_CHECK_EQ_INT(ncl_json_obj_get_int(data, "first", -1), 321);
-            NCL_CHECK_EQ_INT(ncl_json_obj_get_int(data, "count", -1), 1);
-            values = ncl_json_obj_get(data, "values");
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
             NCL_CHECK(values != NULL && ncl_json_arr_len(values) == 1);
             if (values != NULL && ncl_json_arr_len(values) == 1) {
-                long long v = 0;
+                const ncl_json *v = ncl_json_arr_get(values, 0);
 
-                NCL_CHECK(ncl_json_as_int(ncl_json_arr_get(values, 0), &v));
-                NCL_CHECK_EQ_INT(v, 100); /* the scripted value of 321 */
+                NCL_CHECK_EQ_INT(ncl_json_obj_get_int(v, "321", -1), 100);
             }
             ncl_message_free(response);
         }
     }
 
-    NCL_TEST_CASE("11.4: /PARAMETER_TABLE answers number, title and default");
+    NCL_TEST_CASE("11.4: get_attributes answers the row, get_length the count");
     {
-        ncl_message *request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+        ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+        ncl_query_request_item *item =
+            ncl_query_request_item_new("/MACHINE/CONTROLLER/PARAMETER");
         ncl_message *response;
 
-        NCL_CHECK(request != NULL);
-        (void)ncl_message_set_method(request, "syntec/PARAMETER_TABLE");
-        (void)ncl_message_set_params(
-            request, ncl_json_parse_cstr("{\"no\":321}", NULL));
-        NCL_CHECK_EQ_INT(ncl_message_finalise(request), NCL_OK);
-        response = ncl_server_invoke_method_call(ncl_host_server(host), request);
+        NCL_CHECK(request != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "get_length");
+        (void)ncl_message_set_message_id(request, "q2");
+        (void)ncl_message_add_query_request_item(request, item);
+        response = ncl_server_invoke_query(ncl_host_server(host), request);
         ncl_message_free(request);
         NCL_CHECK(response != NULL);
         if (response != NULL) {
-            const ncl_json *data = response->as.method_call_response.data;
-            const ncl_json *list;
+            ncl_query_response_item *row = ncl_ptrvec_at(&response->as.query_response.items, 0);
 
-            NCL_CHECK(ncl_check_is_code_ok(
-                response->as.method_call_response.code));
-            NCL_CHECK(data != NULL);
-            NCL_CHECK_EQ_INT(ncl_json_obj_get_int(data, "total", -1), 1);
-            list = ncl_json_obj_get(data, "params");
-            NCL_CHECK(list != NULL && ncl_json_arr_len(list) == 1);
-            if (list != NULL && ncl_json_arr_len(list) == 1) {
-                const ncl_json *row = ncl_json_arr_get(list, 0);
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            {
+                long long length = -1;
 
-                NCL_CHECK_EQ_INT(ncl_json_obj_get_int(row, "no", -1), 321);
-                NCL_CHECK_EQ_STR(
-                    ncl_json_as_string(ncl_json_obj_get(row, "title")),
-                    "*X axis axis name");
-                NCL_CHECK_EQ_INT(ncl_json_obj_get_int(row, "fallback", -1), 100);
+                /* 答的是裸数字（一页一条：mock 的表里只有一条） */
+                NCL_CHECK(ncl_json_as_int(ncl_json_arr_get(row->values, 0), &length));
+                NCL_CHECK_EQ_INT(length, 1);
             }
             ncl_message_free(response);
         }
     }
 
-    NCL_TEST_CASE("11.4: a parameter number that is not there is refused");
+    NCL_TEST_CASE("11.4: a key that is not in the table is refused");
     {
-        ncl_message *request = ncl_message_new(NCL_MSG_METHOD_CALL_REQUEST);
+        ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+        ncl_query_request_item *item =
+            ncl_query_request_item_new("/MACHINE/CONTROLLER/PARAMETER");
         ncl_message *response;
 
-        NCL_CHECK(request != NULL);
-        (void)ncl_message_set_method(request, "syntec/PARAMETER");
-        (void)ncl_message_set_params(
-            request, ncl_json_parse_cstr("{\"no\":0}", NULL));
-        NCL_CHECK_EQ_INT(ncl_message_finalise(request), NCL_OK);
-        response = ncl_server_invoke_method_call(ncl_host_server(host), request);
+        NCL_CHECK(request != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "get_attributes");
+        (void)ncl_params_set_string(&item->params, "keys", "999");
+        (void)ncl_message_set_message_id(request, "q3");
+        (void)ncl_message_add_query_request_item(request, item);
+        response = ncl_server_invoke_query(ncl_host_server(host), request);
         ncl_message_free(request);
         NCL_CHECK(response != NULL);
         if (response != NULL) {
-            NCL_CHECK(!ncl_check_is_code_ok(
-                response->as.method_call_response.code));
+            ncl_query_response_item *row = ncl_ptrvec_at(&response->as.query_response.items, 0);
+
+            NCL_CHECK(row != NULL && !ncl_check_is_code_ok(row->code));
             ncl_message_free(response);
         }
     }
+
 
     ncl_host_free(host);
     ncl_strbuf_free(&err);

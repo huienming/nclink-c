@@ -92,16 +92,20 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
     实测（21A）：63 个点位里 **29 个读得到**（9 项 + X/Y/Z/C × 5 格）、**25 个报错**
     （A/B/U/V/W × 5 格，`NotFoundException`）、**9 个待抓包**（九轴的指令位置）；
     mock 侧另断言 SCREW 与 MOTOR 同值、SERVO_DRIVER 回 UNAVAILABLE、没配的字母每一格都报错。
-  * **参数（值 + 表）也能读了**（2026-09-22）：`0x0404` 读值（i32）、`0x0401`
-    读容量（21A 3784）、`0x0402` 整表 dump（一条 268 字节：号 + UTF-16LE 标题 +
-    两个 u32）。线上命令没有偏移，所以 client 一次把整表读回来（≈ 1 MB）
-    缓存在会话里，翻页在本地做；新增方法 `/PARAMETER`（按号读值，可批量）
-    与 `/PARAMETER_TABLE`（按号定位或按位置翻页）。UTF-16 换字用新加的
-    `ncl_utf16le_to_utf8()`（在 `ncl_charset` 里，带单测）。
-    **表里没有上下限**（只有号、标题、一个语义未定的 u32、出厂默认值），
-    所以“含上下限”这一半没兑。实测：`{"no":321}` 答 100（= `'X'`），
-    `{"no":321,"count":4}` 答 100/200/300/400，`{"no":321}` 的表格行 = 位置 251、
-    `*X axis axis name`、flags 10999、默认 100。
+  * **参数按设备模型做成配置对象 `/CONTROLLER/PARAMETER`**（2026-09-22）：照
+    `examples/device_model.c` 的摆法（参数在 CONTROLLER 的 `configs` 里、`type` = `PARAMETER`；
+    册 4 说这类归 configs、`dataType` = `HASH`，因为参数本身是字典），改成**配置点**：
+    `NCL_CONFIG_OPS("/CONTROLLER/PARAMETER", ...)` 答标准的 Query 四个操作——
+    `get_length`（条数，21A 3784）、`get_keys`（参数号清单）、`get_value`（`keys` 给号 →
+    `{"321":100,...}`）、`get_attributes`（`keys` 给号 → 标题/默认值那条记录）。
+    写（set_value/add/delete）不声明：控制器侧没验过怎么写参数，让宿主回
+    "Unsupported Operation"，比给个假写入口诚实。没给 `keys` 时答空的 `{}` / `[]`
+    （自检会对每个点位盲读一次，四千个参数没有"盲读"这一说）。原来那两个方法
+    `/PARAMETER`、`/PARAMETER_TABLE` 撤掉——模型里只留一条 config，不再改来改去。
+    实测：21A `--model` 出 `{"id":"p64","name":"参数","type":"PARAMETER","dataType":"HASH"}`；
+    mock 走 `ncl_server_invoke_query`：`get_value {"keys":"321"}` → `{"321":100}`、`get_length`
+    → 条数、号不在表里 → NG。值仍走 0x0404、表仍走 0x0401/0x0402（整表 1 MB 缓存 + 本地翻页）。
+    （REST 那 12 条路由没有 Query，配置对象按标准走 MQTT 的 Query/Set。）
 
 ### 能力发现挪出心跳：`Pong` 只回状态，方法清单进模型，schema 补齐
 

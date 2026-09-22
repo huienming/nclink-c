@@ -1017,26 +1017,41 @@ UNAVAILABLE”。
   `A = 4 + nLength * 268` 整表 dump（一条 `TParamSpec` = `u16 No` + `u16 留白` +
   `wchar Title[128]` + `u32` + `u32 默认值`）；21A 上整表读回 1,014,112 字节，标题全对得上。
 
-### 11.5 参数：值 + 表（ 2026-09-22，21A 实测，**已实现**）
+### 11.5 参数：按设备模型做成**配置对象** `/CONTROLLER/PARAMETER`（2026-09-22，21A 实测）
 
-* **读值**：`0x0404`，`B` = 参数号，答一个 **i32**。适配器方法
-  `/PARAMETER`：`{"no":321}` → `{"first":321,"count":1,"values":[100]}`；
-  `{"no":321,"count":4}` → `[100,200,300,400]`（四个轴槽的名字代号 X/Y/Z/A）。
-* **读表**：`0x0401` 答容量（21A = **3784**），`0x0402` 按
-  `A = 4 + nLength × 268` 整表 dump。一条 `TParamSpec` = `u16 No` + `u16 留白` +
-  `wchar Title[128]`（UTF-16LE，NUL 填充）+ `u32 flags` + `u32 fallback`。
-  **线上没有偏移**，只能整表拿：client 一次读回来（≈ 1 MB）缓存在会话里，
-  适配器方法 `/PARAMETER_TABLE` 在上面翻页（`{"first":251,"count":4}`）或按号定位
-  （`{"no":321}` → 位置 251）。
-* **表里有什么**：号 + 标题 + `flags`（语义未定，原样给出）+ `fallback`（出厂默认，
-  轴名那行是 100 = `'X'`）。**表里没有上下限**——“含上下限”这一半兑不了，不编一个出来。
-* **实测**：`POST /api/syntec/PARAMETER {"no":321}` 答 `100`（= `'X'`）；
-  `/PARAMETER {"no":321,"count":4}` 答 `100/200/300/400`；`/PARAMETER_TABLE {"no":321}`
-  答 `total 3784`、位置 `251`、`*X axis axis name`、`flags 10999`、`fallback 100`；
-  `{"first":249,"count":4}` 答 315/316/321/322 四条，标题与 Python 探针逐字一致。
-* **代码**：client 侧 `ncl_syntec_param_capacity()` / `ncl_syntec_param_table()` /
-  `ncl_syntec_param_find()`（加两个帧构造函数）；UTF-16LE 转 UTF-8 落在
-  `ncl_charset` 的 `ncl_utf16le_to_utf8()`（有单测）；适配器侧方法 `/PARAMETER`、
-  `/PARAMETER_TABLE`。
-* **1 MB 的应答**需要自己的缓冲：会话里的 16 KiB 装不下，所以
-  `syntec_exchange_into()` 收进调用者的缓冲（审计里那条大应答不留在会话上）。
+**摆法照 `examples/device_model.c`**：参数挂在 CONTROLLER 组件的 `configs` 里，`type` 就是
+`PARAMETER`；册 4 说这类"配置信息"归 `configs`、`dataType` 是 **`HASH`**（参数本身是字典，
+跟 `COORDINATE` 那种 LIST 不同）。所以适配器声明的是**配置点**，不是方法：
+
+    NCL_CONFIG_OPS("/CONTROLLER/PARAMETER", syntec_parameter, NULL,
+                   get_value | get_length | get_keys | get_attributes)
+
+模型里出来就是这个（21A `--model` 实测）：
+
+```json
+"configs": [ { "id": "p64", "name": "参数", "type": "PARAMETER", "dataType": "HASH" } ]
+```
+
+* **操作**（册 5 的 Query 一族）：
+  * `get_length` —— 参数表有多少条（21A = **3784**）；
+  * `get_keys` —— 参数号清单（按表里的顺序，字符串数组）；
+  * `get_value` —— `params.keys` 给号（数组或单个），答 `{"321":100,...}`；
+  * `get_attributes` —— `params.keys` 给号，答 `[{"no","title","flags","fallback"}, ...]`。
+  * **写不声明**（`set_value` / `add` / `delete`）：控制器侧没验过怎么写参数，
+    没声明的操作由宿主回 "Unsupported Operation"，比给个假写入口诚实。
+  * 没给 `keys` 时 `get_value` 答 `{}`、`get_attributes` 答 `[]`（不报错）：自检与轮询会对
+    每个点位盲读一次，四千个参数没有"盲读"这一说，报错只会让现场每次自检看到一条假失败。
+  * 号不在表里回 `NCL_ERR_NOT_FOUND`；一次最多 64 个号（每条一次往返）。
+* **值怎么来的**：`0x0404` 一个号一次（i32）。**表怎么来的**：`0x0401` 问容量、`0x0402` 整表
+  dump（线上没有偏移），client 一次读回（≈1 MB）缓存在会话里，翻页在本地做。一条
+  `TParamSpec` = `u16 No` + `u16 留白` + `wchar Title[128]`（UTF-16LE）+ `u32 flags` +
+  `u32 fallback`（出厂默认）。**表里没有上下限**，所以只有标题，没有范围。
+* **代码**：client 侧 `ncl_syntec_param_capacity()` / `ncl_syntec_param()` /
+  `ncl_syntec_param_table()` / `ncl_syntec_param_find()`；适配器侧
+  `syntec_parameter()`（一个 dispatch 分四个操作）。UTF-16LE 转 UTF-8 用
+  `ncl_utf16le_to_utf8()`（`ncl_charset`，带单测）。
+* **实测**：21A 上 `--model` 出上面那条 config；mock 用例走**标准的 Query**
+  （`ncl_server_invoke_query`）：`get_value {"keys":"321"}` 答 `{"321":100}`、
+  `get_length` 答条数、`get_attributes {"keys":"999"}` 回 `NG`（表里没有）。
+  REST 那 12 条路由里没有 Query（只有 `POST /api/<工具>/<方法>` 走方法调用），
+  所以配置对象的读法走 MQTT 的 Query/Set，跟标准一致。

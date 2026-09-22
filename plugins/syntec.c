@@ -261,148 +261,213 @@ static ncl_err syntec_axes(void *ctx, const ncl_json *params, ncl_json **result,
 /** §6 的审计要原始报文：问 client 一句就够，账由宿主管。 */
 /* ---------------------------------------------------------------- 参数 ---- */
 
-/** 一次读多少条参数（每条一次往返）。 */
+/** 一次读多少条参数：每条一次往返，别让人一口气点四千次。 */
 #define SYNTEC_PARAM_BATCH_MAX 64u
-/** 参数表一页多少条。 */
+/** 翻页取元数据时一页多少条。 */
 #define SYNTEC_PARAM_PAGE 16u
 
 /**
- * `/PARAMETER`：读系统参数的值（§11.4，KrnlAPI 0x0404）。
- *
- *   {"no": 321}           -> {"first":321,"count":1,"values":[300]}
- *   {"no": 321,"count": 8} -> 连着读 8 个号
- *
- * 参数号是控制器参数表里的号（`/PARAMETER_TABLE` 能拿到号与标题）。值是一个
- * **i32**；控制器对没定义的号答 0，所以"这个号有没有"要看表，不看值。
+ * params.keys：按标准是个数组，也认单个（"321" / 321 都行）。
+ * @p index 超出时回 false。
  */
-static ncl_err syntec_parameter(void *ctx, const ncl_json *params,
-                                ncl_json **result, char **reason)
+static bool syntec_param_key(const ncl_json *keys, size_t index, long long *out)
 {
-    long long no = ncl_tool_param_int(params, "no", -1);
-    long long want = ncl_tool_param_int(params, "count", 1);
-    ncl_syntec *syntec = (ncl_syntec *)ctx;
-    ncl_json *values;
-    ncl_json *reply;
-    long long i;
+    const ncl_json *item = keys;
+    size_t count;
 
-    if (no < 1 || no > 0xFFFF) {
-        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
-                             "no 是参数号（1..65535）");
+    if (keys == NULL) {
+        return false;
     }
-    if (want < 1 || want > (long long)SYNTEC_PARAM_BATCH_MAX) {
-        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "count 一次最多 %u 条",
-                             (unsigned)SYNTEC_PARAM_BATCH_MAX);
+    count = ncl_json_arr_len(keys);
+    if (count > 0) {
+        if (index >= count) {
+            return false;
+        }
+        item = ncl_json_arr_get(keys, index);
+    } else if (index > 0) {
+        return false;
     }
-    values = ncl_json_new_array();
-    reply = ncl_json_new_object();
-    if (values == NULL || reply == NULL) {
-        ncl_json_free(values);
-        ncl_json_free(reply);
-        return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
-    }
-    for (i = 0; i < want; i++) {
-        ncl_json *item;
-        int32_t value = 0;
-        ncl_err rc = ncl_syntec_param(syntec, (unsigned)(no + i), &value);
+    return item != NULL && ncl_json_as_int(item, out);
+}
 
-        if (rc != NCL_OK) {
-            ncl_json_free(values);
-            ncl_json_free(reply);
-            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
-        }
-        item = ncl_json_new_int((long long)value);
-        if (item == NULL || ncl_json_arr_push(values, item) != NCL_OK) {
-            ncl_json_free(item);
-            ncl_json_free(values);
-            ncl_json_free(reply);
-            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
-        }
+/** params.keys 里有几个号（单个算一个，没有算零）。 */
+static size_t syntec_param_key_count(const ncl_json *keys)
+{
+    size_t count;
+
+    if (keys == NULL) {
+        return 0;
     }
-    (void)ncl_json_obj_set_int(reply, "first", no);
-    (void)ncl_json_obj_set_int(reply, "count", want);
-    (void)ncl_json_obj_set(reply, "values", values);
-    *result = reply;
-    return NCL_OK;
+    count = ncl_json_arr_len(keys);
+    return count > 0 ? count : 1u;
 }
 
 /**
- * `/PARAMETER_TABLE`：参数表的元数据（§11.4，KrnlAPI 0x0402）。
+ * `/CONTROLLER/PARAMETER`：系统参数（§11.4）。
  *
- *   {"no": 321}          -> 按参数号定位那一条
- *   {"first": 0,"count": 32} -> 按表里的位置翻页（整表在 client 里缓存，翻页很便宜）
+ * 按设备模型的摆法（`examples/device_model.c` 的 CONTROLLER 组件下
+ * `type: PARAMETER`、dict；册 4 说它归 configs、`dataType` = `HASH`），参数是
+ * **配置对象**而不是数据项——所以这里是 `NCL_CONFIG_OPS`，按标准的 Query 操作回答：
  *
- * 一条给 `no` / `title` / `flags` / `fallback`：标题是控制器原文（`*Nth axis axis
- * name`），`fallback` 是出厂默认值（轴名那个号默认 100 = `'X'`）。`flags` 那 4 个
- * 字节的语义还没定，原样给出，不编一个"上下限"出来。
+ *   get_length      参数表有多少条
+ *   get_keys        参数号清单（按表里的顺序）
+ *   get_value       按号读值：`keys` 给号，答 `{"321":100,...}`
+ *   get_attributes  按号取元数据：答 `[{"no","title","flags","fallback"}, ...]`
+ *
+ * 号不在表里回 `NCL_ERR_NOT_FOUND`；一次最多 `SYNTEC_PARAM_BATCH_MAX` 条。
+ * **写（set_value / add / delete）不声明**：控制器侧没验过怎么写参数，
+ * 没声明的操作由宿主回 "Unsupported Operation"，比给个假写入口诚实。
  */
-static ncl_err syntec_parameter_table(void *ctx, const ncl_json *params,
-                                      ncl_json **result, char **reason)
+static ncl_err syntec_parameter(void *ctx, const ncl_tool_point *self,
+                                ncl_operation op, const ncl_json *params,
+                                ncl_json **result, char **reason)
 {
-    ncl_syntec_param_spec page[SYNTEC_PARAM_PAGE];
     ncl_syntec *syntec = (ncl_syntec *)ctx;
-    long long first = ncl_tool_param_int(params, "first", 0);
-    long long want = ncl_tool_param_int(params, "count", (long long)SYNTEC_PARAM_PAGE);
-    long long no = ncl_tool_param_int(params, "no", -1);
-    ncl_json *list;
-    ncl_json *reply;
+    const ncl_json *keys = ncl_params_get(params, "keys");
+    ncl_syntec_param_spec page[SYNTEC_PARAM_PAGE];
     size_t total = 0;
     size_t got = 0;
     size_t i;
     ncl_err rc;
 
-    if (want < 1 || want > (long long)SYNTEC_PARAM_PAGE) {
-        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "count 一次最多 %u 条",
-                             (unsigned)SYNTEC_PARAM_PAGE);
-    }
-    if (no > 0) {
-        /* 按参数号：先在表里定位，再按位置取那一条。 */
-        rc = ncl_syntec_param_find(syntec, (unsigned)no, &i);
+    (void)self;
+    switch (op) {
+    case NCL_OP_GET_LENGTH: /* 参数表有多少条 */
+        rc = ncl_syntec_param_table(syntec, 0, 1, page, &got, &total);
         if (rc != NCL_OK) {
             return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
         }
-        first = (long long)i;
-        want = 1;
-    }
-    if (first < 0) {
-        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "first 从 0 起");
-    }
-    rc = ncl_syntec_param_table(syntec, (size_t)first, (size_t)want, page, &got,
-                                &total);
-    if (rc != NCL_OK) {
-        return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
-    }
-    list = ncl_json_new_array();
-    reply = ncl_json_new_object();
-    if (list == NULL || reply == NULL) {
-        ncl_json_free(list);
-        ncl_json_free(reply);
-        return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
-    }
-    for (i = 0; i < got; i++) {
-        ncl_json *entry = ncl_json_new_object();
+        return ncl_tool_reply_int(result, (long long)total);
 
-        if (entry == NULL) {
-            ncl_json_free(list);
-            ncl_json_free(reply);
+    case NCL_OP_GET_KEYS: /* 参数号清单，按表里的顺序 */
+        rc = ncl_syntec_param_table(syntec, 0, 1, page, &got, &total);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
+        }
+        {
+            ncl_json *array = ncl_json_new_array();
+
+            if (array == NULL) {
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+            for (i = 0; i < total; i += SYNTEC_PARAM_PAGE) {
+                size_t want = total - i < SYNTEC_PARAM_PAGE ? total - i
+                                                            : SYNTEC_PARAM_PAGE;
+                size_t k;
+
+                rc = ncl_syntec_param_table(syntec, i, want, page, &got, &total);
+                if (rc != NCL_OK) {
+                    ncl_json_free(array);
+                    return ncl_tool_fail(reason, rc, "%s",
+                                         ncl_syntec_last_error(syntec));
+                }
+                for (k = 0; k < got; k++) {
+                    char text[16];
+                    ncl_json *item;
+
+                    snprintf(text, sizeof(text), "%d", (int)page[k].no);
+                    item = ncl_json_new_string(text);
+                    if (item == NULL || ncl_json_arr_push(array, item) != NCL_OK) {
+                        ncl_json_free(item);
+                        ncl_json_free(array);
+                        return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+                    }
+                }
+            }
+            *result = array;
+        }
+        return NCL_OK;
+
+    case NCL_OP_GET_VALUE: /* 按号读值 */
+    case NCL_OP_GET_ATTRIBUTES: { /* 按号取元数据 */
+        size_t count = syntec_param_key_count(keys);
+        ncl_json *out;
+
+        if (count == 0) {
+            /*
+             * 没给 keys：不报错，答一个空的（字典给 {}、表格给 []）。
+             * 自检与轮询会对每个点位盲读一次，四千个参数没有"盲读"这一说——
+             * 报错只会让现场每次自检都看见一条假的失败。要值就请给 keys。
+             */
+            *result = op == NCL_OP_GET_VALUE ? ncl_json_new_object()
+                                             : ncl_json_new_array();
+            return *result != NULL ? NCL_OK : NCL_ERR_NOMEM;
+        }
+        if (count > SYNTEC_PARAM_BATCH_MAX) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "一次最多 %u 个号",
+                                 (unsigned)SYNTEC_PARAM_BATCH_MAX);
+        }
+        out = op == NCL_OP_GET_VALUE ? ncl_json_new_object()
+                                     : ncl_json_new_array();
+        if (out == NULL) {
             return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
         }
-        (void)ncl_json_obj_set_int(entry, "no", page[i].no);
-        (void)ncl_json_obj_set_string(entry, "title", page[i].title);
-        (void)ncl_json_obj_set_int(entry, "flags", page[i].flags);
-        (void)ncl_json_obj_set_int(entry, "fallback", page[i].fallback);
-        if (ncl_json_arr_push(list, entry) != NCL_OK) {
-            ncl_json_free(list);
-            ncl_json_free(reply);
-            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        for (i = 0; i < count; i++) {
+            long long no = 0;
+            ncl_json *entry;
+
+            if (!syntec_param_key(keys, i, &no) || no < 1 || no > 0xFFFF) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "keys 里第 %u 个不是参数号",
+                                     (unsigned)(i + 1));
+            }
+            if (op == NCL_OP_GET_VALUE) {
+                int32_t value = 0;
+                char name[16];
+
+                rc = ncl_syntec_param(syntec, (unsigned)no, &value);
+                if (rc != NCL_OK) {
+                    ncl_json_free(out);
+                    return ncl_tool_fail(reason, rc, "%s",
+                                         ncl_syntec_last_error(syntec));
+                }
+                snprintf(name, sizeof(name), "%d", (int)no);
+                if (ncl_json_obj_set_int(out, name, (long long)value) != NCL_OK) {
+                    ncl_json_free(out);
+                    return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+                }
+                continue;
+            }
+            {
+                size_t index = 0;
+
+                rc = ncl_syntec_param_find(syntec, (unsigned)no, &index);
+                if (rc != NCL_OK) {
+                    ncl_json_free(out);
+                    return ncl_tool_fail(reason, rc, "%s",
+                                         ncl_syntec_last_error(syntec));
+                }
+                rc = ncl_syntec_param_table(syntec, index, 1, page, &got, &total);
+                if (rc != NCL_OK || got != 1) {
+                    ncl_json_free(out);
+                    return ncl_tool_fail(reason, rc != NCL_OK ? rc : NCL_ERR_RANGE,
+                                         "%s", ncl_syntec_last_error(syntec));
+                }
+            }
+            entry = ncl_json_new_object();
+            if (entry == NULL) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+            (void)ncl_json_obj_set_int(entry, "no", page[0].no);
+            (void)ncl_json_obj_set_string(entry, "title", page[0].title);
+            (void)ncl_json_obj_set_int(entry, "flags", page[0].flags);
+            (void)ncl_json_obj_set_int(entry, "fallback", page[0].fallback);
+            if (ncl_json_arr_push(out, entry) != NCL_OK) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
         }
+        *result = out;
+        return NCL_OK;
     }
-    (void)ncl_json_obj_set_int(reply, "total", (long long)total);
-    (void)ncl_json_obj_set_int(reply, "first", first);
-    (void)ncl_json_obj_set_int(reply, "count", (long long)got);
-    (void)ncl_json_obj_set(reply, "params", list);
-    *result = reply;
-    return NCL_OK;
+    default:
+        return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
+                             "参数只答 get_length / get_keys / get_value / get_attributes");
+    }
 }
+
 
 static void syntec_last_raw(void *ctx, ncl_tool_frames *out)
 {
@@ -505,11 +570,14 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
     NCL_DATAITEM_F64("/AXIS@W/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 'W')
 
     NCL_METHOD_CALL("/SESSION", syntec_session)
-    /* 轴表的元数据：名字与槽号都从控制器读（§11.4），客户端照着建路径。 */
-    NCL_METHOD_CALL("/AXES", syntec_axes)
-    /* 系统参数（§11.4）：读值、读表。表里只有号/标题/默认值，上下限没有。 */
-    NCL_METHOD_CALL("/PARAMETER", syntec_parameter)
-    NCL_METHOD_CALL("/PARAMETER_TABLE", syntec_parameter_table)
+    /* 系统参数（§11.4）：按设备模型摆成**配置对象**（/CONTROLLER/PARAMETER，
+     * 册 4 说它归 configs、dataType = HASH），按标准的 Query 操作回答：
+     * get_length / get_keys / get_value（按号读值）/ get_attributes（按号取标题）。
+     * 写不声明：控制器侧没验过写参数。 */
+    NCL_CONFIG_OPS("/CONTROLLER/PARAMETER", syntec_parameter, NULL,
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
+                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
+                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
 
 NCL_TOOL_END_WITH_RAW(syntec_last_raw)
 
