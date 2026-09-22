@@ -1086,3 +1086,43 @@ UNAVAILABLE”。
 必须同时声明 `get_value`，这一条我们满足）。客户端侧：`ncl_syntec_param_put()`（`hr != 0`
 回 `NCL_ERR_IO` 并把 hr 写进 `last_error`）。**mock 实测**：写 321 = 111 → 读回 111；
 `hr = 0x1234` → `NCL_ERR_IO` 且 `last_error` 里有 `0x00001234`；适配器级走 `ncl_server_invoke_set` → 成功且值落进表里。
+
+### 11.7 刀具表：一条 `/CONTROLLER/TOOL`（ 2026-09-22，21A 实测）
+
+**只声明一个 `TOOL`**（刀具列表，list），**刀补就是 tool 的元素**（用户口径）——
+不再单开 `TOOLPARAM`。操作与参数那一格同形状：`get_length` / `get_keys` / `get_value` / `get_attributes`。
+
+| 用途 | 码 | 帧 | 21A |
+|---|---|---|---|
+| 条数 | `0x04C2` `NcGetEnabledToolNumber` = `CODE(1,194)` | `A = 8`、`B = 0` | **96** |
+| 一把刀 | `0x043F` `NcGetToolCompensation` = `CODE(1,63)` | `A = 4 + 224`、`B = 刀号索引（从 0）` | 答 **224 字节** |
+
+一条记录 224 字节（从控制器侧 `JMarshal::get_SizeOfToolOffset()` 的 IL 读出来：`8 + 27×8`）：
+
+| 偏移 | 字段 | 线上类型 |
+|---|---|---|
+| 0..3 | `ToolNose` 刀尖号 | i32 |
+| 4..7 | 留白 | — |
+| 8..15 | `RadiusGeometry` 半径几何 | f64 |
+| 16..23 | `RadiusWear` 半径磨损 | f64 |
+| 24..119 | `LengthGeometry[12]` 长度几何 | f64×12 |
+| 120..215 | `LengthWear[12]` 长度磨损 | f64×12 |
+| 216..223 | `ToolAngle` 刀尖角（**排在最后、也是 double**） | f64 |
+
+**元素形状对齐册 4 的 `TOOLPARAM`**（`id/kind/radius/length`），不一一对应的地方按下面这个口径（用户已拍板）：
+
+```json
+{"id": 1, "kind": 3, "radius": 0.8, "length": 0.0,
+ "tool_angle": 60.0, "radius_wear": 0.0,
+ "length_geometry": [ … 12 个 … ], "length_wear": [ … 12 个 … ]}
+```
+
+* `kind` ← **刀尖号** `ToolNose`（册 4 的 `kind` 原文注着“需要再确认”，这是最接近的一项）；
+* `length` ← `LengthGeometry[0]`，12 组原名另给（归属由 `get_LatheToolAxisMappingID` 那张表说）；
+* `radius` = 几何、`radius_wear` = 磨损（长度同理）；
+* `time_usage`（寿命）**不给**：这条路上没有来源（册 4 里 FANUC 那边走 `cnc_rdlife`），`get_attributes` 里把这一条写明。
+* **写刀补（`0x0440` `NcPutToolCompensation`）不声明**：224 字节装不进 flag 那一位，帧形状必须先真机抓包。
+
+**21A 实测**：`--model` 出 `{"id":"p65","name":"刀具","type":"TOOL","dataType":"LIST"}`（册 4 说刀具列表就是 list）；
+`0x04C2` 答 **96**；`0x043F` 取 A=228 恰好答 **224 字节**（这台模拟器的刀补全为 0，所以字段取值还没在非零数据上验过）；
+`--once`：65 个点位（56 可读 / 9 待抓包 / 25 个没配的轴报错）。

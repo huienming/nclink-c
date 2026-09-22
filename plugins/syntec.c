@@ -537,6 +537,172 @@ static ncl_err syntec_parameter(void *ctx, const ncl_tool_point *self,
 }
 
 
+/* ---------------------------------------------------------------- 刀具 ---- */
+
+/** 一条刀补 -> 元素 JSON（§11.7）：册 4 的 `id/kind/radius/length` 在前，SYNTEC 特有的在后。 */
+static ncl_json *syntec_tool_json(const ncl_syntec_tool *tool, unsigned no)
+{
+    ncl_json *obj = ncl_json_new_object();
+    ncl_json *geometry = ncl_json_new_array();
+    ncl_json *wear = ncl_json_new_array();
+    size_t i;
+
+    if (obj == NULL || geometry == NULL || wear == NULL) {
+        ncl_json_free(obj);
+        ncl_json_free(geometry);
+        ncl_json_free(wear);
+        return NULL;
+    }
+    (void)ncl_json_obj_set_int(obj, "id", (long long)no);
+    /* kind ← 刀尖号：册 4 的 kind 原文注着"需要再确认"，这是最接近的一项 */
+    (void)ncl_json_obj_set_int(obj, "kind", tool->tool_nose);
+    (void)ncl_json_obj_set_double(obj, "radius", tool->radius_geometry);
+    (void)ncl_json_obj_set_double(obj, "length", tool->length_geometry[0]);
+    (void)ncl_json_obj_set_double(obj, "tool_angle", tool->tool_angle);
+    (void)ncl_json_obj_set_double(obj, "radius_wear", tool->radius_wear);
+    for (i = 0; i < NCL_SYNTEC_TOOL_LENGTHS; i++) {
+        (void)ncl_json_arr_push(geometry,
+                                ncl_json_new_double(tool->length_geometry[i]));
+        (void)ncl_json_arr_push(wear, ncl_json_new_double(tool->length_wear[i]));
+    }
+    (void)ncl_json_obj_set(obj, "length_geometry", geometry);
+    (void)ncl_json_obj_set(obj, "length_wear", wear);
+    return obj;
+}
+
+/**
+ * `/CONTROLLER/TOOL`：刀具表（§11.7）。刀号即 key（从 1 起），元素就是那把刀的刀补。
+ * 只答读：写刀补（`0x0440`）的帧装不下 224 字节，要先真机抓包（这里不声明 set_value）。
+ */
+static ncl_err syntec_tool_table(void *ctx, const ncl_tool_point *self,
+                                 ncl_operation op, const ncl_json *params,
+                                 ncl_json **result, char **reason)
+{
+    ncl_syntec *syntec = (ncl_syntec *)ctx;
+    const ncl_json *keys = ncl_params_get(params, "keys");
+    size_t count = 0;
+    size_t i;
+    ncl_err rc;
+
+    (void)self;
+    switch (op) {
+    case NCL_OP_GET_LENGTH:
+        rc = ncl_syntec_tool_count(syntec, &count);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
+        }
+        return ncl_tool_reply_int(result, (long long)count);
+
+    case NCL_OP_GET_KEYS: { /* 刀号从 1 起（线上索引是刀号 - 1） */
+        ncl_json *array;
+
+        rc = ncl_syntec_tool_count(syntec, &count);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
+        }
+        array = ncl_json_new_array();
+        if (array == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        for (i = 0; i < count; i++) {
+            char text[16];
+            ncl_json *item;
+
+            snprintf(text, sizeof(text), "%u", (unsigned)(i + 1));
+            item = ncl_json_new_string(text);
+            if (item == NULL || ncl_json_arr_push(array, item) != NCL_OK) {
+                ncl_json_free(item);
+                ncl_json_free(array);
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+        }
+        *result = array;
+        return NCL_OK;
+    }
+
+    case NCL_OP_GET_ATTRIBUTES: { /* 元素里有哪些字段（不用问控制器） */
+        static const char *const k_fields[][2] = {
+            {"id", "刀具编号（就是 key）"},
+            {"kind", "种类：这里取刀尖号 ToolNose（册 4 的 kind 待再确认）"},
+            {"radius", "半径几何（RadiusGeometry）"},
+            {"length", "长度几何第 0 组（LengthGeometry[0]）"},
+            {"tool_angle", "刀尖角（ToolAngle）"},
+            {"radius_wear", "半径磨损（RadiusWear）"},
+            {"length_geometry", "长度几何 12 组（LengthGeometry[0..11]）"},
+            {"length_wear", "长度磨损 12 组（LengthWear[0..11]）"},
+            {"time_usage", "寿命：这条路上没有来源，不给（册 4 里 FANUC 走 cnc_rdlife）"},
+        };
+        ncl_json *array = ncl_json_new_array();
+
+        if (array == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        for (i = 0; i < sizeof(k_fields) / sizeof(k_fields[0]); i++) {
+            ncl_json *entry = ncl_json_new_object();
+
+            if (entry == NULL ||
+                ncl_json_obj_set_string(entry, "name", k_fields[i][0]) != NCL_OK ||
+                ncl_json_obj_set_string(entry, "meaning", k_fields[i][1]) != NCL_OK ||
+                ncl_json_arr_push(array, entry) != NCL_OK) {
+                ncl_json_free(entry);
+                ncl_json_free(array);
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+        }
+        *result = array;
+        return NCL_OK;
+    }
+
+    case NCL_OP_GET_VALUE: { /* 按刀号取值 */
+        size_t n = syntec_param_key_count(keys);
+        ncl_json *out = ncl_json_new_object();
+
+        if (out == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        if (n == 0) { /* 盲读（轮询/自检）：答空的，不报错 */
+            *result = out;
+            return NCL_OK;
+        }
+        if (n > SYNTEC_PARAM_BATCH_MAX) {
+            ncl_json_free(out);
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "一次最多 %u 把刀",
+                                 (unsigned)SYNTEC_PARAM_BATCH_MAX);
+        }
+        for (i = 0; i < n; i++) {
+            ncl_syntec_tool tool;
+            ncl_json *entry;
+            long long no = 0;
+            char name[16];
+
+            if (!syntec_param_key(keys, i, &no) || no < 1 || no > 0xFFFF) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "keys 里第 %u 个不是刀号", (unsigned)(i + 1));
+            }
+            rc = ncl_syntec_tool_get(syntec, (unsigned)(no - 1), &tool);
+            if (rc != NCL_OK) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, rc, "%s",
+                                     ncl_syntec_last_error(syntec));
+            }
+            entry = syntec_tool_json(&tool, (unsigned)no);
+            snprintf(name, sizeof(name), "%d", (int)no);
+            if (entry == NULL || ncl_json_obj_set(out, name, entry) != NCL_OK) {
+                ncl_json_free(entry);
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+        }
+        *result = out;
+        return NCL_OK;
+    }
+    default:
+        return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
+                             "刀具表只答 get_length / get_keys / get_value / get_attributes");
+    }
+}
+
 static void syntec_last_raw(void *ctx, ncl_tool_frames *out)
 {
     const uint8_t *request = NULL;
@@ -645,6 +811,13 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
     NCL_CONFIG_OPS("/CONTROLLER/PARAMETER", syntec_parameter, NULL,
                    NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) |
                        NCL_OP_BIT(NCL_OP_GET_LENGTH) | NCL_OP_BIT(NCL_OP_GET_KEYS) |
+                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
+
+    /* 刀具表（§11.7）：一条 config，元素就是那把刀的刀补（TOOLPARAM 是 TOOL 的元素）。
+     * 只读：写刀补 0x0440 的帧装不下 224 字节，待真机抓包。 */
+    NCL_CONFIG_OPS("/CONTROLLER/TOOL", syntec_tool_table, NULL,
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_GET_LENGTH) |
+                       NCL_OP_BIT(NCL_OP_GET_KEYS) |
                        NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
 
 NCL_TOOL_END_WITH_RAW(syntec_last_raw)

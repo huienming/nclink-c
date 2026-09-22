@@ -100,7 +100,30 @@ typedef struct {
         int32_t fallback;
     } schema[4];
     size_t schema_count;
+    /* 刀具表（§11.7）：0x04C2 答条数、0x043F 答一条 224 字节 */
+    size_t tool_count;
+    struct {
+        int32_t tool_nose;
+        double  radius_geometry;
+        double  radius_wear;
+        double  length_geometry[12];
+        double  length_wear[12];
+        double  tool_angle;
+    } tools[4];
 } syntec_mock;
+
+/** 小端写一个 IEEE754 double（mock 侧造 224 字节记录用）。 */
+static void put_f64(uint8_t *out, double value)
+{
+    union {
+        double   d;
+        uint64_t u;
+    } v;
+
+    v.d = value;
+    put_u32(out, (uint32_t)(v.u & 0xFFFFFFFFu));
+    put_u32(out + 4u, (uint32_t)(v.u >> 32));
+}
 
 /** The value the mock answers for one register / state number (0 when unset). */
 static uint16_t mock_item_value(const syntec_mock *mock, uint32_t key)
@@ -379,6 +402,51 @@ static void mock_main(void *arg)
                                         NCL_SYNTEC_REPLY_BODY +
                                             n * NCL_SYNTEC_PARAM_SPEC_SIZE) !=
                         NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /* 刀具表条数（§11.7）：同一个形状，答一个 i32。 */
+                if (request == NCL_SYNTEC_CODE_TOOL_COUNT) {
+                    uint32_t raw = (uint32_t)mock->tool_count;
+
+                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    reply[NCL_SYNTEC_REPLY_BODY + 0] = (uint8_t)(raw & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)((raw >> 8) & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 2] = (uint8_t)((raw >> 16) & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 3] = (uint8_t)((raw >> 24) & 0xFFu);
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + 4u));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_BODY + 4u) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /* 一条刀补（§11.7）：B = 刀号索引，正文 224 字节。 */
+                if (request == NCL_SYNTEC_CODE_TOOL_GET &&
+                    param_b < mock->tool_count) {
+                    uint8_t *record = reply + NCL_SYNTEC_REPLY_BODY;
+                    size_t k;
+
+                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    memset(record, 0, NCL_SYNTEC_TOOL_SIZE);
+                    put_u32(record, (uint32_t)mock->tools[param_b].tool_nose);
+                    put_f64(record + 8u, mock->tools[param_b].radius_geometry);
+                    put_f64(record + 16u, mock->tools[param_b].radius_wear);
+                    for (k = 0; k < NCL_SYNTEC_TOOL_LENGTHS; k++) {
+                        put_f64(record + 24u + k * 8u,
+                                mock->tools[param_b].length_geometry[k]);
+                        put_f64(record + 120u + k * 8u,
+                                mock->tools[param_b].length_wear[k]);
+                    }
+                    put_f64(record + 216u, mock->tools[param_b].tool_angle);
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER +
+                                              NCL_SYNTEC_TOOL_SIZE));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_BODY +
+                                            NCL_SYNTEC_TOOL_SIZE) != NCL_OK) {
                         break;
                     }
                     continue;
@@ -1058,6 +1126,7 @@ static void test_param_table(void)
 {
     syntec_mock *mock = mock_start();
     ncl_syntec_param_spec page[4];
+    ncl_syntec_tool tool;
     ncl_syntec_config config;
     ncl_syntec *session;
     char *err = NULL;
@@ -1121,6 +1190,26 @@ static void test_param_table(void)
     mock_set_param(mock, 321u, 100);
     NCL_CHECK_EQ_INT(ncl_syntec_param(session, 321u, &value), NCL_OK);
     NCL_CHECK_EQ_INT(value, 100);
+
+    NCL_TEST_CASE("11.7: a tool is 224 bytes (nose, radius, 12 lengths, angle)");
+    mock->tool_count = 2;
+    mock->tools[0].tool_nose = 3;
+    mock->tools[0].radius_geometry = 0.8;
+    mock->tools[0].radius_wear = 0.01;
+    mock->tools[0].length_geometry[0] = 12.5;
+    mock->tools[0].length_geometry[11] = -1.25;
+    mock->tools[0].length_wear[11] = -0.02;
+    mock->tools[0].tool_angle = 60.0;
+    NCL_CHECK_EQ_INT(ncl_syntec_tool_count(session, &total), NCL_OK);
+    NCL_CHECK_EQ_INT(total, 2);
+    NCL_CHECK_EQ_INT(ncl_syntec_tool_get(session, 0, &tool), NCL_OK);
+    NCL_CHECK_EQ_INT(tool.tool_nose, 3);
+    NCL_CHECK(tool.radius_geometry == 0.8);
+    NCL_CHECK(tool.radius_wear == 0.01);
+    NCL_CHECK(tool.length_geometry[0] == 12.5);
+    NCL_CHECK(tool.length_geometry[11] == -1.25);
+    NCL_CHECK(tool.length_wear[11] == -0.02);
+    NCL_CHECK(tool.tool_angle == 60.0); /* 它在最后，而且是 double */
 
     NCL_TEST_CASE("11.6: a write lands (A=12, B=the number, flag=the value)");
     mock->put_hr = 0;
@@ -1260,6 +1349,11 @@ static void test_adapter(void)
     /* 参数表（§11.4）：一条轴名，值也脚本化好。 */
     mock_set_schema(mock, 0, 321, "*X axis axis name", 10999, 100);
     mock_set_param(mock, 321u, 100);
+    /* 刀具表（§11.7）：两把刀，第一把给点非零值。 */
+    mock->tool_count = 2;
+    mock->tools[0].tool_nose = 3;
+    mock->tools[0].radius_geometry = 0.8;
+    mock->tools[0].tool_angle = 60.0;
     snprintf(mock->program, sizeof(mock->program), "O1000");
 
     modules = ncl_modules_create();
@@ -1302,7 +1396,7 @@ static void test_adapter(void)
     }
 
     NCL_TEST_CASE("the nine points are the model the device publishes");
-    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 64); /* 9 项 + 9 轴 × 6 格 + 1 个参数配置 */
+    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 65); /* 9 项 + 9 轴 × 6 格 + 参数 + 刀具两条配置 */
     for (i = 0; i < sizeof(kPaths) / sizeof(kPaths[0]); i++) {
         NCL_CHECK(host_point_index(host, kPaths[i]) != (size_t)-1);
     }
@@ -1445,8 +1539,10 @@ static void test_adapter(void)
 
         NCL_CHECK(text != NULL);
         if (text != NULL) {
-            NCL_CHECK(strstr(text, "/MACHINE/CONTROLLER/PARAMETER") != NULL);
-            NCL_CHECK(strstr(text, "HASH") != NULL); /* dataType：册 4 说 PARAMETER 是 dict */
+        NCL_CHECK(strstr(text, "/MACHINE/CONTROLLER/PARAMETER") != NULL);
+        NCL_CHECK(strstr(text, "HASH") != NULL); /* dataType：册 4 说 PARAMETER 是 dict */
+        NCL_CHECK(strstr(text, "/MACHINE/CONTROLLER/TOOL") != NULL);
+        NCL_CHECK(strstr(text, "LIST") != NULL); /* 刀具列表是 list（册 4） */
             ncl_mem_free(text);
         }
         ncl_json_free(model);
@@ -1477,6 +1573,50 @@ static void test_adapter(void)
                 const ncl_json *v = ncl_json_arr_get(values, 0);
 
                 NCL_CHECK_EQ_INT(ncl_json_obj_get_int(v, "321", -1), 100);
+            }
+            ncl_message_free(response);
+        }
+    }
+
+    NCL_TEST_CASE("11.7: a Query reads the tool table by tool number");
+    {
+        ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
+        ncl_query_request_item *item =
+            ncl_query_request_item_new("/MACHINE/CONTROLLER/TOOL");
+        ncl_message *response;
+
+        NCL_CHECK(request != NULL && item != NULL);
+        (void)ncl_params_set_string(&item->params, "operation", "get_value");
+        (void)ncl_params_set_string(&item->params, "keys", "1");
+        (void)ncl_message_set_message_id(request, "q4");
+        (void)ncl_message_add_query_request_item(request, item);
+        response = ncl_server_invoke_query(ncl_host_server(host), request);
+        ncl_message_free(request);
+        NCL_CHECK(response != NULL);
+        if (response != NULL) {
+            ncl_query_response_item *row =
+                ncl_ptrvec_at(&response->as.query_response.items, 0);
+            const ncl_json *values = row != NULL ? row->values : NULL;
+
+            NCL_CHECK(row != NULL && ncl_check_is_code_ok(row->code));
+            if (values != NULL && ncl_json_arr_len(values) == 1) {
+                const ncl_json *tool = ncl_json_obj_get(
+                    ncl_json_arr_get(values, 0), "1");
+
+                NCL_CHECK(tool != NULL);
+                if (tool != NULL) {
+                    /* 册 4 的四个名字在前：id/kind/radius/length */
+                    NCL_CHECK_EQ_INT(ncl_json_obj_get_int(tool, "id", -1), 1);
+                    NCL_CHECK_EQ_INT(ncl_json_obj_get_int(tool, "kind", -1), 3);
+                    NCL_CHECK_EQ_INT(
+                        (long long)(ncl_json_obj_get_double(tool, "radius", 0.0) *
+                                        1000.0 +
+                                    0.5),
+                        800);
+                    NCL_CHECK_EQ_INT(
+                        ncl_json_arr_len(ncl_json_obj_get(tool, "length_geometry")),
+                        12);
+                }
             }
             ncl_message_free(response);
         }

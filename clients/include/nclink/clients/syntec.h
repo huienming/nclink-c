@@ -248,6 +248,34 @@ size_t ncl_syntec_zone_frame(uint8_t *out, size_t cap, unsigned zone,
  * **flag 装的是新值**（读的那一家 flag 固定是 1）。
  */
 #define NCL_SYNTEC_CODE_PARAM_PUT 0x0403u
+
+/**
+ * §11.7 刀具表（车床刀补）：`0x04C2` 问条数（`NcGetEnabledToolNumber`，`CODE(1,194)`），
+ * `0x043F` 读一把（`NcGetToolCompensation`，`CODE(1,63)`，In 只有一个 `nFirst`）。
+ * 一条记录 **224 字节**（从控制器侧 `JMarshal::get_SizeOfToolOffset()` 的 IL 读出来：
+ * 8 + 27×sizeof(double)），布局见下。
+ */
+#define NCL_SYNTEC_CODE_TOOL_COUNT 0x04C2u
+#define NCL_SYNTEC_CODE_TOOL_GET 0x043Fu
+
+/** 一条刀补的字节数。 */
+#define NCL_SYNTEC_TOOL_SIZE 224u
+/** 长度补偿的组数（几何与磨损各 12 组，归属由 `get_LatheToolAxisMappingID` 那张表说）。 */
+#define NCL_SYNTEC_TOOL_LENGTHS 12u
+
+/**
+ * 一条刀补（线上 224 字节）：`[0..3]` 刀尖号 i32、`[4..7]` 留白、
+ * `[8]` 半径几何、`[16]` 半径磨损、`[24..119]` 长度几何 ×12、
+ * `[120..215]` 长度磨损 ×12、**`[216]` 刀尖角（也是 double，排在最后）**。
+ */
+typedef struct {
+    int32_t tool_nose;
+    double  radius_geometry;
+    double  radius_wear;
+    double  length_geometry[NCL_SYNTEC_TOOL_LENGTHS];
+    double  length_wear[NCL_SYNTEC_TOOL_LENGTHS];
+    double  tool_angle;
+} ncl_syntec_tool;
 #define NCL_SYNTEC_CODE_STATE_GET 0x0407u
 
 /** Build one parameter read: request 0x0404, A = 8, B = the parameter number. */
@@ -380,6 +408,20 @@ ncl_err ncl_syntec_param(ncl_syntec *syntec, unsigned param, int32_t *value);
  * 二次确认都在外面控制**——这里只负责把值写下去，不做判断。
  */
 ncl_err ncl_syntec_param_put(ncl_syntec *syntec, unsigned param, int32_t value);
+
+/** 刀具表的条数（0x04C2，21A 的车床答 96）。 */
+ncl_err ncl_syntec_tool_count(ncl_syntec *syntec, size_t *count);
+/** 读第 @p index 把刀的刀补（0x043F，一条 224 字节）。 */
+ncl_err ncl_syntec_tool_get(ncl_syntec *syntec, unsigned index,
+                            ncl_syntec_tool *out);
+
+/** 把那两个读法的帧拼出来（A = 4 + 正文，B = 索引，与状态区同一个形状）。 */
+size_t ncl_syntec_tool_count_frame(uint8_t *out, size_t cap, uint8_t serial);
+size_t ncl_syntec_tool_frame(uint8_t *out, size_t cap, unsigned index,
+                             uint8_t serial);
+/** 把一条刀补的应答解成结构（正文 224 字节，小端）。 */
+bool ncl_syntec_tool_decode(const uint8_t *frame, size_t len,
+                            ncl_syntec_tool *out);
 
 /**
  * §11.4 的参数表：线上一条 `TParamSpec` **268 字节**——

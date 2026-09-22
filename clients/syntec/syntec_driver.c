@@ -1078,6 +1078,79 @@ ncl_err ncl_syntec_param(ncl_syntec *syntec, unsigned param, int32_t *value)
     return NCL_OK;
 }
 
+ncl_err ncl_syntec_tool_count(ncl_syntec *syntec, size_t *count)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    int32_t value = 0;
+    ncl_err err;
+
+    if (syntec == NULL || count == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *count = 0;
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_tool_count_frame(frame, sizeof(frame), serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_reply_i32(syntec->rx, syntec->last_rx_len, &value)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "刀具表条数");
+    }
+    if (value < 0) {
+        return syntec_note(syntec, NCL_ERR_RANGE, "刀具表条数");
+    }
+    *count = (size_t)value;
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_tool_get(ncl_syntec *syntec, unsigned index,
+                            ncl_syntec_tool *out)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    ncl_err err;
+
+    if (syntec == NULL || out == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_tool_frame(frame, sizeof(frame), index, serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_tool_decode(syntec->rx, syntec->last_rx_len, out)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "刀具表");
+    }
+    return NCL_OK;
+}
+
 ncl_err ncl_syntec_param_put(ncl_syntec *syntec, unsigned param, int32_t value)
 {
     uint8_t frame[NCL_SYNTEC_ITEM_FRAME];

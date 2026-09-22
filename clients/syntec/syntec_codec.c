@@ -652,3 +652,59 @@ bool ncl_syntec_item_text(const uint8_t *frame, size_t len, char *out,
     }
     return true;
 }
+/** 小端读一个 u32 / 一个 IEEE754 double（线协议一律小端）。 */
+static uint32_t syntec_read_u32(const uint8_t *in)
+{
+    return (uint32_t)in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16) |
+           ((uint32_t)in[3] << 24);
+}
+
+static double syntec_read_f64(const uint8_t *in)
+{
+    union {
+        uint64_t bits;
+        double   value;
+    } u;
+
+    u.bits = (uint64_t)syntec_read_u32(in) |
+             ((uint64_t)syntec_read_u32(in + 4) << 32);
+    return u.value;
+}
+
+size_t ncl_syntec_tool_count_frame(uint8_t *out, size_t cap, uint8_t serial)
+{
+    /* In 是空的，答一个 i32：A = 4 + 4 = 8，B 用不上。 */
+    return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_TOOL_COUNT, 0u,
+                             sizeof(int32_t), serial);
+}
+
+size_t ncl_syntec_tool_frame(uint8_t *out, size_t cap, unsigned index,
+                             uint8_t serial)
+{
+    /* §11.7：In 是 { nFirst }，答一条 224 字节：A = 4 + 224。 */
+    return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_TOOL_GET, index,
+                             NCL_SYNTEC_TOOL_SIZE, serial);
+}
+
+bool ncl_syntec_tool_decode(const uint8_t *frame, size_t len,
+                            ncl_syntec_tool *out)
+{
+    size_t i;
+
+    if (frame == NULL || out == NULL ||
+        len < NCL_SYNTEC_REPLY_BODY + NCL_SYNTEC_TOOL_SIZE) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->tool_nose = (int32_t)syntec_read_u32(frame + NCL_SYNTEC_REPLY_BODY);
+    for (i = 0; i < NCL_SYNTEC_TOOL_LENGTHS; i++) {
+        out->length_geometry[i] =
+            syntec_read_f64(frame + NCL_SYNTEC_REPLY_BODY + 24u + i * 8u);
+        out->length_wear[i] =
+            syntec_read_f64(frame + NCL_SYNTEC_REPLY_BODY + 120u + i * 8u);
+    }
+    out->radius_geometry = syntec_read_f64(frame + NCL_SYNTEC_REPLY_BODY + 8u);
+    out->radius_wear = syntec_read_f64(frame + NCL_SYNTEC_REPLY_BODY + 16u);
+    out->tool_angle = syntec_read_f64(frame + NCL_SYNTEC_REPLY_BODY + 216u);
+    return true;
+}

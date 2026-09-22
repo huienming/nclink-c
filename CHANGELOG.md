@@ -93,6 +93,17 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
     （A/B/U/V/W × 5 格，`NotFoundException`）、**9 个待抓包**（九轴的指令位置）；
     mock 侧另断言 SCREW 与 MOTOR 同值、SERVO_DRIVER 回 UNAVAILABLE、没配的字母每一格都报错。
   * **参数按设备模型做成配置对象 `/CONTROLLER/PARAMETER`**（2026-09-22）：照
+  * **刀具表上线：一条 `/CONTROLLER/TOOL`**（2026-09-22）：按用户口径**只声明一个
+    `TOOL`**（刀具列表，list），**刀补就是 tool 的元素**（不再单开 `TOOLPARAM`）。
+    条数 `0x04C2`（`CODE(1,194)`，21A = **96**）、一把刀 `0x043F`（`CODE(1,63)`，`A = 4 + 224`、
+    `B` = 刀号索引）；一条记录 **224 字节**（从 `JMarshal::get_SizeOfToolOffset()` 的 IL 读出来：
+    `8 + 27×8`）：刀尖号 i32 + 留白 4 + 半径几何/磨损 + 长度几何[12] + 长度磨损[12]
+    + **刀尖角（排在最后，也是 double）**。元素对齐册 4 的 `TOOLPARAM`：
+    `id / kind（←刀尖号）/ radius（←RadiusGeometry）/ length（←LengthGeometry[0]）`
+    + `tool_angle / radius_wear / length_geometry[12] / length_wear[12]`；`time_usage` 不给（没来源）。
+    只读：写刀补 `0x0440` 的帧装不下 224 字节，待真机抓包。
+    实测：21A `--model` 出 `{"id":"p65","name":"刀具","type":"TOOL","dataType":"LIST"}`、`0x04C2` 答 96、
+    `0x043F` 取 A=228 答 224 字节；mock 用例验了 224 字节的字段取值与适配器级 Query。
     `examples/device_model.c` 的摆法（参数在 CONTROLLER 的 `configs` 里、`type` = `PARAMETER`；
     册 4 说这类归 configs、`dataType` = `HASH`，因为参数本身是字典），改成**配置点**：
     `NCL_CONFIG_OPS("/CONTROLLER/PARAMETER", ...)` 答标准的 Query 四个操作——
