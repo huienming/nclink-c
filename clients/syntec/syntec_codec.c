@@ -722,6 +722,119 @@ bool ncl_syntec_tool_decode(const uint8_t *frame, size_t len,
     return true;
 }
 
+/* ======================================================== PLC / variables == */
+
+
+size_t ncl_syntec_plc_capacity_frame(uint8_t *out, size_t cap, uint8_t serial)
+{
+    /* In 空，Out = { hr, TPlcCapacity 8×u32 } */
+    return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_PLC_GET_CAPACITY, 0u,
+                             8u * sizeof(uint32_t), serial);
+}
+
+bool ncl_syntec_plc_capacity_decode(const uint8_t *frame, size_t len,
+                                    ncl_syntec_plc_slots *out)
+{
+    const uint8_t *at;
+
+    if (frame == NULL || out == NULL ||
+        len < NCL_SYNTEC_REPLY_BODY + 8u * sizeof(uint32_t)) {
+        return false;
+    }
+    /* 顺序与 TPlcCapacity 一致：IBits / OBits / CBits / SBits / ABits /
+     * RRegister / Timer / Counter。 */
+    at = frame + NCL_SYNTEC_REPLY_BODY;
+    out->ibits = get_u32(at + 0u);
+    out->obits = get_u32(at + 4u);
+    out->cbits = get_u32(at + 8u);
+    out->sbits = get_u32(at + 12u);
+    out->abits = get_u32(at + 16u);
+    out->registers = get_u32(at + 20u);
+    out->timers = get_u32(at + 24u);
+    out->counters = get_u32(at + 28u);
+    return true;
+}
+
+size_t ncl_syntec_plc_register_frame(uint8_t *out, size_t cap, unsigned no,
+                                     uint8_t serial)
+{
+    /* In { nNo }，Out { hr, nValue u32 } */
+    return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_PLC_GET_REGISTER, no,
+                             sizeof(uint32_t), serial);
+}
+
+size_t ncl_syntec_plc_bit_frame(uint8_t *out, size_t cap,
+                                ncl_syntec_plc_kind kind, unsigned no,
+                                uint8_t serial)
+{
+    /* Out 是 { hr, Value u8 }，两条 i32 的槽位固定（u8 后面是填充）。 */
+    static const uint32_t k_codes[] = {0x0412u, 0x0414u, 0x0415u, 0x0417u,
+                                       0x0419u};
+    size_t k = (size_t)kind;
+
+    if (k >= sizeof(k_codes) / sizeof(k_codes[0])) {
+        return 0;
+    }
+    return syntec_code_frame(out, cap, k_codes[k], no, sizeof(uint32_t),
+                             serial);
+}
+
+size_t ncl_syntec_variable_frame(uint8_t *out, size_t cap, unsigned no,
+                                 uint8_t serial)
+{
+    /* In { nNo }，Out { hr, TOcVariant 16 } */
+    /* Out = { hr, TOcVariant 16 }，所以 A = 4 + 16 = 20 */
+    return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_GLOBAL_GET_VALUE, no, 16u,
+                             serial);
+}
+
+size_t ncl_syntec_variable_capacity_frame(uint8_t *out, size_t cap,
+                                          uint8_t serial)
+{
+    return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_GLOBAL_GET_CAPACITY, 0u,
+                             sizeof(uint32_t), serial);
+}
+
+bool ncl_syntec_reply_u32(const uint8_t *frame, size_t len, uint32_t *value)
+{
+    if (frame == NULL || value == NULL ||
+        len < NCL_SYNTEC_REPLY_BODY + sizeof(uint32_t)) {
+        return false;
+    }
+    *value = get_u32(frame + NCL_SYNTEC_REPLY_BODY);
+    return true;
+}
+
+bool ncl_syntec_reply_u8(const uint8_t *frame, size_t len, uint8_t *value)
+{
+    if (frame == NULL || value == NULL || len < NCL_SYNTEC_REPLY_BODY + 1u) {
+        return false;
+    }
+    *value = frame[NCL_SYNTEC_REPLY_BODY];
+    return true;
+}
+
+bool ncl_syntec_variable_decode(const uint8_t *frame, size_t len,
+                                ncl_syntec_variant *out)
+{
+    if (frame == NULL || out == NULL ||
+        len < NCL_SYNTEC_REPLY_BODY + 16u) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->type = (int16_t)get_u16(frame + NCL_SYNTEC_REPLY_BODY);
+    /* 参考客户端也只认 1 = 整数、2 = 浮点，别的当空。 */
+    if (out->type == 1) {
+        out->int_value = (int32_t)get_u32(frame + NCL_SYNTEC_REPLY_BODY + 8u);
+        out->double_value = (double)out->int_value;
+    } else if (out->type == 2) {
+        out->double_value = syntec_read_f64(frame + NCL_SYNTEC_REPLY_BODY + 8u);
+        out->int_value = (int32_t)out->double_value;
+    } else {
+        out->type = 0;
+    }
+    return true;
+}
 /** С�˰�һ�� u32 / һ�� IEEE754 double д��ȥ */
 static void syntec_write_u32(uint8_t *out, uint32_t v)
 {

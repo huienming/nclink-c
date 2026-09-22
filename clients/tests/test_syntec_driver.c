@@ -114,6 +114,17 @@ typedef struct {
     uint32_t last_tool_put;
     size_t   tool_put_in_len;
     int      tool_put_count;
+    /* §11.9 PLC / 变量：容量 + 一个号上的值 */
+    uint32_t plc_registers;
+    uint32_t plc_bits[5];  /**< I/O/C/S/A 的个数 */
+    uint32_t plc_register[8]; /**< 号 -> 值（mock 只摆 8 个） */
+    uint8_t  plc_bit[5];   /**< 号 0 上的位值，按族 */
+    uint32_t var_count;
+    int32_t  var_int[8];   /**< 号 -> 值（mock 只摆 8 个） */
+    int16_t  var_type[8];  /**< 0 空 / 1 整数 / 2 浮点 */
+    double   var_double[8];
+    uint32_t last_plc_bit_code;
+    uint32_t last_var_no;
 } syntec_mock;
 
 /** 小端写一个 IEEE754 double（mock 侧造 224 字节记录用）。 */
@@ -365,6 +376,88 @@ static void mock_main(void *arg)
                     continue;
                 }
 
+                /* §11.9 PLC 容量（0x041E）：In 空，答 8 个 u32。 */
+                if (request == NCL_SYNTEC_CODE_PLC_GET_CAPACITY) {
+                    uint8_t *at = reply + NCL_SYNTEC_REPLY_BODY;
+
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER +
+                                              8u * sizeof(uint32_t)));
+                    put_u32(at + 0u, mock->plc_bits[0]);
+                    put_u32(at + 4u, mock->plc_bits[1]);
+                    put_u32(at + 8u, mock->plc_bits[2]);
+                    put_u32(at + 12u, mock->plc_bits[3]);
+                    put_u32(at + 16u, mock->plc_bits[4]);
+                    put_u32(at + 20u, mock->plc_registers);
+                    put_u32(at + 24u, 256u);
+                    put_u32(at + 28u, 256u);
+                    if (ncl_socket_send(peer, reply, NCL_SYNTEC_REPLY_BODY +
+                                        8u * sizeof(uint32_t)) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /* §11.9 位（0x0412/14/15/17/19）：B = 号，答 { hr, u8 }。 */
+                if (request == NCL_SYNTEC_CODE_PLC_GET_BIT ||
+                    (request >= NCL_SYNTEC_CODE_PLC_GET_BIT + 2u &&
+                     request <= NCL_SYNTEC_CODE_PLC_GET_ABIT &&
+                     (request - NCL_SYNTEC_CODE_PLC_GET_BIT) % 2u == 0u)) {
+                    size_t k = (size_t)((request - NCL_SYNTEC_CODE_PLC_GET_BIT) / 2u);
+                    uint8_t bit = (param_b == 0u && k < 5u) ? mock->plc_bit[k] : 0u;
+
+                    mock->last_plc_bit_code = request;
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
+                    reply[NCL_SYNTEC_REPLY_BODY] = bit;
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER +
+                                              2u * sizeof(uint32_t)));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_BODY +
+                                            2u * sizeof(uint32_t)) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /* §11.9 变量容量（0x0423）：In 空，答 { hr, u32 }。 */
+                if (request == NCL_SYNTEC_CODE_GLOBAL_GET_CAPACITY) {
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
+                    put_u32(reply + NCL_SYNTEC_REPLY_BODY, mock->var_count);
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER +
+                                              sizeof(uint32_t)));
+                    if (ncl_socket_send(peer, reply, NCL_SYNTEC_REPLY_BODY +
+                                        sizeof(uint32_t)) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /* §11.9 变量（0x0421）：B = 号，答 { hr, TOcVariant 16 }。 */
+                if (request == NCL_SYNTEC_CODE_GLOBAL_GET_VALUE) {
+                    uint8_t *at = reply + NCL_SYNTEC_REPLY_BODY;
+                    int16_t type = param_b < 8u ? mock->var_type[param_b] : 0;
+
+                    mock->last_var_no = param_b;
+                    memset(reply, 0, NCL_SYNTEC_REPLY_BODY);
+                    memcpy(reply, frame, NCL_SYNTEC_PACKET_HEADER);
+                    /* 线上是 i16 类型在 [20]，值在 [28]（int 或 double） */
+                    at[0] = (uint8_t)((uint16_t)type & 0xFFu);
+                    at[1] = (uint8_t)(((uint16_t)type >> 8) & 0xFFu);
+                    if (type == 1) {
+                        put_u32(at + 8u, (uint32_t)mock->var_int[param_b]);
+                    } else if (type == 2) {
+                        put_f64(at + 8u, mock->var_double[param_b]);
+                    }
+                    /* 应答 = 12 包头 + 传输层 hr + { hr, TOcVariant } */
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + 16u));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_BODY + 16u) != NCL_OK) {
+                        break;
+                    }
+                    continue;
+                }
+
                 /*
                  * 写刀补（§11.7，0x0440）：In 是 { nToolNo, TToolOffset } 228 字节，
                  * 跟在 16 字节桩头后面（整帧 256 字节）；Out 是 { hr }。
@@ -535,6 +628,16 @@ static void mock_main(void *arg)
                         reply[NCL_SYNTEC_REPLY_BODY + 1] = 0x00;
                         item_body = 2;
                     }
+                } else if (request == NCL_SYNTEC_CODE_PLC_GET_REGISTER) {
+                    /*
+                     * §11.9：PART_COUNT/SPDL_SPEED 用的就是这个码 —— 它本来就是
+                     * **R 寄存器**读，应答是 u32；条目的 u16 只是取低半。
+                     */
+                    uint16_t value = mock_item_value(mock, param_b);
+
+                    reply[NCL_SYNTEC_REPLY_BODY] = (uint8_t)(value & 0xFF);
+                    reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)(value >> 8);
+                    item_body = 4;
                 } else {                        /* a u16 at [20..21]          */
                     uint16_t value = mock_item_value(mock, param_b);
                     reply[NCL_SYNTEC_REPLY_BODY] = (uint8_t)(value & 0xFF);
@@ -1338,6 +1441,70 @@ static void test_param_table(void)
         NCL_CHECK(tool.tool_angle == 80.0);
     }
 
+    NCL_TEST_CASE("11.9: PLC capacity, one register and one bit off the mock");
+    {
+        ncl_syntec_plc_slots slots;
+        uint32_t value = 0;
+        bool bit = false;
+        uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+
+        mock->plc_bits[0] = 512;
+        mock->plc_bits[4] = 512;
+        mock->plc_registers = 65536;
+        mock->plc_bit[NCL_SYNTEC_PLC_I] = 1;
+        /* R 寄存器读的就是 0x041A，和条目那条路同源：值放在条目表里 */
+        mock->items[mock->item_count].key = 771u;
+        mock->items[mock->item_count].value = 1000u;
+        mock->item_count++;
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_capacity(session, &slots), NCL_OK);
+        NCL_CHECK_EQ_INT(slots.ibits, 512);
+        NCL_CHECK_EQ_INT(slots.abits, 512);
+        NCL_CHECK_EQ_INT(slots.registers, 65536);
+        NCL_CHECK_EQ_INT(slots.timers, 256);
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_register(session, 771u, &value), NCL_OK);
+        NCL_CHECK_EQ_INT(value, 1000); /* 21A 上 R771 就是主轴转速 */
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_bit(session, NCL_SYNTEC_PLC_I, 0u, &bit),
+                         NCL_OK);
+        NCL_CHECK(bit);
+        NCL_CHECK_EQ_INT(mock->last_plc_bit_code, NCL_SYNTEC_CODE_PLC_GET_BIT);
+        /* 位族之间只差两个数：I=0x0412、A=0x0419 */
+        NCL_CHECK_EQ_INT(ncl_syntec_plc_bit_frame(frame, sizeof(frame),
+                                                 NCL_SYNTEC_PLC_A, 0u, 0u),
+                         NCL_SYNTEC_ITEM_FRAME);
+        NCL_CHECK_EQ_INT(get_u32(frame + 16), 0x0419u);
+        NCL_CHECK_EQ_INT(get_u32(frame + 24), 8u); /* Out = { hr, Value u8 } */
+    }
+
+    NCL_TEST_CASE("11.9: a variable comes back as int or double");
+    {
+        ncl_syntec_variant value;
+        size_t count = 0;
+        uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+
+        mock->var_count = 14096; /* 21A 的真实容量 */
+        /* mock 只摆 8 个号（0..7）：5 号是整数、6 号是浮点 */
+        mock->var_type[5] = 1;
+        mock->var_int[5] = 1;
+        mock->var_type[6] = 2;
+        mock->var_double[6] = 2.5;
+        NCL_CHECK_EQ_INT(ncl_syntec_variable_capacity(session, &count), NCL_OK);
+        NCL_CHECK_EQ_INT(count, 14096);
+        NCL_CHECK_EQ_INT(ncl_syntec_variable(session, 5u, &value), NCL_OK);
+        NCL_CHECK_EQ_INT(value.type, 1);
+        NCL_CHECK_EQ_INT(value.int_value, 1);
+        NCL_CHECK_EQ_INT(ncl_syntec_variable(session, 6u, &value), NCL_OK);
+        NCL_CHECK_EQ_INT(value.type, 2);
+        NCL_CHECK(value.double_value == 2.5);
+        NCL_CHECK_EQ_INT(mock->last_var_no, 6u);
+        /* In = { nNo }（4），Out = { hr, TOcVariant 16 } -> A = 20 */
+        NCL_CHECK_EQ_INT(ncl_syntec_variable_frame(frame, sizeof(frame), 500u, 0u),
+                         NCL_SYNTEC_ITEM_FRAME);
+        NCL_CHECK_EQ_INT(get_u32(frame + 16), NCL_SYNTEC_CODE_GLOBAL_GET_VALUE);
+        NCL_CHECK_EQ_INT(get_u32(frame + 20), 4u);  /* dwSizeIn */
+        NCL_CHECK_EQ_INT(get_u32(frame + 24), 20u); /* dwSizeOut */
+        NCL_CHECK_EQ_INT(get_u32(frame + 28), 500u);
+    }
+
     NCL_TEST_CASE("11.7: a refused tool write is NCL_ERR_IO, tool 0 is invalid");
     {
         ncl_syntec_tool want;
@@ -1523,7 +1690,8 @@ static void test_adapter(void)
     }
 
     NCL_TEST_CASE("the nine points are the model the device publishes");
-    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 65); /* 9 项 + 9 轴 × 6 格 + 参数 + 刀具两条配置 */
+    /* 9 项 + 9 轴 × 6 格(54) + 参数表 + 刀具表 + PLC 6 张表 + 变量表 = 72 */
+    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 72);
     for (i = 0; i < sizeof(kPaths) / sizeof(kPaths[0]); i++) {
         NCL_CHECK(host_point_index(host, kPaths[i]) != (size_t)-1);
     }
@@ -1658,6 +1826,13 @@ static void test_adapter(void)
                                 &err) != NCL_OK);
     NCL_CHECK(ncl_host_poll_one(host, "/MACHINE/AXIS@W/SERVO_DRIVER/POSITION",
                                 &err) != NCL_OK);
+
+    NCL_TEST_CASE("11.9: PLC tables and the variable table are declared too");
+    NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/PLC/REGISTER") !=
+              (size_t)-1);
+    NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/PLC/IBIT") != (size_t)-1);
+    NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/PLC/ABIT") != (size_t)-1);
+    NCL_CHECK(host_point_index(host, "/MACHINE/CONTROLLER/VARIABLE") != (size_t)-1);
 
     NCL_TEST_CASE("11.4: parameters are a config object (dict), not a method");
     {

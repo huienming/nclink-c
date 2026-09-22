@@ -656,6 +656,113 @@ ncl_err ncl_syntec_krnl_parse(const uint8_t *body, size_t len,
 size_t ncl_syntec_path_body(uint8_t *out, size_t cap, uint16_t func_id,
                             const char *path);
 
+/* ======================================================== PLC / variables == */
+
+/*
+ * §11.9：PLC（梯形图）与变量。码表来自控制器侧 `OCK_CODE` 的 .cctor（433 个 code 全取出来了）：
+ *
+ *   0x0412 PlcGetIBit       In { nNo }  Out { hr, Value u8 }      I 位
+ *   0x0414 PlcGetOBit       In { nNo }  Out { hr, Value u8 }      O 位
+ *   0x0415 PlcGetCBit       In { nNo }  Out { hr, Value u8 }      C 位
+ *   0x0417 PlcGetSBit       In { nNo }  Out { hr, Value u8 }      S 位
+ *   0x0419 PlcGetABit       In { nNo }  Out { hr, Value u8 }      A 位
+ *   0x041A PlcGetRRegister  In { nNo }  Out { hr, nValue u32 }    R 寄存器
+ *   0x041C PlcGetTimer      In { nNo }  Out { hr, TPlcTimer }     定时器
+ *   0x041D PlcGetCounter    In { nNo }  Out { hr, TPlcCounter }   计数器
+ *   0x041E PlcGetCapacity   In 空       Out { hr, TPlcCapacity }  容量（8 个 u32）
+ *
+ *   0x0421 NcGlobalGetValue     In { nNo } Out { hr, TOcVariant }  全局变量（#号）
+ *   0x0423 NcGlobalGetCapacity  In 空      Out { hr, nValue u32 }  变量表容量
+ *
+ * `0x041A` 就是现成的 PART_COUNT（R1000）/ SPDL_SPEED（R771）用的那个码 —— 九项里的
+ * “寄存器”本来就是 PLC 寄存器读；这一节只是把它开放成按号读。
+ *
+ * 21A 实测（2026-09-22）：容量 = I/O/C/S/A 各 512 位、R 寄存器 65536、定时器/计数器各 256；
+ * 全局变量 14096 个。R771 = 1000（正是这台机床屏幕上的主轴转速），R700 = 0。
+ */
+#define NCL_SYNTEC_CODE_PLC_GET_BIT 0x0412u /**< I；下面四个是另外几族（差 2 个数） */
+#define NCL_SYNTEC_CODE_PLC_GET_OBIT 0x0414u
+#define NCL_SYNTEC_CODE_PLC_GET_CBIT 0x0415u
+#define NCL_SYNTEC_CODE_PLC_GET_SBIT 0x0417u
+#define NCL_SYNTEC_CODE_PLC_GET_ABIT 0x0419u
+#define NCL_SYNTEC_CODE_PLC_GET_REGISTER 0x041Au
+#define NCL_SYNTEC_CODE_PLC_GET_TIMER 0x041Cu
+#define NCL_SYNTEC_CODE_PLC_GET_COUNTER 0x041Du
+#define NCL_SYNTEC_CODE_PLC_GET_CAPACITY 0x041Eu
+#define NCL_SYNTEC_CODE_GLOBAL_GET_VALUE 0x0421u
+#define NCL_SYNTEC_CODE_GLOBAL_GET_CAPACITY 0x0423u
+
+/** 位族（`PlcGet?Bit` 之间就差两个数：0x0412/14/15/17/19）。 */
+typedef enum {
+    NCL_SYNTEC_PLC_I = 0,
+    NCL_SYNTEC_PLC_O,
+    NCL_SYNTEC_PLC_C,
+    NCL_SYNTEC_PLC_S,
+    NCL_SYNTEC_PLC_A,
+} ncl_syntec_plc_kind;
+
+/** PLC 容量（`TPlcCapacity { u32 IBits, OBits, CBits, SBits, ABits, RRegister, Timer, Counter }`）。 */
+typedef struct {
+    uint32_t ibits;
+    uint32_t obits;
+    uint32_t cbits;
+    uint32_t sbits;
+    uint32_t abits;
+    uint32_t registers; /**< R 寄存器个数（0xFFFF 是 65536） */
+    uint32_t timers;
+    uint32_t counters;
+} ncl_syntec_plc_slots;
+
+/**
+ * 一个变量值（`TOcVariant`，16 字节：`i16 nValType` + 6 填 + `i32|f64` 在 [8..]）。
+ * `type` 就是线上那个数：0 = 空、1 = 整数、2 = 浮点（3 = 字符串；参考客户端也只会解
+ * 前两种，第三种这里按“空”处理）。
+ */
+typedef struct {
+    int16_t type;
+    int32_t int_value;
+    double  double_value;
+} ncl_syntec_variant;
+
+/** PLC 容量。 */
+ncl_err ncl_syntec_plc_capacity(ncl_syntec *syntec, ncl_syntec_plc_slots *out);
+/** 读一个 R 寄存器（`0x041A`）。 */
+ncl_err ncl_syntec_plc_register(ncl_syntec *syntec, unsigned no, uint32_t *value);
+/** 读一个位（`0x0412/14/15/17/19`），@p kind 选 I/O/C/S/A。 */
+ncl_err ncl_syntec_plc_bit(ncl_syntec *syntec, ncl_syntec_plc_kind kind,
+                           unsigned no, bool *value);
+/** 变量表容量（`0x0423`）。 */
+ncl_err ncl_syntec_variable_capacity(ncl_syntec *syntec, size_t *count);
+/** 读一个变量（`0x0421`，号就是 `#` 号）。 */
+ncl_err ncl_syntec_variable(ncl_syntec *syntec, unsigned no,
+                            ncl_syntec_variant *out);
+
+/** `0x041E`：In 空，Out = { hr, TPlcCapacity }。 */
+size_t ncl_syntec_plc_capacity_frame(uint8_t *out, size_t cap, uint8_t serial);
+bool ncl_syntec_plc_capacity_decode(const uint8_t *frame, size_t len,
+                                     ncl_syntec_plc_slots *out);
+/** `0x041A`：In `{ nNo }`，Out = { hr, nValue }。 */
+size_t ncl_syntec_plc_register_frame(uint8_t *out, size_t cap, unsigned no,
+                                     uint8_t serial);
+/** `0x0412 + 2*kind`：In `{ nNo }`，Out = { hr, Value u8 }。 */
+size_t ncl_syntec_plc_bit_frame(uint8_t *out, size_t cap,
+                                ncl_syntec_plc_kind kind, unsigned no,
+                                uint8_t serial);
+/** `0x0421`：In `{ nNo }`，Out = { hr, TOcVariant }。 */
+size_t ncl_syntec_variable_frame(uint8_t *out, size_t cap, unsigned no,
+                                 uint8_t serial);
+/** `0x0423`：In 空，Out = { hr, nValue }。 */
+size_t ncl_syntec_variable_capacity_frame(uint8_t *out, size_t cap,
+                                          uint8_t serial);
+
+/** 一个 u32 正文（应答 [20..23]，小端）。 */
+bool ncl_syntec_reply_u32(const uint8_t *frame, size_t len, uint32_t *value);
+/** 一个 u8 正文（应答 [20]，位读用它）。 */
+bool ncl_syntec_reply_u8(const uint8_t *frame, size_t len, uint8_t *value);
+/** 一个 `TOcVariant`（应答 [20..35]）。 */
+bool ncl_syntec_variable_decode(const uint8_t *frame, size_t len,
+                                ncl_syntec_variant *out);
+
 #ifdef __cplusplus
 }
 #endif

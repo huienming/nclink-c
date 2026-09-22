@@ -1204,3 +1204,66 @@ CKrnlAPI::MultiTCPNcPutToolCompensation(link, nToolNo, TToolOffset)
 
 **留给真机的**：`hr != 0` 时的拒绝语义（这台模拟器一律回 0，验不出来）、以及 [14] 那个字节
 到底是谁的（参考客户端永远发 0；本仓库沿用 0）。
+
+### 11.9 PLC 与变量：能读（2026-09-22，21A 实测；码表来自 `OCK_CODE` 的 .cctor）
+
+§4.6 那 20 个 PLC API 与 §4.5 的宏/变量，之前一直是"待抓包"。这一轮把**码和帧**都定下来了：
+控制器侧 `Syntec.OpenCNC.OCK_CODE` 的静态构造里 433 个 code 全在（`CODE(type,id) = (type<<10)|id`），
+`CKrnlAPI` 每个包装方法又把 `In`/`Out` 结构体的大小与 `Marshal` 布局一起交出去 —— 帧形状和
+§11.7 的刀补同一个套路：**In 跟在 16 字节桩头后面，`A` = `dwSizeOut`**。
+
+| 功能 | 码 | In | Out | 21A |
+|---|---|---|---|---|
+| PLC 容量 | `0x041E` `PlcGetCapacity` | 空 | `{ hr, TPlcCapacity }`（8×u32） | **I/O/C/S/A 各 512 位、R 65536、T/C 各 256** |
+| R 寄存器 | `0x041A` `PlcGetRRegister` | `{ nNo }` | `{ hr, nValue u32 }` | **R771 = 1000**（就是主轴转速）|
+| I 位 | `0x0412` `PlcGetIBit` | `{ nNo }` | `{ hr, Value u8 }` | 答 0（这台没接输入）|
+| O / C / S / A 位 | `0x0414` / `0x0415` / `0x0417` / `0x0419` | `{ nNo }` | `{ hr, Value u8 }` | 同上 |
+| 定时器 / 计数器 | `0x041C` / `0x041D` | `{ nNo }` | `{ hr, TPlcTimer / TPlcCounter }` | 答 0（没跑梯形图）|
+| 全局变量 | `0x0421` `NcGlobalGetValue` | `{ nNo }` | `{ hr, TOcVariant }` | **#500 = 1（整数）**；#0/#100 是"空" |
+| 变量表容量 | `0x0423` `NcGlobalGetCapacity` | 空 | `{ hr, nValue u32 }` | **14096** |
+| 状态变量 | `0x0407` `NcStateGetValue` | `{ nNo }` | `{ hr, nValue }` | 已经在用（位置/状态区）|
+| 状态变量容量 | `0x0408` `NcStateGetCapacity` | 空 | `{ hr, nValue }` | 500 |
+| 坐标状态 / 轴状态变量 | `0x04BC` / `0x04D4` | `{ CoordID, nNo }` / `{ nAxisID, nNo }` | `{ hr, … }` | 答了，字段还没核 |
+
+`TOcVariant` = 16 字节：`[0..1]` `nValType`（i16：0 空 / 1 整数 / 2 浮点 / 3 字符串）、`[8..]` 值
+（整数 `i32` 或 `f64`）。参考客户端也只解 1 和 2，别的当"空"。
+
+**一个有意思的交叉验证**：`0x041A` 就是我们九项里**现成**的 PART_COUNT（R1000）与 SPDL_SPEED（R771）用的那个码
+—— 九项里的"寄存器"本来就是 PLC 寄存器读。所以现在按号读 R771，读出来的就是同一个 1000。
+
+**写这一侧**：`0x041B` `PlcPutRRegister`（In `{ nNo, newVal }`）现场试过 ——
+写 R3000 = 123456，读回 123456，再还原成 0（见下表"核对"）。位写（`0x0413` 等）与
+`0x0422` `NcGlobalPutValue` **没有**接线进来：后者的 In 结构体在控制器侧没找到，帧形状还没定，
+所以变量写这一条**不算验过**，也没进适配器。
+
+**进模型的两样**（都只答读）：
+
+| 模型路径 | 是什么 | key |
+|---|---|---|
+| `/CONTROLLER/PLC/REGISTER` | R 寄存器表 | 寄存器号（0..65535）|
+| `/CONTROLLER/PLC/{I,O,C,S,A}BIT` | 五种位表 | 位号（0..511）|
+| `/CONTROLLER/VARIABLE` | 变量表（册 4 表 7 的 `VARIABLE`，list）| 变量号（就是程序里的 `#号`）|
+
+> **PLC 那两个名字是扩展**：册 4 的表 7 里没有 PLC 这一格（只有 TOOL / TOOLPARAM /
+> VARIABLE / PARAMETER / COORDINATE…），现场网关那侧也没有对应路由。用它的人要知道这一点；
+> `/CONTROLLER/VARIABLE` 是标准名，和 FANUC 的宏变量表同一个位置。
+
+**现场核对记录（21A，2026-09-22）**：
+
+```
+PlcGetCapacity            -> (512,512,512,512,512,65536,256,256)
+PlcGetRRegister(771)      -> 1000          # 与 SPDL_SPEED 点位同一个值
+PlcGetIBit/OBit/CBit/SBit/ABit(0) -> 0     # hr=0，这台没接现场信号
+NcGlobalGetCapacity       -> 14096
+NcGlobalGetValue(500)     -> type=1(int) value=1 ; (0)/(100) -> type=0 空
+写 R3000=123456 -> hr=0，读回 123456，还原 -> 0
+
+# 以上数字也由**本仓库的 C 客户端**跑过一遍（ncl_syntec_plc_capacity / _plc_register /
+# _plc_bit / _variable_capacity / _variable，全部 rc=0）：
+#   PLC 容量 512/512/512/512/512  R=65536  T=256  C=256
+#   R771=1000   I0=0   A3=0   变量表容量=14096   #500 type=1 int=1   #0 type=0 空
+NcGlobalPutValue(#500)    -> 应答 hr=0 但值没变（In 形状未定，见上）
+```
+
+**还没验的**：真机上 PLC 位的实际跳变（模拟器没有梯形图在跑，所有位都是 0）、
+定时器/计数器（同上）、坐标状态/轴状态变量的字段布局、变量写。

@@ -5,6 +5,29 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### SYNTEC：PLC（位 / R 寄存器 / 定时器 / 计数器）与变量能读了（2026-09-22，21A 实测）
+
+  * **码表补齐**：控制器侧 `Syntec.OpenCNC.OCK_CODE` 的静态构造里 433 个 code 全取出来了
+    （`CODE(type,id) = (type<<10)|id`），PLC 与变量这一族终于有名有姓：`PlcGetIBit` 0x0412、
+    `PlcGetOBit/CBit/SBit/ABit` 0x0414/15/17/19、`PlcGetRRegister` 0x041A、`PlcGetTimer/Counter`
+    0x041C/1D、`PlcGetCapacity` 0x041E、`NcGlobalGetValue` 0x0421、`NcGlobalGetCapacity` 0x0423、
+    `NcStateGetCapacity` 0x0408。帧形状与 §11.7 的刀补同一套路（In 跟在 16 字节桩头后面，
+    `A` = `dwSizeOut`）。10 册新增 §11.9。
+  * **顺手解开一个老疑问**：九项里的 PART_COUNT / SPDL_SPEED 用的就是 `0x041A` —— 它们本来就是
+    **PLC R 寄存器读**（R1000 / R771）。现在按号读 R771 读出来还是 1000，两条路对得上。
+  * **新增客户面**（都只答读）：`/CONTROLLER/PLC/REGISTER`（R 寄存器表）、
+    `/CONTROLLER/PLC/{I,O,C,S,A}BIT`（五种位表）、`/CONTROLLER/VARIABLE`（变量表，册 4 表 7 的
+    `VARIABLE`，与 FANUC 的宏变量表同一个位置）。前两个名字是**扩展**：册 4 没有 PLC 这一格，
+    现场网关那侧也没有对应路由，文档里写明。
+  * **client**：`ncl_syntec_plc_capacity()` / `_plc_register()` / `_plc_bit()` /
+    `_variable_capacity()` / `_variable()` + 各自的帧与解码（`TOcVariant` 16 字节：i16 类型 + 值）。
+  * **21A 实测**：容量 = I/O/C/S/A 各 512、R 65536、T/C 各 256；全局变量 14096 个；R771 = 1000；
+    #500 = 整数 1；位读答 hr=0（这台的梯形图没跑，位全是 0）。**R 寄存器写**现场试过：
+    写 R3000 = 123456 → 读回 123456 → 还原 0。**变量写不算验过**（`0x0422` 的 In 结构体在
+    控制器侧没找到），所以没接线进来。
+  * **测试**：mock 补 PLC 容量/位/变量三条分支 + 一张寄存器由条目表提供的"同源"分支；
+    新增设备级用例（容量、R771、位帧码字、变量 int/double 两条、帧字段断言），模型点位数 65 → 72。
+    **ctest 43/43**。
 ### SYNTEC：刀补**能写了**，线协议那 16 字节桩头也补对（2026-09-22，21A 实测）
 
   * **先把线协议读对**：`OCAPIServer.exe` 是 .NET，反汇编定下真实结构 ——

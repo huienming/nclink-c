@@ -1152,6 +1152,183 @@ ncl_err ncl_syntec_tool_get(ncl_syntec *syntec, unsigned index,
 }
 
 /*
+ * §11.9：PLC（位 / R 寄存器 / 容量）与变量（全局变量 # 号 / 容量）。
+ * 形状和参数读一样：号在一格 i32 的 In 里，Out 是 { hr, 值 }；两条容量 In 是空的。
+ */
+ncl_err ncl_syntec_plc_capacity(ncl_syntec *syntec, ncl_syntec_plc_slots *out)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    ncl_err err;
+
+    if (syntec == NULL || out == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_plc_capacity_frame(frame, sizeof(frame), serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_plc_capacity_decode(syntec->rx, syntec->last_rx_len,
+                                            out)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "PLC 容量读不了");
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_plc_register(ncl_syntec *syntec, unsigned no, uint32_t *value)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    ncl_err err;
+
+    if (syntec == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_plc_register_frame(frame, sizeof(frame), no, serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_reply_u32(syntec->rx, syntec->last_rx_len, value)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "PLC 寄存器读不了");
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_plc_bit(ncl_syntec *syntec, ncl_syntec_plc_kind kind,
+                           unsigned no, bool *value)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    uint8_t raw = 0;
+    ncl_syntec_view view;
+    ncl_err err;
+
+    if (syntec == NULL || value == NULL || kind < NCL_SYNTEC_PLC_I ||
+        kind > NCL_SYNTEC_PLC_A) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_plc_bit_frame(frame, sizeof(frame), kind, no, serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_reply_u8(syntec->rx, syntec->last_rx_len, &raw)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "PLC 位读不了");
+    }
+    *value = raw != 0;
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_variable_capacity(ncl_syntec *syntec, size_t *count)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    uint32_t value = 0;
+    ncl_syntec_view view;
+    ncl_err err;
+
+    if (syntec == NULL || count == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *count = 0;
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_variable_capacity_frame(frame, sizeof(frame), serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_reply_u32(syntec->rx, syntec->last_rx_len, &value)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "变量表读不了");
+    }
+    *count = (size_t)value;
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_variable(ncl_syntec *syntec, unsigned no,
+                            ncl_syntec_variant *out)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    ncl_err err;
+
+    if (syntec == NULL || out == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_variable_frame(frame, sizeof(frame), no, serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+        if (err == NCL_OK &&
+            !ncl_syntec_variable_decode(syntec->rx, syntec->last_rx_len, out)) {
+            err = NCL_ERR_RANGE;
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "变量读不了");
+    }
+    return NCL_OK;
+}
+/*
  * §11.7 写一把刀：`0x0440`，In 是 `{ nToolNo, TToolOffset }` 228 字节，跟着
  * 16 字节桩头走（`ncl_syntec_tool_put_frame()`）。索引是**刀号（从 1 起）**，
  * 和读用的是同一个号，也就和 `/CONTROLLER/TOOL` 的 key 一致。
