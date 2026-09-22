@@ -5,6 +5,24 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 新代：G 代码上下行的协议打通了（文件服务在 5572，还在等接进 client）
+
+  * **先把服务找出来**：§4.7/§6.2 那 12 个程序/文件 API 不走 KrnlAPI，而是一套**独立的文件服务**。
+    四个监听端口分别是：**5566** = 设备/KrnlAPI（刀具、参数、PLC、变量都在这里）、5568 = 要客户端
+    先握手、5570 = 对任何命令回空帧、**5572 = 文件服务**。
+  * **帧与语义**（10 册新增 §11.11）：12 字节包头 + `{ uFuncID, ... }`，dispatch 在 uFuncID 上
+    （= `FileTransferCmd`：1 FileSendStart / 2 FileSending / 3 FileRecvStart / 4 FileRecving /
+    8 GetAllFileList / 11 FileExist / 12 DirExist / 13 FileNew / 14 FileDelete / 15 FileCopy /
+    16 FileMove / 17 DirCreate / 48 Install）。路径是 **UTF-16LE**、长度字段是**字符数**；
+    `FileRecving` 的应答是**裸数据**（没有 4 字节头）。**这套是带状态的**：路径记在连接上，
+    所以一次传输必须共用一条连接（每条命令另开一条会 `hr = -1`）。
+  * **21A 实测**（探针进仓库 `tools/site-probe/syntec_file_xfer_probe.py`）：49 字节的 G 代码
+    从 `FileSendStart` → `FileSending` 上传（hr=0）→ `FileExist` 变 true → `FileRecvStart` 报
+    `nFileLength = 49` → 按块 `FileRecving` 取回**逐字节一致** → `FileDelete` 删掉（回到 false）。
+    `DirExist` 确认这台上有 `C:/CNC`、`C:/Job`、`C:/MPF`（`C:/CNC/` 带尾斜杠反而不存在）。
+  * **还没落地**（这一轮只到"协议通了 + 探针"）：client 侧还没有到 5572 的文件服务连接与命令；
+    适配器也还没接仓库的文件工具（`/CONTROLLER/FILE` 的 push/pull/remove，FOCAS 已经接了）——
+    接上之后 G 代码上下行就是现成的三条。`GetAllFileList` 在这台上回 0 个（列表语义待真机再看）。
 ### SYNTEC：寄存器 / 位 / 变量能**写**了（2026-09-22，21A 实测）
 
   * **写这一侧的码与帧**（都是 `{ nNo, 新值 }`，帧 = 16 字节桩头 + In）：

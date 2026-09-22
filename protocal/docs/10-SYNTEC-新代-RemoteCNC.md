@@ -1306,3 +1306,60 @@ NcGlobalPutValue(#500)    -> 应答 hr=0 但值没变（In 形状未定，见上
 `set_value`（`@O`、`@A` 不声明）；写法和参数那一格一致 —— `keys` 给号、`value` 给新值，
 权限/白名单照旧在适配器外面。**现场核对**：寄存器 `R4000=123456 → 读回 123456 → 还原 0`、
 变量 `#700=31337 → 读回 31337 → 写回"空"`，都由**本仓库的 C 客户端**跑过（`rc=0`）。
+
+### 11.11 文件服务（G 代码上下行）：**独立端口 5572**，已打通（2026-09-22，21A 实测）
+
+§4.7/§6.2 那 12 个程序/文件 API（`UPLOAD_nc_mem` / `DOWNLOAD_nc_mem` / `READ_nc_mem_list` /
+`DEL_nc_mem` / `WRITE_nc_main` …）走的是**另一套服务**，和 §11 前面那些 KrnlAPI 不是一条路：
+
+| 端口 | 是谁（2026-09-22 定住）|
+|---|---|
+| **5566** | 设备/ Dipole 服务：`uFuncID = 200` 的 KrnlAPI（刀具、参数、PLC、变量都在这里）+ 178/179/180 |
+| 5568 | 连接后不回话（要客户端先握手，像是报警推送那条）|
+| 5570 | 对任何命令都回一个**空**帧（12 字节包头，Length=0）|
+| **5572** | **文件服务**（`FileTransferCmd`：1/2/3/4/8/11/12/13/14/15/16/17/48）|
+
+**帧形状**（12 字节包头 `{Length u32, CmdID u32, Reserved u32}`，`Length` = 后面多少字节）：
+
+```
+In  { uFuncID u32, ... }       dispatch 在 uFuncID 上（= FileTransferCmd 的值）
+    路径是 **UTF-16LE**，长度字段是**字符数**（服务器按 nFilePathLength * 2 字节拷贝）
+
+ 1 FileSendStart  { uFuncID, nFilePathLength, szFilePath }  -> { hr }
+ 2 FileSending    { uFuncID, nFileLength, pBufferIn }       -> { hr }   追加到上一步的文件
+ 3 FileRecvStart  { uFuncID, nFilePathLength, szFilePath }  -> { hr, nFileLength }
+ 4 FileRecving    { uFuncID, nFileOffset, nReqLength }      -> **裸数据**（没有头，长度 = nReqLength）
+ 8 GetAllFileList { uFuncID, nDirPathLength, szDirPath }    -> { nFileListLength, pBufferOut }
+11 FileExist      { uFuncID, nFilePathLength, szFilePath }  -> { bFileServiceSuccess bool }
+12 DirExist       { uFuncID, nDirPathLength, szDirPath }    -> { bFileServiceSuccess bool }
+13 FileNew        { uFuncID, nFilePathLength, szFilePath }  -> { bool }
+14 FileDelete     { uFuncID, nFilePathLength, szFilePath }  -> { bool }
+15 FileCopy / 16 FileMove  { uFuncID, nTwoFilePathLength, szTwoFilePath }
+17 DirCreate      { uFuncID, nDirPathLength, szDirPath }    -> { bool }
+```
+
+**这一套是"带状态"的**：`FileSendStart` 把路径记在**这条连接**上，后面的 `FileSending`
+往它追加（服务器 IL 里 `m_szFilePath` 是连接上的字段）；下载同理 —— `FileRecvStart` 之后，
+`FileRecving` 从那个文件按 `nFileOffset` 取 `nReqLength` 个字节。所以**一次传输必须共用一条连接**，
+每次命令新开一条会得到 `hr = -1`（我第一遍就是这么踩的）。
+
+**21A 实测**（`tools/site-probe/syntec_file_xfer_probe.py`，49 字节的 G 代码）：
+
+```
+DirExist("C:/CNC")            -> true          # 这台还有 C:/Job、C:/MPF；带尾斜杠的 "C:/CNC/" 反而 false
+FileExist("C:/CNC/PYTEST")    -> false
+FileSendStart                 -> hr=0
+FileSending(49 字节)          -> hr=0
+FileExist("C:/CNC/PYTEST")    -> **true**
+FileRecvStart                 -> hr=0, nFileLength = **49**
+FileRecving(offset, min(块, 剩余)) * 3  -> 49 字节，**与上传的逐字节一致**
+FileDelete                    -> true,   FileExist -> false
+```
+
+**还没落地的部分**（这一轮只把协议打通、出了探针）：
+
+1. client 侧没有文件服务：要加一条到 5572 的连接（与会话分开、**带状态**）+ 上面这些命令；
+2. 适配器没接仓库的文件工具（`nclink/ncl_file.h` 的 `/CONTROLLER/FILE`，FOCAS 已经接了），
+   接上之后 `push`（下发）/ `pull`（取回）/ `remove` 三条就是现成的；
+3. `GetAllFileList` 在这台上回 0 个（列表的路径语义还没吃透），真机上要再看一眼；
+4. 程序下发按 §6.2 是**危险操作**，权限照旧在适配器外面（`NCL_OP_SET_VALUE` 那一套门槛）。
