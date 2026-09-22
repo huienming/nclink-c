@@ -740,3 +740,37 @@ bin/ncl_server.exe -r <root> -c conf/syntec-sim.json --offline --once
 1. `WARNING` 的**非空**条目布局（模拟器无报警，抓不到）；
 2. `PROGRAM` 正文里除程序名之外的字段（应答 532 字节，现在只取开头那段文本）；
 3. 官方方言的帧尾 4 字节是什么（句柄/校验没定论；我们那套不需要它）。
+
+### 11.2 数据项核对：现场 9 项 vs 本仓库 9 项（2026-09-22）
+
+对照 i-BOX 的现场驱动（`lua_mod/syntec_mod.lua`，9 个 `get_value` 项 → 网关路由
+`/SYNTEC/CNC/*`）：
+
+| 现场路径（i-BOX 模型项） | 我们对外声明的路径 | 数据 |
+|---|---|---|
+| `/STATUS` | `/STATUS` | ✅ 一致 |
+| `/PART_COUNT` | `/PART_COUNT` | ✅ 一致 |
+| `/FEED_SPEED` | `/FEED_SPEED` | ✅ 一致 |
+| `/FEED_OVERRIDE` | `/FEED_OVERRIDE` | ✅ 一致 |
+| `/SPINDLE_OVERRIDE` | `/SPINDLE_OVERRIDE` | ✅ 一致 |
+| `/CONTROLLER/PROGRAM` | `/CONTROLLER/PROGRAM` | ✅ 一致 |
+| `/CONTROLLER/LINE_NUMBER` | `/LINE_NUMBER` | ⚠️ 现场挂在 CONTROLLER 组件下，我们挂在设备下（与已发货的 FANUC 适配器同规矩） |
+| `/CONTROLLER/WARNING` | `/WARNING` | ⚠️ 同上 |
+| `/SPINDLE_SPEED` | `/MOTOR@S1/SPEED` | ⚠️ 现场用 `SPINDLE_SPEED`；我们按册 32 表 4（SPEED 物理量）+ FANUC 先例放进 MOTOR 组件（表 2 没有 SPINDLE 这个组件类型） |
+
+**结论：数据项没有遗漏** —— 现场 9 项各有一条对应，且九项都在 21A 模拟器上实测读通
+（§11.1）。差别只在上面 3 条路径的**归属**上：一边是"现场盒子的模型键"，
+另一边是"册 32 字典 + 我们已发货适配器"的口径。要不要迁移（或两种名字都声明）取决于
+消费我们模型的 NC-Link 客户端是否硬编码了现场那套名字，**待定**。
+
+**协议侧还能补的（现场没要，属于可选增强）**：位置（官方 `READ_position` 有签名，
+模拟器画面就是 X/Z 两个轴；它的请求帧已抓到 = `0x041e`/code `0x050b`，但应答结构尚未
+解析）、报警明细（`READ_alm_current`/`_history`）、G 码/其它码（`READ_gcode`/`othercode`）、
+时间与程序号（`READ_time`/`READ_useTime`）、工件坐标（7 个 API）、宏/参数（11 个）、
+PLC（20 个 API，含寄存器/位/定时器/计数器读写）。这些都能按册 32 的字典名挂上去，
+但每个都要一次"帧 + 应答读法"的实测，**要哪个点哪个**。
+
+> 顺带一条联调发现：官方 `SyntecRemoteAPI v2.1.0.12`（面向控制器 10.116.10~16）
+> 对本模拟器（10.116.54N）的 `READ_position` **会卡住不返回**（等了 2 分钟）；
+> 这也解释了那套客户端为什么没留下数值结果。**我们按抓包实现的裸协议驱动是通的**
+> （九项 9/9，值与画面逐项一致），所以后续扩展不必依赖官方 v2 客户端。
