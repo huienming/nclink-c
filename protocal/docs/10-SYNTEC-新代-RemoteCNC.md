@@ -665,7 +665,7 @@ worker → 每个 worker 的 IL 里只有一个 `ldc.i4` 常量（脚本在参�
 | `clients/include/nclink/clients/syntec.h`（items 一节） | 九项的表（flags / code / 请求号 / 参数 A / 参数 B / 标志）+ `ncl_syntec_item_frame()`（36 字节，逐字段写）+ 应答读法（`ncl_syntec_item_u16()` / `_text()` / `_empty()`）；九个语义函数 `ncl_syntec_status()` … `ncl_syntec_warning()`；会话 `ncl_syntec_open()` / `ncl_syntec_close()` |
 | `clients/syntec/syntec_codec.c` | `kItems[]`：九项逐字段照 §3.1 的表；查找大小写 / 下划线不敏感、`READ_` 前缀可省 |
 | `clients/syntec/syntec_driver.c` | 会话（TCP + uSerial 回显校验 + 重试）、九项取数（FEED_SPEED 三帧 700 → 12 → 76）、以及原来的 `ncl_driver` 门面 |
-| `plugins/syntec.c` | 适配器：9 个点位 + `/SESSION` 调试方法 + 审计原始帧。绑定沿用 client 的语义函数，只有两处覆盖（`LINE_NUMBER` 落成 string、主轴转速归 `/MOTOR@S1/SPEED`） |
+| `plugins/syntec.c` | 适配器：9 个点位 + `/SESSION` 调试方法 + 审计原始帧。绑定沿用 client 的语义函数，只有一处覆盖（`LINE_NUMBER` 落成 string）。**路径按 iNC-BOX 的模型定义**：`/STATUS`、`/PART_COUNT`、`/FEED_SPEED`、`/FEED_OVERRIDE`、`/SPINDLE_OVERRIDE`、`/SPINDLE_SPEED`、`/CONTROLLER/PROGRAM`、`/CONTROLLER/LINE_NUMBER`、`/CONTROLLER/WARNING`（§11.2） |
 | `clients/tests/test_syntec_driver.c` | 对 mock 控制器：STATUS 请求**逐字节**对照本节那张完整帧；九项各读一次；FEED_SPEED 的 700/12/76 顺序；WARNING 空正文 = `[]`；非 (0,0) 单位档与**非空报警**如实回"还读不了"。最后一段把 `plugins/syntec.c` 当模块装载、由宿主读九个点位 —— 就是本节说的"整机仿真" |
 | `conf/syntec.json` | 交付配置（只有 `host` 一定要改） |
 
@@ -719,12 +719,12 @@ worker → 每个 worker 的 IL 里只有一个 `ldc.i4` 常量（脚本在参�
 | `/STATUS` | `free` | 就绪 |
 | `/PART_COUNT` | 0 | 工件数 0 |
 | `/CONTROLLER/PROGRAM` | `"1"` | 页眉程序 1 |
-| `/LINE_NUMBER` | `"1"` | L1 |
+| `/CONTROLLER/LINE_NUMBER` | `"1"` | L1 |
 | `/FEED_OVERRIDE` | 100 | 100% |
 | `/SPINDLE_OVERRIDE` | 100 | 100% |
 | `/FEED_SPEED` | 0.0 | F 0.0 mm/min（实际） |
-| `/MOTOR@S1/SPEED` | 1000 | S 1000 RPM（实际） |
-| `/WARNING` | `[]` | 无报警 |
+| `/SPINDLE_SPEED` | 1000 | S 1000 RPM（实际） |
+| `/CONTROLLER/WARNING` | `[]` | 无报警 |
 
 复现（交付路径，不需要 broker）：
 
@@ -741,7 +741,7 @@ bin/ncl_server.exe -r <root> -c conf/syntec-sim.json --offline --once
 2. `PROGRAM` 正文里除程序名之外的字段（应答 532 字节，现在只取开头那段文本）；
 3. 官方方言的帧尾 4 字节是什么（句柄/校验没定论；我们那套不需要它）。
 
-### 11.2 数据项核对：现场 9 项 vs 本仓库 9 项（2026-09-22）
+### 11.2 数据项核对：现场 9 项 = 本仓库 9 项（2026-09-22，已按 iNC-BOX 对齐）
 
 对照 i-BOX 的现场驱动（`lua_mod/syntec_mod.lua`，9 个 `get_value` 项 → 网关路由
 `/SYNTEC/CNC/*`）：
@@ -754,14 +754,26 @@ bin/ncl_server.exe -r <root> -c conf/syntec-sim.json --offline --once
 | `/FEED_OVERRIDE` | `/FEED_OVERRIDE` | ✅ 一致 |
 | `/SPINDLE_OVERRIDE` | `/SPINDLE_OVERRIDE` | ✅ 一致 |
 | `/CONTROLLER/PROGRAM` | `/CONTROLLER/PROGRAM` | ✅ 一致 |
-| `/CONTROLLER/LINE_NUMBER` | `/LINE_NUMBER` | ⚠️ 现场挂在 CONTROLLER 组件下，我们挂在设备下（与已发货的 FANUC 适配器同规矩） |
-| `/CONTROLLER/WARNING` | `/WARNING` | ⚠️ 同上 |
-| `/SPINDLE_SPEED` | `/MOTOR@S1/SPEED` | ⚠️ 现场用 `SPINDLE_SPEED`；我们按册 32 表 4（SPEED 物理量）+ FANUC 先例放进 MOTOR 组件（表 2 没有 SPINDLE 这个组件类型） |
+| `/CONTROLLER/LINE_NUMBER` | `/CONTROLLER/LINE_NUMBER` | ✅ 已对齐（原为 `/LINE_NUMBER`） |
+| `/CONTROLLER/WARNING` | `/CONTROLLER/WARNING` | ✅ 已对齐（原为 `/WARNING`） |
+| `/SPINDLE_SPEED` | `/SPINDLE_SPEED` | ✅ 已对齐（原为 `/MOTOR@S1/SPEED`） |
 
-**结论：数据项没有遗漏** —— 现场 9 项各有一条对应，且九项都在 21A 模拟器上实测读通
-（§11.1）。差别只在上面 3 条路径的**归属**上：一边是"现场盒子的模型键"，
-另一边是"册 32 字典 + 我们已发货适配器"的口径。要不要迁移（或两种名字都声明）取决于
-消费我们模型的 NC-Link 客户端是否硬编码了现场那套名字，**待定**。
+**结论：数据项没有遗漏，路径已按 iNC-BOX 的模型定义对齐** —— 现场 9 项逐条同名，
+且九项都在 21A 模拟器上按新路径实测读通（§11.1 自检 9/9）。仓库里 **KND 本来就是这套
+命名**（`/SPINDLE_SPEED`、`/CONTROLLER/LINE_NUMBER`、`/CONTROLLER/WARNING`…），
+FANUC 那条是唯一的历史差异（见下）。
+
+> 与册 32 字典的一处偏离要记明：**`SPINDLE_SPEED` 不在表 1-9 的类型表里**（表 4 的物理量
+> 只有 `SPEED`，主轴按表 2 归 `MOTOR` 组件）。iNC-BOX 用的是 `SPINDLE_SPEED`，这条按
+> iNC-BOX 走；要回到字典口径就是 `/MOTOR@S1/SPEED`（改一行，client 的函数不用动）。
+
+**FANUC 那边的差异（待定，未改）**：已发货的 `plugins/focas.c` 用
+`/LINE_NUMBER`、`/WARNING`、`/MOTOR@S1/SPEED`，轴是 `/AXIS@X/POSITION@REAL` 型；
+iNC-BOX 的 FANUC 口径是 `/CONTROLLER/CONSOLE`、`/CONTROLLER/VARIABLE@*`、
+`/AXIS@n/MOTOR/POSITION`、`/AXIS@n/SERVO_DRIVER/VARIABLE@RSHORT` 一套（见
+`iNC-BOX-200-设备API清单.md` §1.1）。**轴那一套不只是改名**（按轴号 + MOTOR/SCREW/
+SERVO_DRIVER 分层 vs 按轴字母 + POSITION@REAL/CMD），要动就单独做一轮，
+且对已经接了 FANUC 模型的现场是**破坏性改名**。
 
 **协议侧还能补的（现场没要，属于可选增强）**：位置（官方 `READ_position` 有签名，
 模拟器画面就是 X/Z 两个轴；它的请求帧已抓到 = `0x041e`/code `0x050b`，但应答结构尚未

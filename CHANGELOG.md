@@ -28,6 +28,17 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
     把模块目录与测试目标接上）。
   * `conf/syntec.json`（交付配置）与 10 册 §11（实现落点 + 缺口）同批落地。
 
+  * **数据项路径按 iNC-BOX 的模型定义对齐**（2026-09-22）：`/LINE_NUMBER` →
+    **`/CONTROLLER/LINE_NUMBER`**、`/WARNING` → **`/CONTROLLER/WARNING`**、
+    `/MOTOR@S1/SPEED` → **`/SPINDLE_SPEED`**；其余六条（`/STATUS`、`/PART_COUNT`、
+    `/FEED_SPEED`、`/FEED_OVERRIDE`、`/SPINDLE_OVERRIDE`、`/CONTROLLER/PROGRAM`）
+    本来就同名。现场 9 项与新代适配器现在**逐条同名**，对齐后重跑 21A 模拟器自检仍
+    **9/9 可读**。仓库里 KND 早就是这套命名；**FANUC 是唯一的历史差异**（`/LINE_NUMBER`、
+    `/WARNING`、`/MOTOR@S1/SPEED` + 轴按字母的 `POSITION@REAL` 型），未动 —— 它对已接
+    FANUC 模型的现场是破坏性改名，要改单独一轮（10 册 §11.2）。另外记明一处与册 32 字典
+    的偏离：`SPINDLE_SPEED` 不在表 1-9 的类型表里（表 4 只有 `SPEED`，主轴按表 2 归
+    `MOTOR`），这次跟 iNC-BOX 走。
+
   * **21A 模拟器联调（2026-09-22，真靶机）**：`SYNTEC 21A 模拟器 10.116.54N`
     （`CncMon32.exe` + `OCAPIServer.exe`，端口 **5566/5570/5572**）上跑
     `ncl_server -c conf/syntec-sim.json --offline --once` → **9 个点位 9 个可读、0 失败**，

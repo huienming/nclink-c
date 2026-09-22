@@ -732,10 +732,10 @@ static void test_adapter(void)
 {
     static const char *kPaths[] = {
         "/MACHINE/STATUS",           "/MACHINE/PART_COUNT",
-        "/MACHINE/CONTROLLER/PROGRAM", "/MACHINE/WARNING",
-        "/MACHINE/LINE_NUMBER",      "/MACHINE/FEED_OVERRIDE",
+        "/MACHINE/CONTROLLER/PROGRAM", "/MACHINE/CONTROLLER/WARNING",
+        "/MACHINE/CONTROLLER/LINE_NUMBER", "/MACHINE/FEED_OVERRIDE",
         "/MACHINE/SPINDLE_OVERRIDE", "/MACHINE/FEED_SPEED",
-        "/MACHINE/MOTOR@S1/SPEED"};
+        "/MACHINE/SPINDLE_SPEED"};
     syntec_mock *mock;
     ncl_module_set *modules;
     ncl_strbuf err;
@@ -842,15 +842,17 @@ static void test_adapter(void)
     NCL_CHECK(value != NULL);
     NCL_CHECK_EQ_STR(ncl_json_as_string(value), "O1000");
 
-    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/WARNING", &err), NCL_OK);
-    value = ncl_host_point_value(host, host_point_index(host, "/MACHINE/WARNING"));
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/CONTROLLER/WARNING", &err),
+                     NCL_OK);
+    value = ncl_host_point_value(
+        host, host_point_index(host, "/MACHINE/CONTROLLER/WARNING"));
     NCL_CHECK(value != NULL);
     NCL_CHECK_EQ_INT(ncl_json_arr_len(value), 0); /* no alarm = empty list */
 
-    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/LINE_NUMBER", &err),
-                     NCL_OK);
-    value = ncl_host_point_value(host,
-                                 host_point_index(host, "/MACHINE/LINE_NUMBER"));
+    NCL_CHECK_EQ_INT(
+        ncl_host_poll_one(host, "/MACHINE/CONTROLLER/LINE_NUMBER", &err), NCL_OK);
+    value = ncl_host_point_value(
+        host, host_point_index(host, "/MACHINE/CONTROLLER/LINE_NUMBER"));
     NCL_CHECK(value != NULL);
     NCL_CHECK_EQ_STR(ncl_json_as_string(value), "4321"); /* 表 7 是 string */
 
@@ -868,10 +870,10 @@ static void test_adapter(void)
     NCL_CHECK(value != NULL && ncl_json_as_int(value, &number));
     NCL_CHECK_EQ_INT(number, 90);
 
-    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/MOTOR@S1/SPEED", &err),
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/SPINDLE_SPEED", &err),
                      NCL_OK);
-    value = ncl_host_point_value(
-        host, host_point_index(host, "/MACHINE/MOTOR@S1/SPEED"));
+    value = ncl_host_point_value(host,
+                                 host_point_index(host, "/MACHINE/SPINDLE_SPEED"));
     NCL_CHECK(value != NULL && ncl_json_as_double(value, &real));
     NCL_CHECK_EQ_INT((long long)real, 9000); /* 主轴转速，rpm */
 

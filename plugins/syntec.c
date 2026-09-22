@@ -9,9 +9,15 @@
  *   1. **绑定**：把 client（clients/syntec）的语义函数挂到模型路径上，一行一个点。
  *      "STATUS 是状态索引 4 的枚举"、"PART_COUNT 是寄存器 1000"、"FEED_SPEED 要问
  *      三帧"这些知识都在 client 里（10 册 §3.1/§3.2），这里不重复。
- *   2. **覆盖**：字典类型与协议取值不一致的两处自己写一小段（LINE_NUMBER 按表 7
- *      是 string，client 读回来是数；主轴转速按表 2 没有 SPINDLE 组件，归到
- *      `/MOTOR@S1/SPEED`，与 FANUC 那条同一个口径）。
+ *   2. **覆盖**：字典类型与协议取值不一致的一处自己写一小段 —— LINE_NUMBER 按表 7
+ *      是 string，client 读回来是数，这里落成文本。
+ *
+ * **路径按 iNC-BOX 的模型定义**（现场盒子的 `lua_mod/syntec_mod.lua` 9 项 +
+ * 它的标准路径字典）：`/STATUS`、`/PART_COUNT`、`/FEED_SPEED`、`/FEED_OVERRIDE`、
+ * `/SPINDLE_OVERRIDE`、**`/SPINDLE_SPEED`**、`/CONTROLLER/PROGRAM`、
+ * **`/CONTROLLER/LINE_NUMBER`**、**`/CONTROLLER/WARNING`** —— 这样现场那套客户端脚本
+ * 不用改路径。仓库里 KND 也是这套命名；FANUC 那条（`/LINE_NUMBER`、`/WARNING`、
+ * `/MOTOR@S1/SPEED`）是历史差异，见 10 册 §11.2。
  *
  * 帧、命令号、九项的请求/应答布局一个字节都不在这份文件里 —— 那是 client 的事。
  *
@@ -74,7 +80,7 @@ static ncl_err syntec_line_number(void *ctx, char *out, size_t cap)
     return NCL_OK;
 }
 
-/** 表 4 的 SPEED 是物理量：主轴转速（rpm）在 `/MOTOR@S1/SPEED` 上是个数。 */
+/** 主轴转速（rpm）落成数：iNC-BOX 的名字是 `/SPINDLE_SPEED`。 */
 static ncl_err syntec_spindle_speed(void *ctx, double *out)
 {
     long long value = 0;
@@ -136,17 +142,16 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
     NCL_DATAITEM_STR_SAMPLED("/STATUS", ncl_syntec_status)
     NCL_DATAITEM_I64_SAMPLED("/PART_COUNT", ncl_syntec_part_count)
     NCL_DATAITEM_STR_SAMPLED("/CONTROLLER/PROGRAM", ncl_syntec_program)
-    NCL_DATAITEM_JSON_SAMPLED("/WARNING", ncl_syntec_warning)
+    NCL_DATAITEM_JSON_SAMPLED("/CONTROLLER/WARNING", ncl_syntec_warning)
 
     /* 表 7 的 LINE_NUMBER 是 string，所以走覆盖档；倍率与速度按需读（不进采样通道）。 */
-    NCL_DATAITEM_STR("/LINE_NUMBER", syntec_line_number)
+    NCL_DATAITEM_STR("/CONTROLLER/LINE_NUMBER", syntec_line_number)
     NCL_DATAITEM_I64("/FEED_OVERRIDE", ncl_syntec_feed_override)
     NCL_DATAITEM_I64("/SPINDLE_OVERRIDE", ncl_syntec_spindle_override)
     NCL_DATAITEM_F64("/FEED_SPEED", ncl_syntec_feed_speed)
 
-    /* 主轴：表 2 的组件类型里没有 SPINDLE（主轴就是主轴电机驱动的），与 FANUC
-     * 那条同一个口径 —— `/MOTOR@S1/SPEED`，rpm。 */
-    NCL_DATAITEM_F64("/MOTOR@S1/SPEED", syntec_spindle_speed)
+    /* 主轴转速：按 iNC-BOX 的字典 `/SPINDLE_SPEED`（rpm），设备级。 */
+    NCL_DATAITEM_F64("/SPINDLE_SPEED", syntec_spindle_speed)
 
     NCL_METHOD_CALL("/SESSION", syntec_session)
 
