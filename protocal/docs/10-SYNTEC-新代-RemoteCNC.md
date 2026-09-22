@@ -653,3 +653,28 @@ worker → 每个 worker 的 IL 里只有一个 `ldc.i4` 常量（脚本在参�
 解析顺序是「具名读数 → 命令名 → 十进制命令号」，所以旧写法（区名 `KrnlAPI`
 + 偏移当 `dwCode`）不受影响。主轴那两个码只给了两个数、没给含义，因此没有
 给它们起语义化的名字：等一次实机读数看到值再定。
+
+---
+
+## 11 本仓库实现（2026-09 落地）
+
+§3.1/§3.2 的九项已经按抓到的形状实现，**client → 适配器 → 目标**三段都在仓库里：
+
+| 在哪 | 是什么 |
+|---|---|
+| `clients/include/nclink/clients/syntec.h`（items 一节） | 九项的表（flags / code / 请求号 / 参数 A / 参数 B / 标志）+ `ncl_syntec_item_frame()`（36 字节，逐字段写）+ 应答读法（`ncl_syntec_item_u16()` / `_text()` / `_empty()`）；九个语义函数 `ncl_syntec_status()` … `ncl_syntec_warning()`；会话 `ncl_syntec_open()` / `ncl_syntec_close()` |
+| `clients/syntec/syntec_codec.c` | `kItems[]`：九项逐字段照 §3.1 的表；查找大小写 / 下划线不敏感、`READ_` 前缀可省 |
+| `clients/syntec/syntec_driver.c` | 会话（TCP + uSerial 回显校验 + 重试）、九项取数（FEED_SPEED 三帧 700 → 12 → 76）、以及原来的 `ncl_driver` 门面 |
+| `plugins/syntec.c` | 适配器：9 个点位 + `/SESSION` 调试方法 + 审计原始帧。绑定沿用 client 的语义函数，只有两处覆盖（`LINE_NUMBER` 落成 string、主轴转速归 `/MOTOR@S1/SPEED`） |
+| `clients/tests/test_syntec_driver.c` | 对 mock 控制器：STATUS 请求**逐字节**对照本节那张完整帧；九项各读一次；FEED_SPEED 的 700/12/76 顺序；WARNING 空正文 = `[]`；非 (0,0) 单位档与**非空报警**如实回"还读不了"。最后一段把 `plugins/syntec.c` 当模块装载、由宿主读九个点位 —— 就是本节说的"整机仿真" |
+| `conf/syntec.json` | 交付配置（只有 `host` 一定要改） |
+
+**如实标注的两处缺口**（不是猜，是没抓到）：
+
+1. **FEED_SPEED 的单位换算表**：只有档位 (0,0)（系数 1.0）实测过；状态 12 是别的档位时回
+   `NCL_ERR_UNAVAILABLE`，理由写"单位换算表待抓包"。
+2. **WARNING 的非空条目布局**：只实测过"没报警 → 空正文 → `[]`"；有报警时回
+   `NCL_ERR_UNAVAILABLE`，理由写"非空报警条目布局待抓包"。
+
+读一侧是完整的；写（宏 / 参数 / 刀补 / PLC 写 / 程序上下行）在 client 里没有对应调用，
+适配器也就不声明 —— 现场网关那一侧的新代同样只有读 + Open/Close/GetResponse。

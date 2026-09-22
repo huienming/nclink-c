@@ -23,7 +23,13 @@
 
 #define SYNTEC_MAX_BODY 4096
 
-typedef struct {
+/*
+ * One session: the connection plus `uSerial`. §10.12's named readings and
+ * §3.1's item service are two ways into the same connection, so both the
+ * semantic API (ncl_syntec_open() + ncl_syntec_status() ...) and the generic
+ * ncl_driver facade (ncl_syntec_create()) share this object.
+ */
+struct ncl_syntec {
     char        *host;
     unsigned     port;
     unsigned     func_id;
@@ -33,11 +39,15 @@ typedef struct {
     unsigned     timeout_ms;
     unsigned     retries;
     ncl_mutex   *mutex;
+    char         error[160];  /**< the last failure, for the caller's log */
     uint8_t      tx[SYNTEC_MAX_BODY + 32];
     uint8_t      rx[SYNTEC_MAX_BODY + 32];
     size_t       last_tx_len; /**< the frame the audit should show */
     size_t       last_rx_len;
-} syntec_ctx;
+};
+
+/** The driver ops carry the session; the old name keeps the diff small. */
+typedef struct ncl_syntec syntec_ctx;
 
 static unsigned json_uint(const ncl_json *object, const char *key,
                           unsigned fallback)
@@ -77,27 +87,24 @@ static ncl_err syntec_open_session(syntec_ctx *ctx)
 /* -------------------------------------------------------------- exchange -- */
 
 /**
- * One packet out, one packet in (§10.4): 12 bytes of header say how much
- * follows, so the reply is read in two steps like the server reads a request.
+ * One ready made frame out, one packet in (§10.4): 12 bytes of header say how
+ * much follows, so the reply is read in two steps like the server reads a
+ * request. The frame is copied into the session buffer, which is also what the
+ * audit shows.
  */
-static ncl_err syntec_exchange(syntec_ctx *ctx, uint16_t cmd_id,
-                               uint16_t func_id, const void *body, size_t body_len,
-                               ncl_syntec_view *view)
+static ncl_err syntec_exchange_frame(syntec_ctx *ctx, const uint8_t *frame,
+                                     size_t frame_len, uint8_t serial,
+                                     ncl_syntec_view *view)
 {
-    ncl_syntec_function function;
-    uint8_t serial = (uint8_t)++ctx->serial;
-    size_t frame_len;
     size_t content;
     size_t total;
     ncl_err err;
 
-    memset(&function, 0, sizeof(function));
-    function.func_id = func_id;
-    function.serial = serial;
-    frame_len = ncl_syntec_build(ctx->tx, sizeof(ctx->tx), cmd_id, &function, body,
-                                 body_len);
-    if (frame_len == 0) {
+    if (frame == NULL || frame_len == 0 || frame_len > sizeof(ctx->tx)) {
         return NCL_ERR_RANGE;
+    }
+    if (frame != ctx->tx) {
+        memcpy(ctx->tx, frame, frame_len);
     }
     ctx->last_tx_len = frame_len;
     ctx->last_rx_len = 0;
@@ -131,6 +138,26 @@ static ncl_err syntec_exchange(syntec_ctx *ctx, uint16_t cmd_id,
         return NCL_DRV_ERR_PROTOCOL(0x91);
     }
     return NCL_OK;
+}
+
+/** Build one packet from its parts and exchange it. */
+static ncl_err syntec_exchange(syntec_ctx *ctx, uint16_t cmd_id,
+                               uint16_t func_id, const void *body, size_t body_len,
+                               ncl_syntec_view *view)
+{
+    ncl_syntec_function function;
+    uint8_t serial = (uint8_t)++ctx->serial;
+    size_t frame_len;
+
+    memset(&function, 0, sizeof(function));
+    function.func_id = func_id;
+    function.serial = serial;
+    frame_len = ncl_syntec_build(ctx->tx, sizeof(ctx->tx), cmd_id, &function, body,
+                                 body_len);
+    if (frame_len == 0) {
+        return NCL_ERR_RANGE;
+    }
+    return syntec_exchange_frame(ctx, ctx->tx, frame_len, serial, view);
 }
 
 static ncl_err syntec_request(syntec_ctx *ctx, uint16_t cmd_id,
@@ -504,22 +531,15 @@ static void syntec_last_raw(const ncl_driver *self, ncl_driver_raw *out)
 
 static void syntec_destroy(ncl_driver *self)
 {
-    syntec_ctx *ctx;
-
     if (self == NULL) {
         return;
     }
-    ctx = (syntec_ctx *)self->ctx;
-    if (ctx != NULL) {
-        syntec_close_session(ctx);
-        ncl_free_safe(ctx->host);
-        if (ctx->mutex != NULL) {
-            ncl_mutex_destroy(ctx->mutex);
-        }
-        ncl_free_safe(ctx);
-    }
+    ncl_syntec_close((ncl_syntec *)self->ctx);
     ncl_free_safe(self);
 }
+
+/** Defined with the session API below; the driver owns a session too. */
+static ncl_syntec *syntec_alloc(const ncl_syntec_config *config);
 
 static const ncl_driver_ops kSyntecOps = {
     "syntec",         syntec_create,
@@ -533,28 +553,348 @@ static const ncl_driver_ops kSyntecOps = {
 
 ncl_driver *ncl_syntec_create(void)
 {
-    syntec_ctx *ctx = (syntec_ctx *)ncl_mem_calloc(1, sizeof(*ctx));
+    ncl_syntec_config config;
+    ncl_syntec *ctx;
     ncl_driver *driver;
+
+    /* The driver's parameters arrive later (the create op), so no host yet. */
+    ncl_syntec_config_default(&config);
+    ctx = syntec_alloc(&config);
+    if (ctx == NULL) {
+        return NULL;
+    }
+    ctx->func_id = 0; /* 0 = use the command number for both fields (§10.9) */
+    driver = ncl_driver_new(&kSyntecOps, ctx);
+    if (driver == NULL) {
+        ncl_syntec_close(ctx);
+        return NULL;
+    }
+    return driver;
+}
+
+/* ================================================================ session == */
+
+void ncl_syntec_config_default(ncl_syntec_config *config)
+{
+    if (config == NULL) {
+        return;
+    }
+    memset(config, 0, sizeof(*config));
+    config->port = 8000; /* §10.1 */
+    config->connect_timeout_ms = 3000;
+    config->timeout_ms = 3000;
+}
+
+static ncl_syntec *syntec_alloc(const ncl_syntec_config *config)
+{
+    ncl_syntec *ctx = (ncl_syntec *)ncl_mem_calloc(1, sizeof(*ctx));
 
     if (ctx == NULL) {
         return NULL;
     }
-    ctx->port = 8000; /* §10.1: the controller's OCAPIServer listens here */
-    ctx->func_id = 0; /* 0 = use the command number for both fields (§10.9) */
+    ctx->port = config->port != 0 ? config->port : 8000u;
+    ctx->connect_timeout_ms = config->connect_timeout_ms != 0
+                                  ? config->connect_timeout_ms
+                                  : 3000u;
+    ctx->timeout_ms = config->timeout_ms != 0 ? config->timeout_ms : 3000u;
+    ctx->retries = config->retries;
     ctx->serial = 1;
-    ctx->connect_timeout_ms = 3000;
-    ctx->timeout_ms = 3000;
-    ctx->retries = 0;
     ctx->mutex = ncl_mutex_create();
     if (ctx->mutex == NULL) {
         ncl_free_safe(ctx);
         return NULL;
     }
-    driver = ncl_driver_new(&kSyntecOps, ctx);
-    if (driver == NULL) {
-        ncl_mutex_destroy(ctx->mutex);
-        ncl_free_safe(ctx);
+    if (config->host != NULL) {
+        ctx->host = ncl_strdup(config->host);
+        if (ctx->host == NULL) {
+            ncl_mutex_destroy(ctx->mutex);
+            ncl_free_safe(ctx);
+            return NULL;
+        }
+    }
+    return ctx;
+}
+
+ncl_syntec *ncl_syntec_open(const ncl_syntec_config *config, char **err)
+{
+    ncl_syntec *ctx;
+
+    if (err != NULL) {
+        *err = NULL;
+    }
+    if (config == NULL || ncl_str_is_blank(config->host)) {
+        if (err != NULL) {
+            *err = ncl_strdup("新代会话需要 host");
+        }
         return NULL;
     }
-    return driver;
+    ctx = syntec_alloc(config);
+    if (ctx == NULL && err != NULL) {
+        *err = ncl_strdup("会话分配失败（内存不足）");
+    }
+    return ctx;
+}
+
+void ncl_syntec_close(ncl_syntec *syntec)
+{
+    if (syntec == NULL) {
+        return;
+    }
+    syntec_close_session(syntec);
+    ncl_free_safe(syntec->host);
+    if (syntec->mutex != NULL) {
+        ncl_mutex_destroy(syntec->mutex);
+    }
+    ncl_free_safe(syntec);
+}
+
+bool ncl_syntec_is_open(const ncl_syntec *syntec)
+{
+    return syntec != NULL && syntec->socket != NULL;
+}
+
+const char *ncl_syntec_last_error(const ncl_syntec *syntec)
+{
+    return syntec != NULL ? syntec->error : "";
+}
+
+/** Remember one line about a failure, then hand the code back. */
+static ncl_err syntec_note(ncl_syntec *syntec, ncl_err code, const char *what)
+{
+    snprintf(syntec->error, sizeof(syntec->error), "%s：%s", what,
+             ncl_err_name(code));
+    return code;
+}
+
+/** One item request: build the 36 byte frame, send it, hand the answer back. */
+static ncl_err syntec_item_request(ncl_syntec *syntec, const ncl_syntec_item *item,
+                                   uint32_t param_b, ncl_syntec_view *view)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_err err;
+
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)++syntec->serial;
+        if (ncl_syntec_item_frame(frame, sizeof(frame), item, param_b, serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial, view);
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        /* A dead link is the caller's business, so drop it and let the next
+         * call reconnect: §3.2's per item connections are the same thing. */
+        syntec_close_session(syntec);
+    }
+    return syntec_note(syntec, err, item != NULL ? item->name : "item");
+}
+
+/** Read one numeric item (a u16 in the answer) as a long long. */
+static ncl_err syntec_item_u16(ncl_syntec *syntec, const char *name,
+                               long long *value)
+{
+    const ncl_syntec_item *item = ncl_syntec_item_lookup(name);
+    ncl_syntec_view view;
+    uint16_t raw = 0;
+    ncl_err err;
+
+    if (item == NULL) {
+        return NCL_ERR_NOT_FOUND;
+    }
+    memset(&view, 0, sizeof(view));
+    err = syntec_item_request(syntec, item, item->param_b, &view);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (!ncl_syntec_item_u16(syntec->rx, syntec->last_rx_len, &raw)) {
+        return syntec_note(syntec, NCL_ERR_RANGE, item->name);
+    }
+    if (value != NULL) {
+        *value = (long long)raw;
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_part_count(ncl_syntec *syntec, long long *value)
+{
+    return syntec_item_u16(syntec, "PART_COUNT", value);
+}
+
+ncl_err ncl_syntec_line_number(ncl_syntec *syntec, long long *value)
+{
+    return syntec_item_u16(syntec, "LINE_NUMBER", value);
+}
+
+ncl_err ncl_syntec_feed_override(ncl_syntec *syntec, long long *value)
+{
+    return syntec_item_u16(syntec, "FEED_OVERRIDE", value);
+}
+
+ncl_err ncl_syntec_spindle_speed(ncl_syntec *syntec, long long *value)
+{
+    return syntec_item_u16(syntec, "SPDL_SPEED", value);
+}
+
+ncl_err ncl_syntec_spindle_override(ncl_syntec *syntec, long long *value)
+{
+    return syntec_item_u16(syntec, "SPDL_OVERRIDE", value);
+}
+
+ncl_err ncl_syntec_status(ncl_syntec *syntec, char *out, size_t cap)
+{
+    long long state = 0;
+    ncl_err err;
+    const char *text;
+
+    if (out == NULL || cap == 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    err = syntec_item_u16(syntec, "STATUS", &state);
+    if (err != NCL_OK) {
+        return err;
+    }
+    /* §3.2: 0/1/4 空闲、2 运行、3 保持，其余未知。 */
+    switch (state) {
+    case 2:
+        text = "running";
+        break;
+    case 3:
+        text = "holding";
+        break;
+    case 0:
+    case 1:
+    case 4:
+        text = "free";
+        break;
+    default:
+        text = "unknown";
+        break;
+    }
+    snprintf(out, cap, "%s", text);
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_program(ncl_syntec *syntec, char *out, size_t cap)
+{
+    const ncl_syntec_item *item = ncl_syntec_item_lookup("PROGRAM");
+    ncl_syntec_view view;
+    ncl_err err;
+
+    if (out == NULL || cap == 0 || item == NULL) {
+        return item == NULL ? NCL_ERR_NOT_FOUND : NCL_ERR_INVALID_ARG;
+    }
+    memset(&view, 0, sizeof(view));
+    err = syntec_item_request(syntec, item, item->param_b, &view);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (!ncl_syntec_item_text(syntec->rx, syntec->last_rx_len, out, cap)) {
+        return syntec_note(syntec, NCL_ERR_RANGE, item->name);
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_feed_speed(ncl_syntec *syntec, double *value)
+{
+    const ncl_syntec_item *item = ncl_syntec_item_lookup("FEED_SPEED");
+    ncl_syntec_view view;
+    uint16_t reg = 0;
+    uint16_t unit = 0;
+    uint16_t mode = 0;
+    ncl_err err;
+
+    if (item == NULL || value == NULL) {
+        return item == NULL ? NCL_ERR_NOT_FOUND : NCL_ERR_INVALID_ARG;
+    }
+    /* §3.2: register 700 first, then the states 12 and 76. */
+    memset(&view, 0, sizeof(view));
+    err = syntec_item_request(syntec, item, NCL_SYNTEC_FEED_SPEED_REG, &view);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (!ncl_syntec_item_u16(syntec->rx, syntec->last_rx_len, &reg)) {
+        return syntec_note(syntec, NCL_ERR_RANGE, "FEED_SPEED(700)");
+    }
+    err = syntec_item_request(syntec, item, NCL_SYNTEC_FEED_SPEED_UNIT_STATE, &view);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (!ncl_syntec_item_u16(syntec->rx, syntec->last_rx_len, &unit)) {
+        return syntec_note(syntec, NCL_ERR_RANGE, "FEED_SPEED(12)");
+    }
+    err = syntec_item_request(syntec, item, NCL_SYNTEC_FEED_SPEED_MODE_STATE, &view);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (!ncl_syntec_item_u16(syntec->rx, syntec->last_rx_len, &mode)) {
+        return syntec_note(syntec, NCL_ERR_RANGE, "FEED_SPEED(76)");
+    }
+    if (mode == NCL_SYNTEC_FEED_SPEED_DIRECT) {
+        *value = (double)reg;
+        return NCL_OK;
+    }
+    /* The unit table is indexed by 状态 12: the integer step is the high bits,
+     * the fractional one the low five (§3.2). Only the (0,0) entry - the factor
+     * 1.0 - was measured, so anything else is honestly "还读不了" rather than a
+     * guess at a table nobody captured. */
+    if ((unit >> 5) == 0u && (unit & 0x1Fu) == 0u) {
+        *value = (double)reg;
+        return NCL_OK;
+    }
+    snprintf(syntec->error, sizeof(syntec->error),
+             "FEED_SPEED：单位换算表待抓包（状态 12 = %u）", (unsigned)unit);
+    return NCL_ERR_UNAVAILABLE;
+}
+
+ncl_err ncl_syntec_warning(ncl_syntec *syntec, ncl_json **list)
+{
+    const ncl_syntec_item *item = ncl_syntec_item_lookup("WARNING");
+    ncl_syntec_view view;
+    ncl_json *array;
+    ncl_err err;
+
+    if (item == NULL || list == NULL) {
+        return item == NULL ? NCL_ERR_NOT_FOUND : NCL_ERR_INVALID_ARG;
+    }
+    *list = NULL;
+    memset(&view, 0, sizeof(view));
+    err = syntec_item_request(syntec, item, item->param_b, &view);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (!ncl_syntec_item_empty(syntec->rx, syntec->last_rx_len)) {
+        /* §3.2: an empty answer is an empty list; a populated one was never
+         * captured, so the layout of its entries is unknown. */
+        snprintf(syntec->error, sizeof(syntec->error),
+                 "WARNING：非空报警条目布局待抓包");
+        return NCL_ERR_UNAVAILABLE;
+    }
+    array = ncl_json_new_array();
+    if (array == NULL) {
+        return syntec_note(syntec, NCL_ERR_NOMEM, "WARNING");
+    }
+    *list = array;
+    return NCL_OK;
+}
+
+void ncl_syntec_last_raw(const ncl_syntec *syntec, const uint8_t **request,
+                         size_t *request_len, const uint8_t **reply,
+                         size_t *reply_len)
+{
+    if (request != NULL) {
+        *request = syntec != NULL && syntec->last_tx_len > 0 ? syntec->tx : NULL;
+    }
+    if (request_len != NULL) {
+        *request_len = syntec != NULL ? syntec->last_tx_len : 0;
+    }
+    if (reply != NULL) {
+        *reply = syntec != NULL && syntec->last_rx_len > 0 ? syntec->rx : NULL;
+    }
+    if (reply_len != NULL) {
+        *reply_len = syntec != NULL ? syntec->last_rx_len : 0;
+    }
 }

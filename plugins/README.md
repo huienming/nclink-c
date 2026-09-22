@@ -288,6 +288,7 @@ sh build-linux.sh               # Linux：同样全跑一遍
 | 想看的 | 文件 |
 |---|---|
 | 绑定 + 覆盖混用、真实协议 | `plugins/focas.c`（FANUC，20 点位 + 2 方法） |
+| 只读适配器、九项现场闭环 | `plugins/syntec.c`（新代，9 点位 + 1 方法；形状见 10 册 §3.1/§3.2） |
 | 最小适配器（零协议代码） | `tests/module_tool_basic.c`（夹具，98 行） |
 | 绑定层本身的测试 | `tests/test_bind.c` |
 | 各协议怎么说话 | [`clients/README.md`](../clients/README.md) |

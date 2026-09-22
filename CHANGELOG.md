@@ -5,6 +5,29 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 新代 SYNTEC 适配器：九项按 10 册 §3.1/§3.2 的现场闭环实现
+
+  * **client 侧**（`clients/include/nclink/clients/syntec.h` + `clients/syntec/`）：§3.1
+    的九项做成一张表（flags / code / 请求号 / 参数 A / 参数 B / 标志），
+    `ncl_syntec_item_frame()` 逐字段拼出那 36 字节（`uSerial` 是唯一会动的字节，与
+    抓到的帧逐字节一致）；应答按 §3.2 读（数字项取 `[20..21]` 的 u16、PROGRAM 整段
+    文本、WARNING 空正文 = `[]`）。会话是 `ncl_syntec_open()` / `ncl_syntec_close()`，
+    九个语义函数 `ncl_syntec_status()` … `ncl_syntec_warning()`；FEED_SPEED 老实地问
+    三帧（寄存器 700 → 状态 12 → 状态 76）再合并。
+  * **适配器**（`plugins/syntec.c`）：9 个点位 —— `/STATUS`、`/PART_COUNT`、
+    `/CONTROLLER/PROGRAM`、`/WARNING`（这四样进默认采样通道，现场口径）+
+    `/LINE_NUMBER`、`/FEED_OVERRIDE`、`/SPINDLE_OVERRIDE`、`/FEED_SPEED`、
+    `/MOTOR@S1/SPEED`；一个 `/SESSION` 调试方法（会话状态 + 上一次失败的原话）与审计
+    原始帧。只读：client 里没有写调用，适配器就不声明写。
+  * **两处缺口如实标注**，都不编数：FEED_SPEED 的单位换算表只实测过档位 (0,0)；其余
+    档位、以及 WARNING 的非空条目布局，都回 `NCL_ERR_UNAVAILABLE` 并写明"待抓包"。
+  * **测试**（`clients/tests/test_syntec_driver.c`）：STATUS 请求逐字节对照文档里那张
+    完整帧；九项各读一次；单位档 / 空报警 / 非空报警三种边界；最后把 `plugins/syntec.c`
+    **当模块装载**、由宿主读九个点位 —— 适配器 + client + 抓到的帧一起跑，就是 10 册
+    说的"整机仿真"（适配器的集成测试挂在 client 的套件里，由 `plugins/CMakeLists.txt`
+    把模块目录与测试目标接上）。
+  * `conf/syntec.json`（交付配置）与 10 册 §11（实现落点 + 缺口）同批落地。
+
 ### 能力发现挪出心跳：`Pong` 只回状态，方法清单进模型，schema 补齐
 
   * **`Pong` 轻量化**。`Pong` 原来背着整份 OpenAPI 文档（几 KB），心跳成了最重的

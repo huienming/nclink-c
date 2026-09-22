@@ -38,6 +38,19 @@ foreach(source IN LISTS NCLINK_PLUGIN_SOURCES)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wshadow
                 -Wstrict-prototypes -Wmissing-prototypes)
     endif()
+
+    # A protocol client's own test suite can double as the adapter's integration
+    # test: it loads this module by protocol name, builds the device with the
+    # host and reads the points off its mock controller (see
+    # clients/tests/test_syntec_driver.c). The test lives in clients/tests, which
+    # is configured before this directory, so the wiring happens here - where
+    # both the module and the test target are known.
+    if(NCLINK_BUILD_TESTS AND TARGET ncl_test_${name}_driver)
+        string(TOUPPER "${name}" name_upper)
+        target_compile_definitions(ncl_test_${name}_driver PRIVATE
+                "NCL_${name_upper}_PLUGIN_DIR=\"$<TARGET_FILE_DIR:${target}>\"")
+        add_dependencies(ncl_test_${name}_driver ${target})
+    endif()
 endforeach()
 
 message(STATUS "nclink: adapter modules -> ${CMAKE_BINARY_DIR}/plugins")

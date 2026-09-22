@@ -135,6 +135,147 @@ typedef struct {
  */
 const ncl_syntec_reading *ncl_syntec_reading_lookup(const char *name);
 
+/* ================================================================ items == */
+
+/*
+ * §3.1/§3.2: the controller's own **item service** - the nine items whose
+ * request frames were captured off the box's gateway (tools/site-probe/
+ * syntec_probe.sh) and whose answers were then probed (syntec_reply_probe.sh).
+ * One request is a fixed **36 byte** frame:
+ *
+ *   [0..3]   Length = 24 (the content: 8 byte function header + 16 byte body)
+ *   [4..5]   CmdID  = 16                      the item service
+ *   [6..7]   per item flags  (0x0000; PROGRAM 0x05f1, WARNING 0x0101)
+ *   [8..9]   constant 200                     the KrnlAPI command number
+ *   [10..11] per item code   (0x0700; PROGRAM 0x071e, WARNING 0x0701)
+ *   [12..13] uFuncID = 200
+ *   [14..15] uSerial, reserved (0)
+ *   [16..19] request number  (0x0407 / 0x041a / 0x048c / 0x0428)
+ *   [20..23] type = 4
+ *   [24..27] parameter A
+ *   [28..31] parameter B     the register / state number
+ *   [32..35] flag
+ *
+ * The answer repeats the 20 byte header and carries the value in what follows:
+ * a little endian u16 at [20..21] for the numeric items, the whole body as text
+ * for PROGRAM, and "no body at all" is an empty list for WARNING. FEED_SPEED is
+ * not a single value: it asks the register 700 and then the states 12 and 76
+ * (a state answer's first two bytes are the state itself) and combines them.
+ */
+
+#define NCL_SYNTEC_CMD_ITEM 16u /**< the item service's CmdID               */
+#define NCL_SYNTEC_ITEM_BODY 16u /**< type | param A | param B | flag       */
+#define NCL_SYNTEC_ITEM_FRAME                                                  \
+    (NCL_SYNTEC_PACKET_HEADER + NCL_SYNTEC_FUNCTION_HEADER + NCL_SYNTEC_ITEM_BODY)
+/** The answer's value starts here: the 12 byte packet + 8 byte function header. */
+#define NCL_SYNTEC_REPLY_BODY                                                  \
+    (NCL_SYNTEC_PACKET_HEADER + NCL_SYNTEC_FUNCTION_HEADER)
+
+/** The register FEED_SPEED reads first, and the two states it combines with it. */
+#define NCL_SYNTEC_FEED_SPEED_REG 700u
+#define NCL_SYNTEC_FEED_SPEED_UNIT_STATE 12u
+#define NCL_SYNTEC_FEED_SPEED_MODE_STATE 76u
+/** State 76 answers this when register 700 may be used as it is (§3.2). */
+#define NCL_SYNTEC_FEED_SPEED_DIRECT 70u
+
+/** One item of the item service: everything the 36 byte frame is built from. */
+typedef struct {
+    const char *name;    /**< canonical name, "PART_COUNT"                  */
+    uint16_t    flags;   /**< frame [6..7]                                  */
+    uint16_t    code;    /**< frame [10..11]                                */
+    uint32_t    request; /**< frame [16..19]                                */
+    uint32_t    param_a; /**< frame [24..27]                                */
+    uint32_t    param_b; /**< frame [28..31], the register / state number   */
+    uint32_t    flag;    /**< frame [32..35]                                */
+} ncl_syntec_item;
+
+/**
+ * Look an item up by name, with the same leniency as the readings: case and
+ * underscores are ignored and a "READ_" prefix is accepted, so "STATUS",
+ * "status" and "READ_status" all find the same entry. NULL when there is none.
+ */
+const ncl_syntec_item *ncl_syntec_item_lookup(const char *name);
+/** The item at @p index (the captured order), or NULL. */
+const ncl_syntec_item *ncl_syntec_item_at(size_t index);
+size_t                 ncl_syntec_item_count(void);
+
+/**
+ * Build the 36 byte request of @p item. @p param_b overrides the item's own
+ * number - that is how FEED_SPEED asks its three questions (700, then 12, then
+ * 76) with one item table entry - and @p serial goes into the function header.
+ * Returns the frame length (36), or 0 when it does not fit.
+ */
+size_t ncl_syntec_item_frame(uint8_t *out, size_t cap,
+                             const ncl_syntec_item *item, uint32_t param_b,
+                             uint8_t serial);
+
+/** The u16 a numeric item answers with ([20..21], little endian). */
+bool ncl_syntec_item_u16(const uint8_t *frame, size_t len, uint16_t *value);
+/** Copy the answer's body (PROGRAM) into @p out, NUL terminated and trimmed. */
+bool ncl_syntec_item_text(const uint8_t *frame, size_t len, char *out,
+                          size_t cap);
+/** True when the answer carries no body at all (WARNING with no alarm). */
+bool ncl_syntec_item_empty(const uint8_t *frame, size_t len);
+
+/* ============================================================== session == */
+
+/** How to reach one controller (the adapter fills this from its parameters). */
+typedef struct {
+    const char *host;              /**< required                             */
+    unsigned    port;              /**< 8000 (the OCAPIServer's port)        */
+    unsigned    connect_timeout_ms;/**< 3000                                 */
+    unsigned    timeout_ms;        /**< 3000                                 */
+    unsigned    retries;           /**< 0: re-send after a transport failure  */
+} ncl_syntec_config;
+
+void ncl_syntec_config_default(ncl_syntec_config *config);
+
+/**
+ * One session: the TCP connection plus the `uSerial` counter the controller
+ * echoes back (§10.4). The connection is made lazily and re-made after a
+ * transport failure, so open() only fails when the configuration is unusable.
+ */
+typedef struct ncl_syntec ncl_syntec;
+
+ncl_syntec *ncl_syntec_open(const ncl_syntec_config *config, char **err);
+void        ncl_syntec_close(ncl_syntec *syntec);
+bool        ncl_syntec_is_open(const ncl_syntec *syntec);
+/** One line about the last failure; "" when the last call succeeded. */
+const char *ncl_syntec_last_error(const ncl_syntec *syntec);
+
+/* The nine items, each one named after what it reads (§3.2). A call that the
+ * captured material does not cover answers NCL_ERR_UNAVAILABLE - "还读不了" -
+ * with ncl_syntec_last_error() saying which part is missing. */
+
+/** STATUS: "running" / "free" / "holding" / "unknown" (state 4, §3.2). */
+ncl_err ncl_syntec_status(ncl_syntec *syntec, char *out, size_t cap);
+/** PART_COUNT: the register 1000 (u16). */
+ncl_err ncl_syntec_part_count(ncl_syntec *syntec, long long *value);
+/** LINE_NUMBER: the register 10 (u16). */
+ncl_err ncl_syntec_line_number(ncl_syntec *syntec, long long *value);
+/** PROGRAM: the whole answer body as text. */
+ncl_err ncl_syntec_program(ncl_syntec *syntec, char *out, size_t cap);
+/** FEED_SPEED: register 700 combined with states 12 and 76 (§3.2). */
+ncl_err ncl_syntec_feed_speed(ncl_syntec *syntec, double *value);
+/** FEED_OVERRIDE: the register 19 (u16). */
+ncl_err ncl_syntec_feed_override(ncl_syntec *syntec, long long *value);
+/** SPDL_SPEED: the register 771 (u16). */
+ncl_err ncl_syntec_spindle_speed(ncl_syntec *syntec, long long *value);
+/** SPDL_OVERRIDE: the register 21 (u16). */
+ncl_err ncl_syntec_spindle_override(ncl_syntec *syntec, long long *value);
+/**
+ * WARNING: the alarm list. An empty answer is an empty list, which is what the
+ * probe saw; the layout of a *populated* answer was never captured, so that
+ * case answers NCL_ERR_UNAVAILABLE rather than guessing. The caller owns the
+ * array.
+ */
+ncl_err ncl_syntec_warning(ncl_syntec *syntec, ncl_json **list);
+
+/** The frames of the last exchange (audit): borrowed from the session. */
+void ncl_syntec_last_raw(const ncl_syntec *syntec, const uint8_t **request,
+                         size_t *request_len, const uint8_t **reply,
+                         size_t *reply_len);
+
 /* ================================================================= data == */
 
 /** CRC-16 with the reversed 0xA001 polynomial, as the client library has it. */

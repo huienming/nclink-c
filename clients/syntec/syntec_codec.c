@@ -431,3 +431,127 @@ size_t ncl_syntec_path_body(uint8_t *out, size_t cap, uint16_t func_id,
     memcpy(out + 6, path, chars);
     return total;
 }
+
+/* ================================================================ items == */
+
+/*
+ * §3.1: the nine items, exactly as captured off the box's own gateway
+ * (tools/site-probe/syntec_probe.sh prints each request frame). The columns are
+ * the ones the doc tabulates:
+ *
+ *   name            [6..7]   [10..11]  [16..19]  A       B      [32..35]
+ *   STATUS          0000     0700      0407      8       4      1
+ *   PART_COUNT      0000     0700      041a      8       1000   0
+ *   LINE_NUMBER     0000     0700      0407      8       10     1
+ *   PROGRAM         f105     071e      048c      0204    1      1
+ *   FEED_SPEED      0000     0700      041a      8       700    0
+ *   SPDL_SPEED      0000     0700      041a      8       771    0
+ *   FEED_OVERRIDE   0000     0700      0407      8       19     1
+ *   SPDL_OVERRIDE   0000     0700      0407      8       21     1
+ *   WARNING         0101     0701      0428      1c78    40     115
+ *
+ * 700 / 1000 / 771 / 19 / 21 / 10 / 4 are the register / state numbers that
+ * also appear in the client's own worker stubs (§10.12) - the same numbers,
+ * which is the cross check that ties this table to the delivered client.
+ */
+static const ncl_syntec_item kItems[] = {
+    {"STATUS", 0x0000u, 0x0700u, 0x0407u, 8u, 4u, 1u},
+    {"PART_COUNT", 0x0000u, 0x0700u, 0x041au, 8u, 1000u, 0u},
+    {"LINE_NUMBER", 0x0000u, 0x0700u, 0x0407u, 8u, 10u, 1u},
+    {"PROGRAM", 0x05f1u, 0x071eu, 0x048cu, 0x0204u, 1u, 1u},
+    {"FEED_SPEED", 0x0000u, 0x0700u, 0x041au, 8u, 700u, 0u},
+    {"SPDL_SPEED", 0x0000u, 0x0700u, 0x041au, 8u, 771u, 0u},
+    {"FEED_OVERRIDE", 0x0000u, 0x0700u, 0x0407u, 8u, 19u, 1u},
+    {"SPDL_OVERRIDE", 0x0000u, 0x0700u, 0x0407u, 8u, 21u, 1u},
+    {"WARNING", 0x0101u, 0x0701u, 0x0428u, 0x1c78u, 40u, 115u},
+};
+
+size_t ncl_syntec_item_count(void)
+{
+    return sizeof(kItems) / sizeof(kItems[0]);
+}
+
+const ncl_syntec_item *ncl_syntec_item_at(size_t index)
+{
+    return index < ncl_syntec_item_count() ? &kItems[index] : NULL;
+}
+
+const ncl_syntec_item *ncl_syntec_item_lookup(const char *name)
+{
+    size_t i;
+
+    if (ncl_str_is_blank(name)) {
+        return NULL;
+    }
+    for (i = 0; i < ncl_syntec_item_count(); i++) {
+        if (reading_name_matches(name, kItems[i].name)) {
+            return &kItems[i];
+        }
+    }
+    return NULL;
+}
+
+size_t ncl_syntec_item_frame(uint8_t *out, size_t cap,
+                             const ncl_syntec_item *item, uint32_t param_b,
+                             uint8_t serial)
+{
+    if (out == NULL || item == NULL || cap < NCL_SYNTEC_ITEM_FRAME) {
+        return 0;
+    }
+    /* Length counts the content: the 8 byte function header + the 16 byte body. */
+    put_u32(out, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + NCL_SYNTEC_ITEM_BODY));
+    put_u16(out + 4, NCL_SYNTEC_CMD_ITEM);
+    put_u16(out + 6, item->flags);
+    put_u16(out + 8, (uint16_t)NCL_SYNTEC_CMD_KRML_API); /* the constant 200 */
+    put_u16(out + 10, item->code);
+    put_u16(out + 12, (uint16_t)NCL_SYNTEC_CMD_KRML_API); /* uFuncID */
+    out[14] = serial;                                     /* uSerial */
+    out[15] = 0;
+    put_u32(out + 16, item->request);                     /* IHeader */
+    put_u32(out + 20, 4u);                                /* type */
+    put_u32(out + 24, item->param_a);
+    put_u32(out + 28, param_b);
+    put_u32(out + 32, item->flag);
+    return NCL_SYNTEC_ITEM_FRAME;
+}
+
+bool ncl_syntec_item_u16(const uint8_t *frame, size_t len, uint16_t *value)
+{
+    if (frame == NULL || value == NULL ||
+        len < NCL_SYNTEC_REPLY_BODY + 2u) {
+        return false;
+    }
+    *value = get_u16(frame + NCL_SYNTEC_REPLY_BODY);
+    return true;
+}
+
+bool ncl_syntec_item_empty(const uint8_t *frame, size_t len)
+{
+    return frame != NULL && len <= NCL_SYNTEC_REPLY_BODY;
+}
+
+bool ncl_syntec_item_text(const uint8_t *frame, size_t len, char *out,
+                          size_t cap)
+{
+    size_t chars;
+
+    if (frame == NULL || out == NULL || cap == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    if (len <= NCL_SYNTEC_REPLY_BODY) {
+        return true;
+    }
+    chars = len - NCL_SYNTEC_REPLY_BODY;
+    if (chars > cap - 1u) {
+        chars = cap - 1u;
+    }
+    memcpy(out, frame + NCL_SYNTEC_REPLY_BODY, chars);
+    out[chars] = '\0';
+    /* Text arrives with its terminator (and sometimes blank padding). */
+    while (chars > 0 && (out[chars - 1] == '\0' || out[chars - 1] == '\r' ||
+                         out[chars - 1] == '\n' || out[chars - 1] == ' ')) {
+        out[--chars] = '\0';
+    }
+    return true;
+}

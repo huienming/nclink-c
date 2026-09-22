@@ -13,9 +13,15 @@
 
 #include "nclink/ncl_platform.h"
 #include "nclink/ncl_socket.h"
+#include "nclink/ncl_host.h"
+#include "nclink/ncl_module.h"
 #include "test_point_map.h"
 #include "nclink/clients/syntec.h"
 #include "syntec/ncl_syntec_driver.h"
+
+#ifndef NCL_SYNTEC_PLUGIN_DIR
+#  define NCL_SYNTEC_PLUGIN_DIR "" /* the adapter test is skipped without it */
+#endif
 
 static void put_u32(uint8_t *out, uint32_t value)
 {
@@ -53,7 +59,53 @@ typedef struct {
     uint8_t     answer[64];
     size_t      answer_len;
     bool        answer_as_is;
+    /* §3.1/§3.2: the item service. The mock plays the controller: it answers
+     * each item request with the request's 20 byte header echoed plus the
+     * value, which is exactly what the probe found (tools/site-probe/
+     * syntec_reply_probe.sh). */
+    struct {
+        uint32_t key;   /**< parameter B: the register / state number */
+        uint16_t value; /**< the u16 it answers with                 */
+    } items[16];
+    size_t   item_count;
+    char     program[64];      /**< the PROGRAM answer's text */
+    bool     warning_body;     /**< WARNING with a body (never captured) */
+    uint32_t item_log[8];      /**< parameter B of every item request, in order */
+    size_t   item_log_count;
+    uint16_t last_item_code;
+    uint32_t last_item_b;
 } syntec_mock;
+
+/** The value the mock answers for one register / state number (0 when unset). */
+static uint16_t mock_item_value(const syntec_mock *mock, uint32_t key)
+{
+    size_t i;
+
+    for (i = 0; i < mock->item_count; i++) {
+        if (mock->items[i].key == key) {
+            return mock->items[i].value;
+        }
+    }
+    return 0;
+}
+
+/** Script one answer: "when the request asks for @p key, answer @p value". */
+static void mock_set_value(syntec_mock *mock, uint32_t key, uint16_t value)
+{
+    size_t i;
+
+    for (i = 0; i < mock->item_count; i++) {
+        if (mock->items[i].key == key) {
+            mock->items[i].value = value;
+            return;
+        }
+    }
+    if (mock->item_count < sizeof(mock->items) / sizeof(mock->items[0])) {
+        mock->items[mock->item_count].key = key;
+        mock->items[mock->item_count].value = value;
+        mock->item_count++;
+    }
+}
 
 static void mock_main(void *arg)
 {
@@ -100,6 +152,49 @@ static void mock_main(void *arg)
             mock->last_cmd = view.packet.cmd_id;
             mock->last_func = view.function.func_id;
             mock->last_serial = view.function.serial;
+            if (view.packet.cmd_id == NCL_SYNTEC_CMD_ITEM &&
+                view.body_len >= NCL_SYNTEC_ITEM_BODY) {
+                /* §3.1: type | param A | param B | flag at [20..35]. */
+                uint32_t param_b = get_u32(view.body + 8);
+                uint16_t code = get_u16(frame + 10);
+                size_t item_body = 0;
+
+                mock->last_item_b = param_b;
+                mock->last_item_code = code;
+                if (mock->item_log_count <
+                    sizeof(mock->item_log) / sizeof(mock->item_log[0])) {
+                    mock->item_log[mock->item_log_count++] = param_b;
+                }
+                /* The answer repeats the request's 20 byte header and carries
+                 * the value after it (§3.2). */
+                memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                if (code == 0x071eu) {          /* PROGRAM: the body is text  */
+                    item_body = strlen(mock->program);
+                    if (item_body > 0) {
+                        memcpy(reply + NCL_SYNTEC_REPLY_BODY, mock->program,
+                               item_body);
+                    }
+                } else if (code == 0x0701u) {   /* WARNING: usually no body   */
+                    if (mock->warning_body) {
+                        reply[NCL_SYNTEC_REPLY_BODY] = 0x07;
+                        reply[NCL_SYNTEC_REPLY_BODY + 1] = 0x00;
+                        item_body = 2;
+                    }
+                } else {                        /* a u16 at [20..21]          */
+                    uint16_t value = mock_item_value(mock, param_b);
+                    reply[NCL_SYNTEC_REPLY_BODY] = (uint8_t)(value & 0xFF);
+                    reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)(value >> 8);
+                    item_body = 2;
+                }
+                /* Length counts what follows the 12 byte header. */
+                put_u32(reply,
+                        (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + item_body));
+                if (ncl_socket_send(peer, reply,
+                                    NCL_SYNTEC_REPLY_BODY + item_body) != NCL_OK) {
+                    break;
+                }
+                continue;
+            }
             /* The body is MMI_Request_KrnlAPI: funcID u2, code i4, sizeIn i4,
              * sizeOut i4, then the input bytes (§10.2). */
             if (view.body_len >= 14) {
@@ -462,7 +557,342 @@ static void test_through_the_manager(void)
     mock_stop(mock);
 }
 
+/*
+ * §3.1/§3.2: the nine items the delivery closed the loop on. The item table is
+ * checked against the captured STATUS frame byte for byte, and the nine getters
+ * run against the mock controller: it answers every item request the way the
+ * probe found a real one does - request echoed, value after the 20 byte header.
+ */
+static void test_items(void)
+{
+    /* The full STATUS frame from the doc (§3.1), with uSerial 0. */
+    static const uint8_t kStatusFrame[NCL_SYNTEC_ITEM_FRAME] = {
+        0x18, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x00, 0x07,
+        0xc8, 0x00, 0x00, 0x00, 0x07, 0x04, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+        0x08, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00};
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    const ncl_syntec_item *item;
+    syntec_mock *mock;
+    ncl_syntec_config config;
+    ncl_syntec *session;
+    char text[64];
+    char *err = NULL;
+    long long number = 0;
+    double speed = 0.0;
+    ncl_json *warnings = NULL;
+
+    NCL_TEST_CASE("§3.1: the item table holds the nine closed loop items");
+    NCL_CHECK_EQ_INT(ncl_syntec_item_count(), 9);
+    NCL_CHECK(ncl_syntec_item_lookup("STATUS") != NULL);
+    NCL_CHECK(ncl_syntec_item_lookup("read_status") != NULL);
+    item = ncl_syntec_item_lookup("partCount");
+    NCL_CHECK(item != NULL && item->param_b == 1000u);
+    NCL_CHECK(ncl_syntec_item_lookup("no-such-item") == NULL);
+    NCL_CHECK(ncl_syntec_item_at(ncl_syntec_item_count()) == NULL);
+
+    NCL_TEST_CASE("§3.1: the STATUS request is the captured 36 bytes");
+    item = ncl_syntec_item_lookup("STATUS");
+    NCL_CHECK(item != NULL);
+    NCL_CHECK_EQ_INT(
+        ncl_syntec_item_frame(frame, sizeof(frame), item, item->param_b, 0),
+        NCL_SYNTEC_ITEM_FRAME);
+    NCL_CHECK(memcmp(frame, kStatusFrame, sizeof(kStatusFrame)) == 0);
+
+    NCL_TEST_CASE("§3.1: param B is the register, uSerial the only moving byte");
+    item = ncl_syntec_item_lookup("FEED_SPEED");
+    NCL_CHECK(item != NULL);
+    NCL_CHECK_EQ_INT(
+        ncl_syntec_item_frame(frame, sizeof(frame), item, 12, 7),
+        NCL_SYNTEC_ITEM_FRAME);
+    NCL_CHECK_EQ_INT(get_u16(frame + 4), NCL_SYNTEC_CMD_ITEM);
+    NCL_CHECK_EQ_INT(get_u16(frame + 12), NCL_SYNTEC_CMD_KRML_API);
+    NCL_CHECK_EQ_INT(get_u32(frame + 28), 12u);
+    NCL_CHECK_EQ_INT(frame[14], 7);
+    NCL_CHECK_EQ_INT(frame[6], 0); /* FEED_SPEED's own flags */
+
+    mock = mock_start();
+    NCL_CHECK(mock != NULL);
+    if (mock == NULL) {
+        return;
+    }
+    mock_set_value(mock, 1000u, 1234u); /* PART_COUNT */
+    mock_set_value(mock, 10u, 4321u);   /* LINE_NUMBER */
+    mock_set_value(mock, 19u, 80u);     /* FEED_OVERRIDE */
+    mock_set_value(mock, 771u, 9000u);  /* SPDL_SPEED */
+    mock_set_value(mock, 21u, 90u);     /* SPDL_OVERRIDE */
+    mock_set_value(mock, 700u, 4321u);  /* FEED_SPEED's register */
+    mock_set_value(mock, 12u, 0u);      /* its unit state */
+    mock_set_value(mock, 76u, 70u);     /* its mode state */
+    snprintf(mock->program, sizeof(mock->program), "O1000");
+
+    ncl_syntec_config_default(&config);
+    NCL_CHECK_EQ_INT(config.port, 8000);
+    config.host = "127.0.0.1";
+    config.port = mock->port;
+    config.timeout_ms = 800;
+    NCL_CHECK(ncl_syntec_open(&config, &err) != NULL || err != NULL);
+    session = ncl_syntec_open(&config, &err);
+    NCL_CHECK(session != NULL);
+    if (session == NULL) {
+        mock_stop(mock);
+        return;
+    }
+
+    NCL_TEST_CASE("§3.2: STATUS maps the state enum");
+    mock_set_value(mock, 4u, 2u);
+    NCL_CHECK_EQ_INT(ncl_syntec_status(session, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "running");
+    mock_set_value(mock, 4u, 3u);
+    NCL_CHECK_EQ_INT(ncl_syntec_status(session, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "holding");
+    mock_set_value(mock, 4u, 4u);
+    NCL_CHECK_EQ_INT(ncl_syntec_status(session, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "free");
+    mock_set_value(mock, 4u, 9u);
+    NCL_CHECK_EQ_INT(ncl_syntec_status(session, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "unknown");
+
+    NCL_TEST_CASE("§3.2: the numeric items read their u16");
+    NCL_CHECK_EQ_INT(ncl_syntec_part_count(session, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 1234);
+    NCL_CHECK_EQ_INT(mock->last_item_b, 1000u);
+    NCL_CHECK_EQ_INT(ncl_syntec_line_number(session, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 4321);
+    NCL_CHECK_EQ_INT(ncl_syntec_feed_override(session, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 80);
+    NCL_CHECK_EQ_INT(ncl_syntec_spindle_speed(session, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 9000);
+    NCL_CHECK_EQ_INT(ncl_syntec_spindle_override(session, &number), NCL_OK);
+    NCL_CHECK_EQ_INT(number, 90);
+
+    NCL_TEST_CASE("§3.2: PROGRAM comes back as the body's text");
+    NCL_CHECK_EQ_INT(ncl_syntec_program(session, text, sizeof(text)), NCL_OK);
+    NCL_CHECK_EQ_STR(text, "O1000");
+
+    NCL_TEST_CASE("§3.2: FEED_SPEED asks 700, then the states 12 and 76");
+    mock->item_log_count = 0;
+    NCL_CHECK_EQ_INT(ncl_syntec_feed_speed(session, &speed), NCL_OK);
+    NCL_CHECK_EQ_INT((long long)speed, 4321);
+    NCL_CHECK_EQ_INT(mock->item_log_count, 3);
+    NCL_CHECK_EQ_INT(mock->item_log[0], 700u);
+    NCL_CHECK_EQ_INT(mock->item_log[1], 12u);
+    NCL_CHECK_EQ_INT(mock->item_log[2], 76u);
+
+    NCL_TEST_CASE("§3.2: a unit state of (0,0) is the factor 1.0");
+    mock_set_value(mock, 76u, 1u);
+    NCL_CHECK_EQ_INT(ncl_syntec_feed_speed(session, &speed), NCL_OK);
+    NCL_CHECK_EQ_INT((long long)speed, 4321);
+
+    NCL_TEST_CASE("§3.2: an uncaptured unit step says 还读不了, not a guess");
+    mock_set_value(mock, 12u, 32u);
+    NCL_CHECK_EQ_INT(ncl_syntec_feed_speed(session, &speed),
+                     NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(strstr(ncl_syntec_last_error(session), "单位换算表") != NULL);
+
+    NCL_TEST_CASE("§3.2: WARNING with no body is an empty list");
+    NCL_CHECK_EQ_INT(ncl_syntec_warning(session, &warnings), NCL_OK);
+    NCL_CHECK(warnings != NULL);
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(warnings), 0);
+    ncl_json_free(warnings);
+    warnings = NULL;
+
+    NCL_TEST_CASE("§3.2: a populated WARNING was never captured");
+    mock->warning_body = true;
+    NCL_CHECK_EQ_INT(ncl_syntec_warning(session, &warnings),
+                     NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(strstr(ncl_syntec_last_error(session), "待抓包") != NULL);
+    mock->warning_body = false;
+
+    ncl_syntec_close(session);
+    mock_stop(mock);
+}
+
+/** Index of a point by its model path, or (size_t)-1. */
+static size_t host_point_index(const ncl_host *host, const char *path)
+{
+    size_t i;
+
+    for (i = 0; i < ncl_host_point_count(host); i++) {
+        const char *candidate = ncl_host_point_path(host, i);
+
+        if (candidate != NULL && strcmp(candidate, path) == 0) {
+            return i;
+        }
+    }
+    return (size_t)-1;
+}
+
+/*
+ * The adapter itself: plugins/syntec.c is loaded as a module by protocol name
+ * (exactly the path the device program takes), the host turns its declaration
+ * into the model, and the nine points are read over the same mock controller.
+ * That is the "整机仿真" 10 册 §3.2 promised: adapter + client + captured frames.
+ */
+static void test_adapter(void)
+{
+    static const char *kPaths[] = {
+        "/MACHINE/STATUS",           "/MACHINE/PART_COUNT",
+        "/MACHINE/CONTROLLER/PROGRAM", "/MACHINE/WARNING",
+        "/MACHINE/LINE_NUMBER",      "/MACHINE/FEED_OVERRIDE",
+        "/MACHINE/SPINDLE_OVERRIDE", "/MACHINE/FEED_SPEED",
+        "/MACHINE/MOTOR@S1/SPEED"};
+    syntec_mock *mock;
+    ncl_module_set *modules;
+    ncl_strbuf err;
+    ncl_strbuf json;
+    ncl_json *config;
+    ncl_host *host = NULL;
+    const ncl_json *value;
+    long long number = 0;
+    double real = 0.0;
+    size_t i;
+
+    if (NCL_SYNTEC_PLUGIN_DIR[0] == '\0') {
+        return; /* built without the adapter modules (NCLINK_BUILD_PLUGINS=OFF) */
+    }
+    mock = mock_start();
+    NCL_CHECK(mock != NULL);
+    if (mock == NULL) {
+        return;
+    }
+    mock_set_value(mock, 4u, 2u);      /* STATUS = running */
+    mock_set_value(mock, 1000u, 1234u);
+    mock_set_value(mock, 10u, 4321u);
+    mock_set_value(mock, 19u, 80u);
+    mock_set_value(mock, 771u, 9000u);
+    mock_set_value(mock, 21u, 90u);
+    mock_set_value(mock, 700u, 4321u);
+    mock_set_value(mock, 12u, 0u);
+    mock_set_value(mock, 76u, 70u);
+    snprintf(mock->program, sizeof(mock->program), "O1000");
+
+    modules = ncl_modules_create();
+    ncl_strbuf_init(&err);
+    NCL_CHECK(modules != NULL);
+    NCL_TEST_CASE("the syntec adapter loads as a tool module");
+    if (modules == NULL ||
+        ncl_modules_add(modules, "syntec", NCL_SYNTEC_PLUGIN_DIR, &err) != NCL_OK) {
+        NCL_CHECK_EQ_INT((int)err.len, 0);
+        ncl_strbuf_free(&err);
+        mock_stop(mock);
+        return;
+    }
+    NCL_CHECK_EQ_INT((int)err.len, 0);
+    NCL_CHECK_EQ_STR(ncl_module_name(modules, 0), "syntec");
+
+    ncl_strbuf_init(&json);
+    (void)ncl_strbuf_printf(
+        &json,
+        "{ \"sn\": \"V000000001\","
+        "  \"tools\": [ { \"name\": \"syntec\", \"parameters\": {"
+        "     \"host\": \"127.0.0.1\", \"port\": %u, \"timeoutMs\": 800 } } ],"
+        "  \"device\": { \"type\": \"MACHINE\", \"id\": \"01\","
+        "                \"name\": \"新代机床\" },"
+        "  \"sample\": { \"intervalMs\": 250, \"uploadMs\": 250 } }",
+        mock->port);
+    config = ncl_json_parse_cstr(ncl_strbuf_cstr(&json), &err);
+    ncl_strbuf_free(&json);
+    NCL_CHECK(config != NULL);
+    if (config != NULL) {
+        host = ncl_host_create_with_modules(config, modules, &err);
+        ncl_json_free(config);
+    }
+    NCL_CHECK(host != NULL);
+    if (host == NULL) {
+        ncl_strbuf_free(&err);
+        ncl_modules_free(modules);
+        mock_stop(mock);
+        return;
+    }
+
+    NCL_TEST_CASE("the nine points are the model the device publishes");
+    NCL_CHECK_EQ_INT(ncl_host_point_count(host), 9);
+    for (i = 0; i < sizeof(kPaths) / sizeof(kPaths[0]); i++) {
+        NCL_CHECK(host_point_index(host, kPaths[i]) != (size_t)-1);
+    }
+    /* 模型里就是这台机床的能力面：路径是按树推出来的（模型文档里没有 path 字段），
+     * 采样通道只引用四样（状态、计件、程序名、报警）。 */
+    {
+        ncl_node *part = ncl_node_find_by_id(ncl_server_model(ncl_host_server(host)),
+                                            "p1");
+        NCL_CHECK(part != NULL);
+        if (part != NULL) {
+            NCL_CHECK_EQ_STR(ncl_node_path(part), "/MACHINE/PART_COUNT");
+        }
+        NCL_CHECK(ncl_node_find_by_type(ncl_server_model(ncl_host_server(host)),
+                                        NCL_NODE_TYPE_SAMPLE_CHANNEL) != NULL);
+    }
+
+    NCL_TEST_CASE("the adapter reads the nine items off the mock controller");
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/STATUS", &err), NCL_OK);
+    value = ncl_host_point_value(host, host_point_index(host, "/MACHINE/STATUS"));
+    NCL_CHECK(value != NULL);
+    NCL_CHECK_EQ_STR(ncl_json_as_string(value), "running");
+
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/PART_COUNT", &err), NCL_OK);
+    value = ncl_host_point_value(host,
+                                 host_point_index(host, "/MACHINE/PART_COUNT"));
+    NCL_CHECK(value != NULL && ncl_json_as_int(value, &number));
+    NCL_CHECK_EQ_INT(number, 1234);
+
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/CONTROLLER/PROGRAM", &err),
+                     NCL_OK);
+    value = ncl_host_point_value(
+        host, host_point_index(host, "/MACHINE/CONTROLLER/PROGRAM"));
+    NCL_CHECK(value != NULL);
+    NCL_CHECK_EQ_STR(ncl_json_as_string(value), "O1000");
+
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/WARNING", &err), NCL_OK);
+    value = ncl_host_point_value(host, host_point_index(host, "/MACHINE/WARNING"));
+    NCL_CHECK(value != NULL);
+    NCL_CHECK_EQ_INT(ncl_json_arr_len(value), 0); /* no alarm = empty list */
+
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/LINE_NUMBER", &err),
+                     NCL_OK);
+    value = ncl_host_point_value(host,
+                                 host_point_index(host, "/MACHINE/LINE_NUMBER"));
+    NCL_CHECK(value != NULL);
+    NCL_CHECK_EQ_STR(ncl_json_as_string(value), "4321"); /* 表 7 是 string */
+
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/FEED_OVERRIDE", &err),
+                     NCL_OK);
+    value = ncl_host_point_value(host,
+                                 host_point_index(host, "/MACHINE/FEED_OVERRIDE"));
+    NCL_CHECK(value != NULL && ncl_json_as_int(value, &number));
+    NCL_CHECK_EQ_INT(number, 80);
+
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/SPINDLE_OVERRIDE", &err),
+                     NCL_OK);
+    value = ncl_host_point_value(
+        host, host_point_index(host, "/MACHINE/SPINDLE_OVERRIDE"));
+    NCL_CHECK(value != NULL && ncl_json_as_int(value, &number));
+    NCL_CHECK_EQ_INT(number, 90);
+
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/MOTOR@S1/SPEED", &err),
+                     NCL_OK);
+    value = ncl_host_point_value(
+        host, host_point_index(host, "/MACHINE/MOTOR@S1/SPEED"));
+    NCL_CHECK(value != NULL && ncl_json_as_double(value, &real));
+    NCL_CHECK_EQ_INT((long long)real, 9000); /* 主轴转速，rpm */
+
+    NCL_TEST_CASE("FEED_SPEED goes through its three frames here too");
+    mock->item_log_count = 0;
+    NCL_CHECK_EQ_INT(ncl_host_poll_one(host, "/MACHINE/FEED_SPEED", &err), NCL_OK);
+    value = ncl_host_point_value(
+        host, host_point_index(host, "/MACHINE/FEED_SPEED"));
+    NCL_CHECK(value != NULL && ncl_json_as_double(value, &real));
+    NCL_CHECK_EQ_INT((long long)real, 4321);
+    NCL_CHECK_EQ_INT(mock->item_log_count, 3);
+
+    ncl_host_free(host);
+    ncl_strbuf_free(&err);
+    ncl_modules_free(modules);
+    mock_stop(mock);
+}
+
 NCL_TEST_MAIN_BEGIN()
     test_read();
     test_through_the_manager();
+    test_items();
+    test_adapter();
 NCL_TEST_MAIN_END()
