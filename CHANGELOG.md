@@ -32,6 +32,8 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
     `A` = `dwSizeOut`）。10 册新增 §11.9。
   * **顺手解开一个老疑问**：九项里的 PART_COUNT / SPDL_SPEED 用的就是 `0x041A` —— 它们本来就是
     **PLC R 寄存器读**（R1000 / R771）。现在按号读 R771 读出来还是 1000，两条路对得上。
+  * > **下面的路径下一版就改了**：PLC 后来改成 `REGISTER` 一类、一族一条
+    > （`/CONTROLLER/REGISTER@R` …），操作也按 HASH/LIST 分开 —— 见上面那条修正。
   * **新增客户面**（都只答读）：`/CONTROLLER/PLC/REGISTER`（R 寄存器表）、
     `/CONTROLLER/PLC/{I,O,C,S,A}BIT`（五种位表）、`/CONTROLLER/VARIABLE`（变量表，册 4 表 7 的
     `VARIABLE`，与 FANUC 的宏变量表同一个位置）。前两个名字是**扩展**：册 4 没有 PLC 这一格，
