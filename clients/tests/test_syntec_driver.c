@@ -81,6 +81,13 @@ typedef struct {
         size_t   count;
     } zones[4];
     size_t zone_count;
+    /* 参数区（§11.4）：参数号 -> 一个 i32（请求号 0x0404） */
+    struct {
+        uint32_t number;
+        int32_t  value;
+    } params[48];
+    size_t param_count;
+    uint32_t last_param;
 } syntec_mock;
 
 /** The value the mock answers for one register / state number (0 when unset). */
@@ -130,6 +137,24 @@ static void mock_set_zone(syntec_mock *mock, uint16_t zone,
         mock->zones[mock->zone_count].values[i] = values[i];
     }
     mock->zone_count++;
+}
+
+    /* 一台车床：X 在第 1 槽（端口 1），Z 在第 3 槽（端口 3），其余槽都是 0。 */
+static void mock_set_param(syntec_mock *mock, uint32_t number, int32_t value)
+{
+    size_t i;
+
+    for (i = 0; i < mock->param_count; i++) {
+        if (mock->params[i].number == number) {
+            mock->params[i].value = value;
+            return;
+        }
+    }
+    if (mock->param_count < sizeof(mock->params) / sizeof(mock->params[0])) {
+        mock->params[mock->param_count].number = number;
+        mock->params[mock->param_count].value = value;
+        mock->param_count++;
+    }
 }
 
 static void mock_main(void *arg)
@@ -218,6 +243,31 @@ static void mock_main(void *arg)
                 }
                 if (zone_handled) {
                     if (send_failed) {
+                        break;
+                    }
+                    continue;
+                }
+
+                /* 参数区（§11.4）：A = 4 + 4，B = 参数号，答一个 i32。 */
+                if (request == NCL_SYNTEC_CODE_PARAM_GET) {
+                    uint32_t raw = 0;
+                    size_t p;
+
+                    mock->last_param = param_b;
+                    for (p = 0; p < mock->param_count; p++) {
+                        if (mock->params[p].number == param_b) {
+                            raw = (uint32_t)mock->params[p].value;
+                            break;
+                        }
+                    }
+                    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+                    reply[NCL_SYNTEC_REPLY_BODY + 0] = (uint8_t)(raw & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 1] = (uint8_t)((raw >> 8) & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 2] = (uint8_t)((raw >> 16) & 0xFFu);
+                    reply[NCL_SYNTEC_REPLY_BODY + 3] = (uint8_t)((raw >> 24) & 0xFFu);
+                    put_u32(reply, (uint32_t)(NCL_SYNTEC_FUNCTION_HEADER + 4u));
+                    if (ncl_socket_send(peer, reply,
+                                        NCL_SYNTEC_REPLY_BODY + 4u) != NCL_OK) {
                         break;
                     }
                     continue;
@@ -771,6 +821,99 @@ static void test_items(void)
     mock_stop(mock);
 }
 
+/**
+ * §11.4：参数区（请求号 0x0404）与轴名。轴名不是猜出来的：控制器自己说的，321 + 槽 = 轴名代号（100 = X、300 = Z），21 + 槽 = 端口号（0 = 这一槽没接轴）。
+ */
+static void test_params(void)
+{
+    syntec_mock *mock = mock_start();
+    ncl_syntec_axis axes[NCL_SYNTEC_AXIS_SLOTS];
+    ncl_syntec_config config;
+    ncl_syntec *session;
+    char name[16];
+    char *err = NULL;
+    int32_t value = 0;
+    size_t count = 0;
+
+    NCL_TEST_CASE("§11.4: an axis name code decodes the client's way");
+    NCL_CHECK(ncl_syntec_axis_name_decode(100, name, sizeof(name)));
+    NCL_CHECK_EQ_STR(name, "X");
+    NCL_CHECK(ncl_syntec_axis_name_decode(102, name, sizeof(name)));
+    NCL_CHECK_EQ_STR(name, "X2");
+    NCL_CHECK(ncl_syntec_axis_name_decode(300, name, sizeof(name)));
+    NCL_CHECK_EQ_STR(name, "Z");
+    NCL_CHECK(ncl_syntec_axis_name_decode(901, name, sizeof(name)));
+    NCL_CHECK_EQ_STR(name, "W1");
+    /* 0 与 >= 10000 都是“这一槽没有名字”：空串是答案，不是错 */
+    NCL_CHECK(ncl_syntec_axis_name_decode(0, name, sizeof(name)));
+    NCL_CHECK_EQ_STR(name, "");
+    NCL_CHECK(ncl_syntec_axis_name_decode(10999, name, sizeof(name)));
+    NCL_CHECK_EQ_STR(name, "");
+
+    NCL_CHECK(mock != NULL);
+    if (mock == NULL) {
+        return;
+    }
+    /* 一台车床：X 在第 1 槽（端口 1），Z 在第 3 槽（端口 3），其余槽都是 0。 */
+    mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_PORT + 0u, 1);
+    mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_NAME + 0u, 100); /* X */
+    mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_PORT + 2u, 3);
+    mock_set_param(mock, NCL_SYNTEC_PARAM_AXIS_NAME + 2u, 300); /* Z */
+
+    ncl_syntec_config_default(&config);
+    config.host = "127.0.0.1";
+    config.port = mock->port;
+    config.timeout_ms = 800;
+    session = ncl_syntec_open(&config, &err);
+    NCL_CHECK(session != NULL);
+    if (session == NULL) {
+        mock_stop(mock);
+        return;
+    }
+
+    NCL_TEST_CASE("§11.4: a parameter is one i32 behind request 0x0404");
+    NCL_CHECK_EQ_INT(ncl_syntec_param(session, NCL_SYNTEC_PARAM_AXIS_NAME, &value),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT(value, 100);
+    NCL_CHECK_EQ_INT(mock->last_param, NCL_SYNTEC_PARAM_AXIS_NAME);
+    NCL_CHECK_EQ_INT(ncl_syntec_param(session, 0, &value), NCL_ERR_INVALID_ARG);
+
+    NCL_TEST_CASE("§11.4: the axis table is what the controller says");
+    NCL_CHECK_EQ_INT(ncl_syntec_axes(session, axes, NCL_SYNTEC_AXIS_SLOTS,
+                                     &count),
+                     NCL_OK);
+    NCL_CHECK_EQ_INT(count, 2);
+    NCL_CHECK_EQ_INT(axes[0].slot, 0);
+    NCL_CHECK_EQ_INT(axes[0].port, 1);
+    NCL_CHECK_EQ_STR(axes[0].name, "X");
+    NCL_CHECK_EQ_INT(axes[1].slot, 2);
+    NCL_CHECK_EQ_INT(axes[1].port, 3);
+    NCL_CHECK_EQ_STR(axes[1].name, "Z");
+
+    NCL_TEST_CASE("§11.4: one axis name on its own, and an unused slot");
+    NCL_CHECK_EQ_INT(ncl_syntec_axis_name(session, 2, name, sizeof(name)),
+                     NCL_OK);
+    NCL_CHECK_EQ_STR(name, "Z");
+    NCL_CHECK_EQ_INT(ncl_syntec_axis_name(session, 1, name, sizeof(name)),
+                     NCL_OK);
+    NCL_CHECK_EQ_STR(name, ""); /* 没接轴 */
+    NCL_CHECK_EQ_INT(ncl_syntec_axis_name(session, NCL_SYNTEC_AXIS_SLOTS, name,
+                                          sizeof(name)),
+                     NCL_ERR_INVALID_ARG);
+
+    NCL_TEST_CASE("§11.4: no axis at all says so instead of guessing");
+    mock->param_count = 0;
+    count = 123;
+    NCL_CHECK_EQ_INT(ncl_syntec_axes(session, axes, NCL_SYNTEC_AXIS_SLOTS,
+                                     &count),
+                     NCL_ERR_UNAVAILABLE);
+    NCL_CHECK_EQ_INT(count, 0);
+    NCL_CHECK(strstr(ncl_syntec_last_error(session), "轴表") != NULL);
+
+    ncl_syntec_close(session);
+    mock_stop(mock);
+}
+
 /** Index of a point by its model path, or (size_t)-1. */
 static size_t host_point_index(const ncl_host *host, const char *path)
 {
@@ -1005,5 +1148,6 @@ NCL_TEST_MAIN_BEGIN()
     test_read();
     test_through_the_manager();
     test_items();
+    test_params();
     test_adapter();
 NCL_TEST_MAIN_END()

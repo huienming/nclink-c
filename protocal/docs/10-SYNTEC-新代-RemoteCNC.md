@@ -915,3 +915,68 @@ iNC-BOX 的格子是**按轴 × 驱动链**分层的（`/AXIS@<轴>/MOTOR/POSITI
 八个位置点位全 0.0（画面 X/Z `0.000` ✓）。mock 侧另加了一条断言：脚本把 X 摆
 `1234`、Z 摆 `-500`、小数位 3 → 读到 **1.234 / -0.5** ✓，证明"int16 + 10^-dec"这条解码
 （不是只跟 0 对得上）。
+
+### 11.4 轴名：在参数区（ 2026-09-22，21A 实测，**已实现**）
+
+**结论：轴名读得到，而且不是猜的。**
+轴名不在状态区，在 **系统参数区**——另一族
+KrnlAPI：帧形状与状态区一模一样（§3.1），只有请求号不同。
+请求号出自控制器侧 `Syntec.OpenCNC.dll` 的
+`OCK_CODE::CODE(type, id) = (type << 10) | id`：
+
+| 请求号 | `OCK_CODE` 字段 | In | Out |
+|---|---|---|---|
+| `0x0401` | `CncParamGetCapacity` | `{ }` | `{ hr, nValue }` |
+| `0x0402` | `CncParamDump` | `{ nLength }` | `{ hr, TParamSpec[nLength] }` |
+| `0x0404` | `CncParamGetValue` | `{ nNo }` | `{ hr, nValue:i32 }` |
+| `0x0407` | `NcStateGetValue` | `{ nNo }` | `{ hr, nValue:i16[] }` |
+
+（0x0407 就是我们一直在用的状态区读法：`CODE(1,7)`。）
+
+* **参数值与状态区不同宽**：一个参数是一个 **i32**（`A = 4 + 4`），状态区是 int16。
+* **轴名行号固定**（`CncParamDump` 拓下来的 `TParamSpec` 表，21A 共 **3784** 条）：
+
+| 参数号 | 控制器里的标题（原文） |
+|---|---|
+| `21 + 槽` | `*Port no. for Nth axis`（端口号，0 = 这一槽没接轴） |
+| `221 + 槽` | `Nth axis type(0:Linear;1-5:Rotation Type A-E)` |
+| `321 + 槽` | `*Nth axis axis name` |
+
+* **轴名代号解码**（抄客户端 `get_AllAxisName()`）：
+  `letter = 代号 / 100` 是 `"XYZABCUVW"` 里的位置（1 = X），
+  `digit = 代号 % 100` 是后缀（0 = 没有）。
+  100 = `X`、102 = `X2`、300 = `Z`、901 = `W1`；
+  **0 与 >= 10000 都是“这一槽没有名字”**（客户端也是这么滤的）。
+* **哪些轴在用**（抄客户端 `get_EnableAxisMappingID()`）：
+  端口号 > 0 **且** 0 < 轴名代号 < 10000。
+  `get_MaxUsedAxisID()` 又是这张表的**最后一条**，
+  而状态区一共 `MaxUsedAxisID + 1` 项——这就是位置数组的长度。
+
+**21A 实测**（`/AXES` 方法的回答，与 Python 探针逐字一致）：
+
+```json
+{"count":4,"stateCount":6,"axes":[
+  {"index":0,"axis":1,"port":1,"name":"X"},
+  {"index":1,"axis":2,"port":1,"name":"Y"},
+  {"index":2,"axis":3,"port":3,"name":"Z"},
+  {"index":3,"axis":6,"port":6,"name":"C"}]}
+```
+
+* `stateCount = 6` 与“状态区 261 只答第 1 项 3 位小数、其余全 0”对得上：状态区确实有 6 项。
+* **⚠ 与 §11.3.3 的声明不一致**：声明里按 `X=0、Z=1` 写死，而这台模拟器说
+  **位置下标 1 是第 2 轴 `Y`**（Z 是下标 2）。也就是说 `/AXIS@Z/...` 这一列点的
+  *名字*是声明里写死的、不是从控制器读的。要让 iNC-BOX 的
+  `/AXIS@<名>/...` 名副其实，只有两条路：把轴表做成**工具参数**
+  （`"axes": ["X","Z"]`），或把点位表**运行时构造**（`ncl_tool_register()`
+  的声明本来就是数据，可以堆上拼）。**目前没做**：先把控制器说的
+  原样报在 `/AXES` 里，不在代码里猜一个名字。
+* **代码**：client 侧 `ncl_syntec_param()` / `ncl_syntec_axis_name()` /
+  `ncl_syntec_axis_name_decode()` / `ncl_syntec_axes()`；适配器侧多一个方法 `/AXES`
+  （REST：`POST /api/syntec/AXES`）。
+* **实测**：mock 里脚本化 `21+0=1, 321+0=100, 21+2=3, 321+2=300`
+  → 轴表答 `X(槽 0, 端口 1)`、`Z(槽 2, 端口 3)`，
+  没轴时回 `NCL_ERR_UNAVAILABLE`（理由 `轴表`）；21A 上 `--once` 仍
+  **17/17 可读、0 失败**，`POST /api/syntec/AXES` 答 4 条轴。
+* **参数表本身也能读**（`0x0402`，`A = 4 + nLength * 268`，一条
+  `TParamSpec` = `u16 No` + `u16 留白` + `wchar Title[128]` + `u32` + `u32 默认值`）：
+  21A 上 `0x0401` 答 **3784**，按这个步长全表读回 1,014,112 字节，标题全对得上。

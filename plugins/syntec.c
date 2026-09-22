@@ -173,6 +173,64 @@ static ncl_err syntec_session(void *ctx, const ncl_json *params, ncl_json **resu
     return NCL_OK;
 }
 
+/**
+ * `/AXES`：控制器自己说有哪些轴（§11.4）。
+ *
+ * 参数表的口径（槽号、端口号、名字）与位置区的口径（`stateCount`：状态区一项
+ * 里有几个轴值，等于客户端的 `get_MaxUsedAxisID() + 1`）都在这里：位置数组第 i
+ * 个就是 `axes[i]`。轴表读不到就照实回 NCL_ERR_UNAVAILABLE，不猜一个名字出来。
+ */
+static ncl_err syntec_axes(void *ctx, const ncl_json *params, ncl_json **result,
+                           char **reason)
+{
+    ncl_syntec_axis axes[NCL_SYNTEC_AXIS_SLOTS];
+    ncl_syntec *syntec = (ncl_syntec *)ctx;
+    ncl_json *array;
+    ncl_json *reply;
+    size_t count = 0;
+    size_t i;
+    ncl_err rc;
+
+    (void)params;
+    rc = ncl_syntec_axes(syntec, axes, sizeof(axes) / sizeof(axes[0]), &count);
+    if (rc != NCL_OK) {
+        return ncl_tool_fail(reason, rc, "%s", ncl_syntec_last_error(syntec));
+    }
+    array = ncl_json_new_array();
+    reply = ncl_json_new_object();
+    if (array == NULL || reply == NULL) {
+        ncl_json_free(array);
+        ncl_json_free(reply);
+        return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+    }
+    for (i = 0; i < count; i++) {
+        ncl_json *entry = ncl_json_new_object();
+
+        if (entry == NULL) {
+            ncl_json_free(array);
+            ncl_json_free(reply);
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        /* index：位置数组下标；axis：参数表里的第几个轴（1 起数）。 */
+        (void)ncl_json_obj_set_int(entry, "index", (long long)i);
+        (void)ncl_json_obj_set_int(entry, "axis", (long long)axes[i].slot + 1);
+        (void)ncl_json_obj_set_int(entry, "port", (long long)axes[i].port);
+        (void)ncl_json_obj_set_string(entry, "name", axes[i].name);
+        if (ncl_json_arr_push(array, entry) != NCL_OK) {
+            ncl_json_free(array);
+            ncl_json_free(reply);
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+    }
+    (void)ncl_json_obj_set_int(reply, "count", (long long)count);
+    /* 状态区一项的条目数：客户端用 get_MaxUsedAxisID() + 1 当读数长度。 */
+    (void)ncl_json_obj_set_int(reply, "stateCount",
+                               (long long)axes[count - 1].slot + 1);
+    (void)ncl_json_obj_set(reply, "axes", array);
+    *result = reply;
+    return NCL_OK;
+}
+
 /** §6 的审计要原始报文：问 client 一句就够，账由宿主管。 */
 static void syntec_last_raw(void *ctx, ncl_tool_frames *out)
 {
@@ -220,6 +278,8 @@ NCL_TOOL_BEGIN("syntec", "SYNTEC RemoteCNC over TCP (8000), read only",
     NCL_DATAITEM_F64("/AXIS@Z/MOTOR/VARIABLE@DISTANCE", syntec_distance_position, 1)
 
     NCL_METHOD_CALL("/SESSION", syntec_session)
+    /* 轴表的元数据：名字与槽号都从控制器读（§11.4），客户端照着建路径。 */
+    NCL_METHOD_CALL("/AXES", syntec_axes)
 
 NCL_TOOL_END_WITH_RAW(syntec_last_raw)
 

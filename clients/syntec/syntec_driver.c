@@ -988,6 +988,135 @@ ncl_err ncl_syntec_position(ncl_syntec *syntec, unsigned zone, size_t count,
     return NCL_OK;
 }
 
+/* =============================================================== 参数区 == */
+
+ncl_err ncl_syntec_param(ncl_syntec *syntec, unsigned param, int32_t *value)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t serial;
+    ncl_syntec_view view;
+    ncl_err err;
+
+    if (syntec == NULL || value == NULL || param == 0 || param > 0xFFFFu) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    ncl_mutex_lock(syntec->mutex);
+    err = syntec_open_session(syntec);
+    if (err == NCL_OK) {
+        serial = (uint8_t)syntec->serial;
+        if (ncl_syntec_param_frame(frame, sizeof(frame), param, serial) == 0) {
+            err = NCL_ERR_RANGE;
+        } else {
+            err = syntec_exchange_frame(syntec, frame, sizeof(frame), serial,
+                                        &view);
+        }
+    }
+    ncl_mutex_unlock(syntec->mutex);
+    if (err != NCL_OK) {
+        syntec_close_session(syntec);
+        return syntec_note(syntec, err, "参数区");
+    }
+    if (!ncl_syntec_reply_i32(syntec->rx, syntec->last_rx_len, value)) {
+        return syntec_note(syntec, NCL_ERR_RANGE, "参数区");
+    }
+    return NCL_OK;
+}
+
+bool ncl_syntec_axis_name_decode(int32_t code, char *out, size_t cap)
+{
+    /* 客户端的 get_AllAxisName()：字母表就是这九个，1 起数。 */
+    static const char letters[] = "XYZABCUVW";
+    int32_t letter;
+    int32_t digit;
+    size_t used = 0;
+
+    if (out == NULL || cap == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    if (code <= 0 || code >= 10000) {
+        return true; /* 这一槽没有名字，不是错误 */
+    }
+    letter = code / 100;
+    digit = code % 100;
+    if (letter > 0 && (size_t)letter <= sizeof(letters) - 1u) {
+        out[used++] = letters[letter - 1];
+        out[used] = '\0';
+    }
+    if (digit > 0) {
+        snprintf(out + used, cap - used, "%d", (int)digit);
+    }
+    return true;
+}
+
+ncl_err ncl_syntec_axis_name(ncl_syntec *syntec, unsigned slot, char *out,
+                             size_t cap)
+{
+    int32_t code = 0;
+    ncl_err err;
+
+    if (out == NULL || cap == 0 || slot >= NCL_SYNTEC_AXIS_SLOTS) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    err = ncl_syntec_param(syntec, NCL_SYNTEC_PARAM_AXIS_NAME + slot, &code);
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (!ncl_syntec_axis_name_decode(code, out, cap)) {
+        return NCL_ERR_RANGE;
+    }
+    return NCL_OK;
+}
+
+ncl_err ncl_syntec_axes(ncl_syntec *syntec, ncl_syntec_axis *out, size_t cap,
+                        size_t *count)
+{
+    size_t found = 0;
+    unsigned slot;
+
+    if (syntec == NULL || out == NULL || count == NULL || cap == 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *count = 0;
+    for (slot = 0; slot < NCL_SYNTEC_AXIS_SLOTS; slot++) {
+        char name[NCL_SYNTEC_AXIS_NAME_MAX];
+        int32_t port = 0;
+        int32_t code = 0;
+        ncl_err err;
+
+        /* 判据与客户端一样：端口号 > 0 且 0 < 轴名代号 < 10000（见头文件）。 */
+        err = ncl_syntec_param(syntec, NCL_SYNTEC_PARAM_AXIS_PORT + slot, &port);
+        if (err != NCL_OK) {
+            return err;
+        }
+        err = ncl_syntec_param(syntec, NCL_SYNTEC_PARAM_AXIS_NAME + slot, &code);
+        if (err != NCL_OK) {
+            return err;
+        }
+        if (port <= 0 || code <= 0 || code >= 10000) {
+            continue;
+        }
+        if (!ncl_syntec_axis_name_decode(code, name, sizeof(name)) ||
+            name[0] == '\0') {
+            continue;
+        }
+        if (found >= cap) {
+            return NCL_ERR_RANGE;
+        }
+        memset(&out[found], 0, sizeof(out[found]));
+        out[found].slot = slot;
+        out[found].port = port;
+        snprintf(out[found].name, sizeof(out[found].name), "%s", name);
+        found++;
+    }
+    *count = found;
+    if (found == 0) {
+        return syntec_note(syntec, NCL_ERR_UNAVAILABLE, "轴表");
+    }
+    return NCL_OK;
+}
+
 void ncl_syntec_last_raw(const ncl_syntec *syntec, const uint8_t **request,
                          size_t *request_len, const uint8_t **reply,
                          size_t *reply_len)

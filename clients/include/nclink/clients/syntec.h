@@ -228,6 +228,30 @@ bool ncl_syntec_item_empty(const uint8_t *frame, size_t len);
 size_t ncl_syntec_zone_frame(uint8_t *out, size_t cap, unsigned zone,
                              size_t count, uint8_t serial);
 
+/**
+ * §11.4：系统参数区是**另一族 KrnlAPI**，帧形状与状态区一模一样，只有请求号
+ * 不同。请求号出自控制器里的 `OCK_CODE::CODE(type, id) = (type << 10) | id`：
+ *
+ *   0x0401 CncParamGetCapacity   In { }         Out { hr, nValue }
+ *   0x0402 CncParamDump          In { nLength } Out { hr, TParamSpec[nLength] }
+ *   0x0404 CncParamGetValue      In { nNo }     Out { hr, nValue:i32 }
+ *   0x0407 NcStateGetValue       In { nNo }     Out { hr, nValue:i16[] }
+ *
+ * 参数值与状态区**不同宽**：一个参数是一个 **i32**，所以 A = 4 + 4。轴名就在这一
+ * 区（321 + 槽），见 `ncl_syntec_axis_name()`。
+ */
+#define NCL_SYNTEC_CODE_PARAM_CAPACITY 0x0401u
+#define NCL_SYNTEC_CODE_PARAM_SCHEMA 0x0402u
+#define NCL_SYNTEC_CODE_PARAM_GET 0x0404u
+#define NCL_SYNTEC_CODE_STATE_GET 0x0407u
+
+/** Build one parameter read: request 0x0404, A = 8, B = the parameter number. */
+size_t ncl_syntec_param_frame(uint8_t *out, size_t cap, unsigned param,
+                              uint8_t serial);
+
+/** The i32 a parameter answer carries ([20..23], little endian). */
+bool ncl_syntec_reply_i32(const uint8_t *frame, size_t len, int32_t *value);
+
 /* ============================================================ state zones == */
 
 /*
@@ -293,6 +317,59 @@ ncl_err ncl_syntec_decimals(ncl_syntec *syntec, int *decimals);
  */
 ncl_err ncl_syntec_position(ncl_syntec *syntec, unsigned zone, size_t count,
                             double *out);
+
+/* ============================================================== 参数区 == */
+
+/*
+ * §11.4：轴名不是状态区里的东西，它在**系统参数区**（请求号 0x0404），而且
+ * 每个轴一行、行号固定（表 21A 的 `*Nth axis axis name`）：
+ *
+ *   21  + 槽  "Port no. for Nth axis"     端口号，0 = 这一槽没接轴
+ *   321 + 槽  "*Nth axis axis name"       轴名代号（下面的解码规则）
+ *
+ * 客户端的 `get_AllAxisName()` 就是这么拼的：`XXX... = "XYZABCUVW"`，
+ * `letter = code / 100`（1 = X、2 = Y、3 = Z、4 = A …），`digit = code % 100`
+ * （0 = 没有后缀）。所以 100 = "X"、102 = "X2"、323 → 300 = "Z"、901 = "W1"。
+ */
+#define NCL_SYNTEC_PARAM_AXIS_PORT 21u  /**< + 槽：轴控端口号            */
+#define NCL_SYNTEC_PARAM_AXIS_NAME 321u /**< + 槽：轴名代号              */
+/** 参数表里的轴槽数：第 1..16 槽（§11.4 抓到的 `*Nth axis ...` 到 16）。 */
+#define NCL_SYNTEC_AXIS_SLOTS 16u
+/** 轴名的字节数：一个字母 + 两位数字 + 终止符，8 字节有余。 */
+#define NCL_SYNTEC_AXIS_NAME_MAX 8u
+
+/** Read one system parameter (KrnlAPI 0x0404, one i32). */
+ncl_err ncl_syntec_param(ncl_syntec *syntec, unsigned param, int32_t *value);
+
+/**
+ * 一个轴名代号 → 字符串（§11.4）。0 与 ≥ 10000 都是"这一槽没有名字"，回空串；
+ * 这不是错误，所以照样返回 true。@p cap 至少给 8 字节
+ * （NCL_SYNTEC_AXIS_NAME_MAX）。
+ */
+bool ncl_syntec_axis_name_decode(int32_t code, char *out, size_t cap);
+
+/** 第 @p slot 槽（0 = 第一个）的轴名；这一槽没有名字时回空串。 */
+ncl_err ncl_syntec_axis_name(ncl_syntec *syntec, unsigned slot, char *out,
+                             size_t cap);
+
+/** 一条"在用的轴"：参数槽、端口号、名字。 */
+typedef struct {
+    unsigned slot;                           /**< 0 = X/Y/Z 那一行        */
+    int32_t  port;                           /**< 21 + slot 的端口号      */
+    char     name[NCL_SYNTEC_AXIS_NAME_MAX]; /**< "X" / "X2" / "Z" …      */
+} ncl_syntec_axis;
+
+/**
+ * 控制器说自己在用哪些轴，次序就是位置数组的次序（表里第 0 条 = 位置第 0 个）。
+ * 判据抄自客户端的 `get_EnableAxisMappingID()`：**端口号 > 0 且 0 < 轴名代号 <
+ * 10000** 的槽才算数；`get_MaxUsedAxisID()` 又是这张表的**最后一条**，而状态区
+ * 一共有 `MaxUsedAxisID + 1` 项——所以轴表也顺带告诉了你位置数组有多长。
+ *
+ * 一条都没读到时回 NCL_ERR_UNAVAILABLE（理由写在 ncl_syntec_last_error()），
+ * 而不是猜一个轴出来。@p out 是调用者的数组，@p count 回填实际条数。
+ */
+ncl_err ncl_syntec_axes(ncl_syntec *syntec, ncl_syntec_axis *out, size_t cap,
+                        size_t *count);
 
 /* The nine items, each one named after what it reads (§3.2). A call that the
  * captured material does not cover answers NCL_ERR_UNAVAILABLE - "还读不了" -

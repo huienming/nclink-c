@@ -229,6 +229,48 @@ static void test_bodies(void)
     NCL_CHECK_EQ_INT(ncl_syntec_path_body(body, 4, 1, "x"), 0);
 }
 
+static void test_param_frame(void)
+{
+    uint8_t frame[NCL_SYNTEC_ITEM_FRAME];
+    uint8_t reply[NCL_SYNTEC_REPLY_BODY + 4u];
+    int32_t value = 0;
+
+    NCL_TEST_CASE("11.4: a parameter read is the same frame with request 0x0404");
+    NCL_CHECK_EQ_INT(ncl_syntec_param_frame(frame, sizeof(frame), 321u, 0u),
+                     NCL_SYNTEC_ITEM_FRAME);
+    NCL_CHECK_EQ_INT(frame[4], NCL_SYNTEC_CMD_ITEM); /* CmdID 16 */
+    NCL_CHECK_EQ_INT(frame[16], 0x04);               /* the request ... */
+    NCL_CHECK_EQ_INT(frame[17], 0x04);               /* ... little endian */
+    NCL_CHECK_EQ_INT(frame[20], 4);                  /* type */
+    NCL_CHECK_EQ_INT(frame[24], 8);                  /* A = 4 + 4, one i32 */
+    NCL_CHECK_EQ_INT(frame[28], 321 & 0xFF);         /* B = the parameter */
+    NCL_CHECK_EQ_INT(frame[29], (321 >> 8) & 0xFF);
+    NCL_CHECK_EQ_INT(frame[32], 1);                  /* flag */
+    /* The state zone keeps its own request number. */
+    NCL_CHECK_EQ_INT(ncl_syntec_zone_frame(frame, sizeof(frame), 101u, 2u, 0u),
+                     NCL_SYNTEC_ITEM_FRAME);
+    NCL_CHECK_EQ_INT(frame[16], 0x07);
+    NCL_CHECK_EQ_INT(frame[17], 0x04);
+    NCL_CHECK_EQ_INT(frame[24], 8);
+    /* Too small a buffer is refused, not truncated. */
+    NCL_CHECK_EQ_INT(ncl_syntec_param_frame(frame, 8, 321u, 0u), 0);
+
+    NCL_TEST_CASE("11.4: a parameter answer is one i32 after the 20 byte header");
+    memset(reply, 0, sizeof(reply));
+    memcpy(reply, frame, NCL_SYNTEC_REPLY_BODY);
+    reply[NCL_SYNTEC_REPLY_BODY + 0] = 0x2C;
+    reply[NCL_SYNTEC_REPLY_BODY + 1] = 0x01; /* 300 = the axis name Z */
+    NCL_CHECK(ncl_syntec_reply_i32(reply, sizeof(reply), &value));
+    NCL_CHECK_EQ_INT(value, 300);
+    reply[NCL_SYNTEC_REPLY_BODY + 0] = 0xFF; /* -1 is a value, not an error */
+    reply[NCL_SYNTEC_REPLY_BODY + 1] = 0xFF;
+    reply[NCL_SYNTEC_REPLY_BODY + 2] = 0xFF;
+    reply[NCL_SYNTEC_REPLY_BODY + 3] = 0xFF;
+    NCL_CHECK(ncl_syntec_reply_i32(reply, sizeof(reply), &value));
+    NCL_CHECK_EQ_INT(value, -1);
+    NCL_CHECK(!ncl_syntec_reply_i32(reply, NCL_SYNTEC_REPLY_BODY + 3u, &value));
+}
+
 static void test_crc(void)
 {
     static const uint8_t kData[] = {0x01, 0x02, 0x03, 0x04};
@@ -244,5 +286,6 @@ NCL_TEST_MAIN_BEGIN()
     test_commands();
     test_readings();
     test_bodies();
+    test_param_frame();
     test_crc();
 NCL_TEST_MAIN_END()

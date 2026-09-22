@@ -537,26 +537,54 @@ bool ncl_syntec_item_i16(const uint8_t *frame, size_t len, size_t index,
     return true;
 }
 
+/*
+ * §11.4：状态区与参数区共用同一种帧，只有请求号（§3.1 的 [16..19]）不同。
+ * 把"请求号 + 索引 + 要几个字节"抽出来，两个读法都是它的一行调用。
+ */
+static size_t syntec_code_frame(uint8_t *out, size_t cap, uint32_t request,
+                                unsigned index, size_t bytes, uint8_t serial)
+{
+    size_t answer = 4u + bytes; /* 回答里的那个 4 字节字 + 正文 */
+    ncl_syntec_item item;
+
+    if (out == NULL || cap < NCL_SYNTEC_ITEM_FRAME || answer > 0xFFFFFFFFu) {
+        return 0;
+    }
+    memset(&item, 0, sizeof(item));
+    item.name = "CODE";
+    item.flags = 0x0000u;
+    item.code = 0x0700u;
+    item.request = request;
+    item.param_a = (uint32_t)answer;
+    item.param_b = (uint32_t)index;
+    item.flag = 1u;
+    return ncl_syntec_item_frame(out, cap, &item, (uint32_t)index, serial);
+}
+
 size_t ncl_syntec_zone_frame(uint8_t *out, size_t cap, unsigned zone,
                              size_t count, uint8_t serial)
 {
-    size_t bytes = 4u + count * 2u; /* the answer's word + count int16 */
-    ncl_syntec_item item;
-
-    if (out == NULL || cap < NCL_SYNTEC_ITEM_FRAME || bytes > 0xFFFFFFFFu) {
-        return 0;
-    }
     /* The zone read is the §3.1 frame shape with A/B doing the work:
      * A = 4 + 2*count (the answer's byte count), B = the zone number. */
-    memset(&item, 0, sizeof(item));
-    item.name = "ZONE";
-    item.flags = 0x0000u;
-    item.code = 0x0700u;
-    item.request = 0x0407u;
-    item.param_a = (uint32_t)bytes;
-    item.param_b = (uint32_t)zone;
-    item.flag = 1u;
-    return ncl_syntec_item_frame(out, cap, &item, (uint32_t)zone, serial);
+    return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_STATE_GET, zone,
+                             count * 2u, serial);
+}
+
+size_t ncl_syntec_param_frame(uint8_t *out, size_t cap, unsigned param,
+                              uint8_t serial)
+{
+    /* §11.4：一个参数是一个 i32，所以 A = 4 + 4，B = 参数号。 */
+    return syntec_code_frame(out, cap, NCL_SYNTEC_CODE_PARAM_GET, param,
+                             sizeof(int32_t), serial);
+}
+
+bool ncl_syntec_reply_i32(const uint8_t *frame, size_t len, int32_t *value)
+{
+    if (frame == NULL || value == NULL || len < NCL_SYNTEC_REPLY_BODY + 4u) {
+        return false;
+    }
+    *value = (int32_t)get_u32(frame + NCL_SYNTEC_REPLY_BODY);
+    return true;
 }
 
 bool ncl_syntec_item_empty(const uint8_t *frame, size_t len)
