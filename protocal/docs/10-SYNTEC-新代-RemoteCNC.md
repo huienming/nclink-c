@@ -786,3 +786,45 @@ PLC（20 个 API，含寄存器/位/定时器/计数器读写）。这些都能�
 > 对本模拟器（10.116.54N）的 `READ_position` **会卡住不返回**（等了 2 分钟）；
 > 这也解释了那套客户端为什么没留下数值结果。**我们按抓包实现的裸协议驱动是通的**
 > （九项 9/9，值与画面逐项一致），所以后续扩展不必依赖官方 v2 客户端。
+
+### 11.3 位置与跟随误差（2026-09-22 核查，**未实现**）
+
+**`READ_position` 是位置，而且不是一个数**。官方客户端的签名（`ExampleForm.cs` /
+`SyntecTest.cs`）是：
+
+```
+READ_position(out string[] AxisName, out short DecPoint, out string[] Unit,
+              out float[] Mach, out float[] Abs, out float[] Rel, out float[] Dist)
+```
+
+`AxisName` / `DecPoint` / `Unit` + **四组按轴的数值**：机械 `Mach`、绝对 `Abs`、
+相对 `Rel`、**剩余距离 `Dist`**。`D:\codex\syntec_re\api_codes.txt`（薄壳交给 worker
+的常量表）也印证了分组：`AxisName←_Pc=[0,1]`、`Unit←_4C=[0,0,1]`、`Mach←_Jb=[1,0,1]`、
+`Abs/Rel/Dist←_cd/_nc/_oc` —— **四组各一次调用**，所以一次 `READ_position` 会开多条连接
+（与 §3.2"每项自己建一条连接"同源）。
+
+21A 模拟器上它的首帧 = `request 0x041e / code 0x050b`，`A=36`、`B=4`，应答 52 字节
+（正文 40 字节）。**正文布局还没解**：那 40 字节是 8 个 32 位字（`0x0200`×5、`0x0100`×3，
+正好 = 4 组 × 2 轴），但 0.000 的编码方式没定；官方 v2.1.0.12 客户端解不了这台
+10.116.54N 的模拟器（版本不匹配），所以不能拿它当解码器。
+
+**`READ_position` 里没有"跟随误差"**。它那四组是**坐标系**（机械/绝对/相对/剩余距离），
+不是"指令 vs 实际"。跟随误差（位置偏差 / 伺服滞后）得走：
+
+| 候选 | 出处 |
+|---|---|
+| `READ_state_variable` | 官方 API（`api_codes.txt`：`_s=[0,5,1,0]`） |
+| `READ_SerialStateVar_*` / DAQ | §4.9 伺服状态变量与采样 |
+| `/AXIS@n/SERVO_DRIVER/VARIABLE@RSHORT` | i-BOX 的伺服专有变量格子（§0.3 路径字典） |
+
+FANUC 那条我们是"指令 = 实际 − `cnc_srvdelay`"推出来的；**Syntec 的 `Mach/Abs/Rel`
+不是指令/实际，推不出跟随误差**，只能用上面的状态变量路径。
+
+**要做的两件事**（都还没做）：
+
+1. **解位置应答的布局**：① 用 dnfile 反解模拟器自带的 `Syntec.RemoteCNC.Win32.dll`
+   （控制器侧同类实现，解析代码在里面，不用 GUI）；或 ② 在模拟器 HMI 上动一下 X 轴，
+   看哪几个字节跟着变（先定零点编码）。两条路都能定字段偏移。
+2. **定命名**（按 iNC-BOX 优先的口径）：位置 = `/AXIS@n/MOTOR/POSITION`（轴号 + MOTOR
+   组件，i-BOX 式）还是字典式 `/AXIS@X/POSITION@REAL`？跟随误差 =
+   `/AXIS@n/SERVO_DRIVER/VARIABLE@RSHORT`？
