@@ -21,7 +21,12 @@
 #include "nclink/clients/syntec.h"
 #include "syntec/ncl_syntec_driver.h"
 
-#define SYNTEC_MAX_BODY 4096
+/*
+ * 16 KiB: a WARNING read answers a zero filled block the size the request asked
+ * for (the 21A simulator returns 7292 bytes for §3.1's frame), so the reply
+ * buffer has to hold a real one.
+ */
+#define SYNTEC_MAX_BODY 16384
 
 /*
  * One session: the connection plus `uSerial`. §10.12's named readings and
@@ -134,8 +139,16 @@ static ncl_err syntec_exchange_frame(syntec_ctx *ctx, const uint8_t *frame,
         return err;
     }
     if (view->function.serial != serial) {
-        /* §10.4: the serial is echoed, so a mismatch means a stale answer. */
-        return NCL_DRV_ERR_PROTOCOL(0x91);
+        /*
+         * §10.4 says the controller echoes the serial, but the 21A simulator
+         * (v10.116.54N, the target Hermes ran) always answers **0** - and so
+         * does the delivered PC client, which never sends anything else. So a
+         * zero in the answer means "not echoed", not "stale"; only a *different
+         * non zero* serial is a real mismatch.
+         */
+        if (view->function.serial != 0) {
+            return NCL_DRV_ERR_PROTOCOL(0x91);
+        }
     }
     return NCL_OK;
 }
@@ -598,7 +611,7 @@ static ncl_syntec *syntec_alloc(const ncl_syntec_config *config)
                                   : 3000u;
     ctx->timeout_ms = config->timeout_ms != 0 ? config->timeout_ms : 3000u;
     ctx->retries = config->retries;
-    ctx->serial = 1;
+    ctx->serial = 0; /* the session starts at serial 0, what both clients send */
     ctx->mutex = ncl_mutex_create();
     if (ctx->mutex == NULL) {
         ncl_free_safe(ctx);
@@ -677,7 +690,8 @@ static ncl_err syntec_item_request(ncl_syntec *syntec, const ncl_syntec_item *it
     ncl_mutex_lock(syntec->mutex);
     err = syntec_open_session(syntec);
     if (err == NCL_OK) {
-        serial = (uint8_t)++syntec->serial;
+        /* §3.1 抓到的帧与官方客户端都发 0；模拟器也只答 0（见上面的校验）。 */
+        serial = (uint8_t)syntec->serial;
         if (ncl_syntec_item_frame(frame, sizeof(frame), item, param_b, serial) == 0) {
             err = NCL_ERR_RANGE;
         } else {
@@ -855,6 +869,8 @@ ncl_err ncl_syntec_warning(ncl_syntec *syntec, ncl_json **list)
     const ncl_syntec_item *item = ncl_syntec_item_lookup("WARNING");
     ncl_syntec_view view;
     ncl_json *array;
+    size_t i;
+    bool any = false;
     ncl_err err;
 
     if (item == NULL || list == NULL) {
@@ -866,7 +882,15 @@ ncl_err ncl_syntec_warning(ncl_syntec *syntec, ncl_json **list)
     if (err != NCL_OK) {
         return err;
     }
-    if (!ncl_syntec_item_empty(syntec->rx, syntec->last_rx_len)) {
+    /* §3.2: 没有报警时正文是空的；21A 模拟器（实测）回一整块**全零**（它按请求里
+     * 要的字节数回），所以"正文全零"也算没有报警。 */
+    for (i = NCL_SYNTEC_REPLY_BODY; i < syntec->last_rx_len; i++) {
+        if (syntec->rx[i] != 0) {
+            any = true;
+            break;
+        }
+    }
+    if (any) {
         /* §3.2: an empty answer is an empty list; a populated one was never
          * captured, so the layout of its entries is unknown. */
         snprintf(syntec->error, sizeof(syntec->error),
