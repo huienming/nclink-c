@@ -18,7 +18,7 @@
 
 ---
 
-## 2. 连接建立（典型调用序列）
+## 2. 连接建立
 
 ```c
 // ① 分配句柄（最多 2 个并发句柄）
@@ -51,21 +51,29 @@ cnc_freelibhndl(h);
           a0 a0 a0 a0 00 01 02 01 00 00           (10 字节)
 ```
 
-> **2026-09 更正（见 §2.8）：这两条连接不是"重试"。** 上面那段当时是**对着假机床**抓的，
+> **2026-09 更正（见 §10.4）：这两条连接不是"重试"。** 上面那段当时是**对着假机床**抓的，
 > 机床一条都不回，于是把"两条连接"读成了 SDK 的重试；真机（应答齐全的那台）上，
 > 官方 SDK **照样开两条**：第一条是控制通道（hello 计数器 1，只发 hello），第二条是
-> 数据通道（计数器 2，命令全走这条）。分开的判据见 §2.8。
+> 数据通道（计数器 2，命令全走这条）。分开的判据见 §10.4。
 
 - 没有应答时 SDK 返回 **-16（EW_SOCKET）**，并且**会重试一次** —— 这只解释"为什么会
   出现两组 hello"，不解释"为什么计数器是 1 和 2"（重试的话两条都是同一段代码，
   计数器不会自己 +1）。
 - 应答格式（🟢 2026-09 第九/十轮，反汇编 `libfwlib32.so` 的 `Pdu::send`/`Pdu::receive`/
-  `getRbPos`/`getRb` + 假机床实测）：帧格式与四道判据见 §2.2，
-  **应答体取值见 §2.3** —— 第十轮已把"体 = 块个数 + 变长块"这套结构解出来并实测
+  `getRbPos`/`getRb` + 假机床实测）：帧格式与四道判据见 §3.1，
+  **应答体取值见 §3.2** —— 第十轮已把"体 = 块个数 + 变长块"这套结构解出来并实测
   `cnc_allclibhndl3` **rc=0**，本册**不再需要真机**。
 - 现场（`cfg/driver_def.json`）用的就是这一家：`module: focas`、`8193`。
 
-### 2.2 帧格式与校验规则（🟢 2026-09 第九轮反汇编）
+---
+
+## 3. 帧格式
+
+FOCAS 的报文是 `Fwlib32` 内部那套 **PDU**（请求头 + 业务码 + 载荷），一收一发就是
+"10 字节头 + 体"。下面三节分别是：帧与四道判据（3.1）、**应答体怎么取值**（3.2，
+这一节是本地闭环的关键）、每个 API 用的 **item 码**（3.3）。
+
+### 3.1 帧格式与校验规则（🟢 2026-09 第九轮反汇编）
 
 **帧 = 10 字节头 + 体**，头和体都是"大端 u16 字段"的堆叠：
 
@@ -127,10 +135,10 @@ cnc_freelibhndl(h);
 | 方向 `[7]` 改 `01`（其余同 A） | -16 |
 
 结论：**格式与判据已经全解**，剩下的是"应答体里那 16/32 字节放什么"——
-**这一格 2026-09 第十轮已经补上**，见 §2.3（不需要真机了：按解出来的块结构回，
+**这一格 2026-09 第十轮已经补上**，见 §3.2（不需要真机了：按解出来的块结构回，
 `cnc_allclibhndl3` 实测 **rc=0**）。
 
-### 2.3 应答体的取值（🟢 2026-09 第十轮：反汇编 + 假机床实测 rc=0）
+### 3.2 应答体的取值（🟢 2026-09 第十轮：反汇编 + 假机床实测 rc=0）
 
 **体不是一块连续数据，而是一串"块"。** `Pdu::getRbPos`（`0x26ab0`）就是靠块自己的
 长度字段往后走的：
@@ -233,9 +241,9 @@ cnc_startupprocess cnc_exitprocess cnc_rdparam
 
 ---
 
-### 2.4 item 码表（🟢 2026-09 用**官方 SDK** 逐条问出来的）
+### 3.3 item 码表（🟢 2026-09 用**官方 SDK** 逐条问出来的）
 
-§2.3 那十二个码是"反汇编 + 假机床"解的。2026-09 拿到 FANUC 官方 SDK 包（`Fwlib64.dll`
+§3.2 那十二个码是"反汇编 + 假机床"解的。2026-09 拿到 FANUC 官方 SDK 包（`Fwlib64.dll`
 + 官方头 `Fwlib64.h` + 每函数一页的 `Document/SpecE/*.xml` + 手册 `FWLIBPM.TXT`），
 方法换成**"官方库自己对着一台假机床跑"** —— 那条调用发什么帧、收什么载荷，直接看得见：
 
@@ -264,10 +272,10 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 | `cnc_acts` | 0x25 | 0 | 每个主轴一个 float32 | 🟢 已进 client（主轴转速 S） |
 | `cnc_absolute` / `cnc_machine` / `cnc_relative` / `cnc_distance` | 0x26 | **d = 0/1/2/3**，e = 轴号或 `-1`(ALL_AXES) | ODBAXIS（dummy/type/data[]），**切法待核** | 🟡 码已核 |
 | `cnc_rdposition` | 0x26 ×4 | d = 0..3，e = -1 | 同上（一次四条，四种位置） | 🟡 码已核 |
-| `cnc_srvdelay` | 0x26 | **d = 9**，e = -1 | 每轴一条 **8 字节记录**：值 = 记录第 0 个 int32（BE32）；**后 4 字节官方库不读**，小数位走 `cnc_getfigure`（= 该轴 `POSELM` 的 `dec`） | 🟢 已进 client（跟踪误差；`POSITION@CMD` = 实际 − 这一条，见 §2.5.2） |
+| `cnc_srvdelay` | 0x26 | **d = 9**，e = -1 | 每轴一条 **8 字节记录**：值 = 记录第 0 个 int32（BE32）；**后 4 字节官方库不读**，小数位走 `cnc_getfigure`（= 该轴 `POSELM` 的 `dec`） | 🟢 已进 client（跟踪误差；`POSITION@CMD` = 实际 − 这一条，见 §10.1.3） |
 | `cnc_rdprgnum` | 0x1c | 0 | 载荷 **@2 运行程序号（BE16）**、@6 主程序号 | 🟢 已进 client |
 | `cnc_rdseqnum` | 0x1d | 0 | 载荷 **@0 顺序号（BE32）** | 🟢 已进 client |
-| `cnc_rdcount` | 0x8b | **0 / 0** | `ODBTLIFE3`：`datano` **@2**、件数 **@20**（BE32）—— 见 §2.6 | 🟢 已进 client（原来写成 1/1，是寿命那一支；值也从 @0 改到 @20） |
+| `cnc_rdcount` | 0x8b | **0 / 0** | `ODBTLIFE3`：`datano` **@2**、件数 **@20**（BE32）—— 见 §10.2 | 🟢 已进 client（原来写成 1/1，是寿命那一支；值也从 @0 改到 @20） |
 | `cnc_rdlife` | 0x8b | **1 / 1** | `ODBTLIFE3`：`datano` **@2**、寿命 **@12**（BE32）—— 与件数**不是一个偏移**，别串用 | 🟢 形状已核（client 侧还没挂点位） |
 | `cnc_alarm2` | 0x1a | 0 | 载荷 **@0 报警状态位（BE32）**，0 = 无报警 | 🟢 已进 client |
 | `cnc_rdngrp` | 0x4a | 0 | 载荷 **@0 刀具组数（BE32）** | 🟢 已进 client |
@@ -275,14 +283,14 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 | `cnc_rdalmmsg2` | 0x23 | d = 报警类型（-1 = 全部），e = 条数 | ODBALMMSG2 数组（编号/类型/轴/文本 64B） | 🟡 码已核 |
 | `cnc_rdsvmeter` | 0x56 + 0x89 | d = 1 | LOADELM 数组（伺服负载） | 🟡 码已核 |
 | `cnc_rdspmeter` | 0x40（d=4 负载 / 5 转速）+ 0x8a | e = -1 | LOADELM 数组 | 🟡 码已核 |
-| `cnc_rdblkcount` | 0x35 | 0 | 载荷 **@0 的 BE32**（原来的"不是 @0"是错的，§2.6 反查出来的） | 🟢 已核（原来表里记成 0x06，是错的） |
+| `cnc_rdblkcount` | 0x35 | 0 | 载荷 **@0 的 BE32**（原来的"不是 @0"是错的，§10.2 反查出来的） | 🟢 已核（原来表里记成 0x06，是错的） |
 | `cnc_rdopmode` | 0x57 | 0 | short 数组（主轴调整模式） | 🟡 码已核 |
 | `cnc_exeprgname2` | 0xfc | 0 | 程序名文本 | 🟢 已进 client |
 | `cnc_rdprogdir3` | 0x06 | d = 0x13，e = 1 | PRGDIR3 数组 | 🟡 帧有了、字段待核 |
 | `cnc_rdtofs` | 0x08 | d = 形状（0 磨耗/1 形状…）、e = 编号 | `ODBTOFS` 的 `data` = 载荷 **@0 的 BE32**（`datano`/`type` 是请求回显） | 🟡 值的位置已核 |
 | `cnc_rdparam` | 0x0e | d = 参数号、e = 轴号 | `IODBPSD`：`datano` **@2**、`type` **@4**、`ldata` **@8**（BE32） | 🟡 字段位置已核 |
 | `cnc_rdmacro` | 0x15 | d = 变量号、e = 1 | `ODBM`（`mcr_val` + `dec_val`），**长度要给对**（给 12 仍回 `EW_LENGTH`=2） | 🟡 码已核、长度待试 |
-| `cnc_rdtofsinfo` | **0x0a** | 0 | `ODBTLINF`：`use_no` **@2**、`ofs_type` **@4**（都是 BE16） | 🟢 码 + 切法都新核出来（§2.6） |
+| `cnc_rdtofsinfo` | **0x0a** | 0 | `ODBTLINF`：`use_no` **@2**、`ofs_type` **@4**（都是 BE16） | 🟢 码 + 切法都新核出来（§10.2） |
 | `cnc_rdmacroinfo` | **0x17** | 0 | `ODBMVINF`：头两个 short 在 **@2** / **@6** | 🟡 码新核出来、字段名待对 |
 | `cnc_rdexecprog` | **0x20** | arg0 = 0x594（缓冲长度） | 程序段文本**从载荷 @4 原样拷**（不是大端字） | 🟡 码 + 起点新核出来 |
 | `cnc_rdgcode` | **0x96** | d = 类型、e = 段号 | `ODBGCD` 数组 | 🟡 码新核出来 |
@@ -314,9 +322,273 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 
 ---
 
-### 2.5 真机实测：NCGuide（FS0i-F 模拟器）能当"没有真机的真机"
+## 4. 常用函数表（按域）
 
-#### 2.5.0 "正确环境"的配方 + 本机现在卡在哪（🟢 2026-09，手册 + 自写调试器）
+### 4.1 连接与系统（cnc_*）
+
+| 函数 | 说明 |
+|---|---|
+| `cnc_allclibhndl3(ip, port, timeout, &h)` | 建立连接（最常用） |
+| `cnc_allclibhndl2/4` | 变体（多句柄/超时细控） |
+| `cnc_freelibhndl(h)` | 释放 |
+| `cnc_sysinfo(h, &ODBSYS)` | 系统信息（型号/系列/轴数/主轴数） |
+| `cnc_rdmodel(h, &ODBMDL)` | 机床型号 |
+| `cnc_statinfo(h, &ODBST)` | **运行状态**（模式/运行/急停/报警） |
+| `cnc_rddt(`…`)` / `cnc_rdtime` | 日期时间 |
+| `cnc_rdopmode(h, &ODBOPM)` | 工作模式 |
+
+### 4.2 坐标与轴（★ 采集核心）
+
+| 函数 | 说明 |
+|---|---|
+| `cnc_absolute(h, axis, &ODBACT)` | 绝对坐标 |
+| `cnc_absolute2` | 绝对坐标（扩展） |
+| `cnc_relative(h, axis, &ODBREL)` | 相对坐标 |
+| `cnc_machine(h, axis, &ODBM)` | 机械坐标 |
+| `cnc_distance(h, axis, &ODBDIS)` | 剩余距离 |
+| `cnc_rdposition(h, type, …)` | **批量坐标读取**（一次取多轴多类型） |
+| `cnc_acts(h, &ODBACT)` / `cnc_actf` | 全部轴绝对位置（short/float） |
+| `cnc_rdsvmeter` / `cnc_rdspmeter` | **伺服/主轴负载表** |
+| `cnc_rdaxisdata(h, …)` | 轴数据（速度/负载/温度，可批量，推荐） |
+| `cnc_rdaxisname` | 轴名称 |
+
+### 4.3 主轴
+
+| 函数 | 说明 |
+|---|---|
+| `cnc_rdspdata` | 主轴数据 |
+| `cnc_rdspmeter` | 主轴负载/速度 |
+| `cnc_rdspindle` / `cnc_rdspload` | 主轴转速/负载 |
+| `cnc_rdspspeed` | 主轴速度 |
+
+### 4.4 报警
+
+| 函数 | 说明 |
+|---|---|
+| `cnc_alarm(h, &ODBALM)` | **当前报警**（数量+内容） |
+| `cnc_rdalmmsg2(h, type, …)` | 报警消息（可分类/分页，推荐） |
+| `cnc_rdalmmsg` | 报警消息（旧版） |
+| `cnc_rdopmsg` / `cnc_rdopmsg2/3` | 操作员消息 |
+| `cnc_rdalmhis` 类 | 报警历史（部分系统） |
+
+### 4.5 程序
+
+| 函数 | 说明 |
+|---|---|
+| `cnc_rdprgnum(h, &ODBPRO)` | 当前主/子程序号 |
+| `cnc_rdseqnum(h, &ODBSEQ)` | 当前程序行号（序列号） |
+| `cnc_rdprogdir` / `cnc_rdprogdir2/3` | 程序目录 |
+| `cnc_upstart4` / `cnc_upend4` / `cnc_upload` | 程序上传（分块） |
+| `cnc_dwnstart4` / `cnc_download` / `cnc_dwnend4` | 程序下载 |
+| `cnc_delprogram` / `cnc_rdproginfo` | 删除 / 信息 |
+| `cnc_rdpdf_*`（pbm_*） | 程序块管理（按块读写，大程序更高效） |
+
+### 4.6 刀具补偿
+
+| 函数 | 说明 |
+|---|---|
+| `cnc_rdtofs(h, type, &ODBTOFS)` | 刀补读（形状/磨损，长度/半径） |
+| `cnc_wrtofs` | 刀补写 |
+| `cnc_rdtool` / `cnc_rdtoolgrp` | 刀具信息/刀具组 |
+| `cnc_rdngrp` | 刀具组数量 |
+
+### 4.7 参数与宏变量
+
+| 函数 | 说明 |
+|---|---|
+| `cnc_rdparam(h, num, len, &ODBPARA)` | **CNC 参数读** |
+| `cnc_wrparam` | 参数写 |
+| `cnc_rdmacro(h, num, len, &ODBM)` | **宏变量读** |
+| `cnc_wrmacro` | 宏变量写 |
+| `cnc_rdparainfo` / `cnc_rdparaminfo` | 参数信息 |
+
+### 4.8 PMC（PLC 层，95 函数）
+
+| 函数 | 说明 |
+|---|---|
+| `pmc_rdpmcrng(h, adr_type, data_type, start, end, len, buf)` | **PMC 区读**（R/Y/X/G/F/E/A/C/D 等） |
+| `pmc_wrpmcrng` | PMC 区写 |
+| `pmc_rdpmcinfo` | PMC 区信息 |
+| `pmc_rdladder` | 梯形图读取 |
+| `pmc_getdtailerr` | 详细错误 |
+| `pmc_setpcmcntl` / `pmc_startladdermonitor` | 梯形图监控 |
+
+### 4.9 其它
+
+| 域 | 前缀 | 说明 |
+|---|---|---|
+| 时间 | `cnc_rdtimer` / `cnc_rdcount` | 运行时间/工件计数 |
+| 伺服/主轴参数 | `cnc_rdservo` / `cnc_rdspindle` | 伺服/主轴参数 |
+| 波形 | `cnc_startwave` / `cnc_rdwave` / `cnc_stopwave` | 波形采集（诊断） |
+| 数据服务 | `ds_*`（8 函数） | FOCAS2 Data Service |
+| 变量/PMC 日志 | `flnt_*`（14 函数） | Focas2 Logger |
+
+---
+
+---
+
+## 5. 地址、数据类型与数据字典
+
+### 5.1 结构体（选摘）
+
+```c
+typedef struct { short data; short dec; short unit; short disp; short name; short suff; } ODBACT;
+// 坐标值 = data / 10^dec  —— ★ 必须按 dec 缩放，否则数值差 10^n 倍
+
+typedef struct { short dummy; short num; struct { short no; short type; short data; } msg[10]; } ODBALM;
+typedef struct { short datano; short type; long data[2]; } ODBTOFS;   // 刀补（形状/磨损 × 长度/半径）
+typedef struct { short datano; short type; long data; } ODBM;          // 宏变量
+typedef struct { char name[36]; char cnc_type[2]; ... } ODBSYS;
+```
+
+**⚠️ 坐标缩放是第一坑**：`cnc_absolute` 返回的 `data` 是整数，必须 `data / pow(10, dec)` 才是实际值（dec 通常 3 或 4）。
+
+---
+
+### 5.2 数据字典映射（册 4 的数据项 / 册 7 的集合类对象 → FOCAS 调用）
+
+| 标准（册 4/7） | 模型路径 | FOCAS 调用 | 状态 |
+|---|---|---|---|
+| `STATUS` | `/STATUS` | `cnc_statinfo`（`ODBST`）| 🟢 rc=0 |
+| `PART_COUNT` | `/PART_COUNT` | `cnc_rdcount`（`ODBTLIFE3`：`datano`@2、件数@20）| 🟢 假机床 rc=0；字段位置修正过一次 |
+| `WARNING` | `/WARNING` | `cnc_rdalmmsg2`（`ODBALMMSG2` 数组）| 🟡 码 `0x23` 已核，块形状还差 |
+| `PROGRAM` | `/CONTROLLER/PROGRAM` | `cnc_exeprgname2`（`0xfc`）| 🟢 rc=0 |
+| `PROGRAM_NUMBER` / `SUBPROGRAM` | `/CONTROLLER/PROGRAM_NUMBER`、`/CONTROLLER/SUBPROGRAM` | `cnc_rdprgnum`（`0x1c`）| 🟢 |
+| `LINE_NUMBER` | `/LINE_NUMBER` | `cnc_rdseqnum`（`0x1d`，载荷 @0 BE32）| 🟢 |
+| `TOOL_NUMBER` | — | 没有可靠来源（模态那条只给 G 组）| ⛔ 未实现 |
+| `POSITION` | `/AXIS@<轴>/POSITION@REAL` | `cnc_rdposition`（`0x26` d=0，`POSELM` 每轴 12 字节）| 🟢 NCGuide 闭环 |
+| `POSITION@CMD`（指令位置）| `/AXIS@<轴>/POSITION@CMD` | **实际位置 − `cnc_srvdelay`（d=9，每轴 8 字节）** | 🟢 NCGuide 闭环 |
+| `PATH_LEFT_LENGTH` | `/AXIS@X/PATH_LEFT_LENGTH` | `cnc_rddynamic2` 的剩余距离 | 🟢 |
+| `SPEED` / 主轴转速 | `/FEED_SPEED`、`/SPINDLE_SPEED` | `cnc_actf`（`0x24`）、`cnc_acts`（`0x25`）——每个轴/主轴一个 **float32** | 🟢 rc=0 |
+| `FEED_OVERRIDE` / `SPINDLE_OVERRIDE` | `/FEED_OVERRIDE`、`/SPINDLE_OVERRIDE` | `cnc_rdopnlsgnl`（`0x5d`，`IODBSGNL` 的 `feed_ovrd`@0xa，码 ×10 = %）| 🟢 进给倍率闭环 |
+| 负载 / 电流 / 温度 | `/AXIS@X/TORQUE`、`CURRENT`、`TEMPERATURE` | `cnc_rdsvmeter`（`0x56`+`0x89`）、`cnc_rdspmeter`（`0x40`/`0x8a`）| 🟡 码已核；**这台机床不提供**（§10.4.6）|
+| `PARAMETER`（dict）| `/CONTROLLER/PARAMETER` | `cnc_rdparam`（`0x0e`，`IODBPSD`：`datano`@2、`type`@4、`ldata`@8）| 🟡 字段位置已核 |
+| `VARIABLE`（list，宏变量）| `/CONTROLLER/VARIABLE` | `cnc_rdmacro`（`0x15`，`ODBM`）| 🟡 码已核，**长度要给对**（给 12 回 `EW_LENGTH`）|
+| `TOOL`（list）| `/CONTROLLER/TOOL` | `cnc_rdtooldata` / `cnc_rdtoolrng` | ⛔ 真机 rc=1/3，**机床不提供**（官方 SDK 同样被拒）|
+| `TOOLPARAM` | `/CONTROLLER/TOOLPARAM` | `cnc_rdtofs` / `cnc_rdtofsinfo` | 🟢 字段 @0 已核 |
+| `COORDINATE` | `/CONTROLLER/COORDINATE` | `cnc_rdwkcdshft`（`0x63`，`IODBWCSF`）| 🟡 码已核 |
+| `FILE`（程序上下行）| `/CONTROLLER/FILE` | `cnc_dwnstart4`/`cnc_download4`/`cnc_dwnend4`；取回是 `cnc_upstart4`/`cnc_upload4`/`cnc_upend4` | 🟢 下行链路码已核；**上行回 `EW_BUFFER`=10**（§10.4.6）|
+| 刀补写 | `/CONTROLLER/TOOLPARAM` 的 `set_value` | `cnc_wrtofs` | 🟢（权限在外面）|
+| 参数写 / 宏变量写 | `/CONTROLLER/PARAMETER`、`VARIABLE` 的 `set_value` | `cnc_wrparam` / `cnc_wrmacro` | 🟢（权限在外面）|
+
+> 两套编号要分清：**册 4/7 的 `type`** 是数据对象的名字（`PARAMETER`、`TOOL`…），
+> **FOCAS 的 item 码**（`0x0e`、`0x15`…）是协议里的业务码；两者在 §3.3 的表里对应。
+
+### 5.3 错误码（错误分类函数）
+
+```c
+short err = cnc_getdtailerr(h, &ODBERR);   // ODBERR 结构 getdtailerrkind/dta1/dta2
+// 通用返回：EW_OK=0；非 0 时用 cnc_getdtailerr 取细节
+```
+常见：`EW_FUNC`(功能不支持) · `EW_LENGTH`(数据长度错) · `EW_PARAM`(参数错) · `EW_HANDLE`(句柄无效) · `EW_SOCKET`(网络错) · `EW_BUSY`
+
+---
+
+---
+
+## 6. 典型流程
+
+### 6.1 采集循环
+
+```c
+cnc_allclibhndl3(ip, 8193, 10, &h);            // ① 一次会话，句柄最多 2 个：单进程复用
+cnc_statinfo(h, &st);                          //   状态（STATUS）
+cnc_rdposition(h, 0, -1, &POSELM);             //   位置：一条拿全部轴（比逐轴 cnc_absolute 快）
+cnc_actf(h, -1, &feed);   cnc_acts(h, -1, &spdl);   //   速度：每轴/每主轴一个 float32
+cnc_rdcount(h, 0, &count);                     //   计件
+cnc_rdopnlsgnl(h, 0x20, &IODBSGNL);            //   进给倍率（bit5）
+/* 轮询周期到了再来一遍；退出时 */
+cnc_freelibhndl(h);
+```
+
+### 6.2 报警
+
+状态位用 `cnc_alarm`（`ODBALM`，最多 10 条）；要文本用 `cnc_rdalmmsg2`（`0x23`，
+`d` = 类型、`e` = 条数，`arg2=2` / `arg3=64` 才填文本，见 §10.4.2）。
+
+### 6.3 程序下发 / 取回
+
+```c
+/* 下发：三步必须成对，中途退出会锁住机床侧 */
+cnc_dwnstart4(h, type, dir);
+  循环: cnc_download4(h, &len, buf);   /* 一块一块 */
+cnc_dwnend4(h);
+
+/* 取回：同一套路（本仓库这条还没通，见 §10.4.6）*/
+cnc_upstart4(h, type, path);  … cnc_upload4(h, &len, buf);  … cnc_upend4(h);
+```
+
+### 6.4 写（刀补 / 参数 / 宏变量）
+
+`cnc_wrtofs` / `cnc_wrparam` / `cnc_wrmacro`。**权限在外面**：改刀补会直接改变加工结果，
+本仓库只在设备侧的 `set_value` 上把能力摆出来，谁能写由部署侧决定。
+
+---
+
+## 7. 同包附带能力（Fwlib32 之外）
+
+`libfwlib32.so.1` 导出 **881 个函数**，不只有 `cnc_*`：
+
+| 前缀 | 个数 | 能干什么 | 本仓库用了吗 |
+|---|---|---|---|
+| `cnc_*` | 758 | CNC 数据、坐标、程序、刀补、参数、宏变量、文件 | ✅ 主力 |
+| `pmc_*` | 95 | PMC/梯形图：位、字节、字、定时器、计数器、I/O 链接 | ❌（册 4 没有对应的数据对象，先不进模型）|
+| `flnt_*` | 14 | Focas2 Logger（高速采样日志）| ❌ |
+| `ds_*` | 8 | 数据服务（服务器侧）| ❌ |
+| `pbm_*` | 3 | 程序块管理 | ❌ |
+| `hmgr_*` / `smgr_*` / `loglevel_*` | 1 / 1 / 1 | 句柄管理、服务器管理、日志级别 | ❌ |
+
+> PMC 那 95 个函数是"梯形图侧"的读写口（`pmc_rdpmcrng` / `pmc_wrpmcrng` 等）。
+> 现场如果要 PLC 信号，走的是这一族；本仓库现在只做 `cnc_*`，PMC 一格空着。
+
+## 8. 实现坑
+
+1. **句柄数限制**：FOCAS 默认最多 2 个并发句柄 —— 多进程采集会互相踢掉。**必须单进程复用句柄**。
+2. **坐标缩放**（见 §4）—— 最常见的数值 bug 来源。
+3. **`cnc_rdaxisdata` 优于逐轴 `cnc_absolute`**：批量读一次拿多轴，吞吐高 3-10 倍。
+4. **报警消息分页**：报警多时 `cnc_alarm` 只给 10 条，遍历要用 `cnc_rdalmmsg2`。
+5. **程序上传/下载必须成对调用**（`*start` → 分块 → `*end`），中途退出会锁住机床侧。
+6. **32/64 位库不同**（`Fwlib32.dll` vs `fwlib32.x64.dll`），结构体对齐要用 `#pragma pack`。
+7. **写类函数（`cnc_wrtofs` / `cnc_wrmacro` / `pmc_wrpmcrng`）风险高**：改刀补会导致撞刀。
+
+---
+
+## 9. 参考实现与待办
+
+| 来源 | 说明 |
+|---|---|
+| `pyfocas` / `pyfanuc` | ctypes 绑定 + fwlib 头文件（可直接抄结构体定义） |
+| **881 个函数原名**（按前缀分类） | 原始素材未随本目录提供 |
+| 商业库对照 `FanucSeries0i` | 高层 API 分组参考（59 成员，坐标/报警/负载/刀补/宏变量/程序列表） |
+| 参考实现侧 | `驱动定义目录/` FANUC 驱动（端口 8193） |
+
+**待办（按"差什么"排）**：
+
+| # | 差什么 | 卡在哪 | 下一步 |
+|---|---|---|---|
+| 1 | 报警文本（`WARNING`）| `cnc_rdalmmsg2` 的**块形状**没对上（假机床铺的形状被 SDK 判无效）| 用 §10.2 那套反查工具按官方头 `ODBALMMSG2` 的尺寸试块长；有报警的真机再抓一次做终验 |
+| 2 | 宏变量（`VARIABLE`）| `cnc_rdmacro` 的**载荷长度**没试出来（给 12 回 `EW_LENGTH`）| 按官方头 `ODBM` 的尺寸扫一轮长度 |
+| 3 | 程序取回 | `cnc_upload4` 一直回 `EW_BUFFER`=10 | 把 `0x18` 那条的"想要多少字节/偏移"试对 |
+| 4 | 坐标状态变量 / 轴状态变量 | 册 4 里没有对应项 | 先不进模型 |
+| 5 | 负载 / 电流 / 温度 | 这台机床**不提供**（官方 SDK 同样被拒）| 换一台支持扩展驱动的机床再看 |
+| 6 | 刀具列表（`TOOL`）| 真机 `cnc_rdtooldata` rc=1、`cnc_rdtoolrng` rc=3 | 同上，机床侧不提供 |
+| 7 | PMC（95 个函数）| 没有对应的数据对象 | 等现场提出信号需求 |
+| 8 | `TOOL_NUMBER` | 没有可靠来源 | 换 `cnc_rdexecprog` 的带刀号模式再试 |
+
+
+---
+
+## 10. 线协议解剖（这些结论是怎么钉出来的）
+
+这一节是**档案**：§1–§9 里每一句话的出处。方法是三层——
+① 反汇编现场交付包里的 `libfwlib32.so` / `fwlibe64.dll`；
+② 拿**官方 SDK** 对着"每个字节都可辨识"的**假机床**跑，出参哪一格等于载荷哪一格是自动反查出来的；
+③ NCGuide（FANUC 自己的模拟器）当真机用；**④ 真机**（以太网 0i-MD）做终验。
+复现脚本都在 `tools/site-probe/` 下（`focas_*.sh` / `focas_*.py` / `mock.py`）。
+
+### 10.1 真机实测：NCGuide（FS0i-F 模拟器）能当"没有真机的真机"
+
+#### 10.1.1 "正确环境"的配方 + 本机现在卡在哪（🟢 2026-09，手册 + 自写调试器）
 
 配方就在 NCGuide 自带的手册 `Document/NCG/NCGuide FOCAS2 Function.pdf`（官方 SDK 包里，
 21 页）：
@@ -368,7 +640,7 @@ FS0i-F` 上实测通了，**配方**（每一条都是踩出来的）：
    > 2026-09 补：这一句只对**基本函数**成立。那条选项（消息表里的 **`OPTPRM_401`**）
    > 卡的是**扩展驱动/库功能**——也就是 `cnc_rdaxisdata` 那一族（伺服/主轴负载、电流、
    > 速度）：官方库对没开这个选项的机床**本地就回 `EW_FUNC`(1)、一个字节都不发**
-   > （见 §2.7）。要核那一族就得在 NCGuide 的 GUI 里用 `OptionSetting.exe` 勾上它
+   > （见 §10.3）。要核那一族就得在 NCGuide 的 GUI 里用 `OptionSetting.exe` 勾上它
    > （勾完必须重启 NCGuide）。
 
 **实测结果**（`focas_sdk_probe32.exe --dll Fwlib32.dll --hssb 127.0.0.1 8193 <调用>`，
@@ -376,7 +648,7 @@ FS0i-F` 上实测通了，**配方**（每一条都是踩出来的）：
 
 | 调用 | rc | 拿到的形状 |
 |---|---|---|
-| `cnc_statinfo` | 0 | ODBST 十一个 u16（块 1/2 + 块 0 载荷的那套切法 ✓ 与 §2.3 一致） |
+| `cnc_statinfo` | 0 | ODBST 十一个 u16（块 1/2 + 块 0 载荷的那套切法 ✓ 与 §3.2 一致） |
 | `cnc_rdposition 0`（绝对） | 0 | **每轴一个 `POSELM`（12 字节）**：`int32 data` + `dec=3` + `unit=0`(mm) + `disp=1` + `name='X'` + `suff` ✓ 位置值 = `data / 10^dec` |
 | `cnc_rdsvmeter` | 0 | **每轴一个 `LOADELM`（12 字节）**：`int32 data` + `dec` + `unit` + `name='X'` |
 | `cnc_rdspmeter -1` | 0 | 每主轴一个 `LOADELM`：`name='S'` + `suff1='1'` → "S1"（负载/转速各一） |
@@ -394,7 +666,7 @@ FS0i-F` 上实测通了，**配方**（每一条都是踩出来的）：
 > 跟踪误差（`cnc_srvdelay`）走的是同一族的 `0x26`，但机床静止时它恒为 0，形状靠
 > **反汇编**钉（下一节）。
 
-#### 2.5.1 库内部：`cnc_srvdelay` 那一族怎么切（🟢 反汇编 + 假机床实测）
+#### 10.1.2 库内部：`cnc_srvdelay` 那一族怎么切（🟢 反汇编 + 假机床实测）
 
 用 `tools/site-probe/focas_dis_range.py` 把 32 位 `fwlibNCG.dll` 里那一层读出来
 （`cnc_srvdelay` 的 RVA `0x1bde0` → 内部函数 `0x1b700`）：
@@ -417,7 +689,7 @@ cnc_skip      (d=8)  ┘     length < 4 + 4×轴数    → EW_LENGTH (2)
 **每轴 8 字节、值在记录第 0 个 int32**。记录后 4 字节是什么，这一节没定 —— 下一节拿
 **以太网**库（我们 client 真正对的那条协议）把它问清楚了。
 
-#### 2.5.2 以太网库 `fwlibe64.dll` 里的同一族（🟢 反汇编，2026-09）
+#### 10.1.3 以太网库 `fwlibe64.dll` 里的同一族（🟢 反汇编，2026-09）
 
 上面那一节读的是 32 位 HSSB 库；**我们 client 对的是以太网协议**，所以又去 x64 的
 以太网处理库 `fwlibe64.dll` 里核了一遍 —— `cnc_srvdelay` 同样是薄壳，把 `kind = 9`
@@ -437,7 +709,7 @@ cnc_skip      (d=8)  ┘     length < 4 + 4×轴数    → EW_LENGTH (2)
 ```
 
 两条结论：**线上每轴 8 字节、值在记录第 0 个 dword（大端）、长度规则 `4 + 4×轴数`** ——
-和 §2.5 的 NCGuide 实测完全对上；**小数位不在这条载荷里**（官方库一个字节都不多看），
+和 §10.1 的 NCGuide 实测完全对上；**小数位不在这条载荷里**（官方库一个字节都不多看），
 位数走 `cnc_getfigure`，也就是我该轴显示小数位 —— 同一条 `POSELM` 里的 `dec`。所以
 `focas_values.c` 的 `srv_delay_raw()` 借 POSELM 的 dec 缩放，记录的 `[4..8)` 当保留位、
 不解释（早先按 POSELM 一族猜它是 dec/unit，这轮改掉了）。
@@ -453,9 +725,9 @@ cnc_skip      (d=8)  ┘     length < 4 + 4×轴数    → EW_LENGTH (2)
 
 ---
 
-#### 2.6 用官方 SDK 反查"载荷第几字节是哪一格"（🟢 2026-09 新方法）
+### 10.2 用官方 SDK 反查"载荷第几字节是哪一格"（🟢 2026-09 新方法）
 
-§2.4/§2.5 核 item 用的是"铺斜坡载荷、人眼看结构体" —— 对 `ODBST` 那种十来个 short 的
+§3.3/§10.1 核 item 用的是"铺斜坡载荷、人眼看结构体" —— 对 `ODBST` 那种十来个 short 的
 结构还行，对"值藏在 @12 还是 @20"这类问题就很容易看岔（本轮就抓到一处：`cnc_rdcount`
 原来按 @0 读，其实是 @20）。这轮把它做成**自动反查**：
 
@@ -522,7 +794,7 @@ python tools/site-probe/fwlib_proto.py  <SpecE 目录> cnc_rdtofsinfo        # �
 `cnc_rdprogdir3`/`cnc_rdmacro` 的**长度**（给 12 仍回 `EW_LENGTH`，要按结构体尺寸试）。
 这些都不再需要真机 —— 接着拿这套反查工具磨就行。
 
-#### 2.7 官方库那条"控制轴数"闸门（🟢 2026-09 把范围钉清楚了）
+### 10.3 官方库那条"控制轴数"闸门（🟢 2026-09 把范围钉清楚了）
 
 前面几轮一直说"单轴调用回 `EW_ATTRIB`"，这轮顺着多块调用往下一挖，发现它其实是**同一
 条闸门**，而且影响面比"单轴"大得多 —— 官方库在连接期把"这台机床几根控制轴"记在上下文
@@ -554,7 +826,7 @@ cnc_rdaxisdata(h, cls, short *type, short num, short *len, ODBAXDT *axdata)
 说明"闸门"和"多块形状"是两件事：多块调用的每一块都得铺对，`0x89` 回填充字节直接判
 协议错。以后调多块调用先加 `focas_sdk_mock.py --axis-table N`。
 
-#### 2.8 真机（以太网 0i-MD，2026-09-21）：会话是**两条 TCP**，`code 24` 才是 ODBSYS
+### 10.4 真机（以太网 0i-MD，2026-09-21）：会话是**两条 TCP**，`code 24` 才是 ODBSYS
 
 现场有了一台能连的 FOCAS2 服务端（`192.168.110.192:8193`，`cnc_sysinfo` 报
 **0i-MD / series `D4G3` / 版本 `28.0` / 3 轴**）。**官方 SDK**（`Fwlib64.dll` +
@@ -584,10 +856,10 @@ cnc_rdaxisdata(h, cls, short *type, short num, short *len, ODBAXDT *axdata)
 | 数据通道上不发那条 `code 24` 探针，直接读数据 | 照样 rc=0 —— 探针**不是**会话前提 |
 
 **handshake 应答的形状**：体 **360 字节**，而 `[8..10)` 写的是 **8**——`16 + 8n`
-（§2.2 判据 5）对不上，可 SDK 自己收下并 rc=0。所以那条判据是**对反汇编的误读**，
+（§3.1 判据 5）对不上，可 SDK 自己收下并 rc=0。所以那条判据是**对反汇编的误读**，
 client 里已经改成"至少 16 字节就收下"（`ncl_focas_hello_reply`）。同理，
 "按记录数发一串 `code 24` 的块、再跟一条 `code 14`（`0x26f0`）"那套 step 2/step 3
-（§2.3）在这台机器上一条都不成立：SDK 只发**一个** `code 24` 的块。
+（§3.2）在这台机器上一条都不成立：SDK 只发**一个** `code 24` 的块。
 
 **ODBSYS 从哪来**（`cnc_sysinfo` 这一格）：
 
@@ -656,7 +928,7 @@ client 里 item `ODBSYS`（`code 24`）是主路径，`VERSION`（`code 0x0e`）
 > 轴数），对假机床（hello 应答是填充字节）它发 9 块。所以"照 SDK 的某一帧"要看清
 > 是**对哪台机器**发的。
 
-#### 2.8.1 每轴一条 **8 字节记录**（🟢 2026-09-21 真机实测；推翻了"12 字节 POSELM"）
+#### 10.4.1 每轴一条 **8 字节记录**（🟢 2026-09-21 真机实测；推翻了"12 字节 POSELM"）
 
 位置/伺服负载/主轴负载/主轴转速/进给速度这几族的应答载荷**都是同一个形状**：
 
@@ -691,7 +963,7 @@ client 里 item `ODBSYS`（`code 24`）是主路径，`VERSION`（`code 0x0e`）
 | 进给速度 / 主轴转速 | `0x24` / `0x25` | 8 字节 |
 | 报警消息 | `0x23` d=−1（全部）、e=条数 | **没报警就是 0 字节** |
 
-#### 2.8.2 报警：`arg2=2` / `arg3=64` 才填文本（🟢 实测，含一条真报警）
+#### 10.4.2 报警：`arg2=2` / `arg3=64` 才填文本（🟢 实测，含一条真报警）
 
 先说结论：**`cnc_rdalmmsg2` 的 Cb 有两个"暗格"**，不填就永远看不到报警文本 ——
 
@@ -738,9 +1010,9 @@ client 里 item `ODBSYS`（`code 24`）是主路径，`VERSION`（`code 0x0e`）
 `1208025088` 分钟（两千多年）—— 机床侧的字节序问题，client 按**官方口径（大端）**
 读，遇到这种机器就是把机床的毛病照实报出来（现场真要这个量的话，先跟机床厂对一下）。
 
-#### 2.8.3 "同一个 item、每次问不同的号"那一族（刀补 / 宏变量 / 参数）🟢 实测
+#### 10.4.3 "同一个 item、每次问不同的号"那一族（刀补 / 宏变量 / 参数）🟢 实测
 
-这三条都是**一个块、`d` = 号**，应答就是 §2.8.1 那条 8 字节记录（值@0 + 小数位@6）：
+这三条都是**一个块、`d` = 号**，应答就是 §10.4.1 那条 8 字节记录（值@0 + 小数位@6）：
 
 | 量 | item | 请求 | 真机应答 | client 出门 |
 |---|---|---|---|---|
@@ -763,7 +1035,7 @@ client 里 item `ODBSYS`（`code 24`）是主路径，`VERSION`（`code 0x0e`）
 也不是"读到 0"：语义层把它翻成 **`NCL_ERR_NOT_FOUND`**（"这台机床没有这一号"），
 上层拿去就能说清是"没配"还是"读不到"。
 
-#### 2.8.4 程序目录（`cnc_rdprogdir3`）🟢 实测
+#### 10.4.4 程序目录（`cnc_rdprogdir3`）🟢 实测
 
 请求：**一个 `0x06`，`d = 0`、`e = 8`（一次要几条）、`arg2 = 1`**（官方 SDK 对这台
 机器发的就是这个形状；原来表里写 `d = 0x13` 是照假机床定的）。应答是**72 字节一条**
@@ -789,7 +1061,7 @@ char gcode[8]}`，文本在 **@4**（SDK 解出来的是 "G00"）—— 但这�
 模态 / 刀号（T 码）这两条先留在"待抓包"：等它真显示的时候再对一次，或者换成
 `cnc_rddynamic2` 那条路（要先把 OBDDY2 的长度给对）。
 
-#### 2.8.5 模态（`cnc_rdgcode`）与执行中的程序段（`cnc_rdexecprog`）🟢 实测
+#### 10.4.5 模态（`cnc_rdgcode`）与执行中的程序段（`cnc_rdexecprog`）🟢 实测
 
 上面那段"模态先放着"的说法**这一轮推翻了**：模态那条一直是好的，是我把**两格看错**了。
 
@@ -827,7 +1099,7 @@ char gcode[8]}`，文本在 **@4**（SDK 解出来的是 "G00"）—— 但这�
 `0x24`×N（抄包确认）。所以按"三根直线轴里最大的那个"给。注意**这台机器 `0x24` 只回
 一根轴的 8 字节**，第 2、3 根读不到就跳过。
 
-#### 2.8.6 这台机器**做不到**的那些（🟢 逐条实测，官方 SDK 同样被拒）
+#### 10.4.6 这台机器**做不到**的那些（🟢 逐条实测，官方 SDK 同样被拒）
 
 扫完一遍，剩下读不到的分两类：**我们还没核**的（照旧 `NCL_ERR_UNAVAILABLE`），和
 **机床自己不给**的（下面这些 —— 官方 SDK 用同样的参数也被拒，所以不是我们的帧错）。
@@ -845,7 +1117,7 @@ char gcode[8]}`，文本在 **@4**（SDK 解出来的是 "G00"）—— 但这�
 | 程序上行 | `cnc_upstart4` rc=0 → `cnc_upload4` | **rc=10**（数据那一步不给） |
 
 能读的都在上面几节里；`cnc_rdaxisdata` 一族里 **cls=1（位置）** 与 **cls=3（主轴）、
-cls=5（速度）** 是好的（`cls=3/5` 见 §2.8.1 那条 8 字节记录）。
+cls=5（速度）** 是好的（`cls=3/5` 见 §10.4.1 那条 8 字节记录）。
 
 **整表那几条也在这台机器上试过**（为它们给探针加了 `n_n`/`s4_n` 两种原型）：
 
@@ -868,7 +1140,7 @@ cls=5（速度）** 是好的（`cls=3/5` 见 §2.8.1 那条 8 字节记录）�
   * **轴类型（linear / rotary）按 FANUC 命名约定推**（X/Y/Z/U/V/W 直线、A/B/C 回转）——
    这是**约定**不是机床上读到的一格，现场命名不按套路时覆盖档里自己改。
 
-#### 2.8.7 收尾那一轮的几个确认（🟢 实测）
+#### 10.4.7 收尾那一轮的几个确认（🟢 实测）
 
   * **`cnc_rddynamic2` 是通的那条**（之前一直 rc=4）：**`axis` 参数必须 ≥ 1**（给 0 就是
     rc=4），长度给 ≥ 48 就行（48/64/96/128/160/192/224/256 都 rc=0）。它**不是一条命令，
@@ -886,158 +1158,109 @@ cls=5（速度）** 是好的（`cls=3/5` 见 §2.8.1 那条 8 字节记录）�
     所以本机上 `feed_override = 0`、主轴倍率无从谈起（**不是我们的偏移错**，是机床没填）。
     现场遇到"倍率一直是 0"，先查这一条。
   * `cnc_rdaxisdata` 的类：**`cls=4`（主轴）rc=0**（记录名 `S`），`cls=0/6/7/8` rc=3，
-    `cls=1/3/5` 是好的（见 §2.8.1）、`cls=2` 是桩（见 §2.8.6）。
+    `cls=1/3/5` 是好的（见 §10.4.1）、`cls=2` 是桩（见 §10.4.6）。
   * `cnc_rdexecprog3`（子程序号）与 `cnc_rdspdata` **这套官方 SDK 根本没导出** ——
     这台机器上这两条到此为止。
   * 两条"表信息"调用是通的、内容也像样：`cnc_rdtofsinfo` → `{type=2, 条目=400}`、
     `cnc_rdmacroinfo` → `{33, 1}` —— 哪台机器支持整表，就从这两条拿范围。
 
-## 3. 常用函数表（按域）
+---
 
-### 3.1 连接与系统（cnc_*）
+## 11. 本仓库实现（2026-09 落地）
 
-| 函数 | 说明 |
-|---|---|
-| `cnc_allclibhndl3(ip, port, timeout, &h)` | 建立连接（最常用） |
-| `cnc_allclibhndl2/4` | 变体（多句柄/超时细控） |
-| `cnc_freelibhndl(h)` | 释放 |
-| `cnc_sysinfo(h, &ODBSYS)` | 系统信息（型号/系列/轴数/主轴数） |
-| `cnc_rdmodel(h, &ODBMDL)` | 机床型号 |
-| `cnc_statinfo(h, &ODBST)` | **运行状态**（模式/运行/急停/报警） |
-| `cnc_rddt(`…`)` / `cnc_rdtime` | 日期时间 |
-| `cnc_rdopmode(h, &ODBOPM)` | 工作模式 |
+能力面在 `plugins/focas.c`（点位声明）+ `clients/focas/`（协议与语义）。这一节按能力
+记：**模型路径 → client 函数 → 帧/码 → 验证到什么程度**。
 
-### 3.2 坐标与轴（★ 采集核心）
+### 11.1 会话与验证环境
 
-| 函数 | 说明 |
-|---|---|
-| `cnc_absolute(h, axis, &ODBACT)` | 绝对坐标 |
-| `cnc_absolute2` | 绝对坐标（扩展） |
-| `cnc_relative(h, axis, &ODBREL)` | 相对坐标 |
-| `cnc_machine(h, axis, &ODBM)` | 机械坐标 |
-| `cnc_distance(h, axis, &ODBDIS)` | 剩余距离 |
-| `cnc_rdposition(h, type, …)` | **批量坐标读取**（一次取多轴多类型） |
-| `cnc_acts(h, &ODBACT)` / `cnc_actf` | 全部轴绝对位置（short/float） |
-| `cnc_rdsvmeter` / `cnc_rdspmeter` | **伺服/主轴负载表** |
-| `cnc_rdaxisdata(h, …)` | 轴数据（速度/负载/温度，可批量，推荐） |
-| `cnc_rdaxisname` | 轴名称 |
-
-### 3.3 主轴
-
-| 函数 | 说明 |
-|---|---|
-| `cnc_rdspdata` | 主轴数据 |
-| `cnc_rdspmeter` | 主轴负载/速度 |
-| `cnc_rdspindle` / `cnc_rdspload` | 主轴转速/负载 |
-| `cnc_rdspspeed` | 主轴速度 |
-
-### 3.4 报警
-
-| 函数 | 说明 |
-|---|---|
-| `cnc_alarm(h, &ODBALM)` | **当前报警**（数量+内容） |
-| `cnc_rdalmmsg2(h, type, …)` | 报警消息（可分类/分页，推荐） |
-| `cnc_rdalmmsg` | 报警消息（旧版） |
-| `cnc_rdopmsg` / `cnc_rdopmsg2/3` | 操作员消息 |
-| `cnc_rdalmhis` 类 | 报警历史（部分系统） |
-
-### 3.5 程序
-
-| 函数 | 说明 |
-|---|---|
-| `cnc_rdprgnum(h, &ODBPRO)` | 当前主/子程序号 |
-| `cnc_rdseqnum(h, &ODBSEQ)` | 当前程序行号（序列号） |
-| `cnc_rdprogdir` / `cnc_rdprogdir2/3` | 程序目录 |
-| `cnc_upstart4` / `cnc_upend4` / `cnc_upload` | 程序上传（分块） |
-| `cnc_dwnstart4` / `cnc_download` / `cnc_dwnend4` | 程序下载 |
-| `cnc_delprogram` / `cnc_rdproginfo` | 删除 / 信息 |
-| `cnc_rdpdf_*`（pbm_*） | 程序块管理（按块读写，大程序更高效） |
-
-### 3.6 刀具补偿
-
-| 函数 | 说明 |
-|---|---|
-| `cnc_rdtofs(h, type, &ODBTOFS)` | 刀补读（形状/磨损，长度/半径） |
-| `cnc_wrtofs` | 刀补写 |
-| `cnc_rdtool` / `cnc_rdtoolgrp` | 刀具信息/刀具组 |
-| `cnc_rdngrp` | 刀具组数量 |
-
-### 3.7 参数与宏变量
-
-| 函数 | 说明 |
-|---|---|
-| `cnc_rdparam(h, num, len, &ODBPARA)` | **CNC 参数读** |
-| `cnc_wrparam` | 参数写 |
-| `cnc_rdmacro(h, num, len, &ODBM)` | **宏变量读** |
-| `cnc_wrmacro` | 宏变量写 |
-| `cnc_rdparainfo` / `cnc_rdparaminfo` | 参数信息 |
-
-### 3.8 PMC（PLC 层，95 函数）
-
-| 函数 | 说明 |
-|---|---|
-| `pmc_rdpmcrng(h, adr_type, data_type, start, end, len, buf)` | **PMC 区读**（R/Y/X/G/F/E/A/C/D 等） |
-| `pmc_wrpmcrng` | PMC 区写 |
-| `pmc_rdpmcinfo` | PMC 区信息 |
-| `pmc_rdladder` | 梯形图读取 |
-| `pmc_getdtailerr` | 详细错误 |
-| `pmc_setpcmcntl` / `pmc_startladdermonitor` | 梯形图监控 |
-
-### 3.9 其它
-
-| 域 | 前缀 | 说明 |
+| 环境 | 是什么 | 用来验什么 |
 |---|---|---|
-| 时间 | `cnc_rdtimer` / `cnc_rdcount` | 运行时间/工件计数 |
-| 伺服/主轴参数 | `cnc_rdservo` / `cnc_rdspindle` | 伺服/主轴参数 |
-| 波形 | `cnc_startwave` / `cnc_rdwave` / `cnc_stopwave` | 波形采集（诊断） |
-| 数据服务 | `ds_*`（8 函数） | FOCAS2 Data Service |
-| 变量/PMC 日志 | `flnt_*`（14 函数） | Focas2 Logger |
+| 假机床（`tools/site-probe/mock.py`）| 自己按抓到的帧铺应答 | 帧形状、块语义、字段位置（§10.2 的反查就靠它）|
+| **NCGuide**（FS0i-F 模拟器）| FANUC 自己的模拟器，能用官方 SDK 直连 | 坐标一族、`cnc_srvdelay`（§10.1）|
+| **真机**（以太网 0i-MD，2026-09-21）| 现场那台 | 终验：两条 TCP / `code 24` / 8 字节记录 / 报警 / 目录（§10.4）|
 
----
+会话：`cnc_allclibhndl3()` 起两条 TCP（§10.4），本仓库的 client 保持**一个句柄复用**
+（FOCAS 默认只给 2 个），轮询与按需读都走它；`--once` 自检会把模型里每个点位读一遍，
+"读不了"的点位报原因而不是假装成功。
 
-## 4. 数据类型（结构体，选摘）
+### 11.2 点位一览（模型 → client）
 
-```c
-typedef struct { short data; short dec; short unit; short disp; short name; short suff; } ODBACT;
-// 坐标值 = data / 10^dec  —— ★ 必须按 dec 缩放，否则数值差 10^n 倍
+| 模型路径 | client 函数 | FOCAS 调用 | 验证 |
+|---|---|---|---|
+| `/STATUS` | `ncl_focas_status()` | `cnc_statinfo` | 🟢 假机床 + 真机 |
+| `/WORK_MODE` | `ncl_focas_mode()` | `cnc_statinfo`（`aut`/`motion`）| 🟢 |
+| `/PART_COUNT` | `ncl_focas_part_count()` | `cnc_rdcount` | 🟢（字段 @20 修正过一次）|
+| `/WARNING` | `ncl_focas_alarm()` | `cnc_alarm` + `cnc_rdalmmsg2` | 🟡 状态位 🟢 / 文本待块形状 |
+| `/MANUFACTURER` `/MODEL` `/VERSION` | `ncl_focas_manufacturer()` 等 | `cnc_sysinfo`（`ODBSYS`）| 🟢 |
+| `/CONTROLLER/PROGRAM` | `ncl_focas_program_name()` | `cnc_exeprgname2` | 🟢 |
+| `/CONTROLLER/PROGRAM_NUMBER` `/SUBPROGRAM` | `ncl_focas_program_number()`、`_subprogram_number()` | `cnc_rdprgnum` | 🟢 |
+| `/LINE_NUMBER` | `ncl_focas_line_number()` | `cnc_rdseqnum` | 🟢 |
+| `/FEED_SPEED` `/SPINDLE_SPEED` | `ncl_focas_feed_speed()`、`_spindle_speed()` | `cnc_actf` / `cnc_acts` | 🟢 rc=0 |
+| `/FEED_OVERRIDE` `/SPINDLE_OVERRIDE` | `ncl_focas_feed_override()` 等 | `cnc_rdopnlsgnl` | 🟢 进给倍率；主轴倍率只在 15i 有 |
+| `/AXIS@<轴>/POSITION@REAL` | `ncl_focas_axis_position()` | `cnc_rdposition`（`POSELM`）| 🟢 NCGuide |
+| `/AXIS@<轴>/POSITION@CMD` | `ncl_focas_axis_position_cmd()` | 实际 − `cnc_srvdelay` | 🟢 NCGuide |
+| `/AXIS@<轴>/MOTOR/VARIABLE@ABSOLUTE\|RELATIVE\|DISTANCE` | `_axis_position_machine/_relative/_distance` | `cnc_rdposition` 的四种（d=0..3）| 🟢 |
+| `/AXIS@X/PATH_LEFT_LENGTH` | `ncl_focas_axis_distance()` | `cnc_rddynamic2` | 🟢 |
+| `/AXIS@X/TORQUE` `/CURRENT` `/TEMPERATURE` | `ncl_focas_axis_torque()` 等 | `cnc_rdsvmeter` / `cnc_rdspmeter` | ⛔ 这台机床不提供（明确回"读不了"）|
+| `/MOTOR@S1/SPEED` | `ncl_focas_spindle_speed()` | `cnc_acts` | 🟢 |
+| `/CONTROLLER/PARAMETER`（HASH）| `ncl_focas_parameter_table()` | `cnc_rdparam` / `cnc_rdparar` | 🟡 字段已核 |
+| `/CONTROLLER/VARIABLE`（LIST）| `ncl_focas_variable_table()` | `cnc_rdmacro` / `cnc_rdmacror` | 🟡 长度待试 |
+| `/CONTROLLER/TOOL`（LIST）| `ncl_focas_tool_list()` | `cnc_rdtooldata` / `cnc_rdtoolrng` | ⛔ 机床不提供 |
+| `/CONTROLLER/TOOLPARAM` | `ncl_focas_tool_param_table()` | `cnc_rdtofs` / `cnc_rdtofsinfo` | 🟢 |
+| `/CONTROLLER/COORDINATE` | `ncl_focas_work_offsets()` | `cnc_rdwkcdshft` | 🟡 码已核 |
+| `/SESSION` `/ITEMS`（方法）| `ncl_focas_system()`、`ncl_focas_read_item()` | 会话自检 / 按 item 码裸读 | 🟢 调试用 |
 
-typedef struct { short dummy; short num; struct { short no; short type; short data; } msg[10]; } ODBALM;
-typedef struct { short datano; short type; long data[2]; } ODBTOFS;   // 刀补（形状/磨损 × 长度/半径）
-typedef struct { short datano; short type; long data; } ODBM;          // 宏变量
-typedef struct { char name[36]; char cnc_type[2]; ... } ODBSYS;
-```
+### 11.3 位置一族（采集核心）
 
-**⚠️ 坐标缩放是第一坑**：`cnc_absolute` 返回的 `data` 是整数，必须 `data / pow(10, dec)` 才是实际值（dec 通常 3 或 4）。
+`POSELM` 每轴 **12 字节**（`int32 data` + `dec=3` + `unit` + `disp` + `name` + `suff`），
+值 = `data / 10^dec`；一条 `cnc_rdposition` 就把四种位置都拿到（d=0 绝对 / 1 机械 /
+2 相对 / 3 剩余），比逐轴 `cnc_absolute` 快得多。**指令位置**没有直接接口：
+`cnc_srvdelay`（`0x26`，d=9）给的是**每轴跟随误差（8 字节记录）**，`指令 = 实际 − 误差`。
 
----
+### 11.4 负载 / 电流 / 温度 / 转矩
 
-## 5. 错误码（错误分类函数）
+码在（`cnc_rdsvmeter` 的 `0x56`+`0x89`、`cnc_rdspmeter` 的 `0x40`/`0x8a`），但这台机床
+回"功能不支持"——**官方 SDK 同样被拒**（§10.4.6），所以点位如实回 `读不了`（`NCL_ERR_UNAVAILABLE`），
+不编造数值。
 
-```c
-short err = cnc_getdtailerr(h, &ODBERR);   // ODBERR 结构 getdtailerrkind/dta1/dta2
-// 通用返回：EW_OK=0；非 0 时用 cnc_getdtailerr 取细节
-```
-常见：`EW_FUNC`(功能不支持) · `EW_LENGTH`(数据长度错) · `EW_PARAM`(参数错) · `EW_HANDLE`(句柄无效) · `EW_SOCKET`(网络错) · `EW_BUSY`
+### 11.5 参数与宏变量
 
----
+参数走 `cnc_rdparam`（`IODBPSD`：`datano`@2、`type`@4、`ldata`@8），表结构先问
+`cnc_rdparainfo`/`cnc_rdparar`（“一次能读几个”由它说）；宏变量走 `cnc_rdmacro`（`ODBM`），
+**长度要给对**（给 12 回 `EW_LENGTH`）——这一条还差最后一步（§9 待办 #2）。
 
-## 6. 实现坑
+### 11.6 刀补 / 刀具参数 / 刀具表
 
-1. **句柄数限制**：FOCAS 默认最多 2 个并发句柄 —— 多进程采集会互相踢掉。**必须单进程复用句柄**。
-2. **坐标缩放**（见 §4）—— 最常见的数值 bug 来源。
-3. **`cnc_rdaxisdata` 优于逐轴 `cnc_absolute`**：批量读一次拿多轴，吞吐高 3-10 倍。
-4. **报警消息分页**：报警多时 `cnc_alarm` 只给 10 条，遍历要用 `cnc_rdalmmsg2`。
-5. **程序上传/下载必须成对调用**（`*start` → 分块 → `*end`），中途退出会锁住机床侧。
-6. **32/64 位库不同**（`Fwlib32.dll` vs `fwlib32.x64.dll`），结构体对齐要用 `#pragma pack`。
-7. **写类函数（`cnc_wrtofs` / `cnc_wrmacro` / `pmc_wrpmcrng`）风险高**：改刀补会导致撞刀。
+`cnc_rdtofs`（字段 @0）与 `cnc_rdtofsinfo` 已进 client；`cnc_rdlife`（寿命）字段 @12 已核。
+机床的**刀具列表**（`TOOL`）它不提供（rc=1/3），模型里那一条点位因此标"机床不提供"。
+写刀补走 `cnc_wrtofs`（§11.9）。
 
----
+### 11.7 报警
 
-## 7. 参考实现
+状态位 `cnc_alarm`（`ODBALM`，最多 10 条）🟢；文本要 `cnc_rdalmmsg2`（`0x23`，`arg2=2`、
+`arg3=64` 才填），**块形状还差**——所以 `WARNING` 现在答得出"有没有报警"，答不出文本
+（§9 待办 #1）。
 
-| 来源 | 说明 |
-|---|---|
-| `pyfocas` / `pyfanuc` | ctypes 绑定 + fwlib 头文件（可直接抄结构体定义） |
-| **881 个函数原名**（按前缀分类） | 原始素材未随本目录提供 |
-| 商业库对照 `FanucSeries0i` | 高层 API 分组参考（59 成员，坐标/报警/负载/刀补/宏变量/程序列表） |
-| 参考实现侧 | `驱动定义目录/` FANUC 驱动（端口 8193） |
+### 11.8 程序与文件
+
+`cnc_dwnstart4` 那条链路的**帧形状已经核出来**（516 字节定长、`[2..4)=1`、`[4..6)="N:"`），
+`cnc_downend4`/`cnc_dwnend4` 成对；**取回**（`cnc_upstart4`/`cnc_upload4`）还回 `EW_BUFFER`=10，
+所以设备侧的 `/CONTROLLER/FILE` 只做了下发与删除，取回没声明。程序目录 `cnc_rdprogdir3` 🟢。
+
+### 11.9 写这一侧
+
+| 能力 | 函数 | 本仓库 |
+|---|---|---|
+| 刀补写 | `cnc_wrtofs` | `/CONTROLLER/TOOLPARAM` 的 `set_value` |
+| 参数写 | `cnc_wrparam` | `/CONTROLLER/PARAMETER` 的 `set_value` |
+| 宏变量写 | `cnc_wrmacro` | `/CONTROLLER/VARIABLE` 的 `set_value` |
+| 程序下发 | `cnc_dwnstart4` 链 | `/CONTROLLER/FILE` 的 `push` |
+| 程序删除 | `cnc_delprogram` | `/CONTROLLER/FILE` 的 `remove` |
+
+**权限在外面**：这些 `set_value` 只声明"能不能做"，谁能写由部署侧的白名单决定。
+
+### 11.10 两条口径（和 10 册同一套）
+
+1. **取值形状决定操作**：dict/HASH 答 `get_keys`，list/LIST 答 `get_length`，两者不同时声明。
+2. **没验过的不假装**：帧形状没核出来的点位（报警文本、刀具列表、负载那一族）如实回
+   "读不了"或"机床不提供"，不编数值、不猜结构。
