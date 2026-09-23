@@ -460,6 +460,15 @@ typedef struct {
     size_t      dir_count;
     bool        dir_ignore_range; /**< 不认 `d` 的坏样子：每页都把头条重铺 */
     int         dir_requests;     /**< 目录请求发了几条 */
+    /* 轴名表（`cnc_rdaxisname` = 0x89）：每轴 4 字节 = 名字 2 字节 + 2 字节代码 */
+    char        axis_names[8][4];
+    size_t      axis_name_count;
+    /* 工件零点偏移（`cnc_rdzofs` = 0x0b / `cnc_wrzofs` = 0x0c）：32 条 8 字节记录 */
+    uint8_t     zofs[256];
+    int         zofs_requested;   /**< 最后一次 0x0b 的偏移号（d 那格） */
+    int         zofs_writes;      /**< 收到几条 0x0c */
+    int         zofs_write_axis;  /**< 最后一次写的轴号（arg2） */
+    int32_t     zofs_write_raw;   /**< 最后一次写的原始值（载荷前 4 字节） */
     int         short_by; /**< reply with fewer blocks than asked */
     uint16_t    block_rc; /**< 应答块里的返回码（机床说 1/6 就是"这台没有"） */
     /* 传输三件套的状态回执：非 0 时，`0x13` end 的应答按真机的样子回
@@ -614,6 +623,57 @@ static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pd
             used += 72u;
         }
         mock->payload_len[0] = used;
+        mock->payload_count = 1;
+    }
+    /*
+     * 轴名表（`Cb 0x89`）：每轴 4 字节，名字 2 字节 + 2 字节代码。工件坐标那族读记录时
+     * 要按**机床自己报的轴名**落键（车床没有 Y，不能按顺序硬排），所以 mock 也得答。
+     */
+    if (pdu->func == NCL_FOCAS_FUNC_CMD && pdu->length >= 18u &&
+        get_u16be(frame + NCL_FOCAS_HEADER + 8u) == 0x89u &&
+        mock->axis_name_count > 0) {
+        size_t k;
+
+        memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+        for (k = 0; k < mock->axis_name_count; k++) {
+            put_u16be(mock->payload[0] + k * 4u,
+                      (uint16_t)mock->axis_names[k][0]);
+        }
+        mock->payload_len[0] = mock->axis_name_count * 4u;
+        mock->payload_count = 1;
+    }
+    /*
+     * 工件零点偏移：`0x0b` 读（回 32 条 8 字节记录）、`0x0c` 写（载荷 = `[值 4 字节]`
+     * + `00 00` + `ff ff`，`arg2` = 轴号 1 起）—— 写了就更新那张表，好让"写后复核"
+     * 这条测试真的走一遍。
+     */
+    if (pdu->func == NCL_FOCAS_FUNC_CMD && pdu->length >= 18u &&
+        (get_u16be(frame + NCL_FOCAS_HEADER + 8u) == 0x0bu ||
+         get_u16be(frame + NCL_FOCAS_HEADER + 8u) == 0x0cu)) {
+        int code = get_u16be(frame + NCL_FOCAS_HEADER + 8u);
+        int d = (int)(int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 10u);
+
+        mock->zofs_requested = d;
+        if (code == 0x0cu) {
+            int axis = (int)(int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 18u);
+            size_t at = (size_t)(axis - 1) * 8u;
+
+            mock->zofs_writes++;
+            mock->zofs_write_axis = axis;
+            mock->zofs_write_raw =
+                (int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 30u);
+            if (axis >= 1 && at + 8u <= sizeof(mock->zofs)) {
+                uint32_t raw = (uint32_t)mock->zofs_write_raw;
+
+                mock->zofs[at] = (uint8_t)(raw >> 24);
+                mock->zofs[at + 1u] = (uint8_t)(raw >> 16);
+                mock->zofs[at + 2u] = (uint8_t)(raw >> 8);
+                mock->zofs[at + 3u] = (uint8_t)raw;
+            }
+        }
+        memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+        memcpy(mock->payload[0], mock->zofs, sizeof(mock->zofs));
+        mock->payload_len[0] = sizeof(mock->zofs);
         mock->payload_count = 1;
     }
     if (pdu->func == NCL_FOCAS_FUNC_HELLO) {
@@ -1623,6 +1683,127 @@ static void test_semantics(void)
     }
 
     /*
+     * 工件零点偏移（`cnc_rdzofs` = 0x0b，见 01 册 §11.19）：载荷 = 32 条 8 字节记录，
+     * 第 i 根轴的值在 `@8×(i-1)`；键用**机床自己报的轴名**。写是 0x0c，载荷与写刀补
+     * 同形（`[值][00 00][ff ff]`）、`arg2` = 轴号（1 起），写完读回来复核。
+     */
+    NCL_TEST_CASE("工件坐标系：读 G54（每轴一条记录）、写 G54 X 后读回来复核");
+    {
+        ncl_json *json = NULL;
+        const ncl_json *g54;
+        size_t k;
+
+        /* 假机床：X/Y/Z 三轴（0x89 的轴名表），坐标系里 dec = 3 */
+        mock->axis_name_count = 3;
+        memcpy(mock->axis_names[0], "X", 2);
+        memcpy(mock->axis_names[1], "Y", 2);
+        memcpy(mock->axis_names[2], "Z", 2);
+        for (k = 0; k < 3; k++) {
+            mock->zofs[k * 8u + 4u] = 0x00;
+            mock->zofs[k * 8u + 5u] = 0x0a;
+            mock->zofs[k * 8u + 6u] = 0x00;
+            mock->zofs[k * 8u + 7u] = 0x03; /* dec = 3 */
+        }
+        /* 先在"机床"上放个值：G54 的 X = 12345（dec=3 → 12.345） */
+        put_u32be(mock->zofs, 12345u);
+        NCL_CHECK_EQ_INT(ncl_focas_work_offset(focas, "G54", &json), NCL_OK);
+        if (json != NULL) {
+            double x = ncl_json_obj_get_double(json, "x", -1.0);
+
+            NCL_CHECK(x > 12.344 && x < 12.346); /* 12345 / 10^3 */
+            NCL_CHECK(ncl_json_obj_get_double(json, "y", -1.0) == 0.0);
+            ncl_json_free(json);
+        }
+        /* 请求认到的偏移号（0x0b 的 d；mock 记下来的那格）——G54 → 1 */
+        NCL_CHECK_EQ_INT((int)mock->zofs_requested, 1);
+
+        /* 写：G54 的 X（轴号 1）= -1.5 → 原始 -1500 */
+        NCL_CHECK_EQ_INT(ncl_focas_work_offset_write(focas, "G54", 1, -1.5),
+                         NCL_OK);
+        NCL_CHECK_EQ_INT(mock->zofs_writes, 1);
+        NCL_CHECK_EQ_INT(mock->zofs_write_axis, 1);
+        NCL_CHECK_EQ_INT((int)mock->zofs_write_raw, -1500);
+        /* 帧形状看 mock 记下来的那几格（last_request 会被后面的复核读覆盖） */
+        /* 写后复核读回来的也应该是新值 */
+        NCL_CHECK_EQ_INT(ncl_focas_work_offset(focas, "G54", &json), NCL_OK);
+        if (json != NULL) {
+            double back = ncl_json_obj_get_double(json, "x", 0.0);
+
+            NCL_CHECK(back == -1.5); /* -1500 / 10^3 */
+            ncl_json_free(json);
+        }
+        /* 名字认得全：外部 / G54 / G54.1P3 */
+        json = NULL;
+        NCL_CHECK_EQ_INT(ncl_focas_work_offset(focas, "G59", &json), NCL_OK);
+        NCL_CHECK_EQ_INT((int)mock->zofs_requested, 6);
+        ncl_json_free(json);
+        json = NULL;
+        NCL_CHECK_EQ_INT(ncl_focas_work_offset(focas, "EXT", &json), NCL_OK);
+        NCL_CHECK_EQ_INT((int)mock->zofs_requested, 0);
+        ncl_json_free(json);
+        json = NULL;
+        NCL_CHECK_EQ_INT(ncl_focas_work_offset(focas, "G54.1P3", &json), NCL_OK);
+        NCL_CHECK_EQ_INT((int)mock->zofs_requested, 9);
+        ncl_json_free(json);
+        /* 名字认不出：本地就挡下来，不发帧 */
+        NCL_CHECK_EQ_INT(ncl_focas_work_offset(focas, "G99", &json),
+                         NCL_ERR_INVALID_ARG);
+        mock->axis_name_count = 0; /* 后面的用例自己摆 0x89 的应答 */
+        (void)g54;
+    }
+
+    /*
+     * 当前刀号：`cnc_rdcommand`（0x97，d = -1 全读模态非 G 码）回 12 字节一条的
+     * 指令值记录（`[adrs][num][flag(2)][cmd_val(4)][dec_val(4)]`），找 `'T'` 那条。
+     */
+    NCL_TEST_CASE("当前刀号：0x97 的指令值里找 adrs = 'T' 那条的 cmd_val");
+    {
+        long long tool = -1;
+        size_t i;
+
+        memset(mock->payload[0], 0, 64);
+        mock->payload_len[0] = 12 * 3;
+        mock->payload_count = 1;
+        mock->payload[0][0] = (uint8_t)'M';
+        mock->payload[0][12] = (uint8_t)'T';
+        put_u32be(mock->payload[0] + 12 + 4, 7); /* T7 */
+        mock->payload[0][24] = (uint8_t)'S';
+        put_u32be(mock->payload[0] + 24 + 4, 1200);
+        NCL_CHECK_EQ_INT(ncl_focas_tool_number(focas, &tool), NCL_OK);
+        NCL_CHECK_EQ_INT((int)tool, 7);
+        NCL_CHECK_EQ_INT(get_u16be(mock->last_request + 8), 0x97);
+        NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(mock->last_request + 10), -1);
+        (void)i;
+
+        /* 机床没给 T 那条 → 如实回"读不到"，不报 0 */
+        memset(mock->payload[0], 0, 64);
+        mock->payload_len[0] = 12 * 2;
+        mock->payload[0][0] = (uint8_t)'M';
+        mock->payload[0][12] = (uint8_t)'S';
+        NCL_CHECK_EQ_INT(ncl_focas_tool_number(focas, &tool),
+                         NCL_ERR_NOT_FOUND);
+    }
+
+    /* 轴电流（安培）= 0x56 的 d=3（同一格里 d=1 是负载表 %）。 */
+    NCL_TEST_CASE("轴电流：cnc_rdsvmeter 0x56 的 d=3（安培）");
+    {
+        double amps = 0.0;
+        ncl_json *json = NULL;
+
+        memset(mock->payload[0], 0, 64);
+        mock->payload_len[0] = 8;
+        put_u32be(mock->payload[0], 3200); /* 3.2 A（dec=3）*/
+        mock->payload[0][6] = 0x00;
+        mock->payload[0][7] = 0x03;
+        NCL_CHECK_EQ_INT(ncl_focas_axis_current(focas, NCL_FOCAS_AXIS_X, &amps),
+                         NCL_OK);
+        NCL_CHECK(amps > 3.199 && amps < 3.201); /* 3200 / 10^3 */
+        NCL_CHECK_EQ_INT(get_u16be(mock->last_request + 8), 0x56);
+        NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(mock->last_request + 10), 3);
+        ncl_json_free(json);
+    }
+
+    /*
      * 执行中的程序段（`cnc_rdexecprog`，0x20）：体 = 4 字节 + ASCII 文本（0 补齐）。
      * 这台机器回的是**从执行位置起的整段程序文本**（真机 515 字节），所以这里也照
      * 多行铺，验证"整段都拿回来、尾部的 0 与空白去掉"。
@@ -2028,12 +2209,11 @@ static void test_not_yet(void)
     }
 
     NCL_TEST_CASE("还没抓到帧的几条调用回 NCL_ERR_UNAVAILABLE，并说清要抓哪一帧");
-    /* 报警与程序目录都实现了（见 test_semantics），这里换成工件坐标 ——
-     * 这台机床对 `cnc_rdwkcdshft` 回 rc=1，帧还没别处核过。 */
-    NCL_CHECK_EQ_INT(ncl_focas_work_offsets(focas, &value),
+    /* 报警、程序目录、工件坐标都实现了（见 test_semantics：0x0b/0x0c 那一族），
+     * 这里换成"子程序号"——官方库对 `cnc_rdexecprog3` 一帧都不发。 */
+    NCL_CHECK_EQ_INT(ncl_focas_subprogram_number(focas, &number),
                      NCL_ERR_UNAVAILABLE);
-    NCL_CHECK(value == NULL); /* 宁可没有值，也不编一个 */
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdwkcdshft") != NULL);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdexecprog3") != NULL);
 
     /* 合成进给速度与模态都已经实现了（见 test_semantics），这里换一条还没核准的：
      * 主轴倍率要 `IODBSGNL.spdl_ovrd`（现代系列没有那一格）。 */

@@ -487,9 +487,12 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表�
     NCL_DATAITEM_F64("/AXIS@X/PATH_LEFT_LENGTH", ncl_focas_axis_distance,
                      NCL_FOCAS_AXIS_X)
     NCL_DATAITEM_F64("/AXIS@X/TORQUE", ncl_focas_axis_torque, NCL_FOCAS_AXIS_X)
+    /* 轴电流（安培）= cnc_rdsvmeter 0x56 的 d=3（d=1 那格是负载表 %）。 */
     NCL_DATAITEM_F64("/AXIS@X/CURRENT", ncl_focas_axis_current, NCL_FOCAS_AXIS_X)
-    NCL_DATAITEM_F64("/AXIS@X/TEMPERATURE", ncl_focas_axis_temperature,
-                     NCL_FOCAS_AXIS_X)
+    /*
+     * **没有轴温这个点位列**：FOCAS 里没有读轴温的调用（只有智能终端的高温报警码），
+     * 与其挂一个永远回"待抓包"的格子，不如不摆（表 4 的点位也不是必须全摆）。
+     */
     NCL_CONFIG_STR("/AXIS@X/TYPE", ncl_focas_axis_type, NCL_FOCAS_AXIS_X)
     /* 主轴：表 2 的组件类型里没有 SPINDLE，最接近的是 MOTOR（主轴就是主轴电机
      * 驱动的），所以主轴转速按 SPEED（units rpm）报在 /MOTOR@S1 下；负载（%）

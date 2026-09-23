@@ -208,6 +208,28 @@ static const struct {
     { "cnc_rdtooldata", "s2_n", 8 }, { "cnc_rdtoolrng", "s2_n", 8 },
     /* 工件坐标/模态 */
     { "cnc_rdgcode", "s2_n_n", 0 }, { "cnc_rdwkcdshft", "s2", 0 },
+    /*
+     * 工件零点偏移（G54…）：`cnc_rdzofs(h, number, axis, length, IODBZOFS*)` ——
+     * `number` = 偏移号（1 = G54…）、`axis` = 轴号（-1 = ALL_AXES）、`length` =
+     * 出参结构的字节数。`cnc_rdwkcdshft` 那条第 3 个参数是**轴号**（不是长度），
+     * 两个别混。`cnc_zofs_rnge` 问的是"这个号/轴合不合法"。
+     */
+    { "cnc_rdzofs", "s3p", 0 }, { "cnc_zofs_rnge", "s2p", 0 },
+    /* 写工件零点偏移（"对拍"用：写一个显眼的值进去，再读回来看载荷里它是哪几个字节） */
+    { "cnc_wrzofs", "s1p", 0 }, { "cnc_rdzofsr", "s1p", 0 },
+    /* 一条连接内的"写 → 读"对拍（见下面 kind == "zofs" 那段） */
+    { "cnc_zofs", "zofs", 0 },
+    /*
+     * 指令值（**当前刀号就在这条里**）：`cnc_rdcommand(h, type, block, &num, ODBCMD*)`
+     * —— `type` 0..29 模态（非 G 码）、-1 全读、100..129 指令值逐条、-2 全读；
+     * 应答每条 12 字节 `{adrs, num, flag(2), cmd_val(4), dec_val(4)}`，`adrs` 是
+     * 字母（'T'/'M'/'S'/'F'…）。`-2` 一次把 T/M/S/F 都拿回来。
+     */
+    { "cnc_rdcommand", "s2_n_n", 0 },
+    /* 模态（老系列那条；0i-D/F 上 G 码走 cnc_rdgcode，其余走 cnc_rdcommand） */
+    { "cnc_modal", "s2p", 0 },
+    /* 执行中程序的信息（含**子程序号**）：cnc_rdexecprog3(h, &num, ODBEXEPRGINFO*) */
+    { "cnc_rdexecprog3", "np", 0 },
     /* 动态数据（速度/倍率一条全有）与主轴负载 */
     { "cnc_rddynamic2", "s2", 4 }, { "cnc_loadtorq", "s3", 12 },
     /*
@@ -627,6 +649,60 @@ int main(int argc, char **argv)
         dump(buf, 64);
         freelibhndl(handle);
         return 0;
+    } else if (strcmp(kind, "zofs") == 0) {
+        /*
+         * 工件零点偏移的"对拍"：一条连接里
+         *   ① `cnc_rdaxisname`（官方库的轴数闸门要问过一次轴表才放行）
+         *   ② `cnc_wrzofs(h, number, IODBZOFS*)` 写三个显眼的值（0x3039/0x5BA0/0x8707）
+         *   ③ `cnc_rdzofs(h, number, ALL_AXES, 136, IODBZOFS*)` 读回来
+         * 两边都打印 —— 载荷里那三个值落在哪几个字节，就是客户端该切的偏移。
+         * `a0` = 偏移号（1 = G54）。
+         */
+        n_fn axisname_fn = (n_fn)sym("cnc_rdaxisname");
+        s1_p_fn wr_fn = (s1_p_fn)sym("cnc_wrzofs");
+        s3_p_fn rd_fn = (s3_p_fn)sym("cnc_rdzofs");
+        short anum = 8;
+        short number = (short)(a0 > 0 ? a0 : 1);
+        static const long kValues[3] = { 12345L, 23456L, 34567L };
+        int k;
+
+        if (axisname_fn == NULL || wr_fn == NULL || rd_fn == NULL) {
+            fprintf(stderr, "  (缺函数)\n");
+            return 2;
+        }
+        rc = axisname_fn(handle, &anum, buf);
+        printf("  cnc_rdaxisname rc = %d, 轴数 = %d\n", (int)rc, (int)anum);
+        /* IODBZOFS = {short datano; short type; long data[MAX_AXIS]}（0iD 那版没有 dummy） */
+        memset(buf, 0, sizeof(buf));
+        buf[0] = (unsigned char)number;
+        /*
+         * `a1` 选写的形状（官方库拒了就得试；EW_LENGTH=2 说明它自己先挡了）：
+         *   0 = type=ALL_AXES、结构体不带 dummy（Fwlib64 头里 iodbzofs 这版）
+         *   1 = type=1（单轴 X）
+         *   2 = type=ALL_AXES、结构体带 4 字节 dummy（iodbzofs64 那版的样子）
+         */
+        if (a1 == 1) {
+            buf[2] = 1;
+            buf[3] = 0;
+        } else {
+            buf[2] = 0xff;
+            buf[3] = 0xff;
+        }
+        for (k = 0; k < 3; k++) {
+            memcpy(buf + (a1 == 2 ? 8 : 4) + 4 * k, &kValues[k], 4);
+        }
+        rc = wr_fn(handle, number, buf);
+        printf("  cnc_wrzofs(%d) rc = %d\n", (int)number, (int)rc);
+        memset(buf, 0, sizeof(buf));
+        rc = rd_fn(handle, number, -1, 136, buf);
+        printf("  cnc_rdzofs(%d, ALL_AXES, 136) rc = %d\n", (int)number, (int)rc);
+        dump(buf, 48);
+        /* 单个轴再读一次（同一号、axis = 1） */
+        memset(buf, 0, sizeof(buf));
+        rc = rd_fn(handle, number, 1, 136, buf);
+        printf("  cnc_rdzofs(%d, 1, 136) rc = %d\n", (int)number, (int)rc);
+        dump(buf, 32);
+        rc = 0;
     } else if (strcmp(kind, "up1") == 0 || strcmp(kind, "up3") == 0) {
         /*
          * 老代际的上行：`cnc_upstart(h, type)` / `cnc_upstart3(h, type, s_no, e_no)`

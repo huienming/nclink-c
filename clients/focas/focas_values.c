@@ -768,9 +768,63 @@ ncl_err ncl_focas_tool_number(ncl_focas *focas, long long *value)
      * 等找到"当前 T 码"的正式出处（`cnc_rdgcode` 的别的 type，或 ODBDY2 里那一格）
      * 再接。模型里的 `/MACHINE/TOOL` 这一格先保持"读不到"，别编一个数。
      */
-    (void)value;
-    return not_yet(focas, "当前刀具号",
-                   "cnc_rdgcode 的 T 组 / ODBDY2（0x96 只报 G 组，0x2e 那条回整段程序）");
+    /*
+     * 当前刀号在**指令值**里：`cnc_rdcommand`（item `RDCOMMAND` = **0x97**，
+     * `d = -1` 全读模态非 G 码）回一串 12 字节记录，一条一个地址：
+     *
+     *     [adrs(1)][num(1)][flag(2)][cmd_val(4 BE)][dec_val(4 BE)]
+     *
+     * 地址就是字母本身（`'T'` 0x54 = 刀号、`'M'`、`'S'`、`'F'`…），**找 `adrs == 'T'`
+     * 那条的 `cmd_val` 就是当前刀号**（2026-09-23 官方 SDK 对 NCGuide 0i-MF 抓帧，
+     * 一起抓到的还有 D/E/F/H/L/M/N/O/S/T 十条，见 01 册 §11.19）。
+     *
+     * 这里**没抓到 T 那条**（比如机床一把刀都没选）就如实回"读不到"，不报 0 ——
+     * 0 是"选了 0 号刀"，与"没读到"是两回事。
+     */
+    {
+        ncl_json *params = ncl_json_new_object();
+        ncl_json *answer = NULL;
+        ncl_json *bytes = NULL;
+        size_t length;
+        size_t at;
+        bool found = false;
+        long long tool = 0;
+        ncl_err rc;
+
+        if (params == NULL) {
+            return NCL_ERR_NOMEM;
+        }
+        (void)ncl_json_obj_set_string(params, "item", "RDCOMMAND");
+        (void)ncl_json_obj_set_int(params, "block", 0);
+        (void)ncl_json_obj_set_int(params, "d", -1); /* -1 = 全部模态非 G 码 */
+        rc = ncl_focas_call(focas, "payload", params, &answer);
+        ncl_json_free(params);
+        if (rc != NCL_OK) {
+            return rc;
+        }
+        bytes = ncl_json_obj_get(answer, "bytes");
+        if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY) {
+            ncl_json_free(answer);
+            return note(focas, "RDCOMMAND", NCL_ERR_PARSE);
+        }
+        length = ncl_json_arr_len(bytes);
+        for (at = 0; at + 12u <= length; at += 12u) {
+            if (bytes_at(bytes, at) == (uint8_t)'T') {
+                tool = ((long long)bytes_at(bytes, at + 4u) << 24) |
+                       ((long long)bytes_at(bytes, at + 5u) << 16) |
+                       ((long long)bytes_at(bytes, at + 6u) << 8) |
+                       (long long)bytes_at(bytes, at + 7u);
+                found = true;
+                break;
+            }
+        }
+        ncl_json_free(answer);
+        if (!found) {
+            return note(focas, "当前刀具号", NCL_ERR_NOT_FOUND);
+        }
+        *value = tool;
+    }
+    return NCL_OK;
 }
 
 /* 程序行号（cnc_rdseqnum，0x1d）：载荷 @0 的 BE32；表 7 的 LINE_NUMBER 是文本。 */
@@ -1235,20 +1289,6 @@ ncl_err ncl_focas_spindle_load(ncl_focas *focas, unsigned spindle,
     return record_at(focas, "SPLOAD", 0, (int)spindle, value, NULL);
 }
 
-/** 每轴一类量的公共壳（扭矩/电流/温度）：轴号先校验，再交回"还没实现"。 */
-static ncl_err axis_measure_not_yet(ncl_focas *focas, ncl_focas_axis axis,
-                                    double *value, const char *what,
-                                    const char *call)
-{
-    if (focas == NULL || value == NULL) {
-        return NCL_ERR_INVALID_ARG;
-    }
-    if ((int)axis < 0 || (int)axis >= (int)NCL_FOCAS_AXIS_COUNT) {
-        return note(focas, "AXIS", NCL_ERR_RANGE);
-    }
-    return not_yet(focas, what, call);
-}
-
 /**
  * 轴扭矩 / 负载扭矩（`cnc_loadtorq`，item `TORQUE` = 一个 **0xfd**：d = 电机号
  * （**0 = 伺服电机**）、e = 轴号（**1 起**：X = 1）、应答载荷 4 字节）。
@@ -1300,18 +1340,29 @@ ncl_err ncl_focas_axis_torque(ncl_focas *focas, ncl_focas_axis axis,
     return NCL_OK;
 }
 
+/*
+ * 轴电流（安培）：还是 `cnc_rdsvmeter`（**0x56**），只是 `d` 换一格 ——
+ * 官方 SDK 的 `cnc_rdaxisdata(cls = 2 Servo, type = 1/2)` 发的就是这条，
+ * `d = 1` 是**负载表（%）**、`d = 3` 是**负载电流（A）**（2026-09-23 抓帧，
+ * 01 册 §11.19：`cls=2 type=1` → `0x56 d=1`、`type=2` → `0x56 d=3`）。
+ * 记录形状与负载那一族一样：`data@0` + `dec@6`。
+ *
+ * **轴温不用做了**：FOCAS 里**没有**读轴温的调用（官方头 Fwlib64.h + spec 全文搜过，
+ * 只有"智能终端高温报警"那种报警码），所以那个点位列直接删掉，不留"待抓包"。
+ */
 ncl_err ncl_focas_axis_current(ncl_focas *focas, ncl_focas_axis axis,
                                double *value)
 {
-    return axis_measure_not_yet(focas, axis, value, "轴电流",
-                                "cnc_rdaxisdata（电流那一类）");
-}
+    ncl_err rc;
 
-ncl_err ncl_focas_axis_temperature(ncl_focas *focas, ncl_focas_axis axis,
-                                   double *value)
-{
-    return axis_measure_not_yet(focas, axis, value, "轴温",
-                                "cnc_rdaxisdata（温度那一类）");
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    rc = axis_check(focas, axis, "SVCURRENT");
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    return record_at(focas, "SVCURRENT", 0, (int)axis, value, NULL);
 }
 
 /* 轴的种类（表 7 的 TYPE）：linear / rotary —— 读轴名与轴属性（cnc_rdaxisname）。 */
@@ -2390,10 +2441,214 @@ ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
     return NCL_OK;
 }
 
-/* 工件坐标系（cnc_rdwkcdshft 一族）：G54… 的偏移表，帧待抓包。 */
+/*
+ * 工件零点偏移（工件坐标系 G54…）—— `cnc_rdzofs`（item `RDZOFS` = **0x0b**）。
+ *
+ * 帧是 2026-09-23 用官方 SDK 对 NCGuide 0i-MF 抓的：请求四格是
+ * `d` = 偏移号、`e` = 同一个号、`arg2` = 轴号（**-1 = ALL_AXES**）、`arg3` = 0；
+ * 应答载荷 = **32 条 8 字节记录**（`MAX_AXIS` = 32），第 i 根轴的值在 `@8×(i-1)`，
+ * 记录形状与位置/负载那一族**完全一样**（`data@0` + `dec@6`）。
+ *
+ *     number：0 = 外部零点偏移、1..6 = G54..G59、7..306 = G54.1P1..
+ *
+ * 写是 `cnc_wrzofs`（码按"读 + 1"推 = **0x0c**，实测机床认）：载荷与写刀补/宏变量
+ * 一个形状（`[值 BE32][00 00][ff ff]`），但**一次只写一根轴**（`arg2` = 轴号，1 起；
+ * 轴号给 -1 机床不收）。所以"写一个坐标系"= 逐轴写。
+ */
+
+/** "外部/G54/G54.1P3" 这种名字 → 偏移号；认不出回 -1。 */
+static long long zofs_number(const char *name)
+{
+    const char *p = name;
+    long long value = 0;
+
+    while (*p == ' ') {
+        p++;
+    }
+    if (ncl_streq_ignore_case(p, "EXT") || ncl_streq_ignore_case(p, "EXTERNAL") ||
+        ncl_streq_ignore_case(p, "外部")) {
+        return 0;
+    }
+    if (p[0] != 'G' && p[0] != 'g') {
+        return -1;
+    }
+    p++;
+    while (*p >= '0' && *p <= '9') {
+        value = value * 10 + (*p - '0');
+        p++;
+    }
+    if (value < 54 || value > 59) {
+        return -1;
+    }
+    if (*p == '\0') {
+        return value - 54 + 1; /* G54 → 1 … G59 → 6 */
+    }
+    /*
+     * `G54.1P<n>`：**取最后那段数字**当 P 号（"G54.1P3" 里的 `.1` 不是 P 号）。
+     * 号 = 7 + n - 1。
+     */
+    {
+        const char *last = NULL;
+        const char *q;
+        long long n = 0;
+
+        for (q = p; *q != '\0'; q++) {
+            if (*q == '.' || *q == 'p' || *q == 'P') {
+                last = q + 1;
+            }
+        }
+        if (last == NULL) {
+            return -1; /* "G54x" 这种认不出的写法 */
+        }
+        for (q = last; *q >= '0' && *q <= '9'; q++) {
+            n = n * 10 + (*q - '0');
+        }
+        if (n >= 1 && n <= 300 && *q == '\0') {
+            return 7 + n - 1;
+        }
+    }
+    return -1;
+}
+
+/** 把"名字"反过来：号 → `"G54"` / `"EXT"` / `"G54.1P3"`（给整表用）。 */
+static void zofs_name(long long number, char *out, size_t cap)
+{
+    if (number == 0) {
+        snprintf(out, cap, "EXT");
+    } else if (number >= 1 && number <= 6) {
+        snprintf(out, cap, "G%lld", 54 + number - 1);
+    } else {
+        snprintf(out, cap, "G54.1P%lld", number - 7 + 1);
+    }
+}
+
+/** 读一个号的**全轴**载荷（32 条 8 字节记录）；调用方负责 ncl_json_free。 */
+static ncl_err zofs_read(ncl_focas *focas, long long number, ncl_json **records)
+{
+    ncl_json *params;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    ncl_err rc;
+
+    *records = NULL;
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_string(params, "item", "RDZOFS");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", number);
+    (void)ncl_json_obj_set_int(params, "e", number);
+    (void)ncl_json_obj_set_int(params, "arg2", -1); /* ALL_AXES */
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc == NCL_FOCAS_ERR_NO_DATA) {
+        return note(focas, "工件坐标系", NCL_ERR_NOT_FOUND);
+    }
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY ||
+        ncl_json_arr_len(bytes) < (long long)FOCAS_AXIS_RECORD) {
+        ncl_json_free(answer);
+        return note(focas, "工件坐标系", NCL_ERR_NOT_FOUND);
+    }
+    *records = ncl_json_clone(bytes);
+    ncl_json_free(answer);
+    return *records != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
+/**
+ * 一列轴记录 → `{"x":…,"y":…,"z":…}`。
+ *
+ * 键用**机床自己报的轴名**（`cnc_rdaxisname` 那张表，每轴 4 字节）：车床没有 Y，
+ * 按顺序硬排会把 Z 写成 "y"。轴名表读不到时才退回按 X/Y/Z/A/C 排。
+ */
+static ncl_err zofs_axes_json(ncl_focas *focas, const ncl_json *records,
+                              ncl_json **value)
+{
+    static const char *const kFallback[] = { "x", "y", "z", "a", "c" };
+    char names[NCL_FOCAS_AXIS_COUNT][8];
+    size_t count = 0;
+    size_t i;
+    bool have_names = false;
+    ncl_json *object = NULL;
+    ncl_json *params = NULL;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+
+    for (i = 0; i < (size_t)NCL_FOCAS_AXIS_COUNT; i++) {
+        snprintf(names[i], sizeof(names[i]), "%s", kFallback[i]);
+    }
+    params = ncl_json_new_object();
+    if (params != NULL) {
+        (void)ncl_json_obj_set_string(params, "item", "AXISNAME");
+        (void)ncl_json_obj_set_int(params, "block", 0);
+        if (ncl_focas_call(focas, "payload", params, &answer) == NCL_OK) {
+            bytes = ncl_json_obj_get(answer, "bytes");
+            if (bytes != NULL && ncl_json_type_of(bytes) == NCL_JSON_ARRAY) {
+                size_t n = ncl_json_arr_len(bytes) / 4u;
+
+                if (n > (size_t)NCL_FOCAS_AXIS_COUNT) {
+                    n = (size_t)NCL_FOCAS_AXIS_COUNT;
+                }
+                for (i = 0; i < n; i++) {
+                    uint8_t c0 = bytes_at(bytes, i * 4u);
+                    uint8_t c1 = bytes_at(bytes, i * 4u + 1u);
+
+                    if (c0 == 0) {
+                        break;
+                    }
+                    names[i][0] = (char)(c0 >= 'A' && c0 <= 'Z' ? c0 + 32 : c0);
+                    names[i][1] = (char)(c1 >= 'A' && c1 <= 'Z' ? c1 + 32 : c1);
+                    names[i][2] = '\0';
+                    have_names = true;
+                }
+                count = i;
+            }
+        }
+        ncl_json_free(params);
+        ncl_json_free(answer);
+    }
+    if (count == 0 && !have_names) {
+        /* 轴名表读不到：退回 X/Y/Z/A/C 的顺序，但轴数还得问一句 */
+        if (axis_count(focas, &count) != NCL_OK || count == 0) {
+            count = sizeof(kFallback) / sizeof(kFallback[0]);
+        }
+        if (count > (size_t)NCL_FOCAS_AXIS_COUNT) {
+            count = (size_t)NCL_FOCAS_AXIS_COUNT;
+        }
+    }
+    object = ncl_json_new_object();
+    if (object == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    for (i = 0; i < count; i++) {
+        int32_t data = 0;
+        int dec = 0;
+
+        if (!record_read(records, i, &data, &dec)) {
+            break;
+        }
+        (void)ncl_json_obj_set_double(object, names[i], record_scale(data, dec));
+    }
+    if (ncl_json_obj_len(object) == 0) {
+        ncl_json_free(object);
+        return note(focas, "工件坐标系", NCL_ERR_NOT_FOUND);
+    }
+    *value = object;
+    return NCL_OK;
+}
+
 ncl_err ncl_focas_work_offset(ncl_focas *focas, const char *name,
                               ncl_json **value)
 {
+    ncl_json *records = NULL;
+    ncl_json *axes = NULL;
+    long long number;
+    ncl_err rc;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
@@ -2401,7 +2656,22 @@ ncl_err ncl_focas_work_offset(ncl_focas *focas, const char *name,
         return note(focas, "WORK_OFFSET", NCL_ERR_INVALID_ARG);
     }
     *value = NULL;
-    return not_yet(focas, "工件坐标系", "cnc_rdwkcdshft");
+    number = zofs_number(name);
+    if (number < 0) {
+        return note(focas, "工件坐标系", NCL_ERR_INVALID_ARG);
+    }
+    rc = zofs_read(focas, number, &records);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    rc = zofs_axes_json(focas, records, &axes);
+    ncl_json_free(records);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    (void)ncl_json_obj_set_int(axes, "number", number);
+    *value = axes;
+    return NCL_OK;
 }
 
 /* 当前模态（cnc_rdgcode）：T/B/S/F 与一组 G 代码，帧待抓包。 */
@@ -2987,13 +3257,161 @@ ncl_err ncl_focas_variable_table(ncl_focas *focas, ncl_json **value)
                    "cnc_rdmacror（这台机床没开用户宏变量，回 EW_NOOPT=6）");
 }
 
+/** 整张坐标系表：外部 + G54…G59（每个号一次全轴读）。 */
 ncl_err ncl_focas_work_offsets(ncl_focas *focas, ncl_json **value)
 {
+    ncl_json *table;
+    long long number;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     *value = NULL;
-    return not_yet(focas, "工件坐标系", "cnc_rdwkcdshft 一族（G54…）");
+    table = ncl_json_new_object();
+    if (table == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    for (number = 0; number <= 6; number++) { /* 0 = 外部，1..6 = G54..G59 */
+        ncl_json *records = NULL;
+        ncl_json *axes = NULL;
+        char name[24];
+        ncl_err rc = zofs_read(focas, number, &records);
+
+        if (rc != NCL_OK) {
+            if (number == 0) {
+                ncl_json_free(table);
+                return rc;
+            }
+            continue; /* 这个号读不到（机型没有）：跳过，别的号照读 */
+        }
+        rc = zofs_axes_json(focas, records, &axes);
+        ncl_json_free(records);
+        if (rc != NCL_OK) {
+            continue;
+        }
+        zofs_name(number, name, sizeof(name));
+        if (ncl_json_obj_set(table, name, axes) != NCL_OK) {
+            ncl_json_free(axes);
+            ncl_json_free(table);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    if (ncl_json_obj_len(table) == 0) {
+        ncl_json_free(table);
+        return note(focas, "工件坐标系", NCL_ERR_NOT_FOUND);
+    }
+    *value = table;
+    return NCL_OK;
+}
+
+/**
+ * 写一个轴的工件零点偏移（`cnc_wrzofs` = item `WRZOFS` = **0x0c**）。
+ *
+ * 载荷与写刀补/宏变量同形（`[值 BE32][00 00][ff ff]`），值是**最低输入单位**的整数
+ * —— 所以先读一次拿这台机床的小数位（`dec`），`raw = value × 10^dec`。一次只写一根
+ * 轴（`arg2` = 轴号，1 起）；`axis` 是**机床的轴号**（1 = X…），与记录里的第几根轴一致。
+ */
+ncl_err ncl_focas_work_offset_write(ncl_focas *focas, const char *name,
+                                    long long axis_number, double value)
+{
+    ncl_json *records = NULL;
+    ncl_json *params = NULL;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    int32_t current = 0;
+    int dec = 0;
+    int32_t raw;
+    long long number;
+    size_t i;
+    ncl_err rc;
+
+    if (focas == NULL || ncl_str_is_blank(name) || axis_number < 1) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    number = zofs_number(name);
+    if (number < 0) {
+        return note(focas, "写工件坐标系", NCL_ERR_INVALID_ARG);
+    }
+    rc = zofs_read(focas, number, &records);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    if (!record_read(records, (size_t)(axis_number - 1), &current, &dec)) {
+        ncl_json_free(records);
+        return note(focas, "写工件坐标系", NCL_ERR_RANGE); /* 这台没有这根轴 */
+    }
+    ncl_json_free(records);
+    if (value > 2147483.0 || value < -2147483.0) {
+        return note(focas, "写工件坐标系", NCL_ERR_RANGE);
+    }
+    raw = (int32_t)(value * tofs_scale(dec) + (value < 0.0 ? -0.5 : 0.5));
+    params = ncl_json_new_object();
+    bytes = ncl_json_new_array();
+    if (params == NULL || bytes == NULL) {
+        ncl_json_free(params);
+        ncl_json_free(bytes);
+        return NCL_ERR_NOMEM;
+    }
+    for (i = 0; i < 4u; i++) {
+        long long byte = ((uint32_t)raw >> (8 * (3u - i))) & 0xFF;
+
+        if (ncl_json_arr_push(bytes, ncl_json_new_int(byte)) != NCL_OK) {
+            ncl_json_free(params);
+            ncl_json_free(bytes);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    (void)ncl_json_arr_push(bytes, ncl_json_new_int(0));
+    (void)ncl_json_arr_push(bytes, ncl_json_new_int(0));
+    (void)ncl_json_arr_push(bytes, ncl_json_new_int(0xFF));
+    (void)ncl_json_arr_push(bytes, ncl_json_new_int(0xFF));
+    (void)ncl_json_obj_set_string(params, "item", "WRZOFS");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", number);
+    (void)ncl_json_obj_set_int(params, "e", number);
+    (void)ncl_json_obj_set_int(params, "arg2", axis_number);
+    (void)ncl_json_obj_set(params, "data", bytes);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    ncl_json_free(answer);
+    if (rc != NCL_OK) {
+        return note(focas, "写工件坐标系", rc);
+    }
+    /*
+     * 写后复核：比**原始整数**（不跟小数位纠缠）——没落到位就如实回"这台写不进去"，
+     * 与写参数/写宏变量同一个口径。
+     *
+     * **要重试几次**：机床把值落到偏移表上不是"回了 rc=0 就立刻读得到"
+     * （2026-09-23 实测：紧跟着读回的是**旧值**，隔一会儿再读才是新值），所以这里
+     * 读几遍、每遍隔 50 ms；一直不变才回"没写进去"。别因为读得太早把成功报成失败。
+     */
+    {
+        unsigned attempt;
+
+        for (attempt = 0; attempt < 6u; attempt++) {
+            ncl_json *back = NULL;
+            int32_t after = 0;
+            int after_dec = 0;
+
+            rc = zofs_read(focas, number, &back);
+            if (rc != NCL_OK) {
+                return rc;
+            }
+            if (!record_read(back, (size_t)(axis_number - 1), &after,
+                             &after_dec)) {
+                ncl_json_free(back);
+                return note(focas, "写工件坐标系", NCL_ERR_PARSE);
+            }
+            ncl_json_free(back);
+            if (after == raw) {
+                return NCL_OK;
+            }
+            if (attempt + 1u < 6u) {
+                ncl_sleep_millis(50u);
+            }
+        }
+        return note(focas, "写工件坐标系", NCL_ERR_UNAVAILABLE);
+    }
 }
 
 /*

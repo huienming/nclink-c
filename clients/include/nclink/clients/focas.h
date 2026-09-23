@@ -191,12 +191,16 @@ ncl_err ncl_focas_spindle_load(ncl_focas *focas, unsigned spindle,
  */
 ncl_err ncl_focas_axis_torque(ncl_focas *focas, ncl_focas_axis axis,
                               double *value);
-/** 轴的电流（`cnc_rdaxisdata` 的一类数据）。**还没实现**（帧待抓包）。 */
+/**
+ * 轴的电流（安培）：`cnc_rdsvmeter`（item `SVCURRENT` = 0x56，**d = 3**）。
+ * 同一格里 `d = 1` 是负载表（%），见 `ncl_focas_axis_load()`。
+ * 单位 = 安培（官方 `cnc_rdaxisdata(cls = 2, type = 2)` 就是这一格）。
+ *
+ * **轴的伺服温度没有这个接口**：FOCAS 里搜不到读轴温的调用（只有智能终端的高温
+ * 报警码），所以模型里也没有那个点位列。
+ */
 ncl_err ncl_focas_axis_current(ncl_focas *focas, ncl_focas_axis axis,
                                double *value);
-/** 轴的伺服温度（`cnc_rdaxisdata` 的一类数据）。**还没实现**（帧待抓包）。 */
-ncl_err ncl_focas_axis_temperature(ncl_focas *focas, ncl_focas_axis axis,
-                                   double *value);
 /** 轴的种类（linear / rotary，表 7 的 TYPE）：**还没实现**，要读 `cnc_rdaxisname` /
  *  `cnc_rdaxisdata` 的轴属性。 */
 ncl_err ncl_focas_axis_type(ncl_focas *focas, ncl_focas_axis axis,
@@ -299,12 +303,23 @@ ncl_err ncl_focas_parameter_table(ncl_focas *focas, ncl_json **value);
 /** 宏变量表（表 7 的 VARIABLE，list）：`cnc_rdmacror` 按段读。
  *  **还没实现**（帧待核对）。 */
 ncl_err ncl_focas_variable_table(ncl_focas *focas, ncl_json **value);
-/** 工件坐标系（`cnc_rdwkcdshft` 一族，G54…）。**还没实现**（帧待抓包）。 */
+/**
+ * 一个工件坐标系（工件零点偏移）：`cnc_rdzofs`（item `RDZOFS` = **0x0b**）。
+ * @p name 收 `"EXT"`（外部）、`"G54"`…`"G59"`、`"G54.1P3"` 这种。
+ * 出门 `{"number":1,"x":12.345,"y":0,"z":0}` —— 键是**机床自己报的轴名**（小写）。
+ */
 ncl_err ncl_focas_work_offset(ncl_focas *focas, const char *name,
                               ncl_json **value);
-/** 整套工件坐标系（表 7 的 COORDINATE，JSON 对象 → 表 9 的 x/y/z…）。
- *  **还没实现**（帧待抓包）。 */
+/** 整套工件坐标系（表 7 的 COORDINATE）：外部 + G54…G59，键就是名字。 */
 ncl_err ncl_focas_work_offsets(ncl_focas *focas, ncl_json **value);
+/**
+ * 写一个轴的工件零点偏移（`cnc_wrzofs` = item `WRZOFS` = **0x0c**）。
+ * @p axis_number 是**机床的轴号**（1 = X、2 = Y、…），@p value 是实际值（mm/deg，
+ * 本实现按机床报的小数位换算成"最低输入单位"的整数发下去）。写完**读回来复核**，
+ * 没落到位就回 `NCL_ERR_UNAVAILABLE`（不假装成功）。
+ */
+ncl_err ncl_focas_work_offset_write(ncl_focas *focas, const char *name,
+                                    long long axis_number, double value);
 /** 当前模态（T/B/S/F 等，`cnc_rdgcode`）。**还没实现**（帧待抓包）。 */
 ncl_err ncl_focas_modal(ncl_focas *focas, ncl_json **value);
 /**

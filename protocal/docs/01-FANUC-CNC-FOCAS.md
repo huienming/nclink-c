@@ -349,7 +349,7 @@ tools/site-probe/focas_sdk_probe.ps1 -Dll <Fwlib64.dll 所在目录> -Calls "…
 | `cnc_rdposition(h, type, …)` | **批量坐标读取**（一次取多轴多类型） |
 | `cnc_acts(h, &ODBACT)` / `cnc_actf` | 全部轴绝对位置（short/float） |
 | `cnc_rdsvmeter` / `cnc_rdspmeter` | **伺服/主轴负载表** |
-| `cnc_rdaxisdata(h, …)` | 轴数据（速度/负载/温度，可批量，推荐） |
+| `cnc_rdaxisdata(h, …)` | 轴数据（速度/负载/电流，可批量）—— 它只是把 `0x24`/`0x56`/`0x40` 几条老调用拼起来（§11.19.3）|
 | `cnc_rdaxisname` | 轴名称 |
 
 ### 4.3 主轴
@@ -455,18 +455,18 @@ typedef struct { char name[36]; char cnc_type[2]; ... } ODBSYS;
 | `PROGRAM` | `/CONTROLLER/PROGRAM` | `cnc_exeprgname2`（`0xfc`）| 🟢 rc=0 |
 | `PROGRAM_NUMBER` / `SUBPROGRAM` | `/CONTROLLER/PROGRAM_NUMBER`、`/CONTROLLER/SUBPROGRAM` | `cnc_rdprgnum`（`0x1c`）| 🟢 |
 | `LINE_NUMBER` | `/LINE_NUMBER` | `cnc_rdseqnum`（`0x1d`，载荷 @0 BE32）| 🟢 |
-| `TOOL_NUMBER` | — | 没有可靠来源（模态那条只给 G 组）| ⛔ 未实现 |
+| `TOOL_NUMBER` | `cnc_rdcommand`（`0x97`）| 指令值里 `adrs='T'` 那条的 `cmd_val` | 🟢 NCGuide（§11.19.2）|
 | `POSITION` | `/AXIS@<轴>/POSITION@REAL` | `cnc_rdposition`（`0x26` d=0，`POSELM` 每轴 12 字节）| 🟢 NCGuide 闭环 |
 | `POSITION@CMD`（指令位置）| `/AXIS@<轴>/POSITION@CMD` | **实际位置 − `cnc_srvdelay`（d=9，每轴 8 字节）** | 🟢 NCGuide 闭环 |
 | `PATH_LEFT_LENGTH` | `/AXIS@X/PATH_LEFT_LENGTH` | `cnc_rddynamic2` 的剩余距离 | 🟢 |
 | `SPEED` / 主轴转速 | `/FEED_SPEED`、`/SPINDLE_SPEED` | `cnc_actf`（`0x24`）、`cnc_acts`（`0x25`）——每个轴/主轴一个 **float32** | 🟢 rc=0 |
 | `FEED_OVERRIDE` / `SPINDLE_OVERRIDE` | `/FEED_OVERRIDE`、`/SPINDLE_OVERRIDE` | `cnc_rdopnlsgnl`（`0x5d`，`IODBSGNL` 的 `feed_ovrd`@0xa，码 ×10 = %）| 🟢 进给倍率闭环 |
-| 负载 / 电流 / 温度 | `/AXIS@X/TORQUE`、`CURRENT`、`TEMPERATURE` | `cnc_rdsvmeter`（`0x56`+`0x89`）、`cnc_rdspmeter`（`0x40`/`0x8a`）| 🟡 码已核；**这台机床不提供**（§10.4.6）|
+| 负载 / 电流 | `/AXIS@X/TORQUE`、`CURRENT` | `cnc_loadtorq`（`0xfd`）、`cnc_rdsvmeter`（`0x56`，`d=1` 负载表 / `d=3` 安培）| 🟢 NCGuide（轴温没有这条 API，点位已删；§11.19.3）|
 | `PARAMETER`（dict）| `/CONTROLLER/PARAMETER` | `cnc_rdparam`（`0x0e`，`IODBPSD`：`datano`@2、`type`@4、`ldata`@8）| 🟡 字段位置已核 |
 | `VARIABLE`（list，宏变量）| `/CONTROLLER/VARIABLE` | `cnc_rdmacro`（`0x15`，`ODBM`）| 🟡 码已核，**长度要给对**（给 12 回 `EW_LENGTH`）|
 | `TOOL`（list）| `/CONTROLLER/TOOL` | `cnc_rdtooldata` / `cnc_rdtoolrng` | ⛔ 真机 rc=1/3，**机床不提供**（官方 SDK 同样被拒）|
 | `TOOLPARAM` | `/CONTROLLER/TOOLPARAM` | `cnc_rdtofs` / `cnc_rdtofsinfo` | 🟢 字段 @0 已核 |
-| `COORDINATE` | `/CONTROLLER/COORDINATE` | `cnc_rdwkcdshft`（`0x63`，`IODBWCSF`）| 🟡 码已核 |
+| `COORDINATE` | `/CONTROLLER/COORDINATE` | **`cnc_rdzofs`（`0x0b`）/ 写 `0xc`**（`IODBZOFS`）| 🟢 读 + 写都实测过（§11.19）|
 | `FILE`（程序上下行）| `/CONTROLLER/FILE` | `cnc_dwnstart4`/`cnc_download4`/`cnc_dwnend4`；取回是 `cnc_upstart4`/`cnc_upload4`/`cnc_upend4` | 🟢 下行链路码已核；**上行回 `EW_BUFFER`=10**（§10.4.6）|
 | 刀补写 | `/CONTROLLER/TOOLPARAM` 的 `set_value` | `cnc_wrtofs` | 🟢（权限在外面）|
 | 参数写 / 宏变量写 | `/CONTROLLER/PARAMETER`、`VARIABLE` 的 `set_value` | `cnc_wrparam` / `cnc_wrmacro` | 🟢（权限在外面）|
@@ -570,10 +570,10 @@ cnc_upstart4(h, type, path);  … cnc_upload4(h, &len, buf);  … cnc_upend4(h);
 | 2 | 宏变量（`VARIABLE`）| `cnc_rdmacro` 的**载荷长度**没试出来（给 12 回 `EW_LENGTH`）| 按官方头 `ODBM` 的尺寸扫一轮长度 |
 | 3 | 程序取回 | `cnc_upload4` 一直回 `EW_BUFFER`=10 | 把 `0x18` 那条的"想要多少字节/偏移"试对 |
 | 4 | 坐标状态变量 / 轴状态变量 | 册 4 里没有对应项 | 先不进模型 |
-| 5 | 负载 / 电流 / 温度 | 这台机床**不提供**（官方 SDK 同样被拒）| 换一台支持扩展驱动的机床再看 |
+| 5 | 负载 / 电流 | ✅ 通了（`0x56`：`d=1` 负载表、`d=3` 安培；轴温 FOCAS 没有这条 API）| — |
 | 6 | 刀具列表（`TOOL`）| 真机 `cnc_rdtooldata` rc=1、`cnc_rdtoolrng` rc=3 | 同上，机床侧不提供 |
 | 7 | PMC（95 个函数）| 没有对应的数据对象 | 等现场提出信号需求 |
-| 8 | `TOOL_NUMBER` | 没有可靠来源 | 换 `cnc_rdexecprog` 的带刀号模式再试 |
+| 8 | `TOOL_NUMBER` | ✅ `cnc_rdcommand`（`0x97`）的 `'T'` 记录（§11.19.2）| — |
 
 
 ---
@@ -809,7 +809,7 @@ python tools/site-probe/fwlib_proto.py  <SpecE 目录> cnc_rdtofsinfo        # �
 
 也就是说：**多块那几条（`cnc_rdsvmeter` / `cnc_rdspmeter` / `cnc_rdaxisdata`）之所以
 核不出来，根子在这条闸门，不在"应答怎么切"**。反过来，哪天把连接期那一格喂对，这一族
-（`AXIS@*/TORQUE`、`CURRENT`、`TEMPERATURE`、主轴负载、`FEED_SPEED`）就一起打开 ——
+（`AXIS@*/TORQUE`、`CURRENT`、主轴负载、`FEED_SPEED`）就一起打开 ——
 写 client 需要的东西官方文档已经给全：
 
 ```
@@ -1113,7 +1113,7 @@ char gcode[8]}`，文本在 **@4**（SDK 解出来的是 "G00"）—— 但这�
 | 工件坐标 | `cnc_rdwkcdshft`（**type 0..20 全试**） | **rc=1** |
 | 动态数据 | `cnc_rddynamic2`（长度 4/8/24/48/64/128/160/192） | **rc=4** |
 | 轴扭矩 | `cnc_loadtorq`（长度 4/8/24） | **rc=4** |
-| 伺服那一类（`cls=2` 的负载/电流/温度） | `cnc_rdaxisdata 2` | rc=0 但**载荷是桩**（`08 00 09 00` 这种，不是数据） |
+| 伺服那一类（`cls=2` 的负载/电流） | `cnc_rdaxisdata 2` | ✅ 通了：`cls=2 type=1` → `0x56 d=1`、`type=2` → `d=3`（2026-09-23 抓帧，§11.19.3）|
 | 程序上行 | `cnc_upstart4` rc=0 → `cnc_upload4` | **rc=10**（数据那一步不给） |
 
 能读的都在上面几节里；`cnc_rdaxisdata` 一族里 **cls=1（位置）** 与 **cls=3（主轴）、
@@ -1201,13 +1201,13 @@ cls=5（速度）** 是好的（`cls=3/5` 见 §10.4.1 那条 8 字节记录）�
 | `/AXIS@<轴>/POSITION@CMD` | `ncl_focas_axis_position_cmd()` | 实际 − `cnc_srvdelay` | 🟢 NCGuide |
 | `/AXIS@<轴>/MOTOR/VARIABLE@ABSOLUTE\|RELATIVE\|DISTANCE` | `_axis_position_machine/_relative/_distance` | `cnc_rdposition` 的四种（d=0..3）| 🟢 |
 | `/AXIS@X/PATH_LEFT_LENGTH` | `ncl_focas_axis_distance()` | `cnc_rddynamic2` | 🟢 |
-| `/AXIS@X/TORQUE` `/CURRENT` `/TEMPERATURE` | `ncl_focas_axis_torque()` 等 | `cnc_rdsvmeter` / `cnc_rdspmeter` | ⛔ 这台机床不提供（明确回"读不了"）|
+| `/AXIS@X/TORQUE` `/CURRENT` | `ncl_focas_axis_torque()` / `_axis_current()` | `cnc_loadtorq` / `cnc_rdsvmeter`（`0x56` `d=3`）| 🟢 NCGuide（轴温没有这条 API，点位已删）|
 | `/MOTOR@S1/SPEED` | `ncl_focas_spindle_speed()` | `cnc_acts` | 🟢 |
 | `/CONTROLLER/PARAMETER`（HASH）| `ncl_focas_parameter_table()` | `cnc_rdparam` / `cnc_rdparar` | 🟡 字段已核 |
 | `/CONTROLLER/VARIABLE`（LIST）| `ncl_focas_variable_table()` | `cnc_rdmacro` / `cnc_rdmacror` | 🟡 长度待试 |
 | `/CONTROLLER/TOOL`（LIST）| `ncl_focas_tool_list()` | `cnc_rdtooldata` / `cnc_rdtoolrng` | ⛔ 机床不提供 |
 | `/CONTROLLER/TOOLPARAM` | `ncl_focas_tool_param_table()` | `cnc_rdtofs` / `cnc_rdtofsinfo` | 🟢 |
-| `/CONTROLLER/COORDINATE` | `ncl_focas_work_offsets()` | `cnc_rdwkcdshft` | 🟡 码已核 |
+| `/CONTROLLER/COORDINATE` | `ncl_focas_work_offset/…s()` | `cnc_rdzofs`（`0x0b`）/ 写 `0xc` | 🟢 读 + 写（§11.19）|
 | `/SESSION` `/ITEMS`（方法）| `ncl_focas_system()`、`ncl_focas_read_item()` | 会话自检 / 按 item 码裸读 | 🟢 调试用 |
 
 ### 11.3 位置一族（采集核心）
@@ -1217,7 +1217,7 @@ cls=5（速度）** 是好的（`cls=3/5` 见 §10.4.1 那条 8 字节记录）�
 2 相对 / 3 剩余），比逐轴 `cnc_absolute` 快得多。**指令位置**没有直接接口：
 `cnc_srvdelay`（`0x26`，d=9）给的是**每轴跟随误差（8 字节记录）**，`指令 = 实际 − 误差`。
 
-### 11.4 负载 / 电流 / 温度 / 转矩
+### 11.4 负载 / 电流 / 转矩（轴温没有这条 API）
 
 码在（`cnc_rdsvmeter` 的 `0x56`+`0x89`、`cnc_rdspmeter` 的 `0x40`/`0x8a`），但这台机床
 回"功能不支持"——**官方 SDK 同样被拒**（§10.4.6），所以点位如实回 `读不了`（`NCL_ERR_UNAVAILABLE`），
@@ -1319,7 +1319,7 @@ tool_number  tool_offset_write  tool_param  tool_param_table  variable_table
 work_offset  work_offsets
 ```
 
-> 其中 **负载 / 电流 / 温度 / 主轴倍率 / 刀具表** 这台机床本来就不提供（§10.4.6），补了也是
+> 其中 **主轴倍率 / 刀具寿命/组数** 这台机床本来就不提供（§10.4.6），补了也是
 > 继续报"不提供"；真正值得按新代补齐的顺序是：**参数写 → 变量写 → 刀补写 → 程序取回 →
 > PLC/寄存器（要连 `pmc_*` 一起做）**。
 
@@ -1347,20 +1347,20 @@ work_offset  work_offsets
 
 | 类别 | 条目 | 卡在哪 |
 |---|---|---|
-| ① 模型里看得见、client 是桩（`rc=-15`）| `/CONTROLLER/SUBPROGRAM`、`/TOOL_NUMBER`、`/SPINDLE_OVERRIDE`、`/AXIS@X/CURRENT`、`/AXIS@X/TEMPERATURE`、`/CONTROLLER/VARIABLE`、`/CONTROLLER/COORDINATE` | 见下 |
+| ① 模型里看得见、client 是桩（`rc=-15`）| `/CONTROLLER/SUBPROGRAM`、`/SPINDLE_OVERRIDE`、`/CONTROLLER/VARIABLE`（**刀具号/轴电流/坐标系已通、轴温已删**，见 §11.19）| 见下 |
 | ② 写这一侧 | **写参数**（`0xa0`）、**写宏变量**（`0x16` 刻度）| 帧形状/刻度没对 |
 | ③ 整格缺（点位都没有）| **PLC / 寄存器 / 位**（`pmc_*` 95 个一个没接）、**G 代码文件族的其余几条**（exist / copy / move / list…）、报警历史 | 要新做 |
-| ④ 口径要改（不是"没实现"）| `/AXIS@X/TEMPERATURE`（**FOCAS 没有这条 API**）、`/CONTROLLER/COORDINATE`（这台机床明说不支持）、刀具表上限 64 vs 机器 400 | 改声明/改措辞 |
+| ④ 口径要改（不是"没实现"）| `/CONTROLLER/SUBPROGRAM` 该是 **string（子程序名）**、刀具表上限 64 vs 机器 400 | 改声明 |
 
 ① 里每条的落点（都核过一遍）：
 
 | 点位 | 现在 | 该怎么做 |
 |---|---|---|
 | `/CONTROLLER/VARIABLE`（宏变量表）| 桩，理由写"这台没开用户宏变量" | **理由不准确**：单条 `cnc_rdmacro`（`0x15` d=e=号）实测**能读**（100 号有值、500/501 是 vacant=值 0+dec -1）。整表照参数表那样**逐号读**即可（便宜） |
-| `/CONTROLLER/COORDINATE`（工件坐标系）| 桩，理由写"帧待抓包" | 帧是有的（`cnc_rdwkcdshft` `0x63`），**这台机床 type 0..20 全试过一律不支持** → 应如实回"机床不提供"，并把这句从"待抓包"改掉 |
-| `/AXIS@X/CURRENT`（轴电流）| 桩 | 正路是 `cnc_rdaxisdata`（`cls=2` Servo，`type=1` 负载电流% / `2` 安培）—— 码要抓帧进 item 表 |
-| `/AXIS@X/TEMPERATURE`（轴温）| 桩，理由写"帧待抓包" | **FOCAS 没有这条**（官方头 + spec 全文搜不到轴温）→ 建议点位去掉，或如实回"机型没有" |
-| `/TOOL_NUMBER`（当前刀号）| 桩 | 没找到"当前 T 码"的正式出处（`cnc_rdgcode` 只有 G 组；`0x2e` 回整段程序）→ 要么去掉，要么按"程序里最后一个 T"给并在文档里写死口径 |
+| `/CONTROLLER/COORDINATE`（工件坐标系）| ✅ **已通**：`cnc_rdzofs`（`0x0b`）读、`cnc_wrzofs`（`0x0c`）写，读 + 写都实测过（§11.19）。原来问错的调用是 `cnc_rdwkcdshft` |
+| `/AXIS@X/CURRENT`（轴电流）| ✅ **已通**：`cnc_rdsvmeter`（`0x56`）`d=3` = 安培、`d=1` = 负载表 %（§11.19.3）|
+| `/AXIS@X/TEMPERATURE`（轴温）| ✅ **点位已删**（FOCAS 没有这条 API，见 §11.19.3）|
+| `/TOOL_NUMBER`（当前刀号）| ✅ **已通**：`cnc_rdcommand`（`0x97`）里 `adrs='T'` 那条的 `cmd_val`（§11.19.2）|
 | `/CONTROLLER/SUBPROGRAM`（子程序号）| 桩 | `cnc_rdexecprog3`（ODBEXEPRGINFO）要抓帧 |
 | `/SPINDLE_OVERRIDE`（主轴倍率）| 桩 | 现代系列 `IODBSGNL.spdl_ovrd` 没这格；试 `cnc_rdspdata` 或参数 |
 
@@ -1390,7 +1390,7 @@ work_offset  work_offsets
 | 结果 | 条目 |
 |---|---|
 | 🟢 通（有值）| `STATUS`=free、`WORK_MODE`、`MODEL`=`0M D4G3`、`VERSION`=`28.0`、`PROGRAM`=`O0`、`LINE_NUMBER`、`PROGRAM_NUMBER`、`FEED_SPEED`、`FEED_OVERRIDE`、`SPINDLE_SPEED`、**X/Y/Z 的 position / machine / relative / cmd / distance / srv_delay / load / feedrate**、`axis_type`=linear、`executed_block`=`O0000%`、**`PARAMETER` #1**、**`TOOL_OFFSET` #1**、`program_directory`、`modal`、`alarm` |
-| ⛔ 这台机床没有（如实报）| `POSITION A/C` 一族（`-6` = 没有这根轴）、`TORQUE`/`CURRENT`/`TEMPERATURE`（`-15` 未实现）|
+| ⛔ 这台机床没有（如实报）| `POSITION A/C` 一族（`-6` = 没有这根轴）|
 | 🟡 有码但结果异常 | `PART_COUNT` / `TOOL_GROUP_COUNT`（`0x200000b4` = 应答块返回码非 0：这两条的码或 `d/e` 在这台 0i-MF 上还要再看）、`feedrate Z`（`-11` 越界）、宏变量 #500（`-6` 这台没有这个号）|
 
 **写这一侧：试出来的形状被机床拒了**。按"读的码 + 1"猜了三条 ——
@@ -1950,3 +1950,80 @@ D:\downloads\simulators\tools\focas_read.exe    127.0.0.1 8193 O0303            
    当存在性判据（本实现里也没拿它当判据）。
 2. **上行一族的拒绝不看时机**：`0x18` 六种形状（`dir 1`/`dir 4`、体 4/8/1024/1400）
    都不答，`0x19` 一律 `EW_REJECT` —— 所以这台机器的上行是"能力上没有"，不是"时机不对"。
+
+### 11.19 一轮抓帧补三条：工件坐标系 / 当前刀号 / 轴电流（2026-09-23）
+
+用户口径：**坐标系肯定有、刀具号也要、温度不要了**。于是拿官方 SDK（
+`tools/site-probe/focas_sdk_probe.c`，配 `cap.py` 把每条调用的收发帧打出来）对同一台
+NCGuide 0i-MF 把这几条抓了个遍 —— 结论是"坐标系一直都在，只是我们**问错了调用**"。
+
+#### 11.19.1 工件坐标系 = `cnc_rdzofs`（**0x0b**），不是 `cnc_rdwkcdshft`
+
+`cnc_rdwkcdshft`（`0x63`）type 0..20 全试过一律 rc=1（那是"工件坐标**平移**"，不是
+偏移表）；真正读 G54…G59 的是 **`cnc_rdzofs`**：
+
+```
+请求   func 0x21，一个块：code = 0x0b、d = 偏移号、e = 偏移号、arg2 = 轴号（-1 = 全轴）
+应答   载荷 256 字节 = 32 条 8 字节记录（MAX_AXIS = 32），第 i 根轴的值在 @8×(i-1)
+       记录 = [值 BE32][00 0a][dec BE16]   ← 与位置/负载那一族同一形状
+```
+
+    number：**0 = 外部零点偏移、1..6 = G54..G59、7..306 = G54.1P1..**
+
+**写**（`cnc_wrzofs`，码按"读 + 1"推 = **0x0c**，机床认）：载荷与写刀补/宏变量同形
+（`[值 BE32][00 00][ff ff]`），**一次只写一根轴**（`arg2` = 轴号，1 起；给 -1 机床不收）。
+"对拍"验过：写 12345 进 G54 的 X，读回载荷 `@0` 就是 `00003039`。
+
+两个坑（都踩过）：
+* **写进去不是立刻读得到**：写完紧跟着读回的是旧值，隔一会儿才是新值 —— 所以 client 的
+  写后复核**读 6 遍、每遍隔 50 ms**，别把成功报成"没写进去"；
+* 偏置量是**最低输入单位**的整数，小数位要拿机床报的 `dec`（记录 `@6`）换算
+  （这台 X 是 `dec=3` → 12345 就是 12.345 mm）。
+
+#### 11.19.2 当前刀号 = `cnc_rdcommand`（**0x97**）里 `adrs = 'T'` 那条
+
+`cnc_rdgcode`（0x96）只报 G 组，`0x2e` 那条回的是整段程序 —— 当前刀号在**指令值**里：
+
+```
+请求   func 0x21：code = 0x97、d = -1（全部模态非 G 码）、e = 1
+应答   载荷 = 12 字节一条记录，一条一个地址：
+       [adrs(1)][num(1)][flag(2)][cmd_val(4 BE)][dec_val(4 BE)]
+```
+
+这台一次回了 **D/E/F/H/L/M/N/O/S/T** 十条，字母就是地址（`'T'` = 0x54）——
+**取 `'T'` 那条的 `cmd_val` 就是刀号**。`d = 100..129` 可以逐条要。
+
+#### 11.19.3 轴电流 = `cnc_rdsvmeter`（0x56）的 `d = 3`；**轴温 FOCAS 没有**
+
+官方 `cnc_rdaxisdata` 其实只是**把几条老调用拼起来**（前面带上轴数/轴名上下文块），
+把它的 `cls/type` 对着抓到的帧摊开就是一张现成的表：
+
+| `cls` | `type` | 实际发的 item |
+|---|---|---|
+| 2 Servo | 1 负载电流（%）| **0x56** `d = 1`（就是 client 现在的 `/AXIS@X/TORQUE` 那条负载表）|
+| 2 Servo | 2 负载电流（安培）| **0x56** `d = 3` ← 轴电流用这条 |
+| 3 Spindle | 0 主轴负载表 | **0x40** `d = 4` |
+| 5 Speed | 0 进给率 F | **0x24**（ACTF）|
+
+**轴温不做了**：官方头 `Fwlib64.h` + spec 全文搜过，FOCAS 里**没有**读轴温的调用
+（只有"智能终端高温报警"那种报警码），所以那个点位直接从模型里删掉，不留"待抓包"。
+
+#### 11.19.4 没抓到的两条（如实记）
+
+* **子程序号**：`cnc_rdexecprog3` 官方库**自己就回 EW_PROT、一帧都不发**
+  （`cnc_rdexecprog2` 那条还没试，probe 里没编）；所以 `/CONTROLLER/SUBPROGRAM`
+  继续回"还没有"。顺带一条口径：表 4 里 `SUBPROGRAM` 是 **string（子程序名）**，
+  本适配器声明成了 int64 —— 等这条通了要一起改。
+* **主轴倍率**：`cnc_rdspdata` **这份 SDK 里没有这个导出**（0i-D 那套 DLL 查过）；
+  而 `IODBSGNL` 的 spec 写明 **bit6 = 主轴倍率信号只有 Series 15i 用**，
+  0i-D/F/30i 那几格是 "Not used" → 现代系列上这条得另找入口（真机或别的系列再定）。
+
+#### 11.19.5 client 落地 + 实测（同一台模拟器）
+
+| 能力 | 帧 | 实测 |
+|---|---|---|
+| 读坐标系 | `0x0b` | ✓ `ncl_focas_work_offset("G54")` → `{"x":…,"y":…,"z":…,"number":1}`；整套 7 个（EXT + G54..G59）|
+| 写坐标系 | `0x0c` | ✓ 写 G54 的 X = 12.345 → rc=0，读回 12.345（写后复核 6 次重试）|
+| 当前刀号 | `0x97` | ✓ `ncl_focas_tool_number()` 取 `'T'` 那条；机床没给 T 那条时如实回 NOT_FOUND，**不报 0** |
+| 轴电流 | `0x56 d=3` | ✓ `ncl_focas_axis_current()`（安培）；X/Y/Z 三根都读得到 |
+| 轴温 | — | 点位删掉（FOCAS 没这条 API）|
