@@ -1,0 +1,31 @@
+<!-- SPDX-License-Identifier: MIT -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- netstandard2.0 覆盖 .NET Framework 4.6.1+ 与 .NET Core 2.0+/.NET 5+；
+         net472 / net8.0 是给"我就想要这两个"的消费者留的明确目标。 -->
+    <TargetFrameworks>netstandard2.0;net472;net8.0</TargetFrameworks>
+    <AssemblyName>Nclink.Core</AssemblyName>
+    <RootNamespace>Nclink</RootNamespace>
+    <LangVersion>7.3</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- 缺失的 XML 注释不报警 -->
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <PackageId>Nclink.Core</PackageId>
+    <Description>NC-Link（GB/T 41970-2022 / 3.0.0）C 实现的 .NET 绑定：设备客户端、模型、采样与事件。</Description>
+    <Authors>huienming</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <!-- 没装 .NET Framework targeting pack 也能编 net472 -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 原生垫片跟着输出目录走，消费者不用自己找 DLL（哪个存在拷哪个） -->
+    <None Include="..\..\..\native\bin\nclink_shim.dll" Link="nclink_shim.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\..\native\bin\nclink_shim.dll')" />
+    <None Include="..\..\..\native\bin\libnclink_shim.so" Link="libnclink_shim.so" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\..\native\bin\libnclink_shim.so')" />
+  </ItemGroup>
+
+</Project>

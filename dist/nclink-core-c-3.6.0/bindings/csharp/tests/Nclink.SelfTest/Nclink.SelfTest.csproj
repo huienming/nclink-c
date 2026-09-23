@@ -1,0 +1,31 @@
+<!-- SPDX-License-Identifier: MIT -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- 自检跟着绑定一起双目标：.NET Framework 4.7.2 与 .NET 8 -->
+    <TargetFrameworks>net472;net8.0</TargetFrameworks>
+    <AssemblyName>Nclink.SelfTest</AssemblyName>
+    <RootNamespace>Nclink.SelfTest</RootNamespace>
+    <LangVersion>7.3</LangVersion>
+    <PlatformTarget>x64</PlatformTarget>
+    <!-- 自检用 HttpWebRequest 打本机回环：.NET Framework 与 .NET 上都有。
+         net8.0 会把 WebRequest 报成过时（SYSLIB0014），这里不当回事。 -->
+    <NoWarn>$(NoWarn);SYSLIB0014</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Nclink.Core\Nclink.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 三种托管绑定共用 bindings/native/bin 下的原生垫片 -->
+    <None Include="..\..\..\native\bin\nclink_shim.dll" Link="nclink_shim.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\..\native\bin\nclink_shim.dll')" />
+    <None Include="..\..\..\native\bin\libnclink_shim.so" Link="libnclink_shim.so" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\..\native\bin\libnclink_shim.so')" />
+  </ItemGroup>
+
+</Project>

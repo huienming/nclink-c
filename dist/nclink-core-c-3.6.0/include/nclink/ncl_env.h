@@ -1,0 +1,148 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 huienming */
+
+/*
+ * NC-Link core - runtime environment, configuration paths and serial number.
+ *
+ * All path accessors return pointers into static storage owned by the module;
+ * they stay valid until the next ncl_env_set_root() call or until
+ * ncl_env_shutdown().
+ */
+#ifndef NCL_ENV_H
+#define NCL_ENV_H
+
+#include <stdbool.h>
+
+#include "nclink/ncl_common.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** Override the installation root. Passing NULL restores the current working
+ *  directory. */
+void ncl_env_set_root(const char *path);
+
+/** Installation root; defaults to the current working directory. */
+const char *ncl_env_root(void);
+
+const char *ncl_env_conf_path(void);
+const char *ncl_env_run_path(void);
+const char *ncl_env_driver_path(void);
+/** <root>/plugins: where a device program picks its adapter modules up. */
+const char *ncl_env_plugin_path(void);
+const char *ncl_env_log_path(void);
+const char *ncl_env_log_file(void);
+const char *ncl_env_mqtt_cfg_file(void);
+const char *ncl_env_model_file(void);
+const char *ncl_env_driver_cfg_file(void);
+const char *ncl_env_sn_file(void);
+
+/** Known NC-Link servers. */
+void  ncl_env_set_server_list(const char *const *servers, size_t count);
+size_t ncl_env_server_count(void);
+const char *ncl_env_server_at(size_t index);
+
+/** Release memory held by the module (call once at shutdown). */
+void ncl_env_shutdown(void);
+
+/* ------------------------------------------------------------- MqttConfig -- */
+
+typedef struct {
+    char *url;
+    char *username;
+    char *password;
+} ncl_mqtt_config;
+
+/**
+ * Read <conf>/mqtt.cfg. When the file is missing it is created with the built
+ * in defaults and those defaults are returned. Returns NCL_OK on success.
+ */
+ncl_err ncl_mqtt_config_read(ncl_mqtt_config *out);
+void    ncl_mqtt_config_free(ncl_mqtt_config *cfg);
+
+/* ------------------------------------------------------- serial number ---- */
+
+/**
+ * Read <root>/bin/sn.txt, generating and persisting a serial number with
+ * ncl_sn_generate() when the file does not exist.
+ * Returns a library owned string (release with ncl_free_safe()) or NULL on I/O
+ * failure.
+ */
+char *ncl_sn_read(void);
+
+/**
+ * Generate a serial number: "V2" followed by nine upper-case hex digits.
+ * The digits are drawn one nibble at a time from random bytes, and at least
+ * one of them is a letter (A-F), so a generated serial never reads as a plain
+ * decimal number.
+ * Returns a heap string or NULL.
+ */
+char *ncl_sn_generate(void);
+
+/* ------------------------------------------------------------------- misc -- */
+
+/** True when a file or directory exists. */
+bool ncl_path_exists(const char *path);
+
+/** Create @p path and any missing parents. Returns NCL_OK on success. */
+ncl_err ncl_mkdir_p(const char *path);
+
+/** Read a whole file into memory (NUL terminated). *out receives a heap
+ *  buffer; @p out_len may be NULL. */
+ncl_err ncl_file_read_all(const char *path, char **out, size_t *out_len);
+
+/** Write @p data to @p path, creating parents as needed. */
+ncl_err ncl_file_write_all(const char *path, const void *data, size_t len);
+
+/** Append @p data to @p path, creating it (and its parents) when missing. */
+ncl_err ncl_file_append(const char *path, const void *data, size_t len);
+
+/** Copy @p src to @p dst, creating the parent directory of @p dst. */
+ncl_err ncl_file_copy(const char *src, const char *dst);
+
+/** Size of @p path in bytes, or -1 when it cannot be read. */
+long long ncl_file_size(const char *path);
+
+/**
+ * True when @p a and @p b name the same file on disk (absolute paths compared,
+ * case-insensitively on Windows). Used to make a copy onto itself a no-op.
+ */
+bool ncl_path_same_file(const char *a, const char *b);
+
+/**
+ * Streamed file access, for transfers that must not hold the whole file in
+ * memory (and must work with a bounded static pool): open, read/write pieces,
+ * close. A reader starts at @p offset; a writer either truncates and starts at
+ * @p offset (append = false) or appends (append = true), which is what a
+ * resumed transfer needs. Closing a writer truncates the file to what was
+ * actually written, so a short resume does not leave the old tail behind.
+ */
+typedef struct ncl_file_stream ncl_file_stream;
+
+ncl_err ncl_file_open_read(const char *path, long long offset,
+                           ncl_file_stream **out);
+/** Next piece (<= @p len bytes); 0 at end of file. */
+size_t ncl_file_read_chunk(ncl_file_stream *stream, void *buf, size_t len);
+void ncl_file_close_read(ncl_file_stream *stream);
+
+ncl_err ncl_file_open_write(const char *path, long long offset, bool append,
+                            ncl_file_stream **out);
+ncl_err ncl_file_write_chunk(ncl_file_stream *stream, const void *buf,
+                             size_t len);
+ncl_err ncl_file_close_write(ncl_file_stream *stream);
+
+/** Last modification time of @p path in epoch milliseconds, 0 when unknown. */
+int64_t ncl_file_mtime_ms(const char *path);
+
+/** True when @p path exists and names a directory. */
+bool ncl_path_is_dir(const char *path);
+
+/** Remove @p path; directories are removed recursively. Missing paths are OK. */
+ncl_err ncl_path_remove(const char *path);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* NCL_ENV_H */

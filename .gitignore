@@ -2,8 +2,10 @@
 /build/
 /build-*/
 
-# 发布包（由 tools/make_release.ps1 生成，不入库）
-/dist/
+# 发布包（由 tools/make_release.ps1 生成）—— **入库**，见 dist/ 目录
+# 但包里的样例构建中间产物不是产物（obj/ 之类），挡掉
+/dist/**/obj/
+/dist/**/__pycache__/
 
 # 文档转换/预览的中间产物
 *.pdf
@@ -85,3 +87,8 @@ tools/site-probe/cap_*.txt
 
 # internal notes archive (notes / reverse-engineering artifacts, not shipped)
 .internal-notes.zip
+
+# dist/ 里的二进制是发布物本体，*.dll / *.exe / *.so 的全局规则会挡住它们
+!dist/**/*.dll
+!dist/**/*.exe
+!dist/**/*.so

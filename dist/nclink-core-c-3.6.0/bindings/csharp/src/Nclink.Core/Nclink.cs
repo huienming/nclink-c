@@ -1,0 +1,235 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 huienming
+
+using System;
+
+namespace Nclink
+{
+    /// <summary>日志级别（对应 ncl_log_level）。</summary>
+    public enum NclinkLogLevel
+    {
+        Debug = 0,
+        Info = 1,
+        Warn = 2,
+        Error = 3,
+        Fatal = 4
+    }
+
+    /// <summary>
+    /// 绑定入口：进程级初始化 / 关闭、日志、安装根目录，以及按 SN 取设备客户端。
+    ///
+    /// <code>
+    /// Nclink.Init("tcp://127.0.0.1:1883");
+    /// using (NclDeviceClient device = Nclink.GetDevice("V2023A7B762"))
+    /// {
+    ///     using (NclModel model = device.Probe()) { ... }
+    ///     device.SubscribeSamples();
+    ///     device.SampleReceived += (s, e) => Console.WriteLine(e.Sample);
+    /// }
+    /// Nclink.Shutdown();
+    /// </code>
+    /// </summary>
+    public static class Nclink
+    {
+        /// <summary>C 库版本号。</summary>
+        public static string Version { get { return Native.Utf8(Native.Version()); } }
+
+        /// <summary>进程级连接是否已经建好。</summary>
+        public static bool IsOpen { get { return Native.IsOpen() != 0; } }
+
+        /// <summary>
+        /// 建进程级连接（内部建 MQTT 连接并起客户端管理器）。一个进程调一次，配
+        /// <see cref="Shutdown"/>。
+        /// </summary>
+        /// <param name="brokerUri">例如 tcp://127.0.0.1:1883 或 ssl://host:8883。</param>
+        /// <param name="username">可空 = 匿名。</param>
+        /// <param name="password">可空。</param>
+        public static void Init(string brokerUri, string username = null,
+                                string password = null)
+        {
+            Init(brokerUri, username, password, null);
+        }
+
+        /// <summary>
+        /// 建进程级连接，附带 TLS 选项（<paramref name="tls"/> 为 null 就是默认）。
+        /// <c>ssl://</c> 要带 TLS 编译的库与垫片，见 <see cref="TlsAvailable"/>。
+        /// </summary>
+        public static void Init(string brokerUri, string username, string password,
+                                NclTlsOptions tls)
+        {
+            if (brokerUri == null)
+            {
+                throw new ArgumentNullException("brokerUri");
+            }
+            if (tls == null)
+            {
+                NclinkException.Check(
+                    Native.Open(Native.Utf8Z(brokerUri), Native.Utf8Z(username),
+                                Native.Utf8Z(password)),
+                    "Init");
+                return;
+            }
+            NclinkException.Check(
+                Native.OpenEx(Native.Utf8Z(brokerUri), Native.Utf8Z(username),
+                              Native.Utf8Z(password), Native.Utf8Z(tls.CaFile),
+                              Native.Utf8Z(tls.ClientCertificate),
+                              Native.Utf8Z(tls.ClientKey),
+                              Native.Utf8Z(tls.ServerName),
+                              tls.VerifyPeer ? 1 : 0),
+                "Init");
+        }
+
+        /// <summary>当前的原生库有没有编 TLS（false 时 <c>ssl://</c> 会报 NOT_SUPPORTED）。</summary>
+        public static bool TlsAvailable
+        {
+            get { return Native.TlsAvailable() != 0; }
+        }
+
+        /// <summary>取（必要时创建）某个 SN 的设备客户端。</summary>
+        public static NclDeviceClient GetDevice(string sn)
+        {
+            if (string.IsNullOrEmpty(sn))
+            {
+                throw new ArgumentNullException("sn");
+            }
+            IntPtr client = Native.ClientGet(Native.Utf8Z(sn));
+            if (client == IntPtr.Zero)
+            {
+                throw new NclinkException(-6, "GetDevice",
+                                          "取设备客户端失败: " + sn + "（先调 Init？）");
+            }
+            return new NclDeviceClient(sn, client);
+        }
+
+        /// <summary>
+        /// 把一条 MQTT 报文按库的规则解码（采样 / 事件也是同一条路，只是之后可以
+        /// <see cref="NclMessage.AsSample"/> / <see cref="NclMessage.AsEvent"/> 拿快照）。
+        /// 调用方负责 Dispose 返回的报文。
+        /// </summary>
+        public static NclMessage Parse(string topic, byte[] payload)
+        {
+            return NclMessage.Parse(topic, payload);
+        }
+
+        /// <summary>把一条报文按 UTF-8 文本解码，省得自己编码。</summary>
+        public static NclMessage Parse(string topic, string payload)
+        {
+            return NclMessage.Parse(topic,
+                                    System.Text.Encoding.UTF8.GetBytes(payload ?? string.Empty));
+        }
+
+        /// <summary>断开连接、释放所有客户端。</summary>
+        public static void Shutdown()
+        {
+            if (IsOpen)
+            {
+                Native.Close();
+            }
+        }
+
+        /// <summary>安装根目录（conf/、bin/、log/ 的父目录）；设置时复制进原生侧。</summary>
+        public static string RootDirectory
+        {
+            get { return Native.Utf8(Native.EnvRoot()); }
+            set { Native.EnvSetRoot(Native.Utf8Z(value)); }
+        }
+
+        /// <summary>
+        /// 五个语言设备端示例共用的设备模型（JSON 文本；编译在垫片里，
+        /// 不需要任何外部模型文件）。
+        /// </summary>
+        public static string DeviceModel
+        {
+            get { return Native.Utf8(Native.DeviceModel()); }
+        }
+
+        /// <summary>初始化日志；<paramref name="dir"/> 为空时用 &lt;root&gt;/log。</summary>
+        public static bool LogInit(string dir = null)
+        {
+            return Native.LogInit(Native.Utf8Z(dir)) != 0;
+        }
+
+        /// <summary>关掉日志（写盘线程回收）。</summary>
+        public static void LogShutdown()
+        {
+            Native.LogShutdown();
+        }
+
+        /// <summary>日志级别。</summary>
+        public static NclinkLogLevel LogLevel
+        {
+            set { Native.LogSetLevel((int)value); }
+        }
+
+        /// <summary>是否同时往控制台打（默认开）。</summary>
+        public static void SetConsoleLog(bool enabled)
+        {
+            Native.LogSetConsole(enabled ? 1 : 0);
+        }
+
+        /* -------------------------------------------------------- 文件通道 -- */
+
+        /// <summary>
+        /// 起进程级 FTP 端点（127.0.0.1:2323，admin / 123456，根 = 安装根）：
+        /// 文件通道里**设备是 FTP 客户端**，托管侧得有个 FTP 服务端等着它来取/送。
+        /// <see cref="Init(string, string, string)"/> 时已经起过了，这里是给"先要文件后连 broker"的场合用的。
+        /// </summary>
+        public static void StartFileServer()
+        {
+            NclinkException.Check(Native.FileStartFtp(), "StartFileServer");
+        }
+
+        /// <summary>
+        /// 同上，但可以换端口 / 根目录 / 账号（<paramref name="port"/> 为 0、其余为
+        /// null 就用默认）。托管侧与 broker 不在一台机器、或者 2323 被占时用它。
+        /// </summary>
+        public static void StartFileServer(int port, string rootDirectory = null,
+                                           string username = null,
+                                           string password = null)
+        {
+            NclinkException.Check(
+                Native.FileStartFtpEx(unchecked((uint)port), Native.Utf8Z(rootDirectory),
+                                      Native.Utf8Z(username), Native.Utf8Z(password)),
+                "StartFileServer");
+        }
+
+        /// <summary>停掉进程级 FTP 端点。</summary>
+        public static void StopFileServer()
+        {
+            Native.FileStopFtp();
+        }
+
+        /// <summary>这个扩展名的文件传输时要不要压缩（文本类为 true）。</summary>
+        public static bool NeedCompression(string fileName)
+        {
+            return Native.FileNeedCompression(Native.Utf8Z(fileName)) != 0;
+        }
+
+        /// <summary>按 256 KB 一片算，这个字节数要几片。</summary>
+        public static int TotalChunks(long size)
+        {
+            return Native.FileTotalChunks(size);
+        }
+
+        /// <summary>本地文件内容的 SHA-256（小写十六进制）；读不了返回 null。</summary>
+        public static string FileChecksum(string path)
+        {
+            return Native.TakeUtf8(Native.FileChecksum(Native.Utf8Z(path)));
+        }
+
+        /// <summary>本地文件/目录的属性（目录的 FileType = 1）；拿不到返回 null。</summary>
+        public static NclFileInfo FileAttribute(string path, string parent = null)
+        {
+            string json = Native.TakeUtf8(
+                Native.FileAttributeJson(Native.Utf8Z(path), Native.Utf8Z(parent)));
+            if (json == null)
+            {
+                return null;
+            }
+            using (NclJson value = NclJson.Parse(json))
+            {
+                return NclFileInfo.Parse(value);
+            }
+        }
+    }
+}

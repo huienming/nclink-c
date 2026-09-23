@@ -1,15 +1,22 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 huienming
 
-# Assemble the release package: headers, both static libraries and the docs.
+# Assemble the release package: the headers, the static libraries, the vendor
+# protocol clients (their headers and their library), the example programs and
+# the docs.
 #
-# The package has no implementation source by default: headers, both static
-# libraries, the docs and the example programs. Pass -WithSource to also ship
-# the whole tree (src/tests/tools and the build scripts).
+# The package carries no implementation source by default, and that includes
+# the vendor clients: the core library speaks NC-Link only, so a recipient
+# needs a library and a header set to talk to a machine tool, not the protocol
+# implementation. src/, tests/, tools/ and the clients/plugins sources need
+# -WithSource. The adapter modules and the device program live in their own
+# package (tools/make_fanuc_release.ps1).
+# See the "vendor clients" section for the layout.
 #
 # After assembly a content guard runs over the package: a screened word fails
 # the run (the keyword list is written as code point escapes, see $forbidden
-# below, so this file itself passes that guard).
+# below, so this file itself passes that guard). A protocol spelling that
+# happens to contain a screened word is exempted, see $protocolWords below.
 #
 # Note: keep this file ASCII-only. Windows PowerShell 5.1 reads .ps1 files with
 # the OEM code page, and a comment whose last byte pair is a multi-byte
@@ -135,9 +142,74 @@ foreach ($exe in $exeSources) {
     }
     $dest = Join-Path $pkg $exe.Dst
     New-Item -ItemType Directory -Path $dest -Force | Out-Null
-    Get-ChildItem -Path $from -Filter $exe.Filter -File | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dest $_.Name) -Force
-        Write-Host ("  + {0}/{1}" -f $exe.Dst, $_.Name)
+    Get-ChildItem -Path $from -Filter $exe.Filter -File |
+        # the device program is not an example program: it ships with the
+        # adapter package (bin/ncl_server.exe), not in this one
+        Where-Object { $_.Name -notin @("ncl_server", "ncl_server.exe") `
+            -and $_.Name -notlike "ncl_test_*" } |
+        ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dest $_.Name) -Force
+            Write-Host ("  + {0}/{1}" -f $exe.Dst, $_.Name)
+        }
+}
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# vendor clients (every package: their headers and their static library)
+#
+# The core library speaks NC-Link and nothing else: the clients are what talks
+# FOCAS / Syntec / Modbus / ..., so they travel as well - as a library and a
+# header set, never as sources (their C files carry the protocol edge cases
+# and stay with -WithSource, like src/):
+#
+#   include/nclink/clients/*.h       the clients' public headers, next to the
+#                                    core ones: a consumer includes
+#                                    <nclink/clients/focas.h>, the same root
+#                                    the core uses itself
+#   lib/<platform>/nclink_clients.*  the clients as a static library, one per
+#                                    platform that has a core library
+#
+# <platform> names are the ones under lib/, so a build directory that is not
+# present is skipped with a note: exactly like the core libraries above.
+#
+# The adapter modules and the device program are not in this package: an
+# adapter's binary release is a folder of its own (one host, one module, its
+# configuration - see tools/make_fanuc_release.ps1, which assembles
+# dist/nclink-fanuc-adapter-*-win-x64). This package ships the libraries both
+# sides link against.
+Copy-Tree "clients/include/nclink/clients" "include/nclink/clients" @("*.h")
+
+$vendorPlatforms = @(
+    @{ Build = "build";               Platform = "windows-x64-msvc" },
+    @{ Build = "build-tls";           Platform = "windows-x64-msvc-tls" },
+    @{ Build = "build-x86";           Platform = "windows-x86-msvc" },
+    @{ Build = "build-staticmem";     Platform = "windows-x64-msvc-staticmem" },
+    @{ Build = "build-staticmem-tls"; Platform = "windows-x64-msvc-staticmem-tls" },
+    @{ Build = "build-x86-staticmem"; Platform = "windows-x86-msvc-staticmem" },
+    @{ Build = "build-mingw";         Platform = "windows-amd64-mingw" },
+    @{ Build = "build-linux";         Platform = "linux-x86_64-gcc" }
+)
+foreach ($vendor in $vendorPlatforms) {
+    # The clients library: nclink_clients.lib from MSVC, libnclink_clients.a
+    # from the others, exactly like the core library of that platform.
+    # The CMake builds put the clients under <build>/clients/, the script
+    # (build-linux.sh, also used for mingw) writes it at the root of <build>.
+    $clientsLib = ""
+    foreach ($candidate in @("$($vendor.Build)\clients\nclink_clients.lib",
+                             "$($vendor.Build)\clients\libnclink_clients.a",
+                             "$($vendor.Build)\libnclink_clients.a")) {
+        if (Test-Path -LiteralPath (Join-Path $root $candidate)) {
+            $clientsLib = $candidate
+            break
+        }
+    }
+    if ($clientsLib -ne "") {
+        $dest = Join-Path $pkg ("lib\{0}\{1}" -f $vendor.Platform, (Split-Path -Leaf $clientsLib))
+        New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $root $clientsLib) -Destination $dest -Force
+        Write-Host ("  + lib/{0}/{1}" -f $vendor.Platform, (Split-Path -Leaf $clientsLib))
+    } else {
+        Write-Host ("  note: {0} has no clients library, the clients are not packaged for {1}" -f $vendor.Build, $vendor.Platform)
     }
 }
 
@@ -146,8 +218,9 @@ if ($WithSource) {
     Copy-Tree "src" "src" @("*.c", "*.h")
     Copy-Tree "tests" "tests" @("*.c", "*.h", "*.json", "*.txt")
     Copy-Tree "tools" "tools" @("*.py", "*.mjs", "*.ps1")
+    # the vendor side in full: the protocol clients and the adapter modules
     Copy-Tree "clients" "clients" @("*.c", "*.h", "*.md", "*.txt")
-    Copy-Tree "plugins" "plugins" @("*.c", "*.md", "*.txt")
+    Copy-Tree "plugins" "plugins" @("*.c", "*.h", "*.md", "*.txt")
 }
 
 # Language bindings: sources only, they link the packaged static libraries
@@ -265,6 +338,15 @@ if ($WithSource) {
 # toolchain names are allowed: what stays screened are the "derived from"
 # implementation and the third party libraries this library replaces.
 $forbidden = '(?i)\u0063\u006e\.\u006e\u0065\u0072\u0063|\u0065\u0076\u0065\u0072\u0069\u0074|\u006a\u0061\u0063\u006b\u0073\u006f\u006e|\u0070\u0061\u0068\u006f|\u006f\u006b\u0068\u0074\u0074\u0070|\u0063\u006f\u006d\u006d\u006f\u006e\u0073-\u006e\u0065\u0074|\u006e\u0061\u006e\u006f\u0068\u0074\u0074\u0070\u0064|\u0073\u0077\u0061\u0067\u0067\u0065\u0072-\u0063\u006f\u0072\u0065|\u0063\u0061\u0066\u0066\u0065\u0069\u006e\u0065|\u006d\u0071\u0074\u0074\u00765|\b\u0061\u006e\u0064\u0072\u006f\u0069\u0064\b|\u8fc1\u79fb|\u79fb\u690d|\u4e0a\u6e38|\u539f\u7248|\b\u0050\u004f\u0052\u0054\u0049\u004e\u0047\b|\b\u004d\u0065\u0073\u0073\u0061\u0067\u0065\u0055\u0074\u0069\u006c\u0073\b|\b\u0052\u0065\u0073\u0075\u006c\u0074\.\u0073\u0075\u0063\u0063\u0065\u0073\u0073\b|\b\u0052\u0065\u0073\u0075\u006c\u0074\.\u0066\u0061\u0069\u006c\u0065\u0064\b|\b\u0045\u006e\u0063\u006f\u0064\u0065\u0072\.\u0065\u006e\u0063\u006f\u0064\u0065\b|\b\u0044\u0065\u0063\u006f\u0064\u0065\u0072\.\u0064\u0065\u0063\u006f\u0064\u0065\b|\b\u0052\u006f\u006f\u0074\u004e\u006f\u0064\u0065\b|\b\u0044\u0061\u0074\u0061\u0049\u0074\u0065\u006d\u004e\u006f\u0064\u0065\b|\b\u0043\u006f\u006d\u0070\u006f\u006e\u0065\u006e\u0074\u004e\u006f\u0064\u0065\b|\b\u0044\u0065\u0076\u0069\u0063\u0065\u004e\u006f\u0064\u0065\b|\b\u0043\u006f\u006e\u0066\u0069\u0067\u004e\u006f\u0064\u0065\b|\b\u0042\u0061\u0073\u0065\u004e\u006f\u0064\u0065\b|\b\u0041\u0062\u0073\u0074\u0072\u0061\u0063\u0074\u0053\u0065\u0072\u0076\u0065\u0072\b|\b\u0041\u0062\u0073\u0074\u0072\u0061\u0063\u0074\u004d\u0065\u0073\u0073\u0061\u0067\u0065\b|\b\u0043\u006c\u0069\u0065\u006e\u0074\u0048\u006f\u006c\u0064\u0065\u0072|\b\u0053\u0065\u0072\u0076\u0065\u0072\u0046\u0069\u006c\u0065\u0054\u006f\u006f\u006c\b|\b\u0043\u006c\u0069\u0065\u006e\u0074\u0046\u0069\u006c\u0065\u0054\u006f\u006f\u006c\b|\b\u0044\u0065\u0066\u0061\u0075\u006c\u0074\u0046\u0069\u006c\u0065\u0054\u006f\u006f\u006c\b|\b\u004d\u0079\u0048\u0074\u0074\u0070\u0053\u0065\u0072\u0076\u0065\u0072\b|\b\u0054\u0068\u0072\u0065\u0061\u0064\u0053\u0065\u0072\u0076\u0069\u0063\u0065\b|\b\u004a\u0073\u006f\u006e\u0053\u0063\u0068\u0065\u006d\u0061\u0056\u0061\u006c\u0069\u0064\u0061\u0074\u006f\u0072\b|\b\u0043\u0068\u0065\u0063\u006b\u0055\u0074\u0069\u006c\u0073\b|\b\u0063\u006c\u0061\u007a\u007a\b|\b\u0045\u006e\u0075\u006d \u006c\u006f\u006f\u006b\u0075\u0070\b|\b\u0053\u0065\u0072\u0076\u0065\u0072\.\u0068\u0061\u006e\u0064\u006c\u0065\b'
+#
+# One screened substring is a protocol's own spelling rather than a telltale:
+# an MTConnect condition carries its seriousness in an XML attribute literally
+# named "severity" (severity="FAULT"), and "severity" contains the screened
+# "everit". The client that parses those documents, its header and its test
+# fixtures therefore have to spell it that way. The word is cut out of every
+# line before screening, so a hit for any other reason still fails the run.
+$protocolWords = '(?i)\b\u0073\u0065\u0076\u0065\u0072\u0069\u0074\u0079\b'
+
 $offenders = @()
 Get-ChildItem -Path $pkg -Recurse -File |
     Where-Object { $_.Extension -in @(".md", ".h", ".c", ".txt", ".sh", ".ps1", ".json") } |
@@ -273,7 +355,7 @@ Get-ChildItem -Path $pkg -Recurse -File |
         $no = 0
         foreach ($line in [System.IO.File]::ReadAllLines($_.FullName)) {
             $no++
-            if ($line -match $forbidden) {
+            if (($line -replace $protocolWords, "") -match $forbidden) {
                 $offenders += ("{0}:{1}: {2}" -f $rel, $no, $line.Trim())
             }
         }
@@ -294,7 +376,7 @@ if (Test-Path -LiteralPath $docx) {
             $reader = New-Object System.IO.StreamReader($entry.Open())
             try { $docxText = $reader.ReadToEnd() } finally { $reader.Dispose() }
             $docxText = [regex]::Replace($docxText, "<[^>]+>", "")
-            if ($docxText -match $forbidden) {
+            if (($docxText -replace $protocolWords, "") -match $forbidden) {
                 throw ("MANUAL.docx contains '{0}', which must not ship" -f $Matches[0])
             }
         }

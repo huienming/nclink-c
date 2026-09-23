@@ -1,0 +1,24 @@
+# Run for real: poll the machine, publish the samples, serve REST. Ctrl+C exits.
+#
+#   .\run.ps1
+#   .\run.ps1 -Broker tcp://10.0.0.9:1883
+#   .\run.ps1 -Broker tcp://10.0.0.9:1883 -Interval 500 -RestPort 8081 -Raw
+#   .\list-plugins.ps1          # show the loaded adapter modules
+param(
+    [string]$Config = "",
+    [string]$Broker = "",
+    [string]$PluginDir = "",
+    [int]$Interval = 1000,
+    [int]$RestPort = 8080,
+    [switch]$Raw
+)
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$exe = Join-Path $root "bin\ncl_server.exe"
+if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
+if ($PluginDir -eq "") { $PluginDir = Join-Path $root "plugins" }
+$forward = @("-r", $root, "-c", $Config, "-P", $PluginDir,
+             "--interval", "$Interval", "--port", "$RestPort")
+if ($Broker -ne "") { $forward += @("-b", $Broker) }
+if ($Raw) { $forward += "--raw" }
+& $exe @forward
+exit $LASTEXITCODE
