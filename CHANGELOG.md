@@ -5,6 +5,15 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 01 册：先把 `pmc_rdalmmsg` 与 `pmc_rdcntl*` 看了一遍（还没接）
+
+  * 签名与用途记进 §11.24（含 `IODBPMCCNTL` / `ODBPMCALM` 结构）。
+  * 实测（模拟器）：`pmc_rdcntlgrp`、`pmc_rdcntl_exrelay_grp` **通了**（各回 `num=1`
+    —— 这台机器有 1 组数据表控制数据、1 组扩展继电器控制数据）；
+    `pmc_rdcntldata` / `pmc_rdcntlexrelay` / `pmc_rdalmmsg` 还是"入参没给对"
+    （`rc=2` EW_LENGTH / `rc=3` EW_NUMBER），下一步把 `(type, group, num)` 枚举着打。
+  * 口径：`pmc_rdalmmsg` 读的是 **PMC 自己的报警**，与 `cnc_alarm`（CNC 侧）不是一回事。
+
 ### 01 册：PMC 的定时器/计数器（`T`/`C`）接上
 
   * 这两族在 FOCAS 里**没有单独调用**（`pmc_rdpmctm`/`pmc_rdpmccnt` 这份 SDK 没有），

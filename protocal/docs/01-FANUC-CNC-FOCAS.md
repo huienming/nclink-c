@@ -2246,3 +2246,28 @@ R 8000 → 64000、K 100 → 800、D 8000 字）。**机器实际支持多少可
 （写 `T0..T1 = [64,65]`、`C0..C1 = [64,65]` → 读回一致、隔 1 秒还在）。所以
 `/CONTROLLER/REGISTER@T`、`@C` 与别的可写族一样，读 + 写都开；容量照样先问机床
 （`pmc_rdpmcinfo`），问不到才用文档值（T 500、C 200）。
+
+### 11.24 `pmc_rdalmmsg` 与 `pmc_rdcntl*`：先看了一遍（2026-09-23）
+
+用户口径："都看一下，然后汇报"。这四个签名从官方头 `Fwlib64.h` 抄的，探针加好形状后
+对同一台 NCGuide 0i-MF 各试了一条：
+
+| 调用 | 签名（官方头） | 这条调用是干什么的 | 本机实测 |
+|---|---|---|---|
+| `pmc_rdcntlgrp` | `(h, short *num)` | 问"PMC 参数**数据表控制数据**有几组" | ✅ `rc=0`、**`num=1`** |
+| `pmc_rdcntl_exrelay_grp` | `(h, short *num)` | 问"PMC 参数**扩展继电器控制数据**有几组" | ✅ `rc=0`、**`num=1`** |
+| `pmc_rdcntldata` | `(h, type, group, num, IODBPMCCNTL*)` | 读数据表控制数据（`IODBPMCCNTL` = 抬头 + `info[100]`，每格 `{tbl_prm, data_type, data_size, data_dsp}`）| 🟡 `rc=2`（EW_LENGTH，参数没给对）|
+| `pmc_rdcntlexrelay` | `(h, type, group, num, IODBPMCCNTL*)` | 读扩展继电器控制数据（同一个结构体）| 🟡 `rc=2`（同上）|
+| `pmc_rdalmmsg` | `(h, type, short *num, short *nmsg, ODBPMCALM*)` | 读 **PMC 报警文本**（`ODBPMCALM` = 一条 `char almmsg[128]`）| 🟡 `rc=3`（EW_NUMBER，参数没给对）|
+
+结论（这一轮只到"看清楚"）：
+
+* **组数两条是通的**（`num=1`），说明这台机器的 PMC 参数区确实有 1 组数据表控制数据与
+  1 组扩展继电器控制数据 —— 也就是"PMC 参数（数据表/保持继电器）那一页"在这一族接口里；
+* **控制数据本体与 PMC 报警文本还差"参数怎么给"**：两条 E‌W_LENGTH / 一条 EW_NUMBER，
+  都是库/机床嫌入参不对（`type`/`group`/`num` 的取值组合），还没试出那组合来。
+  下一步照老办法：拿官方 SDK 把 `(type, group, num)` 枚举着打，看哪一组回 `rc=0`，
+  再把应答（`IODBPMCCNTL` 每格 6 个字段 / `ODBPMCALM` 的 128 字节文本）的偏移核出来。
+
+> 和别处的分工一样：**`pmc_rdalmmsg` 那条是"PMC 自己的报警"**（PMC 报警号 + 文本），
+> 与 `cnc_alarm`/`cnc_rdalmmsg2`（CNC 侧报警）不是一回事 —— 现场要 PMC 报警才用这条。

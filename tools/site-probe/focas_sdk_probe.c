@@ -211,6 +211,13 @@ static const struct {
      */
     { "pmc_rdpmcrng", "s5p", 0 }, { "pmc_wrpmcrng", "s1p", 0 },
     /* PMC 各族的实际号段（`pmc_rdpmcinfo(h, adr_type, ODBPMCINF*)`，-1 = 全族） */
+    /* PMC 另外几族（2026-09-23 抓帧用）：
+     *   pmc_rdalmmsg(h, type, short *num, short *nmsg, ODBPMCALM*) —— PMC 报警文本
+     *   pmc_rdcntlgrp / pmc_rdcntl_exrelay_grp(h, short *num) —— 控制数据组数
+     *   pmc_rdcntldata / pmc_rdcntlexrelay(h, type, group, num, IODBPMCCNTL*) —— 控制数据 */
+    { "pmc_rdalmmsg", "s2_n", 0 }, { "pmc_rdcntlgrp", "np", 0 },
+    { "pmc_rdcntl_exrelay_grp", "np", 0 }, { "pmc_rdcntldata", "s3p", 0 },
+    { "pmc_rdcntlexrelay", "s3p", 0 },
     { "pmc_rdpmcinfo", "s1p", 0 },
     /* 定时器 / 计数器（结构体那两个，先只看帧） */
     { "pmc_rdpmctm", "s1p", 0 }, { "pmc_rdpmccnt", "s1p", 0 },
