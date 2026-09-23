@@ -104,6 +104,22 @@ typedef struct {
 #define NCL_FOCAS_ERR_NO_DATA NCL_DRV_ERR_PROTOCOL(0xB6)
 
 /**
+ * 传输三件套的**状态回执**（应答方向 3）里机床给的返回码 —— 低 8 位就是那个码。
+ *
+ * 普通命令里方向 3 是"没有这个数"（§2.2 rule 3，翻成 `NCL_FOCAS_ERR_NO_DATA`）；
+ * 但程序上/下行那一族（`0x11/0x13`、`0x15/0x17`）里**方向 3 是状态回执**，
+ * 体前 4 字节是大端返回码：2026-09-23 官方 SDK 实测 `0x13` 的应答是
+ * `a0a0a0a0 0003 13 03 0008 | 0000 0005 0001 0000` —— dir = 3、码 = 5（EW_ATTRIB，
+ * 机床不收这份数据）。见 01 册 §11.14。
+ */
+#define NCL_FOCAS_ERR_TRANSFER(code)                                           \
+    (NCL_DRV_ERR_BUSINESS(0x40) | (((int)(code) & 0xFF) << 8))
+#define NCL_FOCAS_TRANSFER_CODE(err) (((err) >> 8) & 0xFF)
+/** 是不是"传输状态回执"那一族（判据与上面那个宏成对，见 focas_values.c 的 note）。 */
+#define NCL_FOCAS_ERR_IS_TRANSFER(err)                                         \
+    (((err) & ~0xFF00) == NCL_DRV_ERR_BUSINESS(0x40))
+
+/**
  * Build one frame: magic, type 0001, @p func, @p dir, big endian body length.
  * Returns the frame length, or 0 when it does not fit @p cap.
  */

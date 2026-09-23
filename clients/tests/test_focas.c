@@ -455,9 +455,12 @@ typedef struct {
     size_t      payload_count;
     int         short_by; /**< reply with fewer blocks than asked */
     uint16_t    block_rc; /**< 应答块里的返回码（机床说 1/6 就是"这台没有"） */
+    /* 传输三件套的状态回执：非 0 时，`0x13` end 的应答按真机的样子回
+     * **方向 3 + 体前 4 字节的返回码**（01 册 §11.14）。 */
+    int         transfer_status;
     /* 最后一次请求的**体**原样留一份：写那一侧的帧形状（块长、tag0/tag1、载荷）
      * 在 01 册 §11.13 里是逐字节核过的，这里就照那一份对。 */
-    uint8_t     last_request[256];
+    uint8_t     last_request[640]; /**< 程序下行的 start 体就有 516 字节 */
     size_t      last_request_len;
     /* 程序上下行（func 0x11/0x12/0x13）：数据帧收下来、不回，别的照块回 */
     uint8_t     transfer[1024];
@@ -560,6 +563,18 @@ static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pd
         body_len = 0; /* 机床对 bye 回一条空的（§2.1 实测） */
     } else {
         return false;
+    }
+    /* 传输三件套的状态回执：真机上 `0x13` end 的应答是**方向 3**、体前 4 字节是
+     * 机床返回码（`00000005` = EW_ATTRIB）。这里按那个形状回。 */
+    if (pdu->func == NCL_FOCAS_FUNC_DWN_END && mock->transfer_status != 0) {
+        memset(body, 0, 8);
+        body[3] = (uint8_t)mock->transfer_status; /* 前 4 字节 = 返回码（大端） */
+        frame_len = ncl_focas_build(reply, sizeof(reply), pdu->func, 3u, body, 8);
+        if (frame_len == 0 ||
+            ncl_socket_send(conn->peer, reply, frame_len) != NCL_OK) {
+            return false;
+        }
+        return true;
     }
     frame_len = ncl_focas_build(reply, sizeof(reply), pdu->func,
                                 NCL_FOCAS_DIR_RESP, body, body_len);
@@ -1669,7 +1684,9 @@ static void test_tool_tables(void)
 
 static void test_program_transfer(void)
 {
-    static const char kProgram[] = "N100 G0 X0 Y0\nN110 M3 S1200\n";
+    /* 程序正文**第一行必须是程序号**（FANUC 的规矩，用户口径 + 官方 SDK 的帧，
+     * 01 册 §11.14）：机床是从这一行认程序号的。 */
+    static const char kProgram[] = "O0001\nN100 G0 X0 Y0\nN110 M3 S1200\n";
     focas_mock *mock = mock_start();
     ncl_focas_config config;
     ncl_focas *focas;
@@ -1704,6 +1721,35 @@ static void test_program_transfer(void)
     NCL_CHECK_EQ_INT(mock->seen[3], NCL_FOCAS_FUNC_DWN_START);
     NCL_CHECK_EQ_INT(mock->seen[4], NCL_FOCAS_FUNC_DWN_DATA);
     NCL_CHECK_EQ_INT(mock->seen[5], NCL_FOCAS_FUNC_DWN_END);
+
+    NCL_TEST_CASE("程序正文没有程序号那一行（O 开头）→ 本地挡下来，不发帧");
+    mock->seen_count = 0;
+    NCL_CHECK_EQ_INT(ncl_focas_program_download(focas, 0, NULL,
+                                                "N100 G0 X0 Y0\nM30\n"),
+                     NCL_ERR_INVALID_ARG);
+    NCL_CHECK_EQ_INT((int)mock->seen_count, 0); /* 一帧都没发出去 */
+
+    NCL_TEST_CASE("start 帧要的是**目录**：文件路径给进来会取目录那一段");
+    NCL_CHECK_EQ_INT(ncl_focas_program_download(
+                         focas, 0, "//CNC_MEM/USER/PATH1/O0001", kProgram),
+                     NCL_OK);
+    /* 体里 [3] = 1、[4..6) = "N:"、[6..) = 目录名（带上最后那个 '/'） */
+    NCL_CHECK_EQ_INT(mock->last_request[3], 0x01);
+    NCL_CHECK(memcmp(mock->last_request + 4, "N:", 2) == 0);
+    NCL_CHECK(memcmp(mock->last_request + 6, "//CNC_MEM/USER/PATH1/", 21) == 0);
+    NCL_CHECK(mock->last_request[27] == 0x00); /* 文件名那一段没有被带进去 */
+
+    /*
+     * 传输三件套的状态回执：真机上 `0x13` end 的应答是**方向 3**、体前 4 字节是
+     * 机床返回码。普通调用把方向 3 当"没有这个数"，传输这一族得按返回码解释 ——
+     * 这条就是核这个（01 册 §11.14：SDK 对这份程序拿到的就是 `00000005`）。
+     */
+    NCL_TEST_CASE("下行 end 的状态回执（方向 3 + EW_ATTRIB=5）→ 报模块错并带上原因");
+    mock->transfer_status = 5;
+    NCL_CHECK_EQ_INT(ncl_focas_program_download(focas, 0, NULL, kProgram),
+                     NCL_FOCAS_ERR_TRANSFER(5));
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "EW_ATTRIB") != NULL);
+    mock->transfer_status = 0;
 
     NCL_TEST_CASE("程序上传：请求码已核、应答待核，先回 NCL_ERR_UNAVAILABLE");
     NCL_CHECK_EQ_INT(ncl_focas_program_upload(focas, 0, NULL, &program, &len),

@@ -64,12 +64,36 @@ static const char *focas_err_text(ncl_err code)
     }
 }
 
+/** 机床自己那套 EW_xxx 返回码的人话（传输三件套的状态回执里会带回来）。 */
+static const char *focas_ew_text(int code)
+{
+    switch (code) {
+    case 0: return "EW_OK";
+    case 1: return "EW_FUNC（这个机型没有这条功能）";
+    case 2: return "EW_LENGTH（长度不对）";
+    case 3: return "EW_NUMBER（号不对）";
+    case 4: return "EW_RANGE（范围不对）";
+    case 5: return "EW_ATTRIB（属性/数据不对，机床不收）";
+    case 6: return "EW_NOOPT（这个选件没开）";
+    case 7: return "EW_PROT（写保护）";
+    default: return "未知码";
+    }
+}
+
 /** 记下这次失败（绑定的 NG 理由就是这一句）。 */
 static ncl_err note(ncl_focas *focas, const char *what, ncl_err code)
 {
     if (focas != NULL) {
-        snprintf(focas->error, sizeof(focas->error), "%s: %s", what,
-                 focas_err_text(code));
+        if (NCL_FOCAS_ERR_IS_TRANSFER(code)) {
+            /* 程序上/下行的状态回执（应答方向 3，体前 4 字节 = 机床返回码）。 */
+            snprintf(focas->error, sizeof(focas->error),
+                     "%s: 机床回码 %d（%s）", what,
+                     NCL_FOCAS_TRANSFER_CODE(code),
+                     focas_ew_text(NCL_FOCAS_TRANSFER_CODE(code)));
+        } else {
+            snprintf(focas->error, sizeof(focas->error), "%s: %s", what,
+                     focas_err_text(code));
+        }
     }
     return code;
 }
@@ -2343,25 +2367,85 @@ ncl_err ncl_focas_system(ncl_focas *focas, ncl_json **value)
 
 /* ------------------------------------------------------------ 程序上下行 -- */
 
+/** 程序上下行里那个目录/文件名的上限（start 帧的体是 516 字节，扣掉 6 字节头）。 */
+#define FOCAS_PATH_MAX 509u
+
 /*
- * 程序的上下行不是"读一个 item"，是三件套（01 册 §2.4，官方 SDK 实测）：
+ * 程序的上下行不是"读一个 item"，是三件套（01 册 §2.4 与 §11.14，官方 SDK 实测）：
  *
  *   下行（PC → CNC）  cnc_dwnstart4（func 0x11，定长 516 字节体：数据种类 +
- *                     目录名/程序名）→ 分块 cnc_download4（func 0x12、dir 4，
+ *                     **目录名**）→ 分块 cnc_download4（func 0x12、dir 4，
  *                     体就是程序文本）→ cnc_dwnend4（func 0x13；**下载的错误
  *                     都在这条上回**）
  *   上行（CNC → PC）  cnc_upstart4（0x15）→ cnc_upload4（0x18、dir 4）→ cnc_upend4
+ *
+ * **两条现场口径**（2026-09-23 用户给的 + 官方 SDK 的帧对出来的）：
+ *
+ *   1. start 帧那一格给的是**文件夹**（`//CNC_MEM/USER/PATH1/`），**不是文件名** ——
+ *      文件名/目录名那一格 SDK 传的就是目录；传成文件路径机床直接回 `EW_ATTRIB=5`。
+ *   2. **程序正文的第一行必须是程序号**（`O0001` / `O00001` 都行，FANUC 的规矩），
+ *      机床是从这一行认程序号的；正文里没有这一行就是一份机床会拒的程序，
+ *      这里先挡下来（回 `NCL_ERR_INVALID_ARG`），别把注定被拒的帧送出去。
  *
  * 帧在驱动层（focas_driver.c 的 "download" / "upload" 操作），这里只管语义与
  * 参数；`type` 的取值照官方手册：0 NC 程序 / 1 刀补 / 2 参数 / 3 螺距误差 /
  * 4 宏变量 / 5 工件零点偏置。
  */
 
+/**
+ * 正文的第一行是不是程序号（`O` + 数字，大小写都认；后面可以跟注释）。
+ * 空行跳过（有的后处理会先来一个空行）。
+ */
+static bool program_has_number_line(const char *program)
+{
+    size_t i = 0;
+
+    while (program[i] == '\r' || program[i] == '\n' || program[i] == ' ') {
+        i++;
+    }
+    if (program[i] != 'O' && program[i] != 'o') {
+        return false;
+    }
+    i++;
+    if (program[i] < '0' || program[i] > '9') {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * 把"目录/文件名"里**目录那一段**取出来（start 帧要的是目录）。
+ * `//CNC_MEM/USER/PATH1/O0001` → `//CNC_MEM/USER/PATH1/`；
+ * 本来就是目录（以 `/` 结尾）或没有 `/` 就原样给。
+ */
+static void program_dir_part(const char *name, char *out, size_t cap)
+{
+    const char *slash;
+    size_t len;
+
+    out[0] = '\0';
+    if (ncl_str_is_blank(name)) {
+        return;
+    }
+    slash = strrchr(name, '/');
+    if (slash == NULL || slash[1] == '\0') {
+        snprintf(out, cap, "%s", name);
+        return;
+    }
+    len = (size_t)(slash - name) + 1u; /* 含那个 '/' */
+    if (len >= cap) {
+        len = cap - 1u;
+    }
+    memcpy(out, name, len);
+    out[len] = '\0';
+}
+
 ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
                                    const char *dir, const char *program)
 {
     ncl_json *params;
     ncl_json *result = NULL;
+    char target[FOCAS_PATH_MAX];
     ncl_err rc;
 
     if (focas == NULL || program == NULL || program[0] == '\0') {
@@ -2370,13 +2454,20 @@ ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
     if (type < 0 || type > 255) {
         return note(focas, "DWNSTART4", NCL_ERR_INVALID_ARG);
     }
+    if (type == 0 && !program_has_number_line(program)) {
+        /* 机床从正文第一行认程序号（FANUC 的规矩）；没有这一行送下去就是被拒。
+         * 只有 type 0（NC 程序）查这一条 —— type 1..5 送的是刀补/参数/宏变量，
+         * 那些正文当然不是程序。 */
+        return note(focas, "PROGRAM_DOWNLOAD", NCL_ERR_INVALID_ARG);
+    }
+    program_dir_part(dir, target, sizeof(target));
     params = ncl_json_new_object();
     if (params == NULL) {
         return NCL_ERR_NOMEM;
     }
     (void)ncl_json_obj_set_int(params, "type", type);
-    if (!ncl_str_is_blank(dir)) {
-        (void)ncl_json_obj_set_string(params, "dir", dir);
+    if (!ncl_str_is_blank(target)) {
+        (void)ncl_json_obj_set_string(params, "dir", target);
     }
     (void)ncl_json_obj_set_string(params, "data", program);
     rc = ncl_focas_call(focas, "download", params, &result);

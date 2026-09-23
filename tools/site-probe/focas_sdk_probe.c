@@ -276,6 +276,7 @@ int main(int argc, char **argv)
     const char *name_arg = "";
     const char *seed = NULL;   /* --in HEX：出参/入参那块缓冲的初值 */
     const char *shape = NULL;  /* --shape：临时改调用形状（表里的只是缺省） */
+    const char *data_arg = NULL; /* --data TEXT：程序下行的正文（第一行 = 程序号） */
     bool        hssb = false;  /* --hssb：走 cnc_allclibhndl（节点号，NCGuide 用 9） */
     int         node = 9;
     const char *positional[8];
@@ -313,6 +314,8 @@ int main(int argc, char **argv)
             hssb = true;
         } else if (strcmp(argv[i], "--in") == 0 && i + 1 < (size_t)argc) {
             seed = argv[++i];
+        } else if (strcmp(argv[i], "--data") == 0 && i + 1 < (size_t)argc) {
+            data_arg = argv[++i];
         } else if (strcmp(argv[i], "--shape") == 0 && i + 1 < (size_t)argc) {
             shape = argv[++i];
         } else if (strcmp(argv[i], "--node") == 0 && i + 1 < (size_t)argc) {
@@ -570,7 +573,22 @@ int main(int argc, char **argv)
         short rc2 = 0;
         short rc3 = 0;
 
-        memset(buf, 'A', sizeof(buf));
+        /*
+         * 下行要送的那一段：`--data TEXT` 给（**程序的第一行必须是程序号**，
+         * 例如 `O0001`，这是 FANUC 的规矩 —— 目录给的是文件夹）。不给就铺 'A'
+         * （只用来核帧形状，不是一份合法的程序）。
+         */
+        if (data_arg != NULL) {
+            size_t n = strlen(data_arg);
+
+            if (n > sizeof(buf)) {
+                n = sizeof(buf);
+            }
+            memcpy(buf, data_arg, n);
+            want = (long)n;
+        } else {
+            memset(buf, 'A', sizeof(buf));
+        }
         rc = ((start4_fn)sym(strcmp(kind, "dwn4") == 0 ? "cnc_dwnstart4"
                                                        : "cnc_upstart4"))(
             handle, (short)a0, (char *)name_arg);

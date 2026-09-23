@@ -208,6 +208,51 @@ static ncl_err focas_exchange(focas_ctx *ctx, uint8_t func, const uint8_t *body,
                              body_out, body_out_len);
 }
 
+/**
+ * 程序上/下行的三件套专用交换：**应答方向 2 或者 3 都算数**。
+ *
+ * 方向 3 的体前 4 字节是机床的返回码（大端）：0 = 这一步成了、非 0 = 机床不收
+ * （`00000005` = EW_ATTRIB）。普通调用里方向 3 是"没有这个数"，在
+ * `focas_exchange_on()` 那头就翻掉了 —— 传输这一族得单独认，才能把"机床为什么
+ * 不收"带到上层（01 册 §11.14 记了 SDK 这两条帧）。
+ */
+static ncl_err focas_transfer_exchange(focas_ctx *ctx, uint8_t func,
+                                       const uint8_t *body, size_t body_len,
+                                       const uint8_t **reply, size_t *reply_len)
+{
+    ncl_focas_pdu pdu;
+    const uint8_t *body_out = NULL;
+    size_t body_out_len = 0;
+    ncl_err err;
+
+    memset(&pdu, 0, sizeof(pdu));
+    err = focas_exchange_on(ctx, ctx->socket, func, body, body_len, &pdu,
+                            &body_out, &body_out_len);
+    if (err == NCL_FOCAS_ERR_NO_DATA) {
+        const uint8_t *rx = ctx->rx + NCL_FOCAS_HEADER;
+        int code;
+
+        if (ctx->last_rx_len < NCL_FOCAS_HEADER + 4u) {
+            return err;
+        }
+        code = (rx[0] << 24) | (rx[1] << 16) | (rx[2] << 8) | rx[3];
+        if (code == 0) {
+            return NCL_OK; /* 方向 3、码 0：这一步机床认了 */
+        }
+        return NCL_FOCAS_ERR_TRANSFER(code);
+    }
+    if (err != NCL_OK) {
+        return err;
+    }
+    if (reply != NULL) {
+        *reply = body_out;
+    }
+    if (reply_len != NULL) {
+        *reply_len = body_out_len;
+    }
+    return NCL_OK;
+}
+
 /** One `func 0x21` exchange whose reply must be a usable command list. */
 static ncl_err focas_command(focas_ctx *ctx, const uint8_t *body, size_t body_len,
                              const uint8_t **reply, size_t *reply_len)
@@ -295,8 +340,8 @@ static ncl_err focas_program_download(focas_ctx *ctx, const ncl_json *params,
         return err;
     }
     memset(&pdu, 0, sizeof(pdu));
-    err = focas_exchange(ctx, NCL_FOCAS_FUNC_DWN_START, body, sizeof(body), &pdu,
-                         NULL, NULL);
+    err = focas_transfer_exchange(ctx, NCL_FOCAS_FUNC_DWN_START, body,
+                                  sizeof(body), NULL, NULL);
     if (err != NCL_OK) {
         return err;
     }
@@ -314,7 +359,9 @@ static ncl_err focas_program_download(focas_ctx *ctx, const ncl_json *params,
         sent += chunk;
     }
     memset(&pdu, 0, sizeof(pdu));
-    err = focas_exchange(ctx, NCL_FOCAS_FUNC_DWN_END, NULL, 0, &pdu, NULL, NULL);
+    /* 下行的错都在这条上回：应答方向 3 + 体前 4 字节的返回码。 */
+    err = focas_transfer_exchange(ctx, NCL_FOCAS_FUNC_DWN_END, NULL, 0, NULL,
+                                  NULL);
     if (err != NCL_OK) {
         return err; /* 下载的错都在这条上回 */
     }
