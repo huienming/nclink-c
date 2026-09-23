@@ -2553,10 +2553,21 @@ ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
 }
 
 /*
- * 上行（CNC → PC）：请求码 0x15（start，体同下行那 516 字节）/ 0x18（取一块，
- * 体 8 字节、dir 4）已经核出来了；**应答里程序文本的切法还没核** —— 官方库在
- * 内部函数里解（0x14fe70），反汇编到那一层没再往下，真机抓一次就能定。
- * 先照"还读不了"回：点位/方法在模型里看得见，问它有明确答复。
+ * 上行（CNC → PC）：请求帧**已经核完**（官方 SDK + spec，01 册 §11.14/§11.15）：
+ *
+ *   cnc_upstart4(h, 0, file_name) → func 0x15、体与下行同形那 516 字节（`[1]` = 种类、
+ *                                  `[4..6)` = "N:"、`[6..)` = 文件名/目录/路径+文件名）
+ *   cnc_upload4(h, &len, buf)     → func 0x18、dir 4、体 8 字节（全 0）
+ *   cnc_upend4(h)                 → 收尾
+ *   `file_name` 三种写法（`O1234` / `//CNC_MEM/USER/PATH1/` / `//CNC_MEM/USER/PATH1/O1234`）
+ *   都试过；`*len` 按 spec 要 ≥ 256 且是 256 的倍数。读回来的文本是 `% LF Block… LF %`，
+ *   最后一个字符是 `%`（再读就是 `EW_RESET`）。
+ *
+ * **卡在哪**：这台 NCGuide 模拟器收下 start（回 256 字节），但对 `0x18` 那条
+ * **一声不响**（SDK 自己回 `EW_DATA=10`；`cnc_getdtailerr` 的细码是 0，即机床没给
+ * 任何理由）。上行的三代（`cnc_upstart`/`cnc_upstart3`/`cnc_upstart4`）都试过，
+ * 把 O3001 选成主程序也试过 —— 一样不答。所以**回读程序文本的切法这台机器上取不到**，
+ * 要一台肯答 `0x18` 的真机才能定；在那之前这一格如实回"读不到"。
  */
 ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
                                  const char *name, char **program, size_t *len)
@@ -2568,7 +2579,8 @@ ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
     (void)name;
     (void)len;
     *program = NULL;
-    return not_yet(focas, "程序上传", "cnc_upload4（item 0x18 的应答切法）");
+    return not_yet(focas, "程序上传",
+                   "cnc_upload4：0x18 那条机床不答应答（模拟器上三代上行都试过）");
 }
 
 /* --------------------------------------------------- 表 7 的那几种表/对象 -- */

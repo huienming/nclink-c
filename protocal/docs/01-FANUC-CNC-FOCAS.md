@@ -1618,3 +1618,29 @@ python tools/site-probe/focas_replay_verbatim.py <SDK 那次的 tap 日志>     
 | 错误码 | `EW_ATTRIB` 数据类型非法；`EW_DATA` 细码 1 = 文件夹名不对 / 字符非法、2 = TV check、3 = **程序数满**、4 = **同号程序已注册**、5 = 同号程序正在被选中；`EW_PROT` = **O8000-/O9000- 保护或编码**；`EW_OVRFLOW` = 内存不够；`EW_BUFFER` = 缓冲满/空，重试；**`EW_REJECT` = 加工中/复位中/换模式中不能传**；`EW_ALARM` = PW000；`EW_PARAM` = **参数要在屏幕上开"参数写入使能"** |
 | `GENERAL.HTM` | 文件夹名要以 `/` 结尾，否则当成文件名；**0i-D 上 CNC 内存里用不了"文件夹"这一层**；频繁注册/删除程序要用 `cnc_saveprog_start` / `cnc_saveprog_end`（否则每次都写非易失存储） |
 | 会话条数 | 第三条 TCP 连接 hello 得到的是 **`dir 3` + 码 4（EW_RANGE）** —— 一条会话就是**两条** TCP，别多开 |
+
+#### 11.15.2 上行取程序：请求帧都核完了，卡在机床不答 `0x18`
+
+上行三件套的请求侧已经逐条核过（官方 SDK + spec 对得上）：
+
+```
+cnc_upstart4(h, 0, file_name)   func 0x15、体与下行同形那 516 字节
+                                （[1] = 种类、[4..6) = "N:"、[6..) = 文件名/目录/路径+文件名）
+cnc_upload4(h, &len, buf)       func 0x18、dir 4、体 8 字节（全 0）；*len 必须 ≥256 且是 256 的倍数
+cnc_upend4(h)                   收尾
+读回来的文本                    `% LF Block1 LF … LF %`，最后一个字符是 `%`（再读就是 EW_RESET）
+```
+
+**这台模拟器上取不到文本**：start 回 256 字节 ✓，但 `0x18` 那条机床**一声不响**
+（SDK 自己回 `EW_DATA=10`，`cnc_getdtailerr` 的细码是 **0** —— 机床连理由都没给）。
+试过并且都一样的：
+
+| 试法 | 结果 |
+|---|---|
+| `file_name` 三种写法（`O3001` / `//CNC_MEM/USER/PATH1/` / `//CNC_MEM/USER/PATH1/O3001`）| 都是 `upload4 rc=10`、缓冲里一个字都没有 |
+| 上行的**三代**都试（`cnc_upstart` 第一代 / `cnc_upstart3` 第三代 / `cnc_upstart4`）| 一样 |
+| 把 **O3001 选成主程序**后再试 | 一样 |
+| 紧跟在 `cnc_upload4` 之后问 `cnc_getdtailerr` | `err_no = 0`（没细码）|
+
+所以"回读程序文本"这一格仍旧是 `NCL_ERR_UNAVAILABLE`，但**缺的只剩机床那一侧的应答**：
+哪天在真机（或补上这块的模拟器）上抓一次 `0x18` 的应答，切法就能定。

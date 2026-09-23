@@ -218,6 +218,12 @@ static const struct {
     { "cnc_rdopnlsgnl", "s1", 0 },
     /* 程序上下行（三件套，探针里连着跑） */
     { "cnc_dwnstart4", "dwn4", 0 }, { "cnc_upstart4", "up4", 0 },
+    /*
+     * 上行的**别的代际**：`cnc_upstart`（第一代，按号）与 `cnc_upstart3`
+     * （第三代，按号段）。第四代（`up4`，按文件名/目录）在这台模拟器上 start 通、
+     * 但 `0x18` 数据请求机床不答 —— 换代际试试是不是另一条路能读。
+     */
+    { "cnc_upstart", "up1", 0 }, { "cnc_upstart3", "up3", 0 },
     { "cnc_download4", "dwn4", 0 }, { "cnc_upload4", "up4", 0 },
     { "cnc_dwnend4", "dwn4", 0 }, { "cnc_upend4", "up4", 0 },
 };
@@ -447,6 +453,52 @@ int main(int argc, char **argv)
         dump(buf, 64);
         freelibhndl(handle);
         return 0;
+    } else if (strcmp(kind, "up1") == 0 || strcmp(kind, "up3") == 0) {
+        /*
+         * 老代际的上行：`cnc_upstart(h, type)` / `cnc_upstart3(h, type, s_no, e_no)`
+         * → `cnc_upload(h, ODBUP *, unsigned short *)` / `cnc_upload3(h, long *, char *)`
+         * → `cnc_upend(h)`。答出来的文本直接印前 200 字符。
+         */
+        typedef short (NCL_PROBE_CALL *up1_start_fn)(unsigned short, short);
+        typedef short (NCL_PROBE_CALL *up1_xfer_fn)(unsigned short, void *,
+                                                    unsigned short *);
+        typedef short (NCL_PROBE_CALL *up3_start_fn)(unsigned short, short, long,
+                                                     long);
+        typedef short (NCL_PROBE_CALL *up3_xfer_fn)(unsigned short, long *,
+                                                    char *);
+        typedef short (NCL_PROBE_CALL *up_end_fn)(unsigned short);
+        short rc2 = 0;
+        short rc3 = 0;
+        unsigned short olen = 0;
+
+        if (strcmp(kind, "up1") == 0) {
+            rc = ((up1_start_fn)sym("cnc_upstart"))(handle, (short)a0);
+            printf("  cnc_upstart(%d) rc = %d\n", a0, (int)rc);
+        } else {
+            long s_no = npos > 3 ? strtol(positional[3], NULL, 0) : 0;
+            long e_no = npos > 4 ? strtol(positional[4], NULL, 0) : 0;
+
+            rc = ((up3_start_fn)sym("cnc_upstart3"))(handle, (short)a0, s_no,
+                                                     e_no);
+            printf("  cnc_upstart3(%d, %ld, %ld) rc = %d\n", a0, s_no, e_no,
+                   (int)rc);
+        }
+        memset(buf, 0, sizeof(buf));
+        if (strcmp(kind, "up1") == 0) {
+            rc2 = ((up1_xfer_fn)sym("cnc_upload"))(handle, buf, &olen);
+            printf("  cnc_upload rc = %d, len = %u\n", (int)rc2,
+                   (unsigned)olen);
+        } else {
+            long want = (long)sizeof(buf) - 1;
+
+            rc2 = ((up3_xfer_fn)sym("cnc_upload3"))(handle, &want, (char *)buf);
+            printf("  cnc_upload3 rc = %d, want = %ld\n", (int)rc2, want);
+        }
+        printf("  取回的前 120 字节：%.120s\n", (char *)buf);
+        rc3 = ((up_end_fn)sym(strcmp(kind, "up1") == 0 ? "cnc_upend"
+                                                       : "cnc_upend3"))(handle);
+        printf("  upend rc = %d\n", (int)rc3);
+        rc = rc2 != 0 ? rc2 : rc3;
     } else if (strcmp(kind, "void") == 0) {
         rc = ((void_fn)sym(fn_name))(handle, buf);
     } else if (strcmp(kind, "s1") == 0) {
@@ -599,9 +651,45 @@ int main(int argc, char **argv)
         printf("  %s rc = %d, want = %ld, first bytes: %.16s\n",
                strcmp(kind, "dwn4") == 0 ? "download4" : "upload4", (int)rc2,
                want, buf);
+        /* 细码要**紧跟着失败的那一条**问（后面的调用会把它盖掉）。 */
+        {
+            typedef short (NCL_PROBE_CALL *dtail_fn)(unsigned short, void *);
+            dtail_fn dtail = (dtail_fn)sym("cnc_getdtailerr");
+
+            if (dtail != NULL && rc2 != 0) {
+                unsigned char e[8];
+                short drc;
+
+                memset(e, 0, sizeof(e));
+                drc = dtail(handle, e);
+                printf("  [紧跟在 upload4/download4 之后] getdtailerr rc = %d, err_no %d / err_dtno %d\n",
+                       (int)drc, (short)((e[0] << 8) | e[1]),
+                       (short)((e[2] << 8) | e[3]));
+            }
+        }
         rc3 = ((end4_fn)sym(strcmp(kind, "dwn4") == 0 ? "cnc_dwnend4"
                                                       : "cnc_upend4"))(handle);
         printf("  end4 rc = %d\n", (int)rc3);
+        /*
+         * 官方手册说这类错要问 `cnc_getdtailerr` 要细码（`ODBERR = {short err_no;
+         * short err_dtno;}`）—— "程序不在指定范围里" / "NC 程序内存坏了" 之类。
+         */
+        {
+            typedef short (NCL_PROBE_CALL *dtail_fn)(unsigned short, void *);
+            dtail_fn dtail = (dtail_fn)sym("cnc_getdtailerr");
+
+            if (dtail != NULL) {
+                memset(buf, 0, 16);
+                rc = dtail(handle, buf);
+                {
+                    int err_no = (short)((buf[0] << 8) | buf[1]);
+                    int err_dtno = (short)((buf[2] << 8) | buf[3]);
+
+                    printf("  cnc_getdtailerr rc = %d, ODBERR = err_no %d / err_dtno %d\n",
+                           (int)rc, err_no, err_dtno);
+                }
+            }
+        }
         rc = rc2 != 0 ? rc2 : rc3;
     } else {
         rc = -999;
