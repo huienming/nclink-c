@@ -183,6 +183,11 @@ static size_t focas_key_count(const ncl_json *keys)
  *   REGISTER@R   R（内部继电器）       0..7999 字节 → 64000 位
  *   REGISTER@K   K（保持继电器）       0..99 字节 → 800 位
  *   REGISTER@D   D（数据表，**字**）   0..7999
+ *   REGISTER@T   T（定时器，**字**）   0..449（+9000..9499 系统用）
+ *   REGISTER@C   C（计数器，**字**）   0..199
+ *
+ *   T/C 在 FOCAS 里一个号是**两个字**（`[值][类型/设定值]`），这一格给的是**值**
+ *   那个字；要看类型/设定，读下一个号（`ncl_focas_pmc_read(f, 'T', n*2+1, 1, 1, …)`）。
  *
  * 号一律是**该族自己的编号**：位族用"字节.位"摊平的位号（`X0.0` = 0、`X1.0` = 8），
  * D 用字号。取值形状是 LIST（答 `get_length` / `get_value`（`keys` 给号）/
@@ -213,6 +218,12 @@ static unsigned focas_register_capacity(char family, bool *words)
     case 'D':
         *words = true;
         return 8000u;
+    case 'T': /* 定时器：一次读是"值 + 类型/设定"两个字，这里按字号取 */
+        *words = true;
+        return 500u;
+    case 'C': /* 计数器：同上 */
+        *words = true;
+        return 200u;
     default:
         return 0u;
     }
@@ -818,6 +829,10 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表�
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@K", focas_register_table, "K",
                    FOCAS_REGISTER_RW_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@D", focas_register_table, "D",
+                   FOCAS_REGISTER_RW_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@T", focas_register_table, "T",
+                   FOCAS_REGISTER_RW_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@C", focas_register_table, "C",
                    FOCAS_REGISTER_RW_OPS)
 
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
