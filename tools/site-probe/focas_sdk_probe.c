@@ -123,6 +123,9 @@ typedef short (NCL_PROBE_CALL *s1_p_fn)(unsigned short, short, void *);
 /* (h, short, short, short, void *)：cnc_rdtofs / cnc_rdtoolrng 那种"号 + 长度" */
 typedef short (NCL_PROBE_CALL *s3_p_fn)(unsigned short, short, short, short,
                                         void *);
+/* (h, short, short, short, short, short, void *)：pmc_rdpmcrng 那种"五个 short + 结构体" */
+typedef short (NCL_PROBE_CALL *s5_p_fn)(unsigned short, short, short, short, short,
+                                        short, void *);
 /* (h, short, long)：cnc_wrtofsdrctinp 那种"号 + 值" */
 typedef short (NCL_PROBE_CALL *s1_l_fn)(unsigned short, short, long);
 /* (h, char *)：cnc_delete / cnc_pdf_del / cnc_pdf_slctmain 的程序名 */
@@ -199,6 +202,18 @@ static const struct {
     { "cnc_rddiagnum", "void", 0 }, { "cnc_rddiaginfo", "s2", 0 },
     { "cnc_rdngrp", "void", 0 }, { "cnc_rdlife", "s1", 8 },
     { "cnc_rdtofsinfo", "void", 0 }, { "cnc_rdmacroinfo", "void", 0 },
+    /*
+     * PMC（FANUC 的 PLC 就是 PMC）：`pmc_rdpmcrng(h, adr_type, data_type, s_no, e_no,`
+     * `length, IODBPMC*)`。adr_type：0=G、1=F、2=Y、3=X、4=A、5=R、6=T、7=K、8=C、
+     * 9=D；data_type：0=字节、1=字、2=长字；**length = 8 + N×每点字节数**、
+     * 而 N = `e_no - s_no`（spec 的例子：D0100 字型 `s=100 e=101 length=10` 读 1 个）。
+     * 写是 `pmc_wrpmcrng(h, length, IODBPMC*)`（形状 s1p）。
+     */
+    { "pmc_rdpmcrng", "s5p", 0 }, { "pmc_wrpmcrng", "s1p", 0 },
+    /* PMC 各族的实际号段（`pmc_rdpmcinfo(h, adr_type, ODBPMCINF*)`，-1 = 全族） */
+    { "pmc_rdpmcinfo", "s1p", 0 },
+    /* 定时器 / 计数器（结构体那两个，先只看帧） */
+    { "pmc_rdpmctm", "s1p", 0 }, { "pmc_rdpmccnt", "s1p", 0 },
     /* 刀补/参数/宏变量（帧抓到了、字段还没核） */
     { "cnc_rdtofs", "s3p", 0 }, { "cnc_rdparam", "s3p", 0 },
     { "cnc_rdmacro", "s2", 12 }, { "cnc_rddt", "s1", 0 },
@@ -803,6 +818,15 @@ int main(int argc, char **argv)
     } else if (strcmp(kind, "s3p") == 0) {
         rc = ((s3_p_fn)sym(fn_name))(handle, (short)a0, (short)a1, (short)a2,
                                      buf);
+    } else if (strcmp(kind, "s5p") == 0) {
+        /*
+         * `pmc_rdpmcrng(h, adr_type, data_type, s_number, e_number, length, IODBPMC*)`：
+         * 五个 short = `a0`(族) `a1`(字节/字/长字) `a2`(起始号) `a3`(结束号) `length`，
+         * 其中 `length` 取自 `--count`（**= 8 + N×每点字节数**，见 spec）。
+         */
+        rc = ((s5_p_fn)sym(fn_name))(
+            handle, (short)a0, (short)a1, (short)a2,
+            (short)(npos > 6 ? strtol(positional[6], NULL, 0) : 0), num, buf);
     } else if (strcmp(kind, "s3_l") == 0) {
         long data = (long)(npos > 5 ? strtol(positional[5], NULL, 0) : 0);
 

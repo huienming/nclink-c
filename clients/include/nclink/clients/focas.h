@@ -303,6 +303,22 @@ ncl_err ncl_focas_parameter_table(ncl_focas *focas, ncl_json **value);
  *  **还没实现**（帧待核对）。 */
 ncl_err ncl_focas_variable_table(ncl_focas *focas, ncl_json **value);
 /**
+ * 读一段 **PMC**（FANUC 的 PLC 就叫 PMC）：`pmc_rdpmcrng`（item `PMCRNG` = 0x8001）。
+ * @p family 是族字母（`G`/`F`/`Y`/`X`/`A`/`R`/`T`/`K`/`C`/`D`），@p start/@p count
+ * 以**该族自己的单位**计（X/Y/R 这些是字节号，D 是字号），@p width：0 字节 / 1 字。
+ * 出门是一个数组，每点一个值（大端解析）。
+ *
+ * 位读用 `ncl_focas_pmc_bit()`：梯形图地址是"字节.位"，@p bit 是扁平位号
+ * （`字节 × 8 + 位`），与 `/CONTROLLER/REGISTER@X` 那类点位的号一致。
+ */
+ncl_err ncl_focas_pmc_read(ncl_focas *focas, char family, long long start,
+                           long long count, int width, ncl_json **value);
+ncl_err ncl_focas_pmc_bit(ncl_focas *focas, char family, long long bit,
+                          bool *on);
+/** 族字母 → PMC 的 adr_type（0..9；认不出回 -1）。给适配器算号段用。 */
+int ncl_focas_pmc_adr_type(char family);
+
+/**
  * 一个工件坐标系（工件零点偏移）：`cnc_rdzofs`（item `RDZOFS` = **0x0b**）。
  * @p name 收 `"EXT"`（外部）、`"G54"`…`"G59"`、`"G54.1P3"` 这种。
  * 出门 `{"number":1,"x":12.345,"y":0,"z":0}` —— 键是**机床自己报的轴名**（小写）。

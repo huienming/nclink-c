@@ -2479,6 +2479,183 @@ ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
     return NCL_OK;
 }
 
+/* ------------------------------------------------------------------- PMC -- */
+
+/*
+ * PMC（FANUC 的 PLC 就叫 PMC）：`pmc_rdpmcrng`（item `PMCRNG` = **0x8001**）。
+ * 帧是 2026-09-23 用官方 SDK 对 NCGuide 0i-MF 抓的（01 册 §11.21）：
+ *
+ *     请求载荷 = [起始号 BE32][结束号 BE32][族 BE32][宽度 BE32]（+ 数据区）
+ *     族（adr_type）：0=G 1=F 2=Y 3=X 4=A 5=R 6=T 7=K 8=C 9=D
+ *     宽度（data_type）：0=字节 1=字 2=长字；**结束号 = 起始号 + 要几个**
+ *     应答载荷 = 数据（每点 1/2/4 字节，大端）
+ *
+ * `pmc_rdpmcinfo`（**0x8003**）能问出各族机床实际支持的号段，但那 772 字节载荷的
+ * 逐条布局还没核（字母每 12 字节一条，见 §11.21.4）—— 所以 `get_length` 这轮先用
+ * spec 上按系列列的范围（0i-D 那一版），不是问机床要的。
+ */
+
+/** 族字母 → `pmc_rdpmcrng` 的 `adr_type`；认不出回 -1。 */
+int ncl_focas_pmc_adr_type(char family)
+{
+    switch (family) {
+    case 'G': case 'g': return 0;
+    case 'F': case 'f': return 1;
+    case 'Y': case 'y': return 2;
+    case 'X': case 'x': return 3;
+    case 'A': case 'a': return 4;
+    case 'R': case 'r': return 5;
+    case 'T': case 't': return 6;
+    case 'K': case 'k': return 7;
+    case 'C': case 'c': return 8;
+    case 'D': case 'd': return 9;
+    default: return -1;
+    }
+}
+
+/**
+ * 读一段 PMC 号（@p count 个点，从 @p start 起，单位是该族自己的单位：X/Y/R 是**字节**、
+ * D 是**字**）。@p width：0 字节 / 1 字（D 用这个）。
+ */
+ncl_err ncl_focas_pmc_read(ncl_focas *focas, char family, long long start,
+                           long long count, int width, ncl_json **value)
+{
+    ncl_json *params;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    ncl_json *array = NULL;
+    int adr = ncl_focas_pmc_adr_type(family);
+    size_t point = width == 2 ? 4u : (width == 1 ? 2u : 1u);
+    size_t need;
+    size_t i;
+    ncl_err rc;
+
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *value = NULL;
+    if (adr < 0 || start < 0 || count <= 0 || width < 0 || width > 2) {
+        return note(focas, "PMC", NCL_ERR_INVALID_ARG);
+    }
+    if (count > 512) {
+        return note(focas, "PMC", NCL_ERR_RANGE); /* 一段别要太多：应答体放不下 */
+    }
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_string(params, "item", "PMCRNG");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", start);
+    (void)ncl_json_obj_set_int(params, "e", start + count); /* 结束号 = 起始 + 个数 */
+    (void)ncl_json_obj_set_int(params, "arg2", adr);
+    (void)ncl_json_obj_set_int(params, "arg3", width);
+    /* 块头第 2 格：PMC 这一族官方库发 2（别的都是 1）—— 这一格不对机床回的块头是乱的 */
+    (void)ncl_json_obj_set_int(params, "first", 2);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY) {
+        ncl_json_free(answer);
+        return note(focas, "PMC", NCL_ERR_PARSE);
+    }
+    need = (size_t)count * point;
+    if ((size_t)ncl_json_arr_len(bytes) < need) {
+        /*
+         * 机床只回了**一个点**（本机 NCGuide 就是这样：一段要 8 个也只回 1 个）——
+         * 退化成**一个号一个号读**把它补齐。这样"段读"在真机上更快、在只肯一个个
+         * 回的机器上也照样能用。
+         */
+        size_t got = (size_t)ncl_json_arr_len(bytes) / point;
+
+        ncl_json_free(answer);
+        if (got == 0 || count > 64) {
+            return note(focas, "PMC", NCL_ERR_RANGE);
+        }
+        array = ncl_json_new_array();
+        if (array == NULL) {
+            return NCL_ERR_NOMEM;
+        }
+        for (i = 0; i < (size_t)count; i++) {
+            ncl_json *one = NULL;
+            long long v = 0;
+            ncl_json *entry;
+
+            rc = ncl_focas_pmc_read(focas, family, start + (long long)i, 1, width,
+                                    &one);
+            if (rc != NCL_OK) {
+                ncl_json_free(array);
+                return rc;
+            }
+            (void)ncl_json_as_int(ncl_json_arr_get(one, 0), &v);
+            ncl_json_free(one);
+            entry = ncl_json_new_int(v);
+            if (entry == NULL || ncl_json_arr_push(array, entry) != NCL_OK) {
+                ncl_json_free(entry);
+                ncl_json_free(array);
+                return NCL_ERR_NOMEM;
+            }
+        }
+        *value = array;
+        return NCL_OK;
+    }
+    array = ncl_json_new_array();
+    if (array == NULL) {
+        ncl_json_free(answer);
+        return NCL_ERR_NOMEM;
+    }
+    for (i = 0; i < (size_t)count; i++) {
+        size_t at = i * point;
+        long long v = 0;
+        size_t j;
+        ncl_json *entry;
+
+        for (j = 0; j < point; j++) {
+            v = (v << 8) | bytes_at(bytes, at + j);
+        }
+        entry = ncl_json_new_int(v);
+        if (entry == NULL || ncl_json_arr_push(array, entry) != NCL_OK) {
+            ncl_json_free(entry);
+            ncl_json_free(array);
+            ncl_json_free(answer);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    ncl_json_free(answer);
+    *value = array;
+    return NCL_OK;
+}
+
+/**
+ * 读一个 PMC **位**（I/O 那几族的梯形图地址就是"字节.位"：`X0.0` = 字节 0 的第 0 位）。
+ * @p bit 是**扁平位号**（`字节 × 8 + 位`），与模型那侧 `/CONTROLLER/REGISTER@X` 的号一致。
+ */
+ncl_err ncl_focas_pmc_bit(ncl_focas *focas, char family, long long bit, bool *on)
+{
+    ncl_json *one = NULL;
+    long long byte_value = 0;
+    ncl_err rc;
+
+    if (focas == NULL || on == NULL || bit < 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *on = false;
+    rc = ncl_focas_pmc_read(focas, family, bit / 8, 1, 0, &one);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    if (!ncl_json_as_int(ncl_json_arr_get(one, 0), &byte_value)) {
+        ncl_json_free(one);
+        return note(focas, "PMC", NCL_ERR_PARSE);
+    }
+    ncl_json_free(one);
+    *on = ((byte_value >> (bit % 8)) & 1) != 0;
+    return NCL_OK;
+}
+
 /*
  * 工件零点偏移（工件坐标系 G54…）—— `cnc_rdzofs`（item `RDZOFS` = **0x0b**）。
  *

@@ -1003,10 +1003,18 @@ static ncl_err focas_call(ncl_driver *self, const char *operation,
         bool override_e = ncl_json_obj_has(params, "e");
         bool override_2 = ncl_json_obj_has(params, "arg2");
         bool override_3 = ncl_json_obj_has(params, "arg3");
+        /*
+         * 可选 `"first"`：覆盖块头第 2 格（`[4..6)`，别处恒 1）。
+         * **PMC 那一族（0x8001/0x8003）官方库发的是 2**（2026-09-23 抓帧，
+         * 01 册 §11.21）：这一格不对，本机回的块头是乱的（客户端会把它当"块返回码
+         * 非 0"报错）。
+         */
+        bool override_first = ncl_json_obj_has(params, "first");
         long long value_d = ncl_json_obj_get_int(params, "d", 0);
         long long value_e = ncl_json_obj_get_int(params, "e", 0);
         long long value_2 = ncl_json_obj_get_int(params, "arg2", 0);
         long long value_3 = ncl_json_obj_get_int(params, "arg3", 0);
+        long long value_first = ncl_json_obj_get_int(params, "first", 1);
         uint8_t body[FOCAS_MAX_CB * NCL_FOCAS_CB_SIZE + 2u];
         const uint8_t *reply = NULL;
         const uint8_t *block = NULL;
@@ -1043,6 +1051,10 @@ static ncl_err focas_call(ncl_driver *self, const char *operation,
             }
             if (override_3) {
                 driver_put_u32be(cb + 20u, (uint32_t)value_3);
+            }
+            if (override_first) {
+                cb[2] = (uint8_t)((value_first >> 8) & 0xFF);
+                cb[3] = (uint8_t)(value_first & 0xFF);
             }
         }
         /*

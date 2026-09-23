@@ -470,6 +470,12 @@ typedef struct {
     int         zofs_write_axis;  /**< 最后一次写的轴号（arg2） */
     int32_t     zofs_write_raw;   /**< 最后一次写的原始值（载荷前 4 字节） */
     /* 用户宏变量（`cnc_rdmacro` / `cnc_rdmacror` = 0x15）：只摆 1..3 号，别的号回空号 */
+    int         pmc_first;        /**< PMC 请求块头第 2 格（官方库写 2）*/
+    int         pmc_start;
+    int         pmc_end;
+    int         pmc_adr;          /**< 族（adr_type）*/
+    int         pmc_width;        /**< 数据宽度 */
+    int         pmc_reads;
     int32_t     macro_raw[4];
     int         macro_dec[4];
     bool        macro_enabled;    /**< 0x15 按号段摆记录（默认关，免得顶掉别的用例）*/
@@ -645,6 +651,19 @@ static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pd
         }
         mock->payload_len[0] = mock->axis_name_count * 4u;
         mock->payload_count = 1;
+    }
+    /*
+     * PMC 号段读（`pmc_rdpmcrng` = 0x8001）：应答体就是数据，测试自己摆 payload。
+     * 顺便记下请求里的四格（号段/族/宽度）与块头第 2 格（PMC 是 2，别的都是 1）。
+     */
+    if (pdu->func == NCL_FOCAS_FUNC_CMD && pdu->length >= 18u &&
+        get_u16be(frame + NCL_FOCAS_HEADER + 8u) == 0x8001u) {
+        mock->pmc_first = get_u16be(frame + NCL_FOCAS_HEADER + 4u);
+        mock->pmc_start = (int)(int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 10u);
+        mock->pmc_end = (int)(int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 14u);
+        mock->pmc_adr = (int)(int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 18u);
+        mock->pmc_width = (int)(int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 22u);
+        mock->pmc_reads++;
     }
     /*
      * 用户宏变量：`0x15` 一条码两种问法 —— `d = e = 号` = 单条读，`d = 起始号、`
@@ -1863,6 +1882,58 @@ static void test_semantics(void)
     }
 
     /* 主轴倍率：0x5d 的 spdl_ovrd（@0xc，就在进给倍率后面），码值 ×10。 */
+    /*
+     * PMC（FANUC 的 PLC 就是 PMC）：`pmc_rdpmcrng` = **0x8001**，请求四格 =
+     * `[起始号][结束号][族][宽度]`（号段那格在 d/e 上），块头第 2 格官方库写 **2**；
+     * 应答体就是数据（1/2/4 字节一个点）。
+     */
+    NCL_TEST_CASE("PMC：0x8001 号段读（族/宽度/号段四格）与位读");
+    {
+        ncl_json *values = NULL;
+        bool on = false;
+
+        /* 机器"回" 3 个字节：X 的 0..2 号 */
+        memset(mock->payload[0], 0, 64);
+        mock->payload[0][0] = 0x80;
+        mock->payload[0][1] = 0x01;
+        mock->payload[0][2] = 0x04;
+        mock->payload_len[0] = 3;
+        mock->payload_count = 1;
+        mock->pmc_reads = 0;
+        NCL_CHECK_EQ_INT(
+            ncl_focas_pmc_read(focas, 'X', 0, 3, 0, &values), NCL_OK);
+        NCL_CHECK(values != NULL);
+        if (values != NULL) {
+            long long v0 = -1;
+            long long v1 = -1;
+            long long v2 = -1;
+
+            NCL_CHECK_EQ_INT((int)ncl_json_arr_len(values), 3);
+            (void)ncl_json_as_int(ncl_json_arr_get(values, 0), &v0);
+            (void)ncl_json_as_int(ncl_json_arr_get(values, 1), &v1);
+            (void)ncl_json_as_int(ncl_json_arr_get(values, 2), &v2);
+            NCL_CHECK_EQ_INT((int)v0, 0x80);
+            NCL_CHECK_EQ_INT((int)v1, 0x01);
+            NCL_CHECK_EQ_INT((int)v2, 0x04);
+            ncl_json_free(values);
+        }
+        /* 请求形状：0x8001、号段 0..3、族 X(3)、宽度 0、块头第 2 格 = 2 */
+        NCL_CHECK_EQ_INT(mock->pmc_first, 2);
+        NCL_CHECK_EQ_INT(mock->pmc_start, 0);
+        NCL_CHECK_EQ_INT(mock->pmc_end, 3);
+        NCL_CHECK_EQ_INT(mock->pmc_adr, 3);
+        NCL_CHECK_EQ_INT(mock->pmc_width, 0);
+
+        /* 位读：位 1 → 字节 0 的 0x02 那一位（上面摆的是 0x80 → 位 7 才是 1） */
+        NCL_CHECK_EQ_INT(ncl_focas_pmc_bit(focas, 'X', 7, &on), NCL_OK);
+        NCL_CHECK(on);
+        NCL_CHECK_EQ_INT(ncl_focas_pmc_bit(focas, 'X', 1, &on), NCL_OK);
+        NCL_CHECK(!on);
+        /* 族认不出：本地就挡下来 */
+        NCL_CHECK_EQ_INT(ncl_focas_pmc_read(focas, 'Z', 0, 1, 0, &values),
+                         NCL_ERR_INVALID_ARG);
+    }
+
     NCL_TEST_CASE("主轴倍率：0x5d 的 spdl_ovrd（@0xc）码值 ×10；码表外如实报错");
     {
         double percent = 0.0;

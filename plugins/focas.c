@@ -170,6 +170,182 @@ static size_t focas_key_count(const ncl_json *keys)
     return count > 0 ? count : 1u;
 }
 
+/* --------------------------------------------------------------- PMC ---- */
+
+/*
+ * `/CONTROLLER/REGISTER@<族>`：**PMC** 的位与寄存器（FANUC 的 PLC 就叫 PMC，§11.21）。
+ * 一个族一条点位，族写在 `arg` 上：
+ *
+ *   REGISTER@X   X（机床→PMC 输入位）  0i-D：0..127 **字节** → 1024 位
+ *   REGISTER@Y   Y（PMC→机床 输出位）  同上
+ *   REGISTER@G   G（PMC→CNC）          0..767 字节 → 6144 位
+ *   REGISTER@F   F（CNC→PMC）          同上
+ *   REGISTER@R   R（内部继电器）       0..7999 字节 → 64000 位
+ *   REGISTER@K   K（保持继电器）       0..99 字节 → 800 位
+ *   REGISTER@D   D（数据表，**字**）   0..7999
+ *
+ * 号一律是**该族自己的编号**：位族用"字节.位"摊平的位号（`X0.0` = 0、`X1.0` = 8），
+ * D 用字号。取值形状是 LIST（答 `get_length` / `get_value`（`keys` 给号）/
+ * `get_attributes`），与新代那几条寄存器点位同一个口径。
+ *
+ * 号段上限用的是 spec 上 **0i-D** 那一版的表；机器实际支持多少可以用
+ * `pmc_rdpmcinfo`（0x8003）问（帧已抓，见 §11.21.4）—— 这一轮先用文档值。
+ *
+ * **只读这一轮**：PMC 写（`pmc_wrpmcrng`）帧还没核（§11.21.5），点位就不声明写。
+ */
+#define FOCAS_REGISTER_BATCH_MAX 64
+
+/** 族的容量：位族按**字节**算、D 按**字**算。认不出回 0。 */
+static unsigned focas_register_capacity(char family, bool *words)
+{
+    *words = false;
+    switch (family) {
+    case 'X':
+    case 'Y':
+        return 128u;
+    case 'G':
+    case 'F':
+        return 768u;
+    case 'R':
+        return 8000u;
+    case 'K':
+        return 100u;
+    case 'D':
+        *words = true;
+        return 8000u;
+    default:
+        return 0u;
+    }
+}
+
+static ncl_err focas_register_table(void *ctx, const ncl_tool_point *self,
+                                    ncl_operation op, const ncl_json *params,
+                                    ncl_json **result, char **reason)
+{
+    ncl_focas *focas = (ncl_focas *)ctx;
+    const char *family_text = (const char *)self->arg;
+    const ncl_json *keys = ncl_params_get(params, "keys");
+    char family;
+    bool words = false;
+    unsigned units;
+    size_t i;
+    ncl_err rc;
+
+    if (family_text == NULL || family_text[0] == '\0') {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "这条点位没带族（@X/@R…）");
+    }
+    family = family_text[0];
+    if (family >= 'a' && family <= 'z') {
+        family = (char)(family - 'a' + 'A');
+    }
+    units = focas_register_capacity(family, &words);
+    if (units == 0) {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                             "不认识的 PMC 族 %c（X/Y/G/F/R/K/D）", family);
+    }
+    switch (op) {
+    case NCL_OP_GET_LENGTH: /* LIST：这一族有多少个（位族按位、D 按字） */
+        return ncl_tool_reply_int(result, words ? (long long)units
+                                                : (long long)units * 8);
+    case NCL_OP_GET_ATTRIBUTES: {
+        ncl_json *array = ncl_json_new_array();
+        const char *const fields[][2] = {
+            {"number", words ? "字号（0 起，就是 keys）" : "位号（字节 × 8 + 位，0 起）"},
+            {"value", words ? "数据表的值（u16）" : "位（true/false）"},
+            {"count", "这一族有多少个（= get_length）"},
+        };
+
+        if (array == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        for (i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+            ncl_json *entry = ncl_json_new_object();
+
+            if (entry == NULL ||
+                ncl_json_obj_set_string(entry, "name", fields[i][0]) != NCL_OK ||
+                ncl_json_obj_set_string(entry, "meaning", fields[i][1]) != NCL_OK ||
+                ncl_json_arr_push(array, entry) != NCL_OK) {
+                ncl_json_free(entry);
+                ncl_json_free(array);
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+        }
+        *result = array;
+        return NCL_OK;
+    }
+    case NCL_OP_GET_VALUE: {
+        size_t n = focas_key_count(keys);
+        long long limit = words ? (long long)units : (long long)units * 8;
+        ncl_json *out = ncl_json_new_object();
+
+        if (out == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        if (n == 0) { /* 空 keys：不猜，答空的 */
+            *result = out;
+            return NCL_OK;
+        }
+        if (n > FOCAS_REGISTER_BATCH_MAX) {
+            ncl_json_free(out);
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "一次最多 %u 个号",
+                                 (unsigned)FOCAS_REGISTER_BATCH_MAX);
+        }
+        /*
+         * 一个号一次往返：这一族本机是"一次只回一个点"（§11.21.3），
+         * 就算段读也要退化成一个一个来，所以这里干脆按号读。
+         */
+        for (i = 0; i < n; i++) {
+            long long no = 0;
+            char name[24];
+
+            if (!focas_key_at(keys, i, &no) || no < 0 || no >= limit) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "keys 第 %u 个不是 %c 族的号（0..%lld）",
+                                     (unsigned)(i + 1), family, limit - 1);
+            }
+            snprintf(name, sizeof(name), "%lld", no);
+            if (words) {
+                ncl_json *one = NULL;
+                long long value = 0;
+
+                rc = ncl_focas_pmc_read(focas, family, no, 1, 1, &one);
+                if (rc != NCL_OK) {
+                    ncl_json_free(out);
+                    return ncl_tool_fail(reason, rc, "%s",
+                                         ncl_focas_last_error(focas));
+                }
+                (void)ncl_json_as_int(ncl_json_arr_get(one, 0), &value);
+                ncl_json_free(one);
+                if (ncl_json_obj_set_int(out, name, value) != NCL_OK) {
+                    ncl_json_free(out);
+                    return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+                }
+            } else {
+                bool on = false;
+
+                rc = ncl_focas_pmc_bit(focas, family, no, &on);
+                if (rc != NCL_OK) {
+                    ncl_json_free(out);
+                    return ncl_tool_fail(reason, rc, "%s",
+                                         ncl_focas_last_error(focas));
+                }
+                if (ncl_json_obj_set_bool(out, name, on) != NCL_OK) {
+                    ncl_json_free(out);
+                    return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+                }
+            }
+        }
+        *result = out;
+        return NCL_OK;
+    }
+    default:
+        return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
+                             "PMC 寄存器表答 get_length / get_value / "
+                             "get_attributes（写这一轮还没开）");
+    }
+}
+
 /**
  * `/CONTROLLER/TOOL`：刀具表（表 7 的 TOOL，list）。**刀补号即 key（从 1 起）**，
  * 元素就是那把刀的 TOOLPARAM —— 与 10 册新代那条同口径（"一把刀就是一个元素、
@@ -405,6 +581,13 @@ static ncl_err focas_file_remove(void *user, const char *name, char **reason)
 
 /* ------------------------------------------------------------------ 工具 -- */
 
+/**
+ * PMC 寄存器这一族支持的操作用掩码：读的三条（这一轮不开写）。
+ */
+#define FOCAS_REGISTER_OPS                                                     \
+    (NCL_OP_BIT(NCL_OP_GET_LENGTH) | NCL_OP_BIT(NCL_OP_GET_VALUE) |           \
+     NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
+
 NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表可写）", "MACHINE", 1000, 1000,
                focas_open, focas_close)
 
@@ -519,6 +702,25 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表�
     /* 工件坐标系（表 7 的 COORDINATE，JSON 对象 → 表 9 的 x/y/z…）：
      * `cnc_rdwkcdshft` type 0..20 全试过，这台机器一律 rc=1 —— 机床不提供。 */
     NCL_CONFIG_JSON("/CONTROLLER/COORDINATE", ncl_focas_work_offsets)
+
+    /*
+     * PMC / 寄存器（`/CONTROLLER/REGISTER@<族>`）：位族答位（true/false），
+     * `@D` 答字。号是各族自己的编号（位族按"字节 × 8 + 位"）。只读这一轮。
+     */
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@X", focas_register_table, "X",
+                   FOCAS_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@Y", focas_register_table, "Y",
+                   FOCAS_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@G", focas_register_table, "G",
+                   FOCAS_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@F", focas_register_table, "F",
+                   FOCAS_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@R", focas_register_table, "R",
+                   FOCAS_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@K", focas_register_table, "K",
+                   FOCAS_REGISTER_OPS)
+    NCL_CONFIG_OPS("/CONTROLLER/REGISTER@D", focas_register_table, "D",
+                   FOCAS_REGISTER_OPS)
 
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
     NCL_METHOD_CALL("/SESSION", session_method)
