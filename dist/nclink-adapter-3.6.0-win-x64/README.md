@@ -27,7 +27,7 @@ conf/mqtt.cfg                 MQTT broker 配置样例
 docs/*-ADAPTER.md             各驱动自己的现场手册（点位、参数、注意事项）
 run-once.ps1                  自检：轮询一遍全部点位，打印到屏幕并写日志
 run.ps1                       常驻运行（Ctrl+C 退出）
-list-plugins.ps1              列出装载到的驱动（排查"模块没装上"）
+list-plugins.ps1              这次会装载哪个驱动（`-Config` 换一份配置，`-All` 列目录里全部）
 README.md                     本文件
 LICENSE                       MIT 许可全文
 SHA256SUMS.txt                包内每个文件的 SHA-256
@@ -64,10 +64,26 @@ SHA256SUMS.txt                包内每个文件的 SHA-256
 换机床只换配置：`.\run.ps1 -Config conf\syntec.json`。要加第三个厂商的驱动，把编译好的
 `ncl_driver_<工具>.dll` 放进 `plugins\`、在 `plugins` 里加上它的名字即可，宿主不用换。
 
+### 怎么确认"现在装的是哪个驱动"
+
+四处看得到，都是同一件事：
+
+| 在哪看 | 看到什么 |
+|--------|----------|
+| 配置文件 | 你 `-c` 的那一份（`run.ps1` 默认 `conf\fanuc.json`）：`"plugins": ["focas"]` 就是 focas |
+| 屏幕 / `log\out.txt` | `已注册模块 …\plugins\ncl_driver_focas.dll（工具 "focas" 1.5.1，50 个点位 + 4 个方法…）`，紧接着 `设备 <SN> 已启动，工具 "focas" 提供 50 个点位（模型来自模块）` |
+| `.\list-plugins.ps1` | 就是把上面那两行打给你看：不带参数按 `conf\fanuc.json` 走，`-Config conf\syntec.json` 看另一份，`-All` 列 `plugins\` 里**全部**驱动（不看配置） |
+| 上位机拿到的模型 | 模型里那条 `SAMPLE_CHANNEL` 的 `id` 就是驱动名（`focas` / `syntec`），`name` 里带协议描述；`bin\ncl_server.exe --model`、probe 拿到的模型里直接能搜到 |
+
+一句话：**配置里的 `plugins` 选择装载哪个，日志里 `工具 "x"` 就是实际在服务的那一个**；
+`--plugins` 只看"这个盒子能说什么"，`工具 "x"` 才是"这次真的在说哪个"。
+
 ## 3. 跑起来
 
 ```powershell
-.\list-plugins.ps1                                    # 驱动装载到了没（模块 + 声明的协议）
+.\list-plugins.ps1                                    # 这次会装载哪个驱动（按 conf\fanuc.json）
+.\list-plugins.ps1 -Config conf\syntec.json           # 按另一份配置看
+.\list-plugins.ps1 -All                               # 这个盒子里有哪些驱动（不看配置）
 .\run-once.ps1 -Config conf\fanuc.json                # 自检：轮询一遍点位，不需要 broker
 .\run-once.ps1 -Config conf\fanuc.json -Raw           # 带上每次请求的抓帧审计
 .\run.ps1 -Config conf\fanuc.json -Broker tcp://10.0.0.9:1883

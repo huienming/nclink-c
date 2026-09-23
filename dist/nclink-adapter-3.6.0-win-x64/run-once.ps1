@@ -10,6 +10,8 @@ param(
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $exe = Join-Path $root "bin\ncl_server.exe"
 if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
+# A relative -Config is relative to the package, not to the caller's directory
+elseif (-not [System.IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $root $Config }
 $forward = @("-r", $root, "-c", $Config, "--once", "--stats", "-b", "-")
 if ($Raw) { $forward += "--raw" }
 & $exe @forward

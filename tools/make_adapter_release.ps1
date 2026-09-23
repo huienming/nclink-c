@@ -190,6 +190,8 @@ param(
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $exe = Join-Path $root "bin\ncl_server.exe"
 if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
+# A relative -Config is relative to the package, not to the caller's directory
+elseif (-not [System.IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $root $Config }
 $forward = @("-r", $root, "-c", $Config, "--once", "--stats", "-b", "-")
 if ($Raw) { $forward += "--raw" }
 & $exe @forward
@@ -216,7 +218,10 @@ param(
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $exe = Join-Path $root "bin\ncl_server.exe"
 if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
+# relative paths mean "inside the package", wherever the caller stands
+elseif (-not [System.IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $root $Config }
 if ($PluginDir -eq "") { $PluginDir = Join-Path $root "plugins" }
+elseif (-not [System.IO.Path]::IsPathRooted($PluginDir)) { $PluginDir = Join-Path $root $PluginDir }
 $forward = @("-r", $root, "-c", $Config, "-P", $PluginDir,
              "--interval", "$Interval", "--port", "$RestPort")
 if ($Broker -ne "") { $forward += @("-b", $Broker) }
@@ -228,9 +233,27 @@ Set-Content -LiteralPath (Join-Path $pkg "run.ps1") -Value $run -Encoding ASCII
 Write-Host "  + run.ps1"
 
 $listPlugins = @'
-# What can this program talk to? Lists the adapter modules found in plugins/.
+# Which drivers does this box carry, and which one would a run load?
+#
+#   .\list-plugins.ps1                            # the configuration run.ps1 defaults to
+#   .\list-plugins.ps1 -Config conf\syntec.json   # what that configuration selects
+#   .\list-plugins.ps1 -All                       # every module in plugins\, config ignored
+#
+# The loader prints one "registered module" line per module it loaded: the tool
+# name in it ("focas" / "syntec") is what the running device serves.
+param(
+    [string]$Config = "",
+    [switch]$All
+)
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-& (Join-Path $root "bin\ncl_server.exe") -r $root --plugins
+$exe = Join-Path $root "bin\ncl_server.exe"
+if ($All) {
+    & $exe -r $root --plugins
+} else {
+    if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
+    elseif (-not [System.IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $root $Config }
+    & $exe -r $root -c $Config --plugins
+}
 exit $LASTEXITCODE
 '@
 Set-Content -LiteralPath (Join-Path $pkg "list-plugins.ps1") -Value $listPlugins -Encoding ASCII
