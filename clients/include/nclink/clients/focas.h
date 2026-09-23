@@ -315,6 +315,20 @@ ncl_err ncl_focas_pmc_read(ncl_focas *focas, char family, long long start,
                            long long count, int width, ncl_json **value);
 ncl_err ncl_focas_pmc_bit(ncl_focas *focas, char family, long long bit,
                           bool *on);
+/**
+ * PMC 参数区的**控制数据**（数据表 `D` / 扩展继电器）：`pmc_rdcntldata` = 0x8004
+ * （@p exrelay = false）或 `pmc_rdcntlexrelay` = 0x8057（true）。组号**从 1 起**，
+ * 出门 `{"1":{"tableParam":…,"size":10000,"address":0}, …}`。
+ */
+ncl_err ncl_focas_pmc_control_table(ncl_focas *focas, bool exrelay,
+                                    ncl_json **value);
+/**
+ * **PMC 自己的报警文本**（`pmc_rdalmmsg` = 0x8010，`type` 用 1、起始号从 1 起）：
+ * 出门 `[{"number":…,"text":"…"}]`；没有报警回空数组。与 `cnc_alarm`（CNC 侧）不是一回事。
+ * ⚠️ 文本切法没在真机上核过（这台没有 PMC 报警）。
+ */
+ncl_err ncl_focas_pmc_alarm(ncl_focas *focas, long long start, long long count,
+                            ncl_json **value);
 /** 族字母 → PMC 的 adr_type（0..9；认不出回 -1）。给适配器算号段用。 */
 int ncl_focas_pmc_adr_type(char family);
 /**

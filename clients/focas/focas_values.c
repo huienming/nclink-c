@@ -2905,6 +2905,190 @@ ncl_err ncl_focas_pmc_info(ncl_focas *focas, ncl_json **value)
 }
 
 /**
+ * PMC 参数区的**控制数据**（数据表 `D` 或扩展继电器）：`pmc_rdcntldata` = **0x8004**、
+ * `pmc_rdcntlexrelay` = **0x8057**（2026-09-23 抓帧，01 册 §11.24.2）。
+ *
+ * @p exrelay：false = 数据表 D（0x8004）、true = 扩展继电器（0x8057）。
+ * **组号从 1 起**（给 0 机床回 EW_NUMBER）—— 所以这里从 1 号开始读，读到机床不收为止，
+ * 出门 `{"1":{"size":10000,"address":0}, …}`（应答 8 字节 = `[表参数|数据类型 2]`
+ * `[大小 2][地址 2][保留 2]`）。
+ */
+ncl_err ncl_focas_pmc_control_table(ncl_focas *focas, bool exrelay,
+                                    ncl_json **value)
+{
+    ncl_json *table = NULL;
+    long long group;
+
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *value = NULL;
+    table = ncl_json_new_object();
+    if (table == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    for (group = 1; group <= 16; group++) { /* 这台机器 1 组；多读几组兜着 */
+        ncl_json *params;
+        ncl_json *answer = NULL;
+        ncl_json *bytes = NULL;
+        char key[24];
+        ncl_json *entry;
+        ncl_err rc;
+
+        params = ncl_json_new_object();
+        if (params == NULL) {
+            ncl_json_free(table);
+            return NCL_ERR_NOMEM;
+        }
+        (void)ncl_json_obj_set_string(params, "item",
+                                      exrelay ? "PMCEXRLY" : "PMCCNTL");
+        (void)ncl_json_obj_set_int(params, "block", 0);
+        (void)ncl_json_obj_set_int(params, "d", group);
+        (void)ncl_json_obj_set_int(params, "e", group);
+        (void)ncl_json_obj_set_int(params, "first", 2);
+        rc = ncl_focas_call(focas, "payload", params, &answer);
+        ncl_json_free(params);
+        if (rc != NCL_OK) {
+            break; /* 这个组号机床不收：到头了（或这台不支持这一族）*/
+        }
+        bytes = ncl_json_obj_get(answer, "bytes");
+        if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY ||
+            ncl_json_arr_len(bytes) < 8) {
+            ncl_json_free(answer);
+            break;
+        }
+        entry = ncl_json_new_object();
+        if (entry == NULL) {
+            ncl_json_free(answer);
+            ncl_json_free(table);
+            return NCL_ERR_NOMEM;
+        }
+        (void)ncl_json_obj_set_int(
+            entry, "tableParam",
+            ((long long)bytes_at(bytes, 0) << 8) | bytes_at(bytes, 1));
+        (void)ncl_json_obj_set_int(
+            entry, "size",
+            ((long long)bytes_at(bytes, 2) << 8) | bytes_at(bytes, 3));
+        (void)ncl_json_obj_set_int(
+            entry, "address",
+            ((long long)bytes_at(bytes, 4) << 8) | bytes_at(bytes, 5));
+        snprintf(key, sizeof(key), "%lld", group);
+        if (ncl_json_obj_set(table, key, entry) != NCL_OK) {
+            ncl_json_free(entry);
+            ncl_json_free(answer);
+            ncl_json_free(table);
+            return NCL_ERR_NOMEM;
+        }
+        ncl_json_free(answer);
+    }
+    if (ncl_json_obj_len(table) == 0) {
+        ncl_json_free(table);
+        return note(focas, "PMC 控制数据", NCL_ERR_UNAVAILABLE);
+    }
+    *value = table;
+    return NCL_OK;
+}
+
+/**
+ * **PMC 自己的报警**（`pmc_rdalmmsg` = **0x8010**）：与 `cnc_alarm`（CNC 侧）不是一回事。
+ * 载荷 = `[type = 1][起始报警号]`；**起始号给 0 机床回 EW_DATA**，所以这里默认从 1 号起。
+ * 应答载荷 = `[报警号 4 字节]` + 文本（这台没有 PMC 报警 → 号 0 或全 `f` 的哨兵）。
+ *
+ * ⚠️ 文本的切法**没在真机上核过**（这台机器没有 PMC 报警）：这里按"号 4 字节 + 后面
+ * 全是文本（NUL/0 截断、去尾空白）"出门；有真机报警时再对一次。
+ */
+ncl_err ncl_focas_pmc_alarm(ncl_focas *focas, long long start, long long count,
+                            ncl_json **value)
+{
+    ncl_json *params;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    ncl_json *array = NULL;
+    long long number;
+    char text[512];
+    size_t i;
+    size_t used = 0;
+    ncl_err rc;
+
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (start < 1) {
+        start = 1; /* 0 号机床回 EW_DATA，从 1 起 */
+    }
+    if (count <= 0 || count > 8) {
+        count = 8;
+    }
+    *value = NULL;
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_string(params, "item", "PMCALM");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", 1); /* type = 1（枚举出来的）*/
+    (void)ncl_json_obj_set_int(params, "e", start);
+    (void)ncl_json_obj_set_int(params, "first", 2);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc != NCL_OK) {
+        return note(focas, "PMC 报警", rc);
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY ||
+        ncl_json_arr_len(bytes) < 4) {
+        ncl_json_free(answer);
+        return note(focas, "PMC 报警", NCL_ERR_PARSE);
+    }
+    number = ((long long)bytes_at(bytes, 0) << 24) |
+             ((long long)bytes_at(bytes, 1) << 16) |
+             ((long long)bytes_at(bytes, 2) << 8) | (long long)bytes_at(bytes, 3);
+    /* 没有报警：号 0 或全 1 的哨兵 → 回空数组（不是"读不到"）*/
+    for (i = 0; i < (size_t)ncl_json_arr_len(bytes); i++) {
+        if (bytes_at(bytes, i) != 0xFF) {
+            break;
+        }
+    }
+    if (number == 0) {
+        ncl_json_free(answer);
+        *value = ncl_json_new_array();
+        return *value != NULL ? NCL_OK : NCL_ERR_NOMEM;
+    }
+    for (i = 4; i < (size_t)ncl_json_arr_len(bytes) && used + 1u < sizeof(text);
+         i++) {
+        unsigned byte = bytes_at(bytes, i);
+
+        if (byte == 0) {
+            break;
+        }
+        text[used++] = (char)byte;
+    }
+    while (used > 0 && (text[used - 1] == ' ' || text[used - 1] == '\n')) {
+        used--;
+    }
+    text[used] = '\0';
+    ncl_json_free(answer);
+    array = ncl_json_new_array();
+    if (array == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    {
+        ncl_json *entry = ncl_json_new_object();
+
+        if (entry == NULL ||
+            ncl_json_obj_set_int(entry, "number", number) != NCL_OK ||
+            ncl_json_obj_set_string(entry, "text", text) != NCL_OK ||
+            ncl_json_arr_push(array, entry) != NCL_OK) {
+            ncl_json_free(entry);
+            ncl_json_free(array);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    *value = array;
+    return NCL_OK;
+}
+
+/**
  * 读一个 PMC **位**（I/O 那几族的梯形图地址就是"字节.位"：`X0.0` = 字节 0 的第 0 位）。
  * @p bit 是**扁平位号**（`字节 × 8 + 位`），与模型那侧 `/CONTROLLER/REGISTER@X` 的号一致。
  */

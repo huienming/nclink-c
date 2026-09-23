@@ -2327,3 +2327,26 @@ spec 里写着、但一开始按"条数"猜错了）；`pmc_rdalmmsg` 只差"给
 "`length` = 结构体字节数、组号从 1 起、almmsg 的 `type` 用 1"这几个坑）；
 client 与点位**这一轮没接**（时间用完了）—— 接的时候照 §11.21/§11.22 那套
 （item 表 + `first=2` + 载荷复核）走一遍即可，帧和参数都已经在纸上。
+
+#### 11.24.3 三条都接上了（client + 两个方法）
+
+码与入参定了之后就照 §11.21/§11.22 那套接进 client（item 表 + `first=2`）：
+
+| 调用 | 码 | client | 实测（这台模拟器）|
+|---|---|---|---|
+| `pmc_rdcntldata` | `0x8004` | `ncl_focas_pmc_control_table(f, false, &json)` | ✅ `{"1":{"tableParam":0,"size":10000,"address":0}}` |
+| `pmc_rdcntlexrelay` | `0x8057` | `ncl_focas_pmc_control_table(f, true, &json)` | ✅ 同上 |
+| `pmc_rdalmmsg` | `0x8010` | `ncl_focas_pmc_alarm(f, start, count, &json)` | ✅ `[]`（这台没有 PMC 报警）|
+
+`pmc_rdcntlgrp`（`0x8006`）与 `pmc_rdcntl_exrelay_grp`（`0x8059`）的**码也抓到了**，
+但 client 这一轮没包它们 —— 控制数据那边是"从 1 号组读起、机床不收就停"（等价且更稳）。
+
+**适配器侧先落成两个方法**（现场调试用，模型不动）：
+
+```
+/PMC/CONTROL   {"exrelay":false}           → PMC 参数区控制数据
+/PMC/ALARM     {"start":1,"count":8}       → PMC 自己的报警文本
+```
+
+为什么不做成点位：册 4 表 7 里没有"PMC 参数区"这一格（厂商私有），口径要跟 10 册
+（新代）那边对齐之后再进模型 —— 现在这样现场能读、模型不动。

@@ -5,6 +5,20 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 01 册：`pmc_rdcntldata` / `pmc_rdcntlexrelay` / `pmc_rdalmmsg` 都接上了
+
+  * 码：`0x8004`（数据表 D 控制数据）、`0x8057`（扩展继电器控制数据）、`0x8010`（PMC
+    报警文本）；组数那两条是 `0x8006` / `0x8059`（码也抓到了，client 没包 —— 控制数据
+    那边"从 1 号组读起、机床不收就停"等价且更稳）。
+  * client：`ncl_focas_pmc_control_table(f, exrelay, &json)` 与
+    `ncl_focas_pmc_alarm(f, start, count, &json)`；实测
+    `{"1":{"tableParam":0,"size":10000,"address":0}}`、报警 `[]`（这台没有 PMC 报警）。
+  * 适配器：先落成两个**方法**（现场调试用，模型不动）——`/PMC/CONTROL`（`{"exrelay":…}`）
+    与 `/PMC/ALARM`（`{"start":…,"count":…}`）。册 4 表 7 没有"PMC 参数区"这一格，
+    口径与新代对齐之后再进模型。
+  * ⚠️ PMC 报警**文本的切法**没在真机上核过（这台没有 PMC 报警）：按"号 4 字节 + 后面
+    全是文本"出门，有真机报警时再对一次。
+
 ### 01 册：`pmc_rdalmmsg` / `pmc_rdcntl*` 的码与入参都定了
 
   * **`pmc_rdcntldata` = 0x8004**（读 PMC 数据表 D 的控制数据）：入参 `s_number/e_number`

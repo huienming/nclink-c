@@ -131,6 +131,48 @@ static ncl_err items_method(void *ctx, const ncl_json *params,
     return NCL_OK;
 }
 
+/* ------------------------------------------------------- PMC 参数与报警 ---- */
+
+/**
+ * `/PMC/CONTROL`（方法，现场调试用）：PMC**参数区**的控制数据 ——
+ * `pmc_rdcntldata`（数据表 D，**0x8004**）与 `pmc_rdcntlexrelay`（扩展继电器，**0x8057**）。
+ * 参数 `{"exrelay":true}` 取后者；出门 `{"1":{"tableParam":…,"size":10000,"address":0}}`。
+ *
+ * 为什么先做成**方法**而不是点位：册 4 表 7 里没有这一格（"PMC 参数区"是厂商私有），
+ * 口径要跟 10 册（新代）那边对齐之后再进模型 —— 现在这样现场能读、模型不动。
+ */
+static ncl_err pmc_control_method(void *ctx, const ncl_json *params,
+                                  ncl_json **result, char **reason)
+{
+    ncl_focas *focas = (ncl_focas *)ctx;
+    bool exrelay = ncl_json_obj_get_bool(params, "exrelay", false);
+    ncl_err rc = ncl_focas_pmc_control_table(focas, exrelay, result);
+
+    if (rc != NCL_OK) {
+        return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+    }
+    return NCL_OK;
+}
+
+/**
+ * `/PMC/ALARM`（方法，现场调试用）：**PMC 自己的报警文本**（`pmc_rdalmmsg` = **0x8010**，
+ * `type` 用 1、起始号从 1 起）。参数 `{"start":1,"count":8}`；
+ * 出门 `[{"number":…,"text":"…"}]`，没有报警回 `[]` —— 与 `cnc_alarm`（CNC 侧）不是一回事。
+ */
+static ncl_err pmc_alarm_method(void *ctx, const ncl_json *params,
+                                ncl_json **result, char **reason)
+{
+    ncl_focas *focas = (ncl_focas *)ctx;
+    long long start = ncl_json_obj_get_int(params, "start", 1);
+    long long count = ncl_json_obj_get_int(params, "count", 8);
+    ncl_err rc = ncl_focas_pmc_alarm(focas, start, count, result);
+
+    if (rc != NCL_OK) {
+        return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+    }
+    return NCL_OK;
+}
+
 /** 一次读几把刀：每个号 4 条往返（半径/长度 × 几何/磨损），别让人一口气点几百次。 */
 #define FOCAS_TOOL_BATCH_MAX 16u
 
@@ -836,6 +878,10 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表�
                    FOCAS_REGISTER_RW_OPS)
 
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
+    /* PMC 参数区与 PMC 报警：现场调试用（口径定了再进模型） */
+    NCL_METHOD_CALL("/PMC/CONTROL", pmc_control_method)
+    NCL_METHOD_CALL("/PMC/ALARM", pmc_alarm_method)
+
     NCL_METHOD_CALL("/SESSION", session_method)
     NCL_METHOD_CALL("/ITEMS", items_method)
 
