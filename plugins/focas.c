@@ -244,9 +244,32 @@ static ncl_err focas_register_table(void *ctx, const ncl_tool_point *self,
                              "不认识的 PMC 族 %c（X/Y/G/F/R/K/D）", family);
     }
     switch (op) {
-    case NCL_OP_GET_LENGTH: /* LIST：这一族有多少个（位族按位、D 按字） */
+    case NCL_OP_GET_LENGTH: { /* LIST：这一族有多少个（位族按位、D 按字） */
+        /*
+         * 先**问机床**（`pmc_rdpmcinfo` = 0x8003）：它回的号段是真值（这台 0i-MF 上
+         * G/F 各 10 段共 7680 字节、X/Y 5 段 640 字节、R 8500、A 500…，与 spec 0i-D
+         * 那张表逐段对得上，见 §11.23）。问不到（老机型没这条）才退回文档值。
+         */
+        ncl_json *info = NULL;
+        ncl_json *fam = NULL;
+        long long count = 0;
+        char key[2];
+
+        key[0] = family;
+        key[1] = 0;
+        if (ncl_focas_pmc_info(focas, &info) == NCL_OK) {
+            fam = (ncl_json *)ncl_json_obj_get(info, key);
+            if (fam != NULL && ncl_json_type_of(fam) == NCL_JSON_OBJECT) {
+                count = ncl_json_obj_get_int(fam, "count", 0);
+            }
+            ncl_json_free(info);
+        }
+        if (count > 0) {
+            return ncl_tool_reply_int(result, words ? count : count * 8);
+        }
         return ncl_tool_reply_int(result, words ? (long long)units
                                                 : (long long)units * 8);
+    }
     case NCL_OP_GET_ATTRIBUTES: {
         ncl_json *array = ncl_json_new_array();
         const char *const fields[][2] = {

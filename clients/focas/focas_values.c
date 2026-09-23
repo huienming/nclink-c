@@ -2795,6 +2795,116 @@ ncl_err ncl_focas_pmc_bit_write(ncl_focas *focas, char family, long long bit,
 }
 
 /**
+ * 问机床"这个族到底支持哪些号段"：`pmc_rdpmcinfo`（item `PMCINF` = **0x8003**，
+ * `d = -1` 全族）。载荷 = `[记录数 BE32]` + 64 × `[族字母 2 字节][属性 2 字节]`
+ * `[起始号 4][结束号 4]`（**大端**；2026-09-23 在这台 0i-MF 上核出来：G 一族 10 段、
+ * `0..767` / `1000..1767` / … / `9000..9767`，与 spec 0i-D 那张表对得上）。
+ *
+ * 出门：`{"G":{"blocks":[[0,767],…],"count":<各段之和>}, …}`。
+ */
+ncl_err ncl_focas_pmc_info(ncl_focas *focas, ncl_json **value)
+{
+    ncl_json *params;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    ncl_json *table = NULL;
+    size_t length;
+    size_t records;
+    size_t i;
+    ncl_err rc;
+
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *value = NULL;
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_string(params, "item", "PMCINF");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", -1);
+    (void)ncl_json_obj_set_int(params, "first", 2);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY ||
+        ncl_json_arr_len(bytes) < 4) {
+        ncl_json_free(answer);
+        return note(focas, "PMC", NCL_ERR_PARSE);
+    }
+    length = (size_t)ncl_json_arr_len(bytes);
+    records = ((size_t)bytes_at(bytes, 0) << 24) | ((size_t)bytes_at(bytes, 1) << 16) |
+              ((size_t)bytes_at(bytes, 2) << 8) | (size_t)bytes_at(bytes, 3);
+    if (records > 64u || 4u + records * 12u > length) {
+        ncl_json_free(answer);
+        return note(focas, "PMC", NCL_FOCAS_ERR_LENGTH);
+    }
+    table = ncl_json_new_object();
+    if (table == NULL) {
+        ncl_json_free(answer);
+        return NCL_ERR_NOMEM;
+    }
+    for (i = 0; i < records; i++) {
+        size_t at = 4u + i * 12u;
+        char letter[2];
+        long long top;
+        long long last;
+        ncl_json *family;
+        ncl_json *blocks;
+        ncl_json *block;
+
+        letter[0] = (char)bytes_at(bytes, at + 1u); /* 字母在 2 字节格的低字节 */
+        letter[1] = 0;
+        if (letter[0] == '\0') {
+            continue;
+        }
+        top = ((long long)bytes_at(bytes, at + 4u) << 24) |
+              ((long long)bytes_at(bytes, at + 5u) << 16) |
+              ((long long)bytes_at(bytes, at + 6u) << 8) |
+              (long long)bytes_at(bytes, at + 7u);
+        last = ((long long)bytes_at(bytes, at + 8u) << 24) |
+               ((long long)bytes_at(bytes, at + 9u) << 16) |
+               ((long long)bytes_at(bytes, at + 10u) << 8) |
+               (long long)bytes_at(bytes, at + 11u);
+        family = ncl_json_obj_get(table, letter);
+        if (family == NULL || ncl_json_type_of(family) != NCL_JSON_OBJECT) {
+            family = ncl_json_new_object();
+            blocks = ncl_json_new_array();
+            if (family == NULL || blocks == NULL ||
+                ncl_json_obj_set(family, "blocks", blocks) != NCL_OK ||
+                ncl_json_obj_set(table, letter, family) != NCL_OK) {
+                ncl_json_free(family);
+                ncl_json_free(table);
+                ncl_json_free(answer);
+                return NCL_ERR_NOMEM;
+            }
+            (void)ncl_json_obj_set_int(family, "count", 0);
+        }
+        blocks = (ncl_json *)ncl_json_obj_get(family, "blocks");
+        block = ncl_json_new_array();
+        if (block == NULL ||
+            ncl_json_arr_push(block, ncl_json_new_int(top)) != NCL_OK ||
+            ncl_json_arr_push(block, ncl_json_new_int(last)) != NCL_OK ||
+            ncl_json_arr_push(blocks, block) != NCL_OK) {
+            ncl_json_free(block);
+            ncl_json_free(table);
+            ncl_json_free(answer);
+            return NCL_ERR_NOMEM;
+        }
+        (void)ncl_json_obj_set_int(
+            family, "count",
+            ncl_json_obj_get_int(family, "count", 0) + (last - top + 1));
+    }
+    ncl_json_free(answer);
+    *value = table;
+    return NCL_OK;
+}
+
+/**
  * 读一个 PMC **位**（I/O 那几族的梯形图地址就是"字节.位"：`X0.0` = 字节 0 的第 0 位）。
  * @p bit 是**扁平位号**（`字节 × 8 + 位`），与模型那侧 `/CONTROLLER/REGISTER@X` 的号一致。
  */
