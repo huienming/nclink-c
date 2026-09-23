@@ -778,23 +778,24 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表�
     /*
      * PMC / 寄存器（`/CONTROLLER/REGISTER@<族>`）：位族答位（true/false），
      * `@D` 答字。号是各族自己的编号（位族按"字节 × 8 + 位"）。
-     * **只读**：写（`0x8002`）的帧抓到了、官方库写也能落，可**本 client 发出去的值
-     * 还没落地**（§11.22.1）—— 所以先不声明 `set_value`，等那一轮 diff 做完再开。
+     * **能写**：`0x8002` 的载荷形状修对之后（长度那一格压在块头末尾，§11.22.1），
+     * 这台模拟器上实测 `X`/`G`/`K`/`D`/`R` 都写进去了；`Y`/`F` 保持只读
+     * （`Y` 这台机床直接拒、`F` 是 CNC 驱动的信号）。写权限在适配器外面控。
      */
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@X", focas_register_table, "X",
-                   FOCAS_REGISTER_OPS) /* X = 机床驱动的输入：只读 */
+                   FOCAS_REGISTER_RW_OPS) /* 本机实测能写（真机多为机床驱动）*/
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@Y", focas_register_table, "Y",
-                   FOCAS_REGISTER_OPS)
+                   FOCAS_REGISTER_OPS) /* 本机拒写（梯形图驱动输出）*/
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@G", focas_register_table, "G",
-                   FOCAS_REGISTER_OPS)
+                   FOCAS_REGISTER_RW_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@F", focas_register_table, "F",
                    FOCAS_REGISTER_OPS) /* F = CNC 驱动的：只读 */
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@R", focas_register_table, "R",
-                   FOCAS_REGISTER_OPS)
+                   FOCAS_REGISTER_RW_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@K", focas_register_table, "K",
-                   FOCAS_REGISTER_OPS)
+                   FOCAS_REGISTER_RW_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@D", focas_register_table, "D",
-                   FOCAS_REGISTER_OPS)
+                   FOCAS_REGISTER_RW_OPS)
 
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
     NCL_METHOD_CALL("/SESSION", session_method)

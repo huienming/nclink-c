@@ -2665,17 +2665,15 @@ ncl_err ncl_focas_pmc_write(ncl_focas *focas, char family, long long start,
         return NCL_ERR_NOMEM;
     }
     /*
-     * 载荷 = **[数据长度 BE32][每个点 point 字节，大端]**（官方库就是这么发的：
-     * 抓到的帧尾巴是 `00000002 AA 55` —— 长度 4 字节、数据 2 字节）。
+     * 载荷 = **每个点 point 字节，大端**（大端，不带长度前缀）。
+     *
+     * 长度那一格落在**块头末尾那两格**（`[24..26)` = 0、`[26..28)` = 载荷长度）——
+     * 驱动写载荷时会把它填上。为什么是这里：官方库写那帧的块尾是
+     * `[00000002][AA 55]`（4 字节长度 + 2 字节数据，块长 30 = 8 + 16 + 6），
+     * 也就是**长度紧跟在四格载荷后面**、正好压在块头那两格上（`[24..28)` 读成 BE32
+     * 就是 2）。我们早先把长度又塞进载荷里，等于多送了 4 个字节
+     * （2026-09-23 定位，01 册 §11.22.1）。
      */
-    (void)ncl_json_arr_push(data,
-                            ncl_json_new_int((long long)((count * point) >> 24) & 0xFF));
-    (void)ncl_json_arr_push(data,
-                            ncl_json_new_int((long long)((count * point) >> 16) & 0xFF));
-    (void)ncl_json_arr_push(data,
-                            ncl_json_new_int((long long)((count * point) >> 8) & 0xFF));
-    (void)ncl_json_arr_push(data,
-                            ncl_json_new_int((long long)(count * point) & 0xFF));
     for (i = 0; i < count; i++) {
         uint64_t v = (uint64_t)values[i];
         size_t j;
@@ -2743,6 +2741,20 @@ ncl_err ncl_focas_pmc_write(ncl_focas *focas, char family, long long start,
             if (attempt + 1u < 3u) {
                 ncl_sleep_millis(20u);
             }
+        }
+        /*
+         * 复核没过：**这台机床一次只落一个点**（与读那一侧同一个脾气，§11.21.3）——
+         * 退化成**一个号一个号写**再来一遍；还是一个都落不下才如实报"没写进去"。
+         */
+        if (count > 1u) {
+            for (i = 0; i < count; i++) {
+                rc = ncl_focas_pmc_write(focas, family, start + (long long)i,
+                                         &values[i], 1u, width);
+                if (rc != NCL_OK) {
+                    return rc;
+                }
+            }
+            return NCL_OK;
         }
         return note(focas, "写 PMC", NCL_ERR_UNAVAILABLE);
     }
