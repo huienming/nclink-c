@@ -215,7 +215,7 @@ static const struct {
      *   pmc_rdalmmsg(h, type, short *num, short *nmsg, ODBPMCALM*) —— PMC 报警文本
      *   pmc_rdcntlgrp / pmc_rdcntl_exrelay_grp(h, short *num) —— 控制数据组数
      *   pmc_rdcntldata / pmc_rdcntlexrelay(h, type, group, num, IODBPMCCNTL*) —— 控制数据 */
-    { "pmc_rdalmmsg", "s2_n", 0 }, { "pmc_rdcntlgrp", "np", 0 },
+    { "pmc_rdalmmsg", "alm", 0 }, { "pmc_rdcntlgrp", "np", 0 },
     { "pmc_rdcntl_exrelay_grp", "np", 0 }, { "pmc_rdcntldata", "s3p", 0 },
     { "pmc_rdcntlexrelay", "s3p", 0 },
     { "pmc_rdpmcinfo", "s1p", 0 },
@@ -848,6 +848,17 @@ int main(int argc, char **argv)
         rc = ((s_np_fn)sym(fn_name))(handle, (short)a0, &num, buf);
     } else if (strcmp(kind, "np") == 0) {
         rc = ((np_fn)sym(fn_name))(handle, &num, buf);
+    } else if (strcmp(kind, "alm") == 0) {
+        /* pmc_rdalmmsg(h, type, short *num, short *nmsg, ODBPMCALM*)：
+         * num = 起始报警号（a1）、nmsg = 要几条（--count）。 */
+        typedef short (NCL_PROBE_CALL *alm_fn)(unsigned short, short, short *,
+                                               short *, void *);
+        short start = (short)a1;
+        short nmsg = num;
+
+        rc = ((alm_fn)sym(fn_name))(handle, (short)a0, &start, &nmsg, buf);
+        num2 = nmsg;
+        lnum = start;
     } else if (strcmp(kind, "s2_np") == 0) {
         rc = ((s2_np_fn)sym(fn_name))(handle, (short)a0, (short)a1, &num, buf);
     } else if (strcmp(kind, "s1p") == 0) {

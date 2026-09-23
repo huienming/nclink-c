@@ -5,6 +5,20 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 01 册：`pmc_rdalmmsg` / `pmc_rdcntl*` 的码与入参都定了
+
+  * **`pmc_rdcntldata` = 0x8004**（读 PMC 数据表 D 的控制数据）：入参 `s_number/e_number`
+    是**组号、从 1 起**（`s=0` → EW_NUMBER），第三个参数是 **`length` = IODBPMCCNTL
+    结构体字节数**（一开始按"要几条"猜 → EW_LENGTH，绕了一圈）；应答 8 字节
+    （库解出 `data_size=10000`、`data_dsp=0`）。
+  * **`pmc_rdcntlexrelay`**：同签名同形状，`(1,1,16)` 也回 `rc=0`（码待抓）。
+  * **`pmc_rdalmmsg` = 0x8010**（读 PMC 报警文本）：`type` 枚举出 **1/2 才收**
+    （`-1/0` → EW_NUMBER），起始报警号给 0 回 EW_DATA；这台没有 PMC 报警，应答 8 字节
+    `00000000 ffffffff`。
+  * `pmc_rdcntlgrp` / `pmc_rdcntl_exrelay_grp` 早前已通（各回 `num=1`）。
+  * client / 点位这一轮**没接**（时间用尽）—— 帧与参数已记进 §11.24.1/§11.24.2，
+    接的时候照 §11.21/§11.22 那套（item 表 + `first=2` + 载荷复核）走一遍即可。
+
 ### 01 册：`pmc_rdcntldata` 通了（枚举出了入参的含义）
 
   * 病根：第三个参数不是"要几条"，而是 **`length` = `IODBPMCCNTL` 结构体字节数**
