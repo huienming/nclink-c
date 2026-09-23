@@ -1323,6 +1323,55 @@ work_offset  work_offsets
 > 继续报"不提供"；真正值得按新代补齐的顺序是：**参数写 → 变量写 → 刀补写 → 程序取回 →
 > PLC/寄存器（要连 `pmc_*` 一起做）**。
 
+#### 11.11.1 现状盘点（2026-09-23 复测：把公开接口挨个问一遍）
+
+上面那张 E 表是 09-22 的，之后程序文件、参数/刀补写、目录翻页、传输那几轮都补上了，
+所以这里重新盘一次 —— 方法不是看注释，是**把 `focas.h` 的 68 个公开函数挨个调一遍**，
+逐条打 `rc` + `last_error`（工具：**`tools/site-probe/focas_sweep.c`** 挨个调；要逐条看某个 item 的原始应答用
+`tools/site-probe/focas_item.c`（`focas_item 127.0.0.1 8193 RDPARAM 6711 6711`）；
+试连接/帧走哪条用 `tools/site-probe/focas_channel_probe.py`）：
+
+**已经通了（这台 0i-MF 模拟器上 `rc=0`，逐条实测）**
+
+| 域 | 通的 |
+|---|---|
+| 会话 / 系统 | 两条 TCP + hello、`session`、`read_item`、`system`（型号/系列/版本/轴数）、`emergency` |
+| 状态 | `status`、`mode`、`alarm_status`、`alarm`（这台无报警 → 空数组）、`part_count`（参数 6711）、`timer` |
+| 程序 | `program_name` / `program_number` / `main_program_number` / `line_number` / `executed_block` / `modal`（24 组）/ `program_directory`（**14 条，翻页**）/ `program_download` / `program_upload`（0xf0）/ `program_create` / `program_delete` |
+| 轴（**一根轴通就算通**，这台是 3 轴机） | `axis_position`（实际）/ `_machine` / `_relative` / `_cmd` / `_distance` / `_srv_delay` / `_feedrate` / `_load` / `_torque` / `_type` |
+| 主轴（**单算**） | `spindle_speed`（S1）、`spindle_load`（S1） |
+| 进给 | `feed_speed`、`feed_override` |
+| 参数 / 刀补 | `parameter`（单条）、`parameter_table`（逐号读）、`tool_offset` / `_typed` / `_count`、`tool_list`（64 号）、`tool_param` / `tool_param_table`、`tool_offset_write` / `_typed`、`tool_param_write` |
+
+**还没通的，分四类（这是重点）**
+
+| 类别 | 条目 | 卡在哪 |
+|---|---|---|
+| ① 模型里看得见、client 是桩（`rc=-15`）| `/CONTROLLER/SUBPROGRAM`、`/TOOL_NUMBER`、`/SPINDLE_OVERRIDE`、`/AXIS@X/CURRENT`、`/AXIS@X/TEMPERATURE`、`/CONTROLLER/VARIABLE`、`/CONTROLLER/COORDINATE` | 见下 |
+| ② 写这一侧 | **写参数**（`0xa0`）、**写宏变量**（`0x16` 刻度）| 帧形状/刻度没对 |
+| ③ 整格缺（点位都没有）| **PLC / 寄存器 / 位**（`pmc_*` 95 个一个没接）、**G 代码文件族的其余几条**（exist / copy / move / list…）、报警历史 | 要新做 |
+| ④ 口径要改（不是"没实现"）| `/AXIS@X/TEMPERATURE`（**FOCAS 没有这条 API**）、`/CONTROLLER/COORDINATE`（这台机床明说不支持）、刀具表上限 64 vs 机器 400 | 改声明/改措辞 |
+
+① 里每条的落点（都核过一遍）：
+
+| 点位 | 现在 | 该怎么做 |
+|---|---|---|
+| `/CONTROLLER/VARIABLE`（宏变量表）| 桩，理由写"这台没开用户宏变量" | **理由不准确**：单条 `cnc_rdmacro`（`0x15` d=e=号）实测**能读**（100 号有值、500/501 是 vacant=值 0+dec -1）。整表照参数表那样**逐号读**即可（便宜） |
+| `/CONTROLLER/COORDINATE`（工件坐标系）| 桩，理由写"帧待抓包" | 帧是有的（`cnc_rdwkcdshft` `0x63`），**这台机床 type 0..20 全试过一律不支持** → 应如实回"机床不提供"，并把这句从"待抓包"改掉 |
+| `/AXIS@X/CURRENT`（轴电流）| 桩 | 正路是 `cnc_rdaxisdata`（`cls=2` Servo，`type=1` 负载电流% / `2` 安培）—— 码要抓帧进 item 表 |
+| `/AXIS@X/TEMPERATURE`（轴温）| 桩，理由写"帧待抓包" | **FOCAS 没有这条**（官方头 + spec 全文搜不到轴温）→ 建议点位去掉，或如实回"机型没有" |
+| `/TOOL_NUMBER`（当前刀号）| 桩 | 没找到"当前 T 码"的正式出处（`cnc_rdgcode` 只有 G 组；`0x2e` 回整段程序）→ 要么去掉，要么按"程序里最后一个 T"给并在文档里写死口径 |
+| `/CONTROLLER/SUBPROGRAM`（子程序号）| 桩 | `cnc_rdexecprog3`（ODBEXEPRGINFO）要抓帧 |
+| `/SPINDLE_OVERRIDE`（主轴倍率）| 桩 | 现代系列 `IODBSGNL.spdl_ovrd` 没这格；试 `cnc_rdspdata` 或参数 |
+
+② 写这一侧的具体卡点：
+
+* **写参数**（`0xa0`）：官方 SDK 发的是 **20 字节载荷**（`IODBPSD`：`datano`/`type`/`data` 各占一格）+
+  独立的 `length` 参数；本实现按写刀补那个形状补了 8 字节，机床回 `dir 3`（"没有这一号"）——
+  载荷形状还没对。
+* **写宏变量**（`0x16`）：机床**收下**了、读得回来，但**刻度差 10 倍**（写 1.0 读回 10）。写后
+  复核如实回 `NCL_ERR_UNAVAILABLE`（不假装成功）—— 差的是"值那一格的刻度/dec 该怎么送"。
+
 ### 11.12 对着 VM 里的 FANUC 模拟器核对：**读全通、写还没通**（2026-09-23）
 
 这一轮接上了一台真在跑的 FANUC：VMware 里那台 **CNC Guide & NC Trainer plus**
