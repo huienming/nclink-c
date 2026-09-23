@@ -20,6 +20,7 @@
 #include "nclink/ncl_common.h"
 #include "nclink/ncl_charset.h"
 #include "nclink/ncl_json.h"
+#include "nclink/ncl_platform.h" /* ncl_sleep_millis：写参数的读回复核要轮询 */
 
 #include "focas/ncl_focas_pdu.h"
 
@@ -2409,37 +2410,32 @@ ncl_err ncl_focas_macro_variable(ncl_focas *focas, long long number,
     *value = NULL;
     return record_call(focas, "RDMACRO", number, -1, "RDMACRO", value);
 }
-
-/**
- * 一个 CNC 参数（`cnc_rdparam`，item `RDPARAM` = 一个 **`0x8d`**：**d = e = 参数号**、
- * `arg2` = 0）。应答载荷 264 字节，前三格都是 BE32：
+/*
+ * 读一条"参数记录"：**264 字节**，机床 `0x8d` 应答的原样（形状 2026-09-23 在这台
+ * NCGuide 0i-MF 上逐字节核出来的，01 册 §11.26）：
  *
- *     @0  参数号（机床把问的号回一遍）
- *     @4  这一号的"条数/长度"（20 号回 1、6711 号回 3、多数回 0）
- *     @8  **值**        ← 官方 SDK 的 `IODBPSD.u.ldata` 就落在这里
+ *     @0..4    号（BE32，机床把问的号回一遍）
+ *     @4..6    轴号（BE16）
+ *     @6..8    属性 prm_type（BE16：bit0..1 = 类型 0=bit/1=byte/2=word/3=2字，
+ *              bit2 = 带轴，bit5 = 写保护…… 见 spec `cnc_rdparainfo`）
+ *     @8..12   **值**（BE32，有符号）
+ *     @12..    其余：写的时候照抄回去，机床认这一份形状
  *
- * 这三格是 2026-09-23 用**两个值不为 0 的参数**交叉核出来的（20 号 → 4、6000 号 → 4，
- * 而载荷 @8 恰好都是 4；6711 号 @8 = 0、SDK 报的也是 0）。
- * ⚠️ 以前按载荷 **@0** 当值 —— 那是**参数号本身**，只有 1 号参数看着"对"（1 == 1 巧合），
- * 6711 读出来就是 6711（一眼假）。
+ * ⚠️ 以前这里按 "@4 = 条数、@8 = 值" 读。`@4` 那 4 字节其实是 **轴号 + 属性** 两格，
+ * 对无轴参数（轴 0、属性 3）恰好看着"对"；带轴参数（1320/1420/1825…）照老样子读
+ * 机床直接回"块返回码非 0"。轴号在请求里是 `arg2` —— 官方 `cnc_rdparam(h, number,
+ * axis, length, IODBPSD*)` 的 `length` 根本不上线，上线的是 axis。
  */
-ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
-                            ncl_json **value)
+static ncl_err parameter_record(ncl_focas *focas, long long number, long long axis,
+                                uint8_t *record)
 {
     ncl_json *params;
     ncl_json *answer = NULL;
     ncl_json *bytes = NULL;
-    int32_t data = 0;
-    int dec = 0;
+    long long length;
     ncl_err rc;
+    size_t i;
 
-    if (focas == NULL || value == NULL) {
-        return NCL_ERR_INVALID_ARG;
-    }
-    if (number < 0) {
-        return note(focas, "RDPARAM", NCL_ERR_INVALID_ARG);
-    }
-    *value = NULL;
     params = ncl_json_new_object();
     if (params == NULL) {
         return NCL_ERR_NOMEM;
@@ -2447,8 +2443,8 @@ ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
     (void)ncl_json_obj_set_string(params, "item", "RDPARAM");
     (void)ncl_json_obj_set_int(params, "block", 0);
     (void)ncl_json_obj_set_int(params, "d", number);
-    (void)ncl_json_obj_set_int(params, "e", number); /* d = e = 号（见 record_call） */
-    (void)ncl_json_obj_set_int(params, "arg2", 0);
+    (void)ncl_json_obj_set_int(params, "e", number); /* d = e = 号（官方 SDK 同形） */
+    (void)ncl_json_obj_set_int(params, "arg2", axis);
     rc = ncl_focas_call(focas, "payload", params, &answer);
     ncl_json_free(params);
     if (rc == NCL_FOCAS_ERR_NO_DATA) {
@@ -2458,27 +2454,76 @@ ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
         return rc;
     }
     bytes = ncl_json_obj_get(answer, "bytes");
-    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY ||
-        ncl_json_arr_len(bytes) < 12) {
+    length = bytes != NULL && ncl_json_type_of(bytes) == NCL_JSON_ARRAY
+                 ? ncl_json_arr_len(bytes)
+                 : 0;
+    if (length < 12) {
         ncl_json_free(answer);
         return note(focas, "RDPARAM", NCL_ERR_NOT_FOUND); /* 空载荷 = 没有这一号 */
     }
-    /* 值 = 载荷 @8 的 BE32（前两格是号与条数）。 */
-    data = (int32_t)(((uint32_t)bytes_at(bytes, 8) << 24) |
-                     ((uint32_t)bytes_at(bytes, 9) << 16) |
-                     ((uint32_t)bytes_at(bytes, 10) << 8) |
-                     (uint32_t)bytes_at(bytes, 11));
-    (void)dec;
+    if (record != NULL) {
+        /*
+         * 机床一般给满 264 字节；给少了（比如单测里的假机床）就补 0 —— 写的时候
+         * 机床只认前 12 字节那几格，尾巴补 0 它也收（§11.26 实测）。
+         */
+        memset(record, 0, NCL_FOCAS_PARAM_RECORD);
+        for (i = 0; i < NCL_FOCAS_PARAM_RECORD && (long long)i < length; i++) {
+            record[i] = (uint8_t)bytes_at(bytes, i);
+        }
+    }
     ncl_json_free(answer);
+    return NCL_OK;
+}
+
+static ncl_err parameter_read(ncl_focas *focas, long long number, long long axis,
+                              ncl_json **value)
+{
+    uint8_t record[NCL_FOCAS_PARAM_RECORD];
+    int32_t data;
+    ncl_err rc;
+
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (number < 0 || axis < 0) {
+        return note(focas, "RDPARAM", NCL_ERR_INVALID_ARG);
+    }
+    *value = NULL;
+    rc = parameter_record(focas, number, axis, record);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    data = (int32_t)(((uint32_t)record[8] << 24) | ((uint32_t)record[9] << 16) |
+                     ((uint32_t)record[10] << 8) | (uint32_t)record[11]);
     *value = ncl_json_new_object();
     if (*value == NULL) {
         return NCL_ERR_NOMEM;
     }
-    (void)ncl_json_obj_set_int(*value, "number", number);
-    (void)ncl_json_obj_set_double(*value, "value",
-                                  (double)data); /* 参数没有小数位那一说 */
-    (void)ncl_json_obj_set_int(*value, "raw", (long long)data);
+    if (ncl_json_obj_set_int(*value, "number", number) != NCL_OK ||
+        ncl_json_obj_set_int(*value, "axis", axis) != NCL_OK ||
+        ncl_json_obj_set_int(*value, "type",
+                             ((long long)record[6] << 8) | (long long)record[7]) !=
+            NCL_OK ||
+        ncl_json_obj_set_double(*value, "value", (double)data) != NCL_OK ||
+        ncl_json_obj_set_int(*value, "raw", (long long)data) != NCL_OK) {
+        ncl_json_free(*value);
+        *value = NULL;
+        return NCL_ERR_NOMEM;
+    }
     return NCL_OK;
+}
+
+/** 一个 CNC 参数（无轴那条；带轴的用 `ncl_focas_parameter_axis`）。 */
+ncl_err ncl_focas_parameter(ncl_focas *focas, long long number, ncl_json **value)
+{
+    return parameter_read(focas, number, 0, value);
+}
+
+/** 一个带轴 CNC 参数：@p axis = 1..n（0 只对无轴参数有效）。 */
+ncl_err ncl_focas_parameter_axis(ncl_focas *focas, long long number, long long axis,
+                                 ncl_json **value)
+{
+    return parameter_read(focas, number, axis, value);
 }
 
 /* ------------------------------------------------------------------- PMC -- */
@@ -4432,151 +4477,122 @@ ncl_err ncl_focas_program_delete(ncl_focas *focas, const char *name)
     }
     return NCL_OK;
 }
-
-/**
- * 写参数（`cnc_wrparam` = item `WRPARAM` = **0xa0**）。
+/*
+ * 写一条 CNC 参数（`cnc_wrparam` 的**第二条帧**，item `WRPARAM2` = **0x8e**）。
  *
- * 官方 SDK 对着这台机器发的就是 0xa0、d = 参数号、e = 1（**不带载荷**），机床回块
- * 返回码 0，可 SDK 自己回 EW_LENGTH=2 —— 值没送出去。这里按写刀补那个形状补一段
- * 8 字节载荷（BE32 值 + BE16 0 + BE16 0xffff）试；**机床收不收由它说了算**，
- * 不收就是模块错（不会假装写成功）。参数号与值的对应（字节/字/双字）也没法在这台
- * 机器上定标 —— 写之前站点点位表必须自己确认这一号是什么量。
+ * 2026-09-23 在这台 NCGuide 0i-MF 上**写进去又读回核过**（01 册 §11.26）：
  *
- * **写后复核**：写完把这一号再读一次。2026-09 在这台模拟器上，这一帧机床回块返回码
- * 0、**但值没变**（写 0 到 1 号参数，再读还是 1）—— 所以这一条只当"把值送出去"，
- * 真正的判据是复核：值没变就回 `NCL_ERR_UNAVAILABLE`（"这台写不进去"），
- * **绝不回成功**。站点看到这个错表明"参数写还没打通"，而不是"写成功了"。
+ *     载荷 = 机床自己那条读应答的 **264 字节记录原样**，只把值那一格换掉：
+ *         @0..4  号（BE32）、@4..6 轴号（BE16）、@6..8 属性（BE16）、@8..12 值（BE32）
+ *     块头四格 d/e/arg2/arg3 **全 0**，tag1 = 264（"载荷挂在块后面"那条规矩）。
+ *     机床回"块返回码 0"才算收下；12/8 字节的小载荷一律 EW_LENGTH=2。
+ *
+ * 三条**踩过的坑**：
+ *   ① 第一条帧（`0xa0` 问属性）只是老实现的自作主张 —— 记录里本来就要带轴号和属性，
+ *      照读应答回填就行，**不需要先问**；只发第一条时机床回码 0 但值不动。
+ *   ② 官方 SDK 的 `cnc_wrparam` 在这台机器上**写不动**：它把 `IODBPSD.type` 那个
+ *      short 原样塞进 @4..6（轴号那一格）→ 机床回 EW_ATTRIB；按老口径（type=0、
+ *      length=5）发的时候它又把号按**主机序**写进记录 → 机床回 EW_NUMBER。所以这
+ *      一条是按机床自己的读应答形状做的，不是照抄 SDK 的帧。
+ *   ③ 值按**有符号 32 位**整格写：bit/byte 参数也是整字节写（FOCAS 不允许按位写）。
+ *
+ * 写权限（参数写入允许 / PWE，机床上是"参数写入"开关）没开时机床回 EW_PROT=7，
+ * 这里如实翻成 `NCL_ERR_UNAVAILABLE`。**写完一律读回复核**，对不上就回
+ * `NCL_ERR_UNAVAILABLE`，绝不假成功。
  */
-ncl_err ncl_focas_parameter_write(ncl_focas *focas, long long number,
-                                   const char *value)
+static ncl_err parameter_write_axis(ncl_focas *focas, long long number, long long axis,
+                                    const char *value)
 {
+    uint8_t record[NCL_FOCAS_PARAM_RECORD];
+    uint8_t check[NCL_FOCAS_PARAM_RECORD];
     ncl_json *params = NULL;
     ncl_json *answer = NULL;
-    ncl_json *bytes = NULL;
-    ncl_json *before = NULL;
-    ncl_json *after = NULL;
-    uint8_t record[NCL_FOCAS_PARAM_RECORD];
-    long long raw;
-    long long was_raw = 0;
-    long long type = 0;
-    bool had_raw = false;
-    size_t length;
-    size_t i;
-    ncl_err rc;
+    ncl_json *data = NULL;
+    uint32_t raw;
+    long long want;
     char *end = NULL;
+    ncl_err rc;
+    size_t i;
 
-    if (focas == NULL || ncl_str_is_blank(value) || number < 0) {
+    if (focas == NULL || ncl_str_is_blank(value) || number < 0 || axis < 0) {
         return NCL_ERR_INVALID_ARG;
     }
-    raw = strtoll(value, &end, 0);
+    want = strtoll(value, &end, 0);
     if (end == value) {
         return note(focas, "写参数", NCL_ERR_INVALID_ARG);
     }
-    /*
-     * 读参数是**两条帧**（2026-09-23 抓帧 + 用户打开 PWE 后实测，01 册 §11.25）：
-     *   ① `0xa0`：d = e = 参数号、**不带载荷** → 机床回这个参数的属性表
-     *      （载荷里"号"那一格之后 2 字节就是 `type`，这台 6711 是 3）
-     *   ② `0x8e`：**264 字节载荷** = `[@16 = 264][@20 = 号][@24 = type][@28 = 值]`
-     * 少发 ① 或把值塞进 ① 都不行（EW_LENGTH / EW_RCODE）。
-     */
+    raw = (uint32_t)want;
+    /* ① 拿机床自己那条记录（号 / 轴号 / 属性 都在里面）——读不到就是不支持这个号 */
+    rc = parameter_record(focas, number, axis, record);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    record[8] = (uint8_t)(raw >> 24);
+    record[9] = (uint8_t)(raw >> 16);
+    record[10] = (uint8_t)(raw >> 8);
+    record[11] = (uint8_t)raw;
+    /* ② 264 字节载荷挂上去发 */
+    data = ncl_json_new_array();
     params = ncl_json_new_object();
-    if (params == NULL) {
+    if (data == NULL || params == NULL) {
+        ncl_json_free(data);
+        ncl_json_free(params);
         return NCL_ERR_NOMEM;
     }
-    (void)ncl_json_obj_set_string(params, "item", "WRPARAM");
+    for (i = 0; i < NCL_FOCAS_PARAM_RECORD; i++) {
+        if (ncl_json_arr_push(data, ncl_json_new_int(record[i])) != NCL_OK) {
+            ncl_json_free(data);
+            ncl_json_free(params);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    (void)ncl_json_obj_set_string(params, "item", "WRPARAM2");
     (void)ncl_json_obj_set_int(params, "block", 0);
-    (void)ncl_json_obj_set_int(params, "d", number);
-    (void)ncl_json_obj_set_int(params, "e", 1);
+    /* 块头四格全 0：号和属性在**载荷**里（§11.26） */
+    (void)ncl_json_obj_set_int(params, "d", 0);
+    (void)ncl_json_obj_set_int(params, "e", 0);
+    (void)ncl_json_obj_set(params, "data", data);
     rc = ncl_focas_call(focas, "payload", params, &answer);
     ncl_json_free(params);
+    ncl_json_free(answer);
     if (rc != NCL_OK) {
         return note(focas, "写参数", rc);
     }
-    bytes = ncl_json_obj_get(answer, "bytes");
-    if (bytes != NULL && ncl_json_type_of(bytes) == NCL_JSON_ARRAY) {
-        length = (size_t)ncl_json_arr_len(bytes);
-        for (i = 0; i + 6u <= length; i++) {
-            long long got = ((long long)bytes_at(bytes, i) << 24) |
-                            ((long long)bytes_at(bytes, i + 1u) << 16) |
-                            ((long long)bytes_at(bytes, i + 2u) << 8) |
-                            (long long)bytes_at(bytes, i + 3u);
-
-            if (got == number) {
-                type = ((long long)bytes_at(bytes, i + 4u) << 8) |
-                       (long long)bytes_at(bytes, i + 5u);
-                break;
-            }
+    /*
+     * ③ 读回复核，**而且要等一会儿**：这台机器的 FOCAS 服务端对参数块有个几百毫秒的
+     * 缓存 —— 写完立刻读回拿到的还是旧值（2026-09-23 实测：写 4321 后立刻读 = 5555，
+     * 300ms 后再读 = 4321）。所以这里轮询几轮，一直对不上就如实回"写不进去"。
+     * 写是管理动作、不频繁，多花这不到一秒换"不假成功"是划算的。
+     */
+    for (i = 0; i < 5u; i++) {
+        if (i > 0) {
+            ncl_sleep_millis(150u);
         }
-    }
-    ncl_json_free(answer);
-    /* 打底：先读一次（拿'原来是多少'给写后复核比）*/
-    rc = ncl_focas_parameter(focas, number, &before);
-    if (rc != NCL_OK) {
-        ncl_json_free(before);
-        return rc;
-    }
-    had_raw = ncl_json_obj_has(before, "raw");
-    was_raw = ncl_json_obj_get_int(before, "raw", 0);
-    ncl_json_free(before);
-    /* 264 字节载荷 */
-    memset(record, 0, sizeof(record));
-    {
-        /* 四格都是大端 BE32：`@16 = 264`（记录自己的长度）、`@20 = 号`、
-         * `@24 = type`（第 ① 步属性表给的）、`@28 = 值`。 */
-        const uint32_t fields[4] = { (uint32_t)sizeof(record), (uint32_t)number,
-                                     (uint32_t)type, (uint32_t)raw };
-        size_t k;
-
-        for (k = 0; k < 4u; k++) {
-            record[16u + k * 4u + 0u] = (uint8_t)(fields[k] >> 24);
-            record[16u + k * 4u + 1u] = (uint8_t)(fields[k] >> 16);
-            record[16u + k * 4u + 2u] = (uint8_t)(fields[k] >> 8);
-            record[16u + k * 4u + 3u] = (uint8_t)(fields[k]);
-        }
-    }
-    {
-        ncl_json *data = ncl_json_new_array();
-
-        if (data == NULL) {
-            return NCL_ERR_NOMEM;
-        }
-        for (i = 0; i < sizeof(record); i++) {
-            if (ncl_json_arr_push(data, ncl_json_new_int(record[i])) != NCL_OK) {
-                ncl_json_free(data);
-                return NCL_ERR_NOMEM;
-            }
-        }
-        params = ncl_json_new_object();
-        if (params == NULL) {
-            ncl_json_free(data);
-            return NCL_ERR_NOMEM;
-        }
-        (void)ncl_json_obj_set_string(params, "item", "WRPARAM2");
-        (void)ncl_json_obj_set_int(params, "block", 0);
-        /*
-         * **块头四格全是 0**（官方库抓到的就是这样）：号、type、值都装在**载荷**里
-         * (`@20/@24/@28`)。早先把号写进 `d` 那格 → 机床不收（2026-09-23 定位）。
-         */
-        (void)ncl_json_obj_set_int(params, "d", 0);
-        (void)ncl_json_obj_set_int(params, "e", 0);
-        (void)ncl_json_obj_set(params, "data", data);
-        rc = ncl_focas_call(focas, "payload", params, &answer);
-        ncl_json_free(params);
-        ncl_json_free(answer);
+        rc = parameter_record(focas, number, axis, check);
         if (rc != NCL_OK) {
-            return note(focas, "写参数", rc);
+            return rc;
+        }
+        if ((int32_t)(((uint32_t)check[8] << 24) | ((uint32_t)check[9] << 16) |
+                      ((uint32_t)check[10] << 8) | (uint32_t)check[11]) ==
+            (int32_t)want) {
+            return NCL_OK;
         }
     }
-    /* 写后复核：比**原始整数**，没变就如实回"没写进去" */
-    if (had_raw && was_raw != raw) {
-        rc = ncl_focas_parameter(focas, number, &after);
-        if (rc == NCL_OK && ncl_json_obj_get_int(after, "raw", was_raw) != raw) {
-            ncl_json_free(after);
-            return note(focas, "写参数", NCL_ERR_UNAVAILABLE);
-        }
-        ncl_json_free(after);
-    }
-    return NCL_OK;
+    return note(focas, "写参数", NCL_ERR_UNAVAILABLE);
+}
+
+/** 写一个**无轴** CNC 参数。带轴的用 `ncl_focas_parameter_write_axis`。 */
+ncl_err ncl_focas_parameter_write(ncl_focas *focas, long long number,
+                                  const char *value)
+{
+    return parameter_write_axis(focas, number, 0, value);
+}
+
+/** 写一个**带轴** CNC 参数：@p axis = 1..n，只动那一轴。 */
+ncl_err ncl_focas_parameter_write_axis(ncl_focas *focas, long long number,
+                                       long long axis, const char *value)
+{
+    return parameter_write_axis(focas, number, axis, value);
 }
 
 /* 写刀补（`cnc_wrtofs`）：**改刀补会导致撞刀**，官方手册专门警告过。

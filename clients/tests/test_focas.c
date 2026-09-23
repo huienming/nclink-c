@@ -497,6 +497,11 @@ typedef struct {
      * 在 01 册 §11.13 里是逐字节核过的，这里就照那一份对。 */
     uint8_t     last_request[640]; /**< 程序下行的 start 体就有 516 字节 */
     size_t      last_request_len;
+    /* 写参数那条（`0x8e`）**单独记一份**：写完要读回复核，`last_request` 会被那个
+     * 读覆盖掉（与写工件坐标 `0x0c` 同一个道理）。 */
+    uint8_t     param_write_request[640];
+    size_t      param_write_len;
+    int         param_writes;
     /* 程序上下行（func 0x11/0x12/0x13）：数据帧收下来、不回，别的照块回 */
     uint8_t     transfer[1024];
     size_t      transfer_bytes;
@@ -749,6 +754,14 @@ static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pd
         if (pdu->length <= sizeof(mock->last_request)) {
             memcpy(mock->last_request, frame + NCL_FOCAS_HEADER, pdu->length);
             mock->last_request_len = pdu->length;
+        }
+
+        /* `cnc_wrparam` 的第二条帧（`0x8e`）：单独留一份给断言用。 */
+        if (get_u16be(frame + NCL_FOCAS_HEADER + 8u) == 0x8eu &&
+            pdu->length <= sizeof(mock->param_write_request)) {
+            memcpy(mock->param_write_request, frame + NCL_FOCAS_HEADER, pdu->length);
+            mock->param_write_len = pdu->length;
+            mock->param_writes++;
         }
         blocks = 0;
         if (pdu->length >= 2u) {
@@ -2152,6 +2165,51 @@ static void test_tool_tables(void)
                      NCL_ERR_UNAVAILABLE);
     /* 写回原值：不需要"变化"，照常算成功 */
     NCL_CHECK_EQ_INT(ncl_focas_parameter_write(focas, 1, "1"), NCL_OK);
+
+    /*
+     * 写这一侧的帧形状（2026-09-23 对本机实测的那条，01 册 §11.26）：
+     *
+     *     >> code 0x8e [d=0][e=0][a2=0][a3=0] tag0=0 **tag1=264** + 264 字节载荷
+     *     载荷 = 机床自己那条读记录回填，只换值那一格：
+     *        @0..4 号（BE32）、@4..6 轴号（BE16）、@6..8 属性（BE16）、@8..12 值（BE32）
+     *
+     * 载荷短了（12/8 字节）机床回 EW_LENGTH=2 —— 所以这几格都得钉住。
+     */
+    {
+        unsigned char req[64];
+
+        /*
+         * 同值再写一遍（"不需要变化"也算成功），**立刻**把请求帧拷出来：写后面的
+         * 复核那一步还会再读一次，mock 记的"最后一条请求"那时就变成读请求了。
+         */
+        NCL_CHECK_EQ_INT(ncl_focas_parameter_write(focas, 1, "1"), NCL_OK);
+        memcpy(req, mock->param_write_request, sizeof(req));
+        NCL_CHECK(mock->param_writes >= 1);
+        NCL_CHECK_EQ_INT(get_u16be(req + 8), 0x8e);              /* 码 */
+        NCL_CHECK_EQ_INT((int)get_u32be(req + 10), 0);           /* d  */
+        NCL_CHECK_EQ_INT((int)get_u32be(req + 14), 0);           /* e  */
+        NCL_CHECK_EQ_INT((int)get_u32be(req + 18), 0);           /* a2 */
+        NCL_CHECK_EQ_INT((int)get_u32be(req + 22), 0);           /* a3 */
+        NCL_CHECK_EQ_INT(get_u16be(req + 26), 0);                /* tag0 */
+        NCL_CHECK_EQ_INT(get_u16be(req + 28), 264);              /* tag1 = 载荷长 */
+        NCL_CHECK_EQ_INT((int)get_u32be(req + 30), 1);           /* 号 @0..4   */
+        NCL_CHECK_EQ_INT(get_u16be(req + 34), 0);                /* 轴号 @4..6 */
+        NCL_CHECK_EQ_INT(get_u16be(req + 36), 0);                /* 属性 @6..8 */
+        NCL_CHECK_EQ_INT((int)get_u32be(req + 38), 1);           /* 值 @8..12  */
+    }
+
+    NCL_TEST_CASE("带轴参数：轴号走在读请求的 arg2 上（d = e = 号）");
+    ncl_json_free(one);
+    one = NULL;
+    NCL_CHECK_EQ_INT(ncl_focas_parameter_axis(focas, 1320, 2, &one), NCL_OK);
+    NCL_CHECK_EQ_INT(get_u16be(mock->last_request + 8), 0x8d);  /* 码 */
+    NCL_CHECK_EQ_INT((int)get_u32be(mock->last_request + 10), 1320); /* d */
+    NCL_CHECK_EQ_INT((int)get_u32be(mock->last_request + 14), 1320); /* e */
+    NCL_CHECK_EQ_INT((int)get_u32be(mock->last_request + 18), 2);    /* arg2 = 轴 */
+    NCL_CHECK_EQ_INT(ncl_json_obj_get_int(one, "axis", -1), 2);
+    NCL_CHECK_EQ_INT(ncl_json_obj_get_int(one, "raw", -1), 1);
+    ncl_json_free(one);
+    one = NULL;
 
     ncl_focas_close(focas);
     mock_stop(mock);

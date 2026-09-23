@@ -284,9 +284,17 @@ ncl_err ncl_focas_macro_variable(ncl_focas *focas, long long number,
 /** 一段宏变量（`cnc_rdmacror`）：表 7 的 VARIABLE（list）就是它。**机床不提供**。 */
 ncl_err ncl_focas_macro_variables(ncl_focas *focas, long long first,
                                   long long count, ncl_json **value);
-/** 一个 CNC 参数（`cnc_rdparam`，item 0x8d）。 */
-ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
-                            ncl_json **value);
+/**
+ * 读一个 CNC 参数（`cnc_rdparam`，item `RDPARAM` = 0x8d）。@p number 是无轴参数的
+ * 号；带轴参数（1320/1420/1825…）用 `ncl_focas_parameter_axis`。
+ *
+ * 出门的对象：`{"number","axis","type","value","raw"}` —— `type` 是机床的属性字
+ * （prm_type：低位 = 类型 0 bit / 1 byte / 2 word / 3 2字，bit2 = 带轴，bit5 = 写保护）。
+ */
+ncl_err ncl_focas_parameter(ncl_focas *focas, long long number, ncl_json **value);
+/** 读一个**带轴** CNC 参数：@p axis = 1..n（0 只对无轴参数有效，给错机床不收）。 */
+ncl_err ncl_focas_parameter_axis(ncl_focas *focas, long long number, long long axis,
+                                 ncl_json **value);
 /** 一套刀具参数（表 7 的 TOOLPARAM）：`{"id","kind","radius","length",
  *  "radius_wear","length_wear"}`（`kind` 这条路上没有来源，固定 0）。 */
 ncl_err ncl_focas_tool_param(ncl_focas *focas, long long index,
@@ -439,15 +447,22 @@ ncl_err ncl_focas_program_select_main(ncl_focas *focas, const char *name);
  */
 ncl_err ncl_focas_program_delete(ncl_focas *focas, const char *name);
 /**
- * 写一个 CNC 参数（`cnc_wrparam`，item `WRPARAM` = 0xa0，d = 参数号、e = 1）。
+ * 写一个 CNC 参数（`cnc_wrparam` 的第二条帧，item `WRPARAM2` = **0x8e**）：
+ * 照机床自己那条 264 字节读应答回填、只换值那一格，块头四格全 0、tag1 = 264。
+ * 2026-09 在 NCGuide 0i-MF 上**写进去又读回核过**（01 册 §11.26）。
  *
- * 官方 SDK 对这台机器发的就是 0xa0（不带载荷），机床回块返回码 0 而 SDK 自己回
- * EW_LENGTH —— 值没送出去；这里按写刀补那个形状补 8 字节载荷试，**收不收由机床
- * 说了算**（不收就是模块错）。**风险高**：参数写错会让机床行为不对，站点用之前
- * 先确认权限与备份，参数号的量纲（字节/字/双字）也要自己确认。
+ * @p number 是无轴参数的号；带轴参数用 `ncl_focas_parameter_write_axis`（只动那一轴）。
+ * 机床上"参数写入允许（PWE）"没开 / 参数是锁的（>9000 一类）→ 机床回 EW_PROT=7，
+ * 这里翻成 `NCL_ERR_UNAVAILABLE`。**写完一律读回复核**，对不上也回
+ * `NCL_ERR_UNAVAILABLE`，不假成功。
+ *
+ * **风险高**：参数写错会让机床行为不对，站点用之前先确认权限与备份（权限在外面控）。
  */
 ncl_err ncl_focas_parameter_write(ncl_focas *focas, long long number,
                                   const char *value);
+/** 写一个**带轴** CNC 参数：@p axis = 1..n，只动那一轴，其余轴不碰。 */
+ncl_err ncl_focas_parameter_write_axis(ncl_focas *focas, long long number,
+                                       long long axis, const char *value);
 /**
  * 写一条刀补（`cnc_wrtofs` = item `WRTOFS` = **0x09**）：帧 2026-09 对模拟器
  * **写进去又读回来核过**（写 0x3333 → 读回 13.107mm，01 册 §11.13）。写的是

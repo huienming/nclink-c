@@ -736,6 +736,124 @@ static ncl_err focas_file_remove(void *user, const char *name, char **reason)
  */
 #define FOCAS_REGISTER_RW_OPS (FOCAS_REGISTER_OPS | NCL_OP_BIT(NCL_OP_SET_VALUE))
 
+/*
+ * `/CONTROLLER/PARAMETER`（表 6 的 PARAMETER，dict）—— **读 + 写**。
+ *
+ *   get_value   给了 `keys` 就按号读那几条，答 `{"6711":0}`（值按原始整数给，
+ *               与"整张表"那条一个口径）；没给 keys 就还是老路：逐号扫
+ *               `0..FOCAS_PARAM_TABLE_MAX` 那张表。
+ *   set_value   `{"keys":6711,"value":1234}` 或 `{"6711":1234}`。
+ *
+ * `axis`（可选，1..n）给**带轴参数**用（1320/1420/1825…）；不给就是 0（无轴参数）。
+ * 给带轴参数配 axis=0、或给不存在的号，机床都不收 —— 如实回错，不假成功。
+ *
+ * 写这条 2026-09-23 在 NCGuide 0i-MF 上**写进去又读回核过**（01 册 §11.26）：
+ * 264 字节记录照机床自己的读应答回填、只换值那一格。写权限（PWE）、白名单、
+ * 二次确认都在适配器外面 —— 用户口径是"权限在外面控制"。
+ */
+static ncl_err focas_parameter_rw(void *ctx, const ncl_tool_point *self,
+                                  ncl_operation op, const ncl_json *params,
+                                  ncl_json **result, char **reason)
+{
+    ncl_focas *focas = (ncl_focas *)ctx;
+    const ncl_json *keys = ncl_params_get(params, "keys");
+    long long axis = ncl_tool_param_int(params, "axis", 0);
+    ncl_err rc;
+
+    (void)self;
+    if (axis < 0) {
+        return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "axis 要给 0..5");
+    }
+    if (op == NCL_OP_GET_VALUE && focas_key_count(keys) == 0) {
+        rc = ncl_focas_parameter_table(focas, result);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+        }
+        return NCL_OK;
+    }
+    if (op == NCL_OP_SET_VALUE) {
+        const ncl_json *value = ncl_params_get(params, "value");
+        long long number = 0;
+        char text[32];
+
+        if (value != NULL && focas_key_at(keys, 0, &number)) {
+            /* {"keys":号,"value":值} */
+            long long raw = 0;
+
+            if (ncl_json_as_int(value, &raw)) {
+                snprintf(text, sizeof(text), "%lld", raw);
+            } else if (ncl_json_type_of(value) == NCL_JSON_STRING) {
+                snprintf(text, sizeof(text), "%s", ncl_json_as_string(value));
+            } else {
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "value 要给整数或数字字符串");
+            }
+            rc = ncl_focas_parameter_write_axis(focas, number, axis, text);
+            if (rc != NCL_OK) {
+                return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+            }
+        } else {
+            /* 也认直接给字典：params 本身就是 {"6711":1234, ...} */
+            size_t i;
+
+            for (i = 0; i < ncl_json_obj_len(params); i++) {
+                const char *name = ncl_json_obj_key_at(params, i);
+                long long raw = 0;
+
+                if (name == NULL || strcmp(name, "axis") == 0 ||
+                    strcmp(name, "keys") == 0 || strcmp(name, "check") == 0 ||
+                    strcmp(name, "token") == 0 || strcmp(name, "async") == 0 ||
+                    strcmp(name, "operation") == 0) {
+                    continue;
+                }
+                if (sscanf(name, "%lld", &number) != 1 ||
+                    !ncl_json_as_int(ncl_json_obj_get(params, name), &raw)) {
+                    return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                         "写参数用 {\"keys\":号,\"value\":值} 或 {号:值}");
+                }
+                snprintf(text, sizeof(text), "%lld", raw);
+                rc = ncl_focas_parameter_write_axis(focas, number, axis, text);
+                if (rc != NCL_OK) {
+                    return ncl_tool_fail(reason, rc, "%s",
+                                         ncl_focas_last_error(focas));
+                }
+            }
+        }
+    }
+    /* 按号读（写也顺带把新值报回去） */
+    {
+        ncl_json *out = ncl_json_new_object();
+        size_t count = focas_key_count(keys);
+        size_t i;
+
+        if (out == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        if (count == 0) {
+            count = 1u; /* 写那条：keys 缺省不读，只是别让循环空转 */
+        }
+        for (i = 0; i < count; i++) {
+            long long number = 0;
+            ncl_json *one = NULL;
+            char name[16];
+
+            if (!focas_key_at(keys, i, &number)) {
+                break;
+            }
+            rc = ncl_focas_parameter_axis(focas, number, axis, &one);
+            if (rc != NCL_OK) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+            }
+            snprintf(name, sizeof(name), "%lld", number);
+            (void)ncl_json_obj_set_int(out, name, ncl_json_obj_get_int(one, "raw", 0));
+            ncl_json_free(one);
+        }
+        *result = out;
+    }
+    return NCL_OK;
+}
+
 NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表可写）", "MACHINE", 1000, 1000,
                focas_open, focas_close)
 
@@ -845,7 +963,8 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表�
      * **单条**读得到（`cnc_rdparam` 0x8d / `cnc_rdmacro` 0x15，见 client），整表的
      * 范围调用（rdparanum/rdparar/rdmacror）在这台机器上被拒（§2.8.6）——哪天有机器
      * 支持整表，范围从 rdtofsinfo/rdmacroinfo 拿（§2.8.7）。 */
-    NCL_CONFIG_JSON("/CONTROLLER/PARAMETER", ncl_focas_parameter_table)
+    NCL_CONFIG_OPS("/CONTROLLER/PARAMETER", focas_parameter_rw, NULL,
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE))
     NCL_CONFIG_JSON("/CONTROLLER/VARIABLE", ncl_focas_variable_table)
     /* 工件坐标系（表 7 的 COORDINATE，JSON 对象 → 表 9 的 x/y/z…）：
      * `cnc_rdwkcdshft` type 0..20 全试过，这台机器一律 rc=1 —— 机床不提供。 */
