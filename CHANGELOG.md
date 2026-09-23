@@ -3,7 +3,7 @@
 本文件记录 NC-Link C 实现（`nclink-core-c`）的版本变更。版本号跟随
 NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
-## 未发布
+## 3.6.0
 
 ### 示例：振动只留主轴（X/Y/Z/C 四轴的 ACCELERATION 去掉）
 
@@ -1011,7 +1011,7 @@ SIM.LOG 只有 `CNCSIMULATOR STARTED`、没有 `FINISHED`。本机没装 cdb/win
 `127.0.0.1:8193` 就是第一台"真"机床。
 
 顺手把资料归了位：`Document/NCG/*.pdf` 抽成文本、`Fwlib/30i/Fwlib64.h` 与
-`Document/SpecE/**`（1691 份 XML，每份带 `<prottype>`）作为核 item 的上游口径。
+`Document/SpecE/**`（1691 份 XML，每份带 `<prottype>`）作为核 item 的依据。
 本机清理：FS0i-F 的机床数据已还原成我动手之前的样子（12:36 那份仍在
 `%TEMP%\ncg-bak-123643`，我挪走的那份在 `%TEMP%\ncg-cur-f0if`）；没留后台进程。
 
@@ -2119,7 +2119,7 @@ Windows/MSVC **42/42**、MinGW/gcc 16.2 **42/42**），手册 4.9 已注明。
   省略 ＝ 读 `<conf>/mqtt.cfg`，也就是设备端示例用的那一份）。
 - **broker 没起来不是致命错误**：`ncl_adapter_broker_poll()` 在主机自己的循环里
   以 1 s 起、上限 30 s 的退避重试，连上后自动补订阅；断线交给库的自动重连
-  （避免两处同时连）。移植时这条很重要——盒子比 broker 先上电是常态。
+  （避免两处同时连）。这条在换实现时很重要——盒子比 broker 先上电是常态。
 
 ### 修复：FOCAS 点位可以取块内字节偏移（`area` 的 `"@<字节>"`）
 

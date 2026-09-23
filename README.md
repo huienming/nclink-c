@@ -178,7 +178,7 @@ docker run --rm -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh buil
 .\build.ps1 -Arch x86 -StaticMem -BuildDir build-x86-staticmem
 docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh build-linux-staticmem"
 # 3. 组装（会带上 build/ 与 build-linux/bin 里编好的示例可执行文件）
-.\tools\make_release.ps1 -Version 3.4.0
+.\tools\make_release.ps1 -Version 3.6.0
 ```
 
 产物：`dist/nclink-core-c-<版本>/`（头文件 + Windows x64/x86 与 Linux 静态库 + **静态内存版** + 文档 +
