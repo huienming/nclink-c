@@ -932,6 +932,36 @@ static ncl_err focas_call(ncl_driver *self, const char *operation,
                 driver_put_u32be(cb + 20u, (uint32_t)value_3);
             }
         }
+        /*
+         * 可选 "data"：**写**这一侧要送的值（字节数组）—— 它跟在命令块后面，
+         * 长度写在块的 tag0（[24..26)，大端）；`cnc_wrparam` / `cnc_wrmacro` /
+         * `cnc_wrtofs` 这一族就是"同一个 item，带一段载荷进去"。块返回码由
+         * 下面那句 check_blocks 兜着：机床不收就是模块错，不会假装成功。
+         */
+        if (ncl_json_obj_has(params, "data")) {
+            const ncl_json *data = ncl_json_obj_get(params, "data");
+            size_t n = ncl_json_type_of(data) == NCL_JSON_ARRAY
+                           ? ncl_json_arr_len(data)
+                           : 0u;
+            size_t i;
+
+            if (n == 0u || used + n > sizeof(body)) {
+                return NCL_ERR_RANGE;
+            }
+            for (i = 0; i < n; i++) {
+                long long byte = 0;
+
+                if (!ncl_json_as_int(ncl_json_arr_get(data, i), &byte)) {
+                    return NCL_ERR_INVALID_ARG;
+                }
+                body[used++] = (uint8_t)byte;
+            }
+            if (used >= 2u + NCL_FOCAS_CB_SIZE) {
+                /* 第 1 个块的 tag0 = 载荷长度（BE16） */
+                body[2u + 24u] = (uint8_t)(n >> 8);
+                body[2u + 25u] = (uint8_t)n;
+            }
+        }
         ncl_mutex_lock(ctx->mutex);
         err = focas_ensure_session(ctx);
         if (err == NCL_OK) {

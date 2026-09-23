@@ -138,6 +138,12 @@ static const struct {
     { "cnc_rdblkcount", "void", 0 }, { "cnc_exeprgname2", "void", 0 },
     { "cnc_rdprogdir3", "s2_n", 0 }, { "cnc_rdexecprog", "exec", 0 },
     { "cnc_rdproginfo", "s1", 0 },
+    /* 写这一侧（语义与读同族，`(h, 结构体*)`）：抓它们的帧用 */
+    { "cnc_wrparam", "void", 0 }, { "cnc_wrmacro", "void", 0 },
+    { "cnc_wrtofs", "void", 0 }, { "cnc_delprogram", "name", 0 },
+    { "cnc_rdparanum", "void", 0 }, { "cnc_rdparar", "s2_n", 0 },
+    { "cnc_rdwkcdshft", "s2", 8 }, { "cnc_rdtoolnum", "void", 0 },
+    { "cnc_rdtooldata", "s2_n", 0 }, { "cnc_rd_toolnum", "void", 0 },
     /* 计数/时间 */
     { "cnc_rdcount", "s1", 0 }, { "cnc_rdtimer", "s1", 0 },
     /* 跟踪误差那一族：伺服延迟量 / 诊断数据（0i/30i 上跟踪误差在诊断号 300 一族） */

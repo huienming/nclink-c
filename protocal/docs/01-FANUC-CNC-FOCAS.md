@@ -1314,3 +1314,49 @@ work_offset  work_offsets
 > 其中 **负载 / 电流 / 温度 / 主轴倍率 / 刀具表** 这台机床本来就不提供（§10.4.6），补了也是
 > 继续报"不提供"；真正值得按新代补齐的顺序是：**参数写 → 变量写 → 刀补写 → 程序取回 →
 > PLC/寄存器（要连 `pmc_*` 一起做）**。
+
+### 11.12 对着 VM 里的 FANUC 模拟器核对：**读全通、写还没通**（2026-09-23）
+
+这一轮接上了一台真在跑的 FANUC：VMware 里那台 **CNC Guide & NC Trainer plus**
+（Windows 7 + CNC Guide，机床显示 `Series 0i-MF Plus`、`0M D4G3` / `28.0`）。
+
+**怎么接上的**（VM 那一侧按用户给的地址是 169.254.178.13，主机够不着）：
+
+| 现象 | 处理 |
+|---|---|
+| `169.254.178.13` 从主机**没有路由**（`ping` 直接 general failure）| 那是客户机自己的 APIPA：VM 的网卡是**桥接**、所在链路没有 DHCP |
+| 迁到 NAT 就有现成转发（`vmnetnat.conf` 里早写着 `8193 = 192.168.79.128:8193`）| 用 `vmrun stop/start`（不占 GUI、不要管理员）把 `ethernet0.connectionType = "nat"` 写进 vmx 后重启客户机 |
+| 起来后 | 客户机 DHCP 拿到 **192.168.79.128**，主机 **127.0.0.1:8193** 就通了（`a0a0a0a0 0003 0102 0168 0011 …` 的 FOCAS2 hello）|
+
+**读这一侧逐条过了一遍**（`tools/site-probe/focas_live.c`，全对着真模拟器）：
+
+| 结果 | 条目 |
+|---|---|
+| 🟢 通（有值）| `STATUS`=free、`WORK_MODE`、`MODEL`=`0M D4G3`、`VERSION`=`28.0`、`PROGRAM`=`O0`、`LINE_NUMBER`、`PROGRAM_NUMBER`、`FEED_SPEED`、`FEED_OVERRIDE`、`SPINDLE_SPEED`、**X/Y/Z 的 position / machine / relative / cmd / distance / srv_delay / load / feedrate**、`axis_type`=linear、`executed_block`=`O0000%`、**`PARAMETER` #1**、**`TOOL_OFFSET` #1**、`program_directory`、`modal`、`alarm` |
+| ⛔ 这台机床没有（如实报）| `POSITION A/C` 一族（`-6` = 没有这根轴）、`TORQUE`/`CURRENT`/`TEMPERATURE`（`-15` 未实现）|
+| 🟡 有码但结果异常 | `PART_COUNT` / `TOOL_GROUP_COUNT`（`0x200000b4` = 应答块返回码非 0：这两条的码或 `d/e` 在这台 0i-MF 上还要再看）、`feedrate Z`（`-11` 越界）、宏变量 #500（`-6` 这台没有这个号）|
+
+**写这一侧：试出来的形状被机床拒了**。按"读的码 + 1"猜了三条 ——
+`cnc_wrparam` = `0x8e`（读是 `0x8d`）、`cnc_wrmacro` = `0x16`（读是 `0x15`）、
+`cnc_wrtofs` = `0x09`（读是 `0x08`）—— 值放在命令块后面的载荷、长度写进块的 `tag0`；
+三条都**读得到、写回去被拒**（`NCL_FOCAS_ERR_RB_CODE` = 应答块返回码非 0）。
+所以那三条**退回 `not_yet()`**（宁可不做，也不留一个形状没核的写入口）。
+
+**下一步的抓包路子已经打通**（这一轮把工具链也修好了）：
+
+```
+# 1) 官方 SDK 要**在它自己的目录里跑**（不然依赖的 fwlibe64/fwlib0DN64 找不到，
+#    cnc_allclibhndl3 直接回 EW_SOCKET=-15）：
+cd D:\downloads\focas-test2x64
+focas_sdk_probe64.exe 127.0.0.1 8193 cnc_statinfo --dll .\Fwlib64.dll      # rc=0 ✓
+
+# 2) 中间插一层 tap，把 SDK 发的字节原样抄下来：
+python tools/site-probe/focas_tap.py 8194 127.0.0.1 8193
+focas_sdk_probe64.exe 127.0.0.1 8194 cnc_wrparam --dll .\Fwlib64.dll
+```
+
+`tools/site-probe/focas_sdk_probe.c` 的 `kCalls` 里这一轮补了 `cnc_wrparam` /
+`cnc_wrmacro` / `cnc_wrtofs` / `cnc_rdparanum` / `cnc_rdparar` / `cnc_rdwkcdshft` /
+`cnc_rdtoolnum` / `cnc_rdtooldata` 几条；它们现在是 `void` 形状、入参是一块**全零**的
+缓冲区 —— 所以 SDK 会先本地判 `EW_NUMBER`（号 0 不合法）**不发帧**。再给探针加一个
+`--in HEX`（按结构体铺初值）就能把写帧抓出来，照抄进 client。

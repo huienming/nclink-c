@@ -5,6 +5,27 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 01 册：接上 VM 里的 FANUC 模拟器，把"读"逐条核了一遍（写还差抓包）
+
+  * **环境**：VMware 里那台 `Fanuc CNC Guide & NC Trainer plus`（CNC Guide，机床显示
+    `Series 0i-MF Plus` / `0M D4G3` / `28.0`）。用户给的 `169.254.178.13` 是客户机自己的
+    APIPA（VM 网卡桥接、链路没 DHCP），主机没路由够不着；把 vmx 的 `ethernet0.connectionType`
+    设成 `nat`（`vmrun stop/start`，不占 GUI、不要管理员）之后，客户机 DHCP 到 192.168.79.128，
+    主机走现成的 `8193 = 192.168.79.128:8193` 转发就通了。
+  * **读**：新增 `tools/site-probe/focas_live.c`（拿本仓库 client 把语义接口逐条打一遍）对着
+    真模拟器跑：状态/模式/型号/版本/程序名/行号/程序号/进给/倍率/主轴转速、**X/Y/Z 的
+    position 一族（含 machine/relative/cmd/distance/srv_delay/load/feedrate）**、轴类型、
+    执行程序段、参数 #1、刀补 #1、程序目录、模态、报警 全部 rc=0；A/C 轴这台没有（-6）、
+    负载/电流/温度仍是桩（-15）。01 册新增 §11.12 记全过程。
+  * **写**：按"读的码 + 1"猜的三条（`0x8d→0x8e` 参数、`0x15→0x16` 宏变量、`0x08→0x09` 刀补，
+    值作命令块后面的载荷）**被机床拒**（`NCL_FOCAS_ERR_RB_CODE`）→ 三条**退回 `not_yet()`**，
+    只留下可复用的机制：`call("payload")` 现在支持带 `data`（请求载荷 + 块 `tag0` 长度）。
+  * **抓包路子打通**：官方 SDK（`D:\downloads\focas-test2x64\Fwlib64.dll`）必须**在它自己的
+    目录里**跑（否则依赖 DLL 找不到，`cnc_allclibhndl3` 回 `EW_SOCKET=-15`）；
+    `focas_sdk_probe64.exe` + `tools/site-probe/focas_tap.py 8194 127.0.0.1 8193` 已经能对着
+    模拟器把 SDK 的帧原样抄下来（这一轮的 tap 日志 310 行）。探针的 `kCalls` 补了写入那几条，
+    但入参还是全零缓冲区 → SDK 本地判 `EW_NUMBER` 不发帧；下一步给探针加 `--in HEX` 铺初值即可。
+
 ### 01 册：拿 10 册（新代）的代码核对 FOCAS 的缺项 + 修掉 pull 不落盘
 
   * **新增 §11.11 缺项核对**（逐条按代码对，不看注释）：把两边的 client 头文件与适配器

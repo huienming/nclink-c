@@ -75,3 +75,8 @@ tools/site-probe/reply.txt
 
 # 审计测试写在自己目录下的日志（adapters/tests/test_audit.c）
 /ncl_audit_log_test/
+
+# Windows 组件会按字面量写这个路径（相对 cwd），不是仓库产物
+%SystemDrive%/
+# tap 抓包日志（这一轮的证据，留在本地）
+tools/site-probe/tap_fw.log
