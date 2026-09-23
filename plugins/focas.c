@@ -25,6 +25,7 @@
  */
 #include "nclink/ncl_tool.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "nclink/clients/focas.h"
@@ -130,6 +131,207 @@ static ncl_err items_method(void *ctx, const ncl_json *params,
     return NCL_OK;
 }
 
+/** 一次读几把刀：每个号 4 条往返（半径/长度 × 几何/磨损），别让人一口气点几百次。 */
+#define FOCAS_TOOL_BATCH_MAX 16u
+
+/**
+ * `params.keys`：按标准是个数组，也认单个（1 / "1" 都行）。@p index 越界回 false。
+ * （与新代那条同一个口径，见 plugins/syntec.c 的 syntec_param_key。）
+ */
+static bool focas_key_at(const ncl_json *keys, size_t index, long long *out)
+{
+    const ncl_json *item = keys;
+    size_t count;
+
+    if (keys == NULL) {
+        return false;
+    }
+    count = ncl_json_arr_len(keys);
+    if (count > 0) {
+        if (index >= count) {
+            return false;
+        }
+        item = ncl_json_arr_get(keys, index);
+    } else if (index > 0) {
+        return false;
+    }
+    return item != NULL && ncl_json_as_int(item, out);
+}
+
+/** `params.keys` 里有几个号（单个算一个，没有算零）。 */
+static size_t focas_key_count(const ncl_json *keys)
+{
+    size_t count;
+
+    if (keys == NULL) {
+        return 0;
+    }
+    count = ncl_json_arr_len(keys);
+    return count > 0 ? count : 1u;
+}
+
+/**
+ * `/CONTROLLER/TOOL`：刀具表（表 7 的 TOOL，list）。**刀补号即 key（从 1 起）**，
+ * 元素就是那把刀的 TOOLPARAM —— 与 10 册新代那条同口径（"一把刀就是一个元素、
+ * TOOLPARAM 是 TOOL 的元素"）：
+ *
+ *     {"id":1,"kind":0,"radius":0.008,"length":0.0,
+ *      "radius_wear":32.769,"length_wear":0.0}
+ *
+ * 读：`cnc_rdtofsinfo`（0x0a）问号上限、每个号 4 条 `cnc_rdtofs`（0x08）。
+ * 写：`cnc_wrtofs`（0x09）—— 2026-09 对 VM 里的 0i-MF 模拟器**写进去又读回来**核过
+ * （写 0.1234 → 读回 0.123，01 册 §11.13）。一次只写一个号，**只覆盖给到的字段**
+ * （每个字段一条 0x09，别的字段不动）；权限在适配器外面控（用户口径：只提供能力）。
+ *
+ * `kind`（刀尖号）这条路上没有来源（`cnc_rdtooldata` 这台机床回 EW_FUNC），固定 0；
+ * `time_usage`（寿命）也没有（`cnc_rdlife` 回 EW_NOOPT），get_attributes 里写明。
+ */
+static ncl_err focas_tool_table(void *ctx, const ncl_tool_point *self,
+                                ncl_operation op, const ncl_json *params,
+                                ncl_json **result, char **reason)
+{
+    ncl_focas *focas = (ncl_focas *)ctx;
+    const ncl_json *keys = ncl_params_get(params, "keys");
+    size_t i;
+    ncl_err rc;
+
+    (void)self;
+    switch (op) {
+    case NCL_OP_GET_LENGTH: {
+        long long limit = 0;
+
+        /* **机床自己报的号上限**（这台 400），不是"实际有几把刀" —— 后者要逐号扫
+         * 一遍才知道，函数名字里写清楚了。 */
+        rc = ncl_focas_tool_offset_count(focas, &limit);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+        }
+        return ncl_tool_reply_int(result, limit);
+    }
+    case NCL_OP_GET_ATTRIBUTES: {
+        static const char *const k_fields[][2] = {
+            {"id", "刀补号（就是 key，从 1 起）"},
+            {"kind", "刀尖号：这条路上没有来源，固定 0"},
+            {"radius", "半径几何（cnc_rdtofs type 1）"},
+            {"length", "长度几何（cnc_rdtofs type 3）"},
+            {"radius_wear", "半径磨损（type 0）"},
+            {"length_wear", "长度磨损（type 2）"},
+            {"time_usage", "寿命：cnc_rdlife 回 EW_NOOPT（没开寿命管理选项），不给"},
+        };
+        ncl_json *array = ncl_json_new_array();
+
+        if (array == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        for (i = 0; i < sizeof(k_fields) / sizeof(k_fields[0]); i++) {
+            ncl_json *entry = ncl_json_new_object();
+
+            if (entry == NULL ||
+                ncl_json_obj_set_string(entry, "name", k_fields[i][0]) != NCL_OK ||
+                ncl_json_obj_set_string(entry, "meaning",
+                                        k_fields[i][1]) != NCL_OK ||
+                ncl_json_arr_push(array, entry) != NCL_OK) {
+                ncl_json_free(entry);
+                ncl_json_free(array);
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+        }
+        *result = array;
+        return NCL_OK;
+    }
+    case NCL_OP_GET_VALUE: { /* 按刀补号取值（每个号 4 条 0x08） */
+        size_t n = focas_key_count(keys);
+        ncl_json *out = ncl_json_new_object();
+
+        if (out == NULL) {
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        if (n == 0) { /* 盲读（轮询/自检）：答空的，不报错 */
+            *result = out;
+            return NCL_OK;
+        }
+        if (n > FOCAS_TOOL_BATCH_MAX) {
+            ncl_json_free(out);
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG, "一次最多 %u 把刀",
+                                 (unsigned)FOCAS_TOOL_BATCH_MAX);
+        }
+        for (i = 0; i < n; i++) {
+            ncl_json *entry = NULL;
+            long long no = 0;
+            char name[16];
+
+            if (!focas_key_at(keys, i, &no) || no < 1) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                     "keys 里第 %u 个不是刀补号",
+                                     (unsigned)(i + 1));
+            }
+            rc = ncl_focas_tool_param(focas, no, &entry);
+            if (rc != NCL_OK) {
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, rc, "%s",
+                                     ncl_focas_last_error(focas));
+            }
+            snprintf(name, sizeof(name), "%d", (int)no);
+            if (entry == NULL || ncl_json_obj_set(out, name, entry) != NCL_OK) {
+                ncl_json_free(entry);
+                ncl_json_free(out);
+                return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+            }
+        }
+        *result = out;
+        return NCL_OK;
+    }
+    case NCL_OP_SET_VALUE: { /* 写刀补（0x09）；权限在适配器外面控 */
+        const ncl_json *value = ncl_params_get(params, "value");
+        long long no = 0;
+        ncl_json *entry = NULL;
+        ncl_json *reply;
+        char name[16];
+
+        if (!focas_key_at(keys, 0, &no) || no < 1) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                 "要 keys=一个刀补号（从 1 起）");
+        }
+        if (value == NULL ||
+            ncl_json_type_of((ncl_json *)value) != NCL_JSON_OBJECT) {
+            return ncl_tool_fail(reason, NCL_ERR_INVALID_ARG,
+                                 "要 value=一条刀具参数对象");
+        }
+        /*
+         * **只写给到的字段**（每个字段一条 0x09）：想改一个半径磨损就只给
+         * `radius_wear`，别的字段不动 —— 与新代那条（先读回打底再覆盖）同一个口径，
+         * 但这里不用打底：FOCAS 的写本来就是"一个字段一条命令"。
+         */
+        rc = ncl_focas_tool_param_write(focas, no, value);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+        }
+        /* 答写完之后**机床里**的那一条（不是"我以为写进去的值"）。 */
+        rc = ncl_focas_tool_param(focas, no, &entry);
+        if (rc != NCL_OK) {
+            return ncl_tool_fail(reason, rc, "%s", ncl_focas_last_error(focas));
+        }
+        reply = ncl_json_new_object();
+        if (reply == NULL) {
+            ncl_json_free(entry);
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        snprintf(name, sizeof(name), "%d", (int)no);
+        if (ncl_json_obj_set(reply, name, entry) != NCL_OK) {
+            ncl_json_free(entry);
+            ncl_json_free(reply);
+            return ncl_tool_fail(reason, NCL_ERR_NOMEM, "内存不足");
+        }
+        *result = reply;
+        return NCL_OK;
+    }
+    default:
+        return ncl_tool_fail(reason, NCL_ERR_NOT_SUPPORTED,
+                             "刀具表答 get_length / get_value / set_value / get_attributes");
+    }
+}
+
 /* ------------------------------------------------------ 文件处理的最后一段 -- */
 
 /*
@@ -203,7 +405,7 @@ static ncl_err focas_file_remove(void *user, const char *name, char **reason)
 
 /* ------------------------------------------------------------------ 工具 -- */
 
-NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 1000, 1000,
+NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表可写）", "MACHINE", 1000, 1000,
                focas_open, focas_close)
 
     /* 默认采样通道只放四样（现场口径）：设备状态、加工计件、程序名称、报警。 */
@@ -294,10 +496,16 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
      * 字典里没有对应项，只留在 client 的 API 里。 */
     NCL_DATAITEM_F64("/MOTOR@S1/SPEED", ncl_focas_spindle_speed, 0)
 
-    /* 刀具列表（表 7 的 TOOL，list）：真机上 cnc_rdtooldata rc=1、cnc_rdtoolrng rc=3
-     * —— **机床不提供**（官方 SDK 同样被拒，01 册 §2.8.6），所以这一格答"读不到"。 */
-    NCL_CONFIG_JSON("/CONTROLLER/TOOL", ncl_focas_tool_list)
-    /* 刀具参数（表 7 的 TOOLPARAM，JSON 对象）：刀补 + 寿命。 */
+    /* 刀具表（表 7 的 TOOL，list）：元素就是那把刀的 TOOLPARAM（见 focas_tool_table
+     * 的说明）。**读 + 写**都开：读是 0x0a 定号上限 + 每号 4 条 0x08，写是 0x09
+     * （2026-09 对模拟器写进去又读回来核过，01 册 §11.13）。写权限在适配器外面控
+     * —— 用户口径是"只提供能力"。 */
+    NCL_CONFIG_OPS("/CONTROLLER/TOOL", focas_tool_table, NULL,
+                   NCL_OP_BIT(NCL_OP_GET_VALUE) | NCL_OP_BIT(NCL_OP_SET_VALUE) |
+                       NCL_OP_BIT(NCL_OP_GET_LENGTH) |
+                       NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
+    /* 刀具参数（表 7 的 TOOLPARAM，JSON 对象）：**号 → 那一条**（与新代那条不同，
+     * 这里两种摆法都留着：TOOL 是 list（按号取元素），TOOLPARAM 是整张表）。 */
     NCL_CONFIG_JSON("/CONTROLLER/TOOLPARAM", ncl_focas_tool_param_table)
     /* 参数表（表 6 的 PARAMETER，dict）与宏变量表（表 7 的 VARIABLE，list）：
      * **单条**读得到（`cnc_rdparam` 0x8d / `cnc_rdmacro` 0x15，见 client），整表的
@@ -326,4 +534,4 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP, read only", "MACHINE", 
 
 NCL_TOOL_END_WITH_RAW(focas_last_raw)
 
-NCL_TOOL_MODULE("1.5.0", "FANUC FOCAS / Fwlib32 over TCP, read only (会话与报文形状按真机实测：01 册 §2.8；点位对照 32 册数据项)")
+NCL_TOOL_MODULE("1.5.1", "FANUC FOCAS / Fwlib32 over TCP（读为主 + 刀补表可写；会话与报文形状按真机/模拟器实测：01 册 §2.8/§11.13；点位对照 32 册数据项）")

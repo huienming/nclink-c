@@ -42,6 +42,10 @@
  *
  * `--count N` 给"进/出参数"里那个数量（short *data_num）：FOCAS 把 0 当长度错
  * （EW_LENGTH=2），所以要给个 sane 值（缺省 8）。
+ *
+ * `--in HEX` 把出参那块 4 KiB 缓冲**先铺上初值**（十六进制字符串，可带空格）。
+ * 读的那几条不需要它，**写的那几条必须有**：`cnc_wrparam` 之类是照着入参结构体
+ * 发的，全 0 的时候 SDK 自己就在本地判非法（EW_NUMBER），一帧都不发。
  */
 #include <stdio.h>
 #include <stdbool.h>
@@ -110,6 +114,37 @@ typedef short (NCL_PROBE_CALL *s4_n_fn)(unsigned short, short, short, short, sho
 /* (h, short, short, short *, void *)：cnc_rdgcode 那种"两个入参 + 一个数量出参" */
 typedef short (NCL_PROBE_CALL *s2_n_n_fn)(unsigned short, short, short, short *,
                                           void *);
+/* (h, short, short, long)：cnc_wrtofs / cnc_wrmacro 这种"值直接进参数"的写 */
+typedef short (NCL_PROBE_CALL *s2_l_fn)(unsigned short, short, short, long);
+/* (h, short, short, void *)：cnc_rdparam / cnc_wrparam 这种"号 + 类型 + 结构体" */
+typedef short (NCL_PROBE_CALL *s2_p_fn)(unsigned short, short, short, void *);
+/* (h, short, void *)：cnc_rdlife 那种"号 + 结构体" */
+typedef short (NCL_PROBE_CALL *s1_p_fn)(unsigned short, short, void *);
+/* (h, short, short, short, void *)：cnc_rdtofs / cnc_rdtoolrng 那种"号 + 长度" */
+typedef short (NCL_PROBE_CALL *s3_p_fn)(unsigned short, short, short, short,
+                                        void *);
+/* (h, short, long)：cnc_wrtofsdrctinp 那种"号 + 值" */
+typedef short (NCL_PROBE_CALL *s1_l_fn)(unsigned short, short, long);
+/* (h, char *)：cnc_delete / cnc_pdf_del / cnc_pdf_slctmain 的程序名 */
+typedef short (NCL_PROBE_CALL *name_fn)(unsigned short, char *);
+/* (h, short, char *)：cnc_dwnstart4 那种"类型 + 名字" */
+typedef short (NCL_PROBE_CALL *s1_name_fn)(unsigned short, short, char *);
+/* (h, short, short, short, long)：cnc_wrtofs(h, ofs_num, type, len, data) */
+typedef short (NCL_PROBE_CALL *s3_l_fn)(unsigned short, short, short, short,
+                                        long);
+/* (h, short, short, long, short)：cnc_wrmacro(h, number, type, data, flag) */
+typedef short (NCL_PROBE_CALL *s2_l1_fn)(unsigned short, short, short, long,
+                                         short);
+/* (h, short, short *, void *)：cnc_rdtooldata(h, type, &num, IODBTLDT *) */
+typedef short (NCL_PROBE_CALL *s_np_fn)(unsigned short, short, short *, void *);
+/* (h, short *, void *)：cnc_rdexecprog3(h, &num, ODBEXEPRGINFO *) */
+typedef short (NCL_PROBE_CALL *np_fn)(unsigned short, short *, void *);
+/* (h, short, short, short *, void *)：cnc_rdgcode(h, type, block, &num, od) */
+typedef short (NCL_PROBE_CALL *s2_np_fn)(unsigned short, short, short, short *,
+                                         void *);
+/* (h, short *, short, short *, short *, void *)：cnc_rdparar 那条"三个 short 指针" */
+typedef short (NCL_PROBE_CALL *parar_fn)(unsigned short, short *, short, short *,
+                                         short *, void *);
 
 static const struct {
     const char *name;
@@ -139,11 +174,16 @@ static const struct {
     { "cnc_rdprogdir3", "s2_n", 0 }, { "cnc_rdexecprog", "exec", 0 },
     { "cnc_rdproginfo", "s1", 0 },
     /* 写这一侧（语义与读同族，`(h, 结构体*)`）：抓它们的帧用 */
-    { "cnc_wrparam", "void", 0 }, { "cnc_wrmacro", "void", 0 },
-    { "cnc_wrtofs", "void", 0 }, { "cnc_delprogram", "name", 0 },
-    { "cnc_rdparanum", "void", 0 }, { "cnc_rdparar", "s2_n", 0 },
-    { "cnc_rdwkcdshft", "s2", 8 }, { "cnc_rdtoolnum", "void", 0 },
-    { "cnc_rdtooldata", "s2_n", 0 }, { "cnc_rd_toolnum", "void", 0 },
+    { "cnc_wrparam", "s1p", 0 }, { "cnc_wrparas", "s1p", 0 },
+    { "cnc_wrmacro", "s2_l1", 0 }, { "cnc_wrmacror", "s1p", 0 },
+    { "cnc_wrtofs", "s3_l", 0 }, { "cnc_wrtofsr", "s1p", 0 },
+    { "cnc_wrwkcdshft", "s1p", 0 }, { "cnc_delprogram", "name", 0 },
+    { "cnc_delete", "name", 0 }, { "cnc_pdf_del", "name", 0 },
+    { "cnc_pdf_slctmain", "name", 0 },
+    { "cnc_rdparanum", "void", 0 }, { "cnc_rdparar", "s4_n", 0 },
+    { "cnc_rdwkcdshft", "s2p", 0 }, { "cnc_rdwkcdshft2", "s2p", 0 },
+    { "cnc_rdtooldata", "s_np", 0 }, { "cnc_rdtoolrng", "s3p", 0 },
+    { "cnc_rdtoollife_data", "s2_n", 8 },
     /* 计数/时间 */
     { "cnc_rdcount", "s1", 0 }, { "cnc_rdtimer", "s1", 0 },
     /* 跟踪误差那一族：伺服延迟量 / 诊断数据（0i/30i 上跟踪误差在诊断号 300 一族） */
@@ -160,11 +200,11 @@ static const struct {
     { "cnc_rdngrp", "void", 0 }, { "cnc_rdlife", "s1", 8 },
     { "cnc_rdtofsinfo", "void", 0 }, { "cnc_rdmacroinfo", "void", 0 },
     /* 刀补/参数/宏变量（帧抓到了、字段还没核） */
-    { "cnc_rdtofs", "s3", 0 }, { "cnc_rdparam", "s3", 0 },
+    { "cnc_rdtofs", "s3p", 0 }, { "cnc_rdparam", "s3p", 0 },
     { "cnc_rdmacro", "s2", 12 }, { "cnc_rddt", "s1", 0 },
     /* 整表那几条（范围 + 数量出参） */
-    { "cnc_rdparanum", "n_n", 0 }, { "cnc_rdparar", "s4_n", 0 },
-    { "cnc_rdmacror", "s4_n", 0 },
+    { "cnc_rdparanum", "n", 0 }, { "cnc_rdparar", "s4_n", 0 },
+    { "cnc_rdmacror", "s3p", 0 },
     { "cnc_rdtooldata", "s2_n", 8 }, { "cnc_rdtoolrng", "s2_n", 8 },
     /* 工件坐标/模态 */
     { "cnc_rdgcode", "s2_n_n", 0 }, { "cnc_rdwkcdshft", "s2", 0 },
@@ -234,6 +274,8 @@ int main(int argc, char **argv)
     const char *kind = NULL;
     const char *dll = "Fwlib64.dll";
     const char *name_arg = "";
+    const char *seed = NULL;   /* --in HEX：出参/入参那块缓冲的初值 */
+    const char *shape = NULL;  /* --shape：临时改调用形状（表里的只是缺省） */
     bool        hssb = false;  /* --hssb：走 cnc_allclibhndl（节点号，NCGuide 用 9） */
     int         node = 9;
     const char *positional[8];
@@ -243,6 +285,7 @@ int main(int argc, char **argv)
     unsigned char buf[NCL_PROBE_BUF];
     short num = 8;
     short num2 = 8;
+    short num3 = 0;
     short len = 8;  /* s2_n 的第 3 个 short 是 `*num`（给 0 会被回 EW_LENGTH） */
     long lnum = 0;
     size_t i;
@@ -268,6 +311,10 @@ int main(int argc, char **argv)
             name_arg = argv[++i]; /* 程序上下行的目录名/文件名（start4 的那个 char *） */
         } else if (strcmp(argv[i], "--hssb") == 0) {
             hssb = true;
+        } else if (strcmp(argv[i], "--in") == 0 && i + 1 < (size_t)argc) {
+            seed = argv[++i];
+        } else if (strcmp(argv[i], "--shape") == 0 && i + 1 < (size_t)argc) {
+            shape = argv[++i];
         } else if (strcmp(argv[i], "--node") == 0 && i + 1 < (size_t)argc) {
             node = (int)strtol(argv[++i], NULL, 0);
         } else if (npos < (int)(sizeof(positional) / sizeof(positional[0]))) {
@@ -297,6 +344,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "  (unknown function %s - add it to kCalls)\n",
                 fn_name);
         return 2;
+    }
+    if (shape != NULL) {
+        kind = shape;
     }
     a0 = npos > 3 ? (int)strtol(positional[3], NULL, 0) : 0;
     a1 = npos > 4 ? (int)strtol(positional[4], NULL, 0) : 0;
@@ -343,7 +393,35 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* `--in` 铺的初值要在调用前就位（写的那几条全靠它）。 */
     memset(buf, 0, sizeof(buf));
+    if (seed != NULL) {
+        size_t k = 0;
+        int nibble = -1;
+
+        for (i = 0; seed[i] != '\0'; i++) {
+            int hi = -1;
+
+            if (seed[i] >= '0' && seed[i] <= '9') {
+                hi = seed[i] - '0';
+            } else if (seed[i] >= 'a' && seed[i] <= 'f') {
+                hi = seed[i] - 'a' + 10;
+            } else if (seed[i] >= 'A' && seed[i] <= 'F') {
+                hi = seed[i] - 'A' + 10;
+            } else {
+                continue; /* 空格/冒号之类当分隔符 */
+            }
+            if (nibble < 0) {
+                nibble = hi;
+            } else {
+                if (k < sizeof(buf)) {
+                    buf[k] = (unsigned char)((nibble << 4) | hi);
+                    k++;
+                }
+                nibble = -1;
+            }
+        }
+    }
     printf("%s", fn_name);
     for (i = 3; i < (size_t)npos; i++) {
         printf(" %s", positional[i]);
@@ -377,6 +455,73 @@ int main(int argc, char **argv)
                                    (short)(block_len > 0 ? block_len : 8), buf);
     } else if (strcmp(kind, "s3") == 0) {
         rc = ((s3_fn)sym(fn_name))(handle, (short)a0, (short)a1, (short)a2, buf);
+    } else if (strcmp(kind, "s4") == 0) {
+        /* (h, short, short, short, short, void *)：cnc_wrmacror 这种"类型 + 号段" */
+        typedef short (NCL_PROBE_CALL *s4_fn)(unsigned short, short, short, short,
+                                              short, void *);
+        short a3 = (short)(npos > 6 ? strtol(positional[6], NULL, 0) : 0);
+
+        rc = ((s4_fn)sym(fn_name))(handle, (short)a0, (short)a1, (short)a2, a3,
+                                   buf);
+    } else if (strcmp(kind, "parar") == 0) {
+        /*
+         * `cnc_rdparar(h, short *s_no, short e_no, short *s_type, short *e_type,
+         *              void *data)` —— 三个出/入 short 各自的来路不一样，所以
+         * 这里明着摆：`--count` 给 s_no/s_type（同一个值）、`a0` 给 e_no、
+         * `a1` 给 e_type。
+         */
+        short s_type = num;
+        short e_type = (short)a1;
+
+        rc = ((parar_fn)sym(fn_name))(handle, &num, (short)a0, &s_type,
+                                      &e_type, buf);
+        num2 = s_type;
+        num3 = e_type;
+    } else if (strcmp(kind, "parar2") == 0) {
+        /* 全明着给：`a0` = s_no、`a1` = s_type、`a2` = e_no、`a3` = e_type
+         * （机床那头看到的 d/e/a2/a3 就是这四个数，见 01 册 §11.13）。 */
+        short s_no = (short)a0;
+        short s_type = (short)a1;
+        short e_no = (short)a2;
+        short e_type = (short)(npos > 5 ? strtol(positional[5], NULL, 0) : 0);
+
+        rc = ((parar_fn)sym(fn_name))(handle, &s_no, e_no, &s_type, &e_type,
+                                      buf);
+        num = s_no;
+        num2 = s_type;
+        num3 = e_type;
+    } else if (strcmp(kind, "s2_l") == 0) {
+        /* (h, short, short, long)：cnc_wrtofs / cnc_wrmacro，值直接进参数 */
+        rc = ((s2_l_fn)sym(fn_name))(handle, (short)a0, (short)a1, (long)a2);
+    } else if (strcmp(kind, "s2p") == 0) {
+        rc = ((s2_p_fn)sym(fn_name))(handle, (short)a0, (short)a1, buf);
+    } else if (strcmp(kind, "s3p") == 0) {
+        rc = ((s3_p_fn)sym(fn_name))(handle, (short)a0, (short)a1, (short)a2,
+                                     buf);
+    } else if (strcmp(kind, "s3_l") == 0) {
+        long data = (long)(npos > 5 ? strtol(positional[5], NULL, 0) : 0);
+
+        rc = ((s3_l_fn)sym(fn_name))(handle, (short)a0, (short)a1, (short)a2,
+                                     data);
+    } else if (strcmp(kind, "s2_l1") == 0) {
+        long data = (long)(npos > 5 ? strtol(positional[5], NULL, 0) : 0);
+        short flag = (short)(npos > 6 ? strtol(positional[6], NULL, 0) : 0);
+
+        rc = ((s2_l1_fn)sym(fn_name))(handle, (short)a0, (short)a1, data, flag);
+    } else if (strcmp(kind, "s_np") == 0) {
+        rc = ((s_np_fn)sym(fn_name))(handle, (short)a0, &num, buf);
+    } else if (strcmp(kind, "np") == 0) {
+        rc = ((np_fn)sym(fn_name))(handle, &num, buf);
+    } else if (strcmp(kind, "s2_np") == 0) {
+        rc = ((s2_np_fn)sym(fn_name))(handle, (short)a0, (short)a1, &num, buf);
+    } else if (strcmp(kind, "s1p") == 0) {
+        rc = ((s1_p_fn)sym(fn_name))(handle, (short)a0, buf);
+    } else if (strcmp(kind, "s1_l") == 0) {
+        rc = ((s1_l_fn)sym(fn_name))(handle, (short)a0, (long)a1);
+    } else if (strcmp(kind, "name") == 0) {
+        rc = ((name_fn)sym(fn_name))(handle, (char *)name_arg);
+    } else if (strcmp(kind, "s1_name") == 0) {
+        rc = ((s1_name_fn)sym(fn_name))(handle, (short)a0, (char *)name_arg);
     } else if (strcmp(kind, "s1_n") == 0) {
         rc = ((s1_n_fn)sym(fn_name))(handle, (short)a0, &num, buf);
     } else if (strcmp(kind, "n") == 0) {

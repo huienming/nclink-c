@@ -168,6 +168,19 @@ size_t ncl_focas_body_begin(uint8_t *out, size_t cap);
 size_t ncl_focas_body_add(uint8_t *out, size_t cap, size_t used,
                           const ncl_focas_cb *cb);
 
+/**
+ * Append a payload **behind the last block** - the write side of the protocol
+ * (`cnc_wrtofs` 一族). Two things come out of the 2026-09 capture against the
+ * NCGuide 0i-MF Plus:
+ *
+ *   - the block's own size field (`[0..2)`) has to grow by the payload length
+ *     (write tool offset = `0x1c + 8 = 0x24`), and
+ *   - `tag0` / `tag1` stay **0** - the earlier guess of putting the payload
+ *     length in `tag0` is what the machine rejected (01 册 §11.12/§11.13).
+ */
+size_t ncl_focas_body_add_payload(uint8_t *out, size_t cap, size_t used,
+                                 const uint8_t *data, size_t len);
+
 /** Serialise one block on its own (28 bytes), for tests and golden samples. */
 size_t ncl_focas_cb_write(uint8_t *out, size_t cap, const ncl_focas_cb *cb);
 

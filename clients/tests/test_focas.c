@@ -38,6 +38,12 @@ static void put_u32be(uint8_t *out, uint32_t value)
     out[3] = (uint8_t)value;
 }
 
+static uint32_t get_u32be(const uint8_t *in)
+{
+    return ((uint32_t)in[0] << 24) | ((uint32_t)in[1] << 16) |
+           ((uint32_t)in[2] << 8) | (uint32_t)in[3];
+}
+
 static void put_float_be(uint8_t *out, float number)
 {
     uint32_t bits = 0;
@@ -448,6 +454,11 @@ typedef struct {
     size_t      payload_len[NCL_FOCAS_ITEM_CBS];
     size_t      payload_count;
     int         short_by; /**< reply with fewer blocks than asked */
+    uint16_t    block_rc; /**< 应答块里的返回码（机床说 1/6 就是"这台没有"） */
+    /* 最后一次请求的**体**原样留一份：写那一侧的帧形状（块长、tag0/tag1、载荷）
+     * 在 01 册 §11.13 里是逐字节核过的，这里就照那一份对。 */
+    uint8_t     last_request[256];
+    size_t      last_request_len;
     /* 程序上下行（func 0x11/0x12/0x13）：数据帧收下来、不回，别的照块回 */
     uint8_t     transfer[1024];
     size_t      transfer_bytes;
@@ -473,7 +484,7 @@ static size_t mock_block_body(uint8_t *out, size_t cap, size_t count,
         }
         memset(out + used, 0, size);
         put_u16be(out + used, (uint16_t)size);
-        put_u16be(out + used + 8, 0);
+        put_u16be(out + used + 8, mock->block_rc); /* 块返回码：非 0 = 机床不认 */
         put_u16be(out + used + 14, (uint16_t)plen);
         if (plen > 0) {
             memcpy(out + used + 16, mock->payload[k], plen);
@@ -525,6 +536,10 @@ static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pd
     } else if (pdu->func == NCL_FOCAS_FUNC_CMD ||
                pdu->func == NCL_FOCAS_FUNC_DWN_START ||
                pdu->func == NCL_FOCAS_FUNC_DWN_END) {
+        if (pdu->length <= sizeof(mock->last_request)) {
+            memcpy(mock->last_request, frame + NCL_FOCAS_HEADER, pdu->length);
+            mock->last_request_len = pdu->length;
+        }
         blocks = 0;
         if (pdu->length >= 2u) {
             blocks = get_u16be(frame + NCL_FOCAS_HEADER);
@@ -1054,20 +1069,23 @@ static void test_semantics(void)
     NCL_CHECK_EQ_INT(number, 5678);
 
     /*
-     * 件数（PART_COUNT）：值**不在载荷 0 处**，在 @20（`datano` 在 @2）。
-     * 这一格是 2026-09 用官方 SDK 对着一台"每个字节都可辨识"的假机床反查出来的，
-     * 现场包里那份 Linux `libfwlib32.so` 的 `cnc_rdcount` 也是这么切的（01 册 §2.6）。
-     * 所以这里故意把 @2 填成 7、@0 填成垃圾：只认 @20 那个值。
+     * 件数（PART_COUNT）：2026-09-23 改成读 **6711 号参数**（0i 上"加工件数"就在这一号，
+     * 现场那份服务的 `getPartCount` 也是这么读的）—— 原来的 `cnc_rdcount`（0x8b）是
+     * "刀具寿命计数器"，机床要开寿命管理选件才答，这台机器回 EW_NOOPT（01 册 §11.13）。
+     * 参数这一路的值 = 载荷 @0 的 BE32（dec 在 @6）。
      */
-    NCL_TEST_CASE("件数：ODBTLIFE3 的 data 在载荷 @20（不是 @0）");
+    NCL_TEST_CASE("件数：读 6711 号参数（@8 是值；d = e = 6711）");
     memset(mock->payload[0], 0, sizeof(mock->payload[0]));
     mock->payload_count = 1;
-    mock->payload_len[0] = 24;
-    put_u16be(mock->payload[0] + 2, 7);          /* datano */
-    put_u32be(mock->payload[0] + 0, 0xDEADBEEFu);/* 载荷 0 处的干扰值 */
-    put_u32be(mock->payload[0] + 20, 952);       /* 件数 */
+    mock->payload_len[0] = 16;
+    put_u32be(mock->payload[0], 6711); /* 号 */
+    put_u32be(mock->payload[0] + 4, 1);/* 条数 */
+    put_u32be(mock->payload[0] + 8, 952); /* 值 */
     NCL_CHECK_EQ_INT(ncl_focas_part_count(focas, &number), NCL_OK);
     NCL_CHECK_EQ_INT(number, 952);
+    /* 请求里 d 与 e 都得是 6711（写死 1 的话参数 6711 读不出来） */
+    NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(mock->last_request + 10), 6711);
+    NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(mock->last_request + 14), 6711);
 
     NCL_TEST_CASE("程序行号：载荷 @0 的 BE32，出门是文本（表 7 的 LINE_NUMBER）");
     mock->payload_len[0] = 4;
@@ -1370,11 +1388,10 @@ static void test_semantics(void)
     }
 
     /*
-     * 刀补 / 宏变量 / 参数这三条：都是"一个块、d = 号"那一族，应答就是那条 8 字节
-     * 记录（值@0 + 小数位@6）。假机床这里按真机的形状铺：刀补 1 = 12.345、
-     * 宏变量 100 = −7.5、参数 1 = 1（真机参数 1 就是 1）。
+     * 刀补 / 宏变量这两条：一个块、`d = e = 号`，应答就是那条 8 字节记录
+     * （值@0 + 小数位@6）。假机床这里按真机的形状铺：刀补 1 = 12.345、宏变量 100。
      */
-    NCL_TEST_CASE("刀补/宏变量/参数：一个块 + d = 号，值是那条 8 字节记录");
+    NCL_TEST_CASE("刀补/宏变量：一个块 + d = e = 号，值是那条 8 字节记录");
     mock->payload_count = 1;
     memset(mock->payload[0], 0, sizeof(mock->payload[0]));
     mock->payload_len[0] = 8;
@@ -1396,8 +1413,24 @@ static void test_semantics(void)
         ncl_json_free(json);
         json = NULL;
 
+    }
+
+    /*
+     * 参数那一条**不是**这个形状：载荷前三格都是 BE32（@0 号、@4 条数、**@8 值**）。
+     * 以前按 @0 读，读到的是"参数号自己" —— 只有 1 号参数看着对（01 册 §11.13）。
+     */
+    NCL_TEST_CASE("参数：载荷 @8 才是值（@0 是参数号，@4 是条数）");
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_len[0] = 16;
+    put_u32be(mock->payload[0], 1);    /* 号 */
+    put_u32be(mock->payload[0] + 4, 0);/* 条数 */
+    put_u32be(mock->payload[0] + 8, 1);/* 值 */
+    {
+        ncl_json *json = NULL;
+
         NCL_CHECK_EQ_INT(ncl_focas_parameter(focas, 1, &json), NCL_OK);
         NCL_CHECK_EQ_INT(ncl_json_obj_get_int(json, "number", -1), 1);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(json, "raw", -1), 1);
         ncl_json_free(json);
     }
 
@@ -1518,6 +1551,122 @@ static void test_semantics(void)
  * dir=4，体就是程序文本，机床不回）→ 0x13（end；下载的错都在这条回）。这一段拿
  * 假机床把帧序与文本内容验一遍（码与体长来自官方 SDK 实测，见 01 册 §2.4）。
  */
+/**
+ * 刀具那一族（2026-09 对 NCGuide 0i-MF Plus 核过的那几条，01 册 §11.13）：
+ *
+ *   - 刀补号上限来自 `cnc_rdtofsinfo`（0x0a）载荷 @2 的 `use_no`；
+ *   - 一条刀补是 8 字节记录（值 @0、dec @6），类型落在 Cb 的 `arg2 = 1000 + type`；
+ *   - **写刀补（0x09）的帧形状**：块长 = 0x1c + 载荷、`tag0` = 0、
+ *     **`tag1` = 载荷长度**、载荷 8 字节 = BE32 值 + 0000 + ffff。
+ *     最后这一格是拿官方 SDK 的帧逐字节对出来的（tag0 写长度会被机床回 EW_LENGTH）；
+ *   - 机床回块返回码 1（EW_FUNC）/ 6（EW_NOOPT）时翻成 `NCL_ERR_UNAVAILABLE`。
+ */
+static void test_tool_tables(void)
+{
+    focas_mock *mock = mock_start();
+    ncl_focas_config config;
+    ncl_focas *focas;
+    char *err = NULL;
+    ncl_json *one = NULL;
+    long long count = 0;
+
+    NCL_CHECK(mock != NULL);
+    if (mock == NULL) {
+        return;
+    }
+    ncl_focas_config_default(&config);
+    config.host = "127.0.0.1";
+    config.port = mock->port;
+    focas = ncl_focas_open(&config, &err);
+    NCL_CHECK(focas != NULL);
+    if (focas == NULL) {
+        ncl_free_safe(err);
+        mock_stop(mock);
+        return;
+    }
+
+    NCL_TEST_CASE("刀补号上限：cnc_rdtofsinfo（0x0a）载荷 @2 的 use_no");
+    memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+    mock->payload_count = 1;
+    mock->payload_len[0] = 8;
+    put_u16be(mock->payload[0] + 2, 400);
+    put_u16be(mock->payload[0] + 4, 2);
+    NCL_CHECK_EQ_INT(ncl_focas_tool_offset_count(focas, &count), NCL_OK);
+    NCL_CHECK_EQ_INT(count, 400);
+
+    /* 一条刀补：真机回 `00000008 000a 0003` → 0.008mm（dec 在 @6）。 */
+    NCL_TEST_CASE("一条刀补：8 字节记录，值 @0 / dec @6");
+    mock->payload_len[0] = 8;
+    put_u32be(mock->payload[0], 8);
+    put_u16be(mock->payload[0] + 4, 10);
+    put_u16be(mock->payload[0] + 6, 3);
+    one = NULL;
+    NCL_CHECK_EQ_INT(ncl_focas_tool_offset_typed(focas, 1, 1, &one), NCL_OK);
+    NCL_CHECK(one != NULL);
+    if (one != NULL) {
+        NCL_CHECK_EQ_INT((long long)(ncl_json_obj_get_double(one, "value", -1) *
+                                     1000.0 + 0.5),
+                         8);
+        NCL_CHECK_EQ_INT(ncl_json_obj_get_int(one, "raw", -1), 8);
+        ncl_json_free(one);
+    }
+
+    NCL_TEST_CASE("写刀补（0x09）：块长 0x24、tag1 = 载荷长度、载荷 8 字节");
+    NCL_CHECK_EQ_INT(ncl_focas_tool_offset_write_typed(focas, 1, 1, 2.2345),
+                     NCL_OK);
+    NCL_CHECK(mock->last_request_len == 2u + 28u + 8u);
+    if (mock->last_request_len == 2u + 28u + 8u) {
+        const uint8_t *req = mock->last_request;
+
+        /* 体 = 2 字节块数 + 28 字节块（size/first/index/code/d/e/a2/a3/tag0/tag1）
+         * + 载荷。下面所有偏移都是**体**里的偏移。 */
+        NCL_CHECK_EQ_INT(get_u16be(req), 1);         /* 块数 */
+        NCL_CHECK_EQ_INT(get_u16be(req + 2), 0x24);  /* 块长 = 0x1c + 8 */
+        NCL_CHECK_EQ_INT(get_u16be(req + 8), 0x09);  /* 码：读 0x08 + 1 */
+        NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(req + 10), 1);    /* d */
+        NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(req + 14), 1);    /* e */
+        NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(req + 18), 1001); /* 1000+type */
+        NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(req + 22), 0);    /* a3 */
+        NCL_CHECK_EQ_INT(get_u16be(req + 26), 0);    /* tag0 = 0 */
+        NCL_CHECK_EQ_INT(get_u16be(req + 28), 8);    /* tag1 = 载荷长度 */
+        /* 载荷 = BE32(2.2345 → 0.001mm 那一档 = 2234/2235) + 0000 + ffff */
+        NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(req + 30) >= 2234 &&
+                             (int32_t)get_u32be(req + 30) <= 2235,
+                         1);
+        NCL_CHECK_EQ_INT(get_u16be(req + 34), 0);
+        NCL_CHECK_EQ_INT(get_u16be(req + 36), 0xFFFF);
+    }
+
+    NCL_TEST_CASE("机床说 EW_FUNC=1 / EW_NOOPT=6 → NCL_ERR_UNAVAILABLE");
+    mock->block_rc = 6;
+    one = NULL;
+    NCL_CHECK_EQ_INT(ncl_focas_tool_offset_typed(focas, 1, 1, &one),
+                     NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(one == NULL);
+    mock->block_rc = 1;
+    NCL_CHECK_EQ_INT(ncl_focas_tool_offset_typed(focas, 1, 1, &one),
+                     NCL_ERR_UNAVAILABLE);
+    /* 别的码仍旧是"模块错"，别混成一类 */
+    mock->block_rc = 3;
+    NCL_CHECK_EQ_INT(ncl_focas_tool_offset_typed(focas, 1, 1, &one),
+                     NCL_FOCAS_ERR_RB_CODE);
+    mock->block_rc = 0;
+
+    NCL_TEST_CASE("写参数：写后复核，值没变就回 UNAVAILABLE（不假装写成功）");
+    mock->payload_len[0] = 16;
+    put_u32be(mock->payload[0], 1);     /* 号 */
+    put_u32be(mock->payload[0] + 4, 0); /* 条数 */
+    put_u32be(mock->payload[0] + 8, 1); /* 值是 1（机床里就是 1） */
+    /* 写一个**不一样**的值：假机床照原样回 1 → 复核不过 → UNAVAILABLE */
+    NCL_CHECK_EQ_INT(ncl_focas_parameter_write(focas, 1, "0"),
+                     NCL_ERR_UNAVAILABLE);
+    /* 写回原值：不需要"变化"，照常算成功 */
+    NCL_CHECK_EQ_INT(ncl_focas_parameter_write(focas, 1, "1"), NCL_OK);
+
+    ncl_focas_close(focas);
+    mock_stop(mock);
+}
+
 static void test_program_transfer(void)
 {
     static const char kProgram[] = "N100 G0 X0 Y0\nN110 M3 S1200\n";
@@ -1573,6 +1722,7 @@ static void test_not_yet(void)
     char *err = NULL;
     ncl_json *value = NULL;
     double position = 0.0;
+    long long number = 0;
 
     ncl_focas_config_default(&config);
     config.host = "127.0.0.1";
@@ -1602,9 +1752,15 @@ static void test_not_yet(void)
                                               &position),
                      NCL_ERR_RANGE);
 
-    NCL_CHECK_EQ_INT(ncl_focas_tool_list(focas, &value), NCL_ERR_UNAVAILABLE);
+    /* 刀具表已经是真读的（见 test_tool_tables）；这里换成"这台机床没开选件"的两条：
+     * 宏变量表（用户宏变量）与刀具寿命（寿命管理）在 0i-MF 上都回 EW_NOOPT。 */
+    NCL_CHECK_EQ_INT(ncl_focas_variable_table(focas, &value),
+                     NCL_ERR_UNAVAILABLE);
     NCL_CHECK(value == NULL);
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdtooldata") != NULL);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdmacror") != NULL);
+    NCL_CHECK_EQ_INT(ncl_focas_tool_life(focas, 1, &number),
+                     NCL_ERR_UNAVAILABLE);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdlife") != NULL);
 
     ncl_focas_close(focas);
 }
@@ -1621,5 +1777,6 @@ NCL_TEST_MAIN_BEGIN()
     test_driver_no_negotiate();
     test_not_yet();
     test_semantics();
+    test_tool_tables();
     test_program_transfer();
 NCL_TEST_MAIN_END()

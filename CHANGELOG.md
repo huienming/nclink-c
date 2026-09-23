@@ -5,6 +5,33 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 01 册：写这一侧打通（刀补写进去又读回来）+ 单条读/写的 `d=e=号` + 机床"有什么/没什么"清单
+
+  * **写刀补通了**：`cnc_wrtofs` = **`0x09`**，`d = e = 刀补号`、`arg2 = 1000 + 类型`、
+    载荷 8 字节（BE32 值 + `0000` + `ffff`）。**关键那一格**：载荷长度写在块的
+    **`tag1`**（`[26..28)`），块长 = `0x1c + 载荷`；上一轮把长度写进 `tag0` 才会被机床回
+    `EW_LENGTH=2`。对 NCGuide 0i-MF Plus 实测：读 1 号刀补 `0.008` → 写 `2.2345` → 再读
+    `2.234`（一致）→ 还原 `0.008`。`ncl_focas_tool_offset_write[_typed]()` /
+    `ncl_focas_tool_param[_write]()` 与适配器的 `/CONTROLLER/TOOL` 的 `set_value` 都开。
+  * **单条读/写 `d` 与 `e` 都是号**（以前写死 `e = 1`，于是只有 1 号读得出来）：
+    改过来之后刀补 2 号、参数 6711、宏变量 500 全通。
+  * **两处以前读错，已纠正**：加工件数改读 **6711 号参数**（原来是 `cnc_rdcount`，那是
+    刀具寿命计数器、机床要开选件，这台回 `EW_NOOPT`）；**参数的值在载荷 `@8`**，不是 `@0`
+    （`@0` 是参数号自己 —— 只有 1 号看着对）。
+  * **新补的读**：`TOOL`/`TOOLPARAM` 刀具表（`cnc_rdtofsinfo` = `0x0a` 给号上限，本机 400；
+    元素 `{id,kind,radius,length,radius_wear,length_wear}`）、轴扭矩（`cnc_loadtorq` =
+    `0xfd`）、参数表（逐号 `0x8d`）、删程序（`cnc_delete` = `0x05`，帧照官方 SDK 抄，
+    这台机器不收）。
+  * **机床自己的返回码 `1`/`6` 翻成 `NCL_ERR_UNAVAILABLE`**（"这台没有"）：`PART_COUNT`、
+    `TOOL_GROUP_COUNT`、`cnc_rdtooldata`（`EW_FUNC`）、寿命管理 / 用户宏变量的读
+    （`EW_NOOPT`）现在都是明确的"机床不提供"，不再是"模块错"。
+  * **写参数 / 写宏变量：帧收下了但值没对**，所以两条都做**写后复核**：读回来不对就回
+    `NCL_ERR_UNAVAILABLE`（写参数这台收下但不生效；宏变量这台差 10 倍的刻度），
+    **绝不回成功**。程序上传仍未通（SDK 在这台机器上不发帧）。
+  * 工具链：探针补 `--in HEX`（铺初值，写的那几条全靠它）与 `--shape`；新增
+    `focas_capture.py`（一条命令抓一串）与 `focas_log_summary.py`（两个客户端逐帧对齐，
+    就是靠它把 `tag0/tag1` 那一个字节对出来的）。01 册新增 §11.13。
+
 ### 01 册：接上 VM 里的 FANUC 模拟器，把"读"逐条核了一遍（写还差抓包）
 
   * **环境**：VMware 里那台 `Fanuc CNC Guide & NC Trainer plus`（CNC Guide，机床显示

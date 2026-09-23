@@ -933,19 +933,26 @@ static ncl_err focas_call(ncl_driver *self, const char *operation,
             }
         }
         /*
-         * 可选 "data"：**写**这一侧要送的值（字节数组）—— 它跟在命令块后面，
-         * 长度写在块的 tag0（[24..26)，大端）；`cnc_wrparam` / `cnc_wrmacro` /
-         * `cnc_wrtofs` 这一族就是"同一个 item，带一段载荷进去"。块返回码由
-         * 下面那句 check_blocks 兜着：机床不收就是模块错，不会假装成功。
+         * 可选 "data"：**写**这一侧要送的值（字节数组），接在命令块后面。
+         *
+         * 形状按 2026-09 拿官方 SDK 对 NCGuide 0i-MF Plus 抓的那一帧抄（01 册
+         * §11.13）：**块自己的长度格**（[0..2)）要带上载荷（写刀补 = 0x1c + 8 =
+         * 0x24），`tag0`/`tag1` 保持 **0** —— 上一轮把长度写进 tag0 正是被机床
+         * 拒的原因。块返回码由下面那句 check_blocks 兜着：机床不收就是模块错，
+         * 不会假装成功。
          */
         if (ncl_json_obj_has(params, "data")) {
             const ncl_json *data = ncl_json_obj_get(params, "data");
             size_t n = ncl_json_type_of(data) == NCL_JSON_ARRAY
                            ? ncl_json_arr_len(data)
                            : 0u;
+            uint8_t write_bytes[FOCAS_MAX_CB * NCL_FOCAS_CB_SIZE + 2u];
             size_t i;
 
             if (n == 0u || used + n > sizeof(body)) {
+                return NCL_ERR_RANGE;
+            }
+            if (n > sizeof(write_bytes)) {
                 return NCL_ERR_RANGE;
             }
             for (i = 0; i < n; i++) {
@@ -954,12 +961,12 @@ static ncl_err focas_call(ncl_driver *self, const char *operation,
                 if (!ncl_json_as_int(ncl_json_arr_get(data, i), &byte)) {
                     return NCL_ERR_INVALID_ARG;
                 }
-                body[used++] = (uint8_t)byte;
+                write_bytes[i] = (uint8_t)byte;
             }
-            if (used >= 2u + NCL_FOCAS_CB_SIZE) {
-                /* 第 1 个块的 tag0 = 载荷长度（BE16） */
-                body[2u + 24u] = (uint8_t)(n >> 8);
-                body[2u + 25u] = (uint8_t)n;
+            used = ncl_focas_body_add_payload(body, sizeof(body), used,
+                                              write_bytes, n);
+            if (used == 0) {
+                return NCL_ERR_RANGE;
             }
         }
         ncl_mutex_lock(ctx->mutex);

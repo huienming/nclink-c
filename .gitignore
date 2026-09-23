@@ -80,3 +80,5 @@ tools/site-probe/reply.txt
 %SystemDrive%/
 # tap 抓包日志（这一轮的证据，留在本地）
 tools/site-probe/tap_fw.log
+# focas_capture.py 抓下来的帧（同样是本地证据）
+tools/site-probe/cap_*.txt

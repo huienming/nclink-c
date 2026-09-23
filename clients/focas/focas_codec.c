@@ -185,6 +185,35 @@ size_t ncl_focas_body_add(uint8_t *out, size_t cap, size_t used,
     return next;
 }
 
+size_t ncl_focas_body_add_payload(uint8_t *out, size_t cap, size_t used,
+                                 const uint8_t *data, size_t len)
+{
+    size_t block_at;
+
+    if (out == NULL || data == NULL || len == 0u ||
+        used < 2u + NCL_FOCAS_CB_SIZE) {
+        return 0; /* 至少得有一个块在前面 */
+    }
+    if (cap < used + len || used + len > 0xFFFFu) {
+        return 0;
+    }
+    block_at = used - NCL_FOCAS_CB_SIZE; /* 载荷是挂在**最后一个块**后面的 */
+    if (get_u16be(out + block_at) != NCL_FOCAS_CB_SIZE) {
+        return 0; /* 那个块已经带过载荷了，或者根本不是我们写的块 */
+    }
+    memcpy(out + used, data, len);
+    put_u16be(out + block_at, (uint16_t)(NCL_FOCAS_CB_SIZE + len));
+    /* **块尾那两格（tag1，[26..28)）就是载荷长度**（字节数）。
+     *
+     * 2026-09 逐字节对过官方 SDK 的帧：写刀补那条块长 0x24、`tag0` = 0、
+     * **`tag1` = 0x0008**（载荷 8 字节）。上一轮把长度写进 `tag0` 正是被机床回
+     * EW_LENGTH=2 的原因（01 册 §11.13）—— 对，差的就是这一格。应答块这一格
+     * 的位置也对得上（应答块头 16 字节、长度在 [14..16)，同样是"块尾"）。
+     */
+    put_u16be(out + block_at + 26u, (uint16_t)len);
+    return used + len;
+}
+
 /* ========================================================= reply blocks == */
 
 size_t ncl_focas_block_count(const uint8_t *body, size_t body_len)
@@ -290,8 +319,26 @@ ncl_err ncl_focas_check_blocks(const uint8_t *body, size_t body_len,
             return err;
         }
         if (ncl_focas_block_code(block, block_len) != 0) {
+            int code = ncl_focas_block_code(block, block_len);
+
             if (index_out != NULL) {
                 *index_out = i;
+            }
+            /*
+             * 机床自己的返回码里有两个**不是"调用出错"，而是"这台机器没有"**：
+             *
+             *   EW_FUNC  = 1  这条功能这个机型不支持（`cnc_rdtooldata` 在这台
+             *                 0i-MF 上就是 1）
+             *   EW_NOOPT = 6  这个选件没开（刀具寿命管理 `cnc_rdlife`、用户宏变量
+             *                 `cnc_rdmacro` 在这台模拟器上都是 6）
+             *
+             * 2026-09 实测（01 册 §11.13）：这两条以前一路冒到上层成了"模块错"
+             * （`NCL_FOCAS_ERR_RB_CODE`），点位表里看着像 client 坏了。这里直接翻成
+             * `NCL_ERR_UNAVAILABLE`（"声明了、但这台机床读不到"），站点一眼就知道
+             * 该关掉这一格。
+             */
+            if (code == 1 || code == 6) {
+                return NCL_ERR_UNAVAILABLE;
             }
             return NCL_FOCAS_ERR_RB_CODE; /* `Pdu::getRb` throws here */
         }
@@ -378,6 +425,52 @@ static const ncl_focas_item kItems[] = {
      */
     { "RDTOFS",     { 0x08, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false,
                      { 1000, 0, 0 },     { 0, 0, 0 } },
+    /*
+     * 写刀补（`cnc_wrtofs`）= **0x09**（读 0x08 + 1），一帧就够：
+     *
+     *     Cb       code 0x09、d = 刀补号、e = 1、arg2 = 1000 + 刀补类型、tag0/tag1 = 0
+     *     载荷     8 字节 = BE32 值（0.001mm 为单位）+ BE16 0、BE16 0xffff
+     *     块长度格 [0..2) = 0x1c + 8 = 0x24（写这一侧载荷是挂在块后面的，§11.13）
+     *
+     * 2026-09 对 NCGuide 0i-MF Plus 实测：写 0x3333 到 1 号刀补（type 1）→ 机床回
+     * 块返回码 0；再读 1 号刀补 → `00003333 000a 0003`（13.107mm），**写得进**。
+     * 上一轮猜的 0x16/0x8e 两条是"读码 + 1"，这一条同样是"读码 + 1"，但决定成败的
+     * 是载荷形状与块长度，不是码本身。
+     */
+    { "WRTOFS",     { 0x09, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false,
+                     { 1000, 0, 0 },     { 0, 0, 0 } },
+    /*
+     * 刀补表信息（`cnc_rdtofsinfo`）：一个 **0x0a**，应答载荷 8 字节
+     * —— 本机回 `0000 0190 0002 0000` → `use_no` = 0x0190 = **400**（这台机床有 400
+     * 个刀补号）。刀具列表就是靠它定"读到第几号"（cnc_rdtooldata 这台机器回
+     * EW_FUNC=1，不给，见 §11.13）。
+     */
+    { "RDTOFSINFO", { 0x0a, 0, 0 },      { 0, 0, 0 },      { 0, 0, 0 },      1, false },
+    /*
+     * 负载扭矩（`cnc_loadtorq`）：一个 **0xfd**，d = 电机号（0 = 伺服）、e = 轴号
+     * （**1 起**：X=1）。应答载荷 4 字节。本机静止时恒 0，且 d/e 超出机床范围会回
+     * EW_RANGE（试过 d=3/e=7）—— 值在载荷里，本机带不动载，**定标未核**（§11.13）。
+     */
+    { "TORQUE",     { 0xfd, 0, 0 },      { 0, 0, 0 },      { 1, 0, 0 },      1, false },
+    /*
+     * 删程序（`cnc_delete`）= 一个 **0x05**，d = 程序号（O 后面的那个数）。本机
+     * （模拟器）回 EW_ATTRIB=5，即"机床不收这条"，帧按官方 SDK 抄的（§11.13）。
+     */
+    { "DELPROG",    { 0x05, 0, 0 },      { 1, 0, 0 },      { 0, 0, 0 },      1, false },
+    /*
+     * 写 CNC 参数（`cnc_wrparam`）。官方 SDK 对着这台机器发的是 **0xa0**、
+     * d = 参数号、e = 1、**不带载荷**（体就是 0x1c），机床回块返回码 0 而 SDK 自己
+     * 报 EW_LENGTH —— 说明值没送出去。这一条按写刀补那个形状补载荷试
+     * （BE32 值 + 0000 + ffff），**成不成由机床说了算**（见 §11.13 的记录：
+     * 收下了就是这一条，不收就退回"机床不提供"）。
+     */
+    { "WRPARAM",    { 0xa0, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
+    /*
+     * 写宏变量（`cnc_wrmacro`）= **0x16**（读 0x15 + 1），载荷 8 字节，形状与刀补
+     * 那条一致。这台模拟器没开用户宏变量（读 0x15 回 EW_NOOPT=6），所以只核到"帧
+     * 能发出去、机床怎么答"，值没写进去（§11.13 写实情）。
+     */
+    { "WRMACRO",    { 0x16, 0, 0 },      { 1, 0, 0 },      { 1, 0, 0 },      1, false },
     /*
      * 程序目录（`cnc_rdprogdir3`）：**码 0x06、`d` = 0、`e` = 8（一次要几条）、
      * `arg2` = 1**（官方 SDK 对这台机器发的就是这个形状；原来写 `d = 0x13` 是照

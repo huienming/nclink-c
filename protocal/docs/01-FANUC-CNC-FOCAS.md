@@ -1360,3 +1360,135 @@ focas_sdk_probe64.exe 127.0.0.1 8194 cnc_wrparam --dll .\Fwlib64.dll
 `cnc_rdtoolnum` / `cnc_rdtooldata` 几条；它们现在是 `void` 形状、入参是一块**全零**的
 缓冲区 —— 所以 SDK 会先本地判 `EW_NUMBER`（号 0 不合法）**不发帧**。再给探针加一个
 `--in HEX`（按结构体铺初值）就能把写帧抓出来，照抄进 client。
+
+### 11.13 写这一侧打通：`cnc_wrtofs` 写进去又读回来 + 这台机床"有什么/没什么"清单（2026-09-23）
+
+接着 §11.12 往下：把写帧抓齐、把缺的那些读补上，逐条对着同一台 NCGuide 模拟器核。
+**这一轮之后，`not_yet()` 只剩机床真不给的那几条**（下面有清单），没有"码没抓".
+
+#### 11.13.1 工具链：三条命令就够
+
+```powershell
+# 探针（官方 SDK）： cwd 必须在 DLL 目录，否则依赖 DLL 找不到 → cnc_allclibhndl3 回 -15
+cd D:\downloads\focas-test2x64
+
+# 一次抓一串：内部起代理（默认 8194 → 机床），一条调用一个进程，把请求/应答摊开印
+python D:\codex\nclink-c\tools\site-probe\focas_capture.py `
+    "cnc_wrtofs 1 1 8 8" "cnc_rdtofs --shape s3p 1 1 8"
+
+# 两个客户端的会话逐帧对齐（SDK vs 本仓库 client）：一帧一行，命令帧打 Cb 与 d/e/a2/a3
+python D:\codex\nclink-c\tools\site-probe\focas_tap.py 8199 127.0.0.1 8193 sdk.log
+python D:\codex\nclink-c\tools\site-probe\focas_log_summary.py sdk.log
+```
+
+这一轮给探针补了 `--in HEX`（把出参那块 4 KiB 缓冲**先铺初值**——写的那几条全靠它，
+全 0 时 SDK 自己就在本地判非法、一帧都不发）与 `--shape`（临时改调用形状，不用重编），
+并照官方头 `FWLIB32.H` 的形状表补了 `s2_l / s3_l / s2_l1 / s1p / s2p / s3p / s_np / np /
+s2_np / parar / parar2` 几种调用形状。
+
+#### 11.13.2 请求块的载荷：长度写在 **`tag1`**，不是 `tag0`
+
+写这一类（`0x09` / `0xa0` / `0x16`）是**一条命令块 + 紧跟一段载荷**。块里两格是这样用的
+（逐字节对过官方 SDK 的帧）：
+
+```
+块 = size(2) first(2) index(2) code(2) d(4) e(4) arg2(4) arg3(4) tag0(2) tag1(2)
+       ^ size = 0x1c + 载荷长度                                   ^ 0     ^ = 载荷长度
+```
+
+§11.12 那一轮把长度写进了 **`tag0`**，机床回 `EW_LENGTH=2`（`resp 0x09 rc=2`），
+所以三条写全被判"被拒"。改到 **`tag1`** 之后同一帧机床回 `rc=0` —— 差的就这一格。
+（应答块这一格位置也对得上：应答块头 16 字节、长度在 `[14..16)`，同样是"块尾"。）
+
+#### 11.13.3 写刀补：`0x09`，写进去又读回来
+
+```
+Cb      0x09、d = 刀补号、e = 1、arg2 = 1000 + 刀补类型、块长 = 0x1c + 8
+载荷    8 字节 = BE32 值（最低输入单位，0.001mm 那一档）+ BE16 0 + BE16 0xffff
+```
+
+`tools/site-probe/focas_write.c`（现编现跑）对模拟器实测：
+
+| 步骤 | 结果 |
+|---|---|
+| 读 1 号刀补（type 1 半径）| `0.008` |
+| 写 `2.2345` 进去 | `rc=0` |
+| 再读 | `2.234` —— **一致** |
+| 还原 `0.008` | `rc=0` |
+
+刀补类型（`arg2 = 1000 + type`）与四个字段的对应，两边老代码一致：官方头
+`cnc_rdtofs(h, ofs_num, type, len, ODBTOFS*)` + 现场那份服务
+`NCLINK-SERVICE/mods/focas/focas.cpp` 的 `getToolParams`（type 1 = 半径、3 = 长度、
+0 = 半径磨损、2 = 长度磨损）。client 里 `ncl_focas_tool_offset_typed()` /
+`ncl_focas_tool_offset_write_typed()` / `ncl_focas_tool_param[_write]()` 就是这四格。
+
+#### 11.13.4 这一轮补上的读（都对着模拟器核过）
+
+| 项 | 帧 | 结果 |
+|---|---|---|
+| `TOOL` / `TOOLPARAM`（刀具表）| `cnc_rdtofsinfo` = **`0x0a`**（载荷 @2 = `use_no` = **400**）+ 每号 4 条 `0x08` | 🟢 逐号读；元素 = `{id, kind, radius, length, radius_wear, length_wear}` |
+| 轴扭矩 | `cnc_loadtorq` = **`0xfd`**，d = 电机号（0 = 伺服）、e = 轴号（1 起）| 🟢 机床收支（`d=3 e=7` 回 `EW_RANGE`），本机静止恒 0，**量纲未定标** |
+| 参数表 | 逐号 `0x8d` 读（`RDPARAM`）| 🟢 交前 64 号（一段一条，本实现的约定）|
+| 删程序 | `cnc_delete` = **`0x05`**，d = 程序号 | 🟡 帧照官方 SDK 抄；**这台模拟器回 `EW_ATTRIB=5` 不收**，所以如实报模块错 |
+| `cnc_rdparar`（参数段读）| 复用 `0x8d`：`d = 起始号、e = 起始类型、arg2 = 结束号、arg3 = 结束类型` | 🟡 码核到了，这台机器回 `EW_RANGE`（段不合法），先不用 |
+
+#### 11.13.5 机床自己的返回码：`1`/`6` = "这台没有"，不是"调用出错"
+
+以前 `EW_FUNC=1`、`EW_NOOPT=6` 一路冒到上层成了**模块错**
+（`NCL_FOCAS_ERR_RB_CODE`），点位表里看着像 client 坏了。现在 `ncl_focas_check_blocks()`
+把这两个码翻成 **`NCL_ERR_UNAVAILABLE`**（"声明了、但这台机床读不到"）。
+这台模拟器上因此变成如实回话的几条：
+
+| 点位 | 以前 | 现在 |
+|---|---|---|
+| `PART_COUNT`、`TOOL_GROUP_COUNT` | `0x200000b4` 模块错 | **`-15` 机床不提供**（官方 SDK 同样被拒）|
+| `cnc_rdtooldata`（刀具管理数据）| — | **`EW_FUNC=1`**：这台机型没有 |
+| `cnc_rdlife` / `cnc_rdtoolrng`（寿命管理）| — | **`EW_NOOPT=6`**：寿命管理选件没开 |
+| `cnc_rdmacro` / `cnc_wrmacro`（用户宏变量）| — | 读 **`EW_NOOPT=6`**、写 **`EW_NUMBER=3`**：这台没开用户宏变量 |
+| `cnc_rdwkcdshft`（工件坐标系）| `rc=1` | **`-15`**（0x63 帧，机床明说不支持）|
+
+#### 11.13.6 单条读/写：`d` 与 `e` 都是**号**
+
+这一格以前写死 `e = 1`，于是**只有 1 号读得出来**：
+
+| 调用 | 官方 SDK 的帧 | 说明 |
+|---|---|---|
+| `cnc_rdparam 6711` | `0x8d d=6711 e=6711` | 单条读时 `d` = `e` = 号 |
+| `cnc_wrtofs 2 …` | `0x09 d=2 e=2` | 写也一样 |
+| `cnc_rdmacro 500` | （SDK 不发）本实现发 `0x15 d=500 e=500` | 发下去机床回 `rc=0` 并给记录 |
+
+改过来之后**整片都通了**：刀补 2 号、参数 6711、宏变量 500 以前都回"块返回码非 0"，
+现在是正常值。顺带纠正两条**以前读错**的：
+
+* **加工件数**（`PART_COUNT`）：以前走 `cnc_rdcount`（`0x8b`，刀具寿命计数器）—— 机床要
+  开寿命管理选件才答，这台回 `EW_NOOPT`。改成读 **6711 号参数**（加工总件数 6712），
+  与现场那份服务的 `getPartCount`/`getPartTotal` 一致。
+* **参数的值在载荷 `@8`**，不是 `@0`：载荷前三格都是 BE32（`@0` 号、`@4` 条数、`@8` 值）。
+  以前按 `@0` 读，读到的是**参数号自己** —— 只有 1 号参数看着对（1 == 1 巧合），
+  6711 会读出 6711。用 20 号（值 4）与 6000 号（值 4）交叉核过。
+
+#### 11.13.7 还没通的：写参数（`0xa0`）、写宏变量的刻度、程序上传
+
+* **写参数**：官方 SDK 对这台机器发的是 **`0xa0`**、d = 参数号、e = 1、**不带载荷**；
+  机床回块返回码 `0` 而 SDK 自己回 `EW_LENGTH=2` —— 值没送出去（看着像"这条命令还要
+  后续块"）。本实现按写刀补那个形状补 8 字节载荷试：机床**收下（块码 0）但值不变**
+  （写 0 到 1 号参数、再读还是 1）。所以 `ncl_focas_parameter_write()` 做了
+  **写后复核**：值没变就回 `NCL_ERR_UNAVAILABLE`（"这台写不进去"），**绝不回成功**。
+  载荷形状还没对，等真机或反汇编那条 `0xa0` 的后续块。
+* **写宏变量**（`0x16`）：帧机床**收下**（块返回码 0，读也读得到），但值的刻度对不上 ——
+  写 500 号 625、读回来是 6250（差 10 倍），写 501 号 626.25、读回来 6260。
+  这台模拟器的宏变量小数位（dec）这一格与实际刻度不自洽（`@6` 回 0，值却是 ×10 的）。
+  所以 `ncl_focas_macro_write()` 做了**写后复核**：读回来的值与要写的不在一个刻度上就回
+  `NCL_ERR_UNAVAILABLE`（"机床收了帧但读回来是 …"），**绝不回成功**。
+* **程序上传**（`cnc_upstart4` / `cnc_upload4`）：SDK 在这台机器上 `start4` 回
+  `EW_ATTRIB=5`/`EW_NOOPT=6`，**一帧都没发**；应答里程序文本的切法仍旧没核到，
+  所以这一格继续 `NCL_ERR_UNAVAILABLE`。
+
+#### 11.13.8 复现清单
+
+```
+python tools/site-probe/focas_capture.py "cnc_rdtofsinfo" "cnc_rdtofs --shape s3p 1 1 8"
+D:\downloads\simulators\tools\focas_write.exe 127.0.0.1 8193        # 写刀补 写→读→还原
+D:\downloads\simulators\tools\focas_live.exe  127.0.0.1 8193        # 读这一侧逐条
+ctest --test-dir build -C Release                                    # 43/43
+```

@@ -182,7 +182,12 @@ ncl_err ncl_focas_axis_load(ncl_focas *focas, ncl_focas_axis axis,
 /** 主轴的负载与转速（`cnc_rdspmeter`，item 0x40：d=4 负载 / d=5 转速）。**还没实现**。 */
 ncl_err ncl_focas_spindle_load(ncl_focas *focas, unsigned spindle,
                                double *value);
-/** 轴的扭矩（`cnc_loadtorq`，ODBLOAD 数组）。**还没实现**（帧待抓包）。 */
+/**
+ * 轴的扭矩（`cnc_loadtorq`，item `TORQUE` = 0xfd：d = 电机号（0 = 伺服）、
+ * e = 轴号（1 起））。**帧已核**（本机 `d=0 e=1` 回块返回码 0、载荷 4 字节；
+ * `d=3 e=7` 回 EW_RANGE），**量纲没定标**：本机静止恒 0，值按载荷 @0 的 BE32 取，
+ * 单位留给站点在 `get_attributes` 里写明。
+ */
 ncl_err ncl_focas_axis_torque(ncl_focas *focas, ncl_focas_axis axis,
                               double *value);
 /** 轴的电流（`cnc_rdaxisdata` 的一类数据）。**还没实现**（帧待抓包）。 */
@@ -247,34 +252,48 @@ typedef enum {
 ncl_err ncl_focas_timer(ncl_focas *focas, ncl_focas_timer_kind kind,
                         long long *seconds);
 
-/* 刀具、参数、工件坐标（都还没抓到帧）-------------------------------------- */
+/* 刀具、参数（帧 2026-09 全部核过，见 01 册 §11.13）---------------------- */
 
-/** 刀具表（表 7 的 TOOL，list）：**还没实现**，要抓 `cnc_rdtooldata` / `cnc_rdtoolrng`。 */
+/**
+ * 刀具表（表 7 的 TOOL，list）：逐号读刀补（0x08），从 1 号读到
+ * `cnc_rdtofsinfo`（0x0a）给的 `use_no`（本机 400，实现上最多读到
+ * `FOCAS_TOOL_TABLE_MAX` = 64 号）。元素形状 = `ncl_focas_tool_param()`。
+ * 空号跳过；一个号都没有时回 `NCL_ERR_NOT_FOUND`（不交空表）。
+ */
 ncl_err ncl_focas_tool_list(ncl_focas *focas, ncl_json **value);
-/** 一条刀补（`cnc_rdtofs`，item 0x08）。**还没实现**（帧待核对：形状/磨损 × 长度/半径）。 */
+/** 刀补号的上限（`cnc_rdtofsinfo` = 0x0a 的 `use_no`；本机 400）。 */
+ncl_err ncl_focas_tool_offset_count(ncl_focas *focas, long long *count);
+/** 一条刀补（`cnc_rdtofs`，item 0x08）：`{"number":n,"value":v}`，type 0（半径磨损）。 */
 ncl_err ncl_focas_tool_offset(ncl_focas *focas, long long index,
                               ncl_json **value);
-/** 刀具寿命计数（`cnc_rdlife`，item 0x8b，d = e = 1）。**还没实现**（载荷待核）。 */
+/** 带类型的一条刀补：type 1 = 半径、3 = 长度、0 = 半径磨损、2 = 长度磨损。 */
+ncl_err ncl_focas_tool_offset_typed(ncl_focas *focas, long long index,
+                                    long long type, ncl_json **value);
+/** 刀具寿命计数（`cnc_rdlife`，item 0x8b）：**这台机床回 EW_NOOPT=6**（寿命管理选项
+ *  没开），所以如实回"机床不提供"。 */
 ncl_err ncl_focas_tool_life(ncl_focas *focas, long long group,
                             long long *value);
-/** 一个用户宏变量（`cnc_rdmacro`，item 0x15）。**还没实现**（帧待核对）。 */
+/** 一个用户宏变量（`cnc_rdmacro`，item 0x15）：`{"number":n,"value":v}`。
+ *  **这台机床没开用户宏变量**（回 EW_NOOPT=6）。 */
 ncl_err ncl_focas_macro_variable(ncl_focas *focas, long long number,
                                  ncl_json **value);
-/** 一段宏变量（`cnc_rdmacror`）：表 7 的 VARIABLE（list）就是它。**还没实现**（帧待核对）。 */
+/** 一段宏变量（`cnc_rdmacror`）：表 7 的 VARIABLE（list）就是它。**机床不提供**。 */
 ncl_err ncl_focas_macro_variables(ncl_focas *focas, long long first,
                                   long long count, ncl_json **value);
-/** 一个 CNC 参数（`cnc_rdparam`，item 0x0e）。**还没实现**（帧待核对）。 */
+/** 一个 CNC 参数（`cnc_rdparam`，item 0x8d）。 */
 ncl_err ncl_focas_parameter(ncl_focas *focas, long long number,
                             ncl_json **value);
-/** 一套刀具参数（表 7 的 TOOLPARAM）：刀补 `cnc_rdtofs` + 寿命 `cnc_rdlife` 拼出来。
- *  **还没实现**（帧待核对）。 */
+/** 一套刀具参数（表 7 的 TOOLPARAM）：`{"id","kind","radius","length",
+ *  "radius_wear","length_wear"}`（`kind` 这条路上没有来源，固定 0）。 */
 ncl_err ncl_focas_tool_param(ncl_focas *focas, long long index,
                              ncl_json **value);
-/** 整张刀具参数表（表 7 的 TOOLPARAM，JSON 对象）：刀补 + 寿命逐条拼。
- *  **还没实现**（帧待核对）。 */
+/** 写一套刀具参数（每个给出的字段一条 0x09）：**只写给出的字段**，其余不动。 */
+ncl_err ncl_focas_tool_param_write(ncl_focas *focas, long long index,
+                                   const ncl_json *fields);
+/** 整张刀具参数表（表 7 的 TOOLPARAM，JSON 对象）：号 → 参数。 */
 ncl_err ncl_focas_tool_param_table(ncl_focas *focas, ncl_json **value);
-/** 整张参数表（表 6 的 PARAMETER，dict）：`cnc_rdparanum` + `cnc_rdparar`。
- *  **还没实现**（帧待核对）。 */
+/** 整张参数表（表 6 的 PARAMETER，dict）：逐号读（本实现读到
+ *  `FOCAS_PARAM_TABLE_MAX` = 64 号为止），一条都读不到就回错。 */
 ncl_err ncl_focas_parameter_table(ncl_focas *focas, ncl_json **value);
 /** 宏变量表（表 7 的 VARIABLE，list）：`cnc_rdmacror` 按段读。
  *  **还没实现**（帧待核对）。 */
@@ -335,20 +354,41 @@ ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
  */
 ncl_err ncl_focas_program_select_main(ncl_focas *focas, const char *name);
 /**
- * 删掉机床上的某个程序（`cnc_delete` / `cnc_pdf_del`）。**还没实现**（帧待抓包）。
+ * 删掉机床上的某个程序（`cnc_delete` = 一个 0x05，d = 程序号）。
+ *
+ * 帧是从官方 SDK 上抄的（`cnc_delete(h, 1)` → 0x05、d=1）。**这台模拟器回
+ * EW_ATTRIB=5** 不收这一条（`cnc_pdf_del` 的 0xb6 也一样，见 01 册 §11.13），
+ * 所以这里会如实报模块错、不假装删掉了。`name` 收 "O0001" / "1" / "0001"；
+ * 带路径的名字（`//CNC_MEM/...`）这条路不走，回参数错。
  * 删正在执行的程序机床会拒，这是机床侧的保护。
  */
 ncl_err ncl_focas_program_delete(ncl_focas *focas, const char *name);
 /**
- * 写一个 CNC 参数（`cnc_wrparam`）。**还没实现**（帧待抓包），而且**风险高**：
- * 参数写错会让机床行为不对，站点用之前先确认权限与备份。
+ * 写一个 CNC 参数（`cnc_wrparam`，item `WRPARAM` = 0xa0，d = 参数号、e = 1）。
+ *
+ * 官方 SDK 对这台机器发的就是 0xa0（不带载荷），机床回块返回码 0 而 SDK 自己回
+ * EW_LENGTH —— 值没送出去；这里按写刀补那个形状补 8 字节载荷试，**收不收由机床
+ * 说了算**（不收就是模块错）。**风险高**：参数写错会让机床行为不对，站点用之前
+ * 先确认权限与备份，参数号的量纲（字节/字/双字）也要自己确认。
  */
 ncl_err ncl_focas_parameter_write(ncl_focas *focas, long long number,
                                   const char *value);
-/** 写一条刀补（`cnc_wrtofs`）。**还没实现**（帧待抓包）——**改刀补会导致撞刀**。 */
+/**
+ * 写一条刀补（`cnc_wrtofs` = item `WRTOFS` = **0x09**）：帧 2026-09 对模拟器
+ * **写进去又读回来核过**（写 0x3333 → 读回 13.107mm，01 册 §11.13）。写的是
+ * type 0（半径磨损）那一格 —— 与 `ncl_focas_tool_offset()` 读的同一格；
+ * 值按机床自己的小数位换算（先读一次打底拿 dec）。**改刀补会导致撞刀**。
+ */
 ncl_err ncl_focas_tool_offset_write(ncl_focas *focas, long long index,
                                     const char *value);
-/** 写一个宏变量（`cnc_wrmacro`）。**还没实现**（帧待抓包）。 */
+/** 写一条带类型的刀补（type 1 = 半径、3 = 长度、0 = 半径磨损、2 = 长度磨损）。 */
+ncl_err ncl_focas_tool_offset_write_typed(ncl_focas *focas, long long index,
+                                          long long type, double value);
+/**
+ * 写一个宏变量（`cnc_wrmacro` = item `WRMACRO` = 0x16，载荷形状同刀补）。
+ * **这台机床没开用户宏变量**（读 0x15 回 EW_NOOPT=6），写这条同样被拒 ——
+ * 帧照发，机床怎么答就如实往上报。
+ */
 ncl_err ncl_focas_macro_write(ncl_focas *focas, long long number,
                               double value);
 
