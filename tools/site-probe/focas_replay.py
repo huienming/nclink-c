@@ -13,7 +13,8 @@
 
 `down` = 下行三件套（0x11 / 0x12 / 0x13），`up` = 上行（0x15 / 0x18）。
 `down-on-control` = 把下行那三条发到**控制通道**上；`down-on-third` = 另开**第三条**
-连接发（两者都是"换个通道试试"的排查手段）。
+连接发；`down-split` = start 帧**拆成两次 send**（头 10 字节 + 体）发 —— 都是"换个
+发法试试"的排查手段。
 """
 
 import socket
@@ -83,21 +84,53 @@ def start_body(path):
 
 
 def main():
-    # 官方 SDK 的顺序：先连控制通道、hello 1、拿应答，再连数据通道、hello 2。
-    control = socket.create_connection((HOST, PORT), 5)
-    control.settimeout(5)
-    # 一帧一个 TCP 段（关掉 Nagle）：这台机床的传输那一族像是按"段"解帧的。
-    control.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    send(control, 0x01, 1, b"\x00\x01", "hello(控制通道)")
-    read_frame(control, "hello1")
-
-    data = socket.create_connection((HOST, PORT), 5)
-    data.settimeout(5)
-    data.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    send(data, 0x01, 1, b"\x00\x02", "hello(数据通道)")
-    read_frame(data, "hello2")
-
     probe = b"\x00\x01" + b"\x00\x1c\x00\x01\x00\x01\x00\x18" + b"\x00" * 20
+    control = None
+
+    def open_conn(counter, what):
+        sock = socket.create_connection((HOST, PORT), 5)
+        sock.settimeout(5)
+        # 一帧一个 TCP 段（关掉 Nagle）
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        send(sock, 0x01, 1, bytes([0, counter]), what)
+        read_frame(sock, what)
+        return sock
+
+    if WHAT == "down-noctrl":  # 只开一条连接（没有"控制通道"）
+        data = open_conn(2, "hello(单连接)")
+    elif WHAT == "down-swap":  # 两条连接，但顺序反过来
+        data = open_conn(2, "hello(先连的)")
+        control = open_conn(1, "hello(后连的)")
+    else:
+        # 官方 SDK 的顺序：先连控制通道、hello 1、拿应答，再连数据通道、hello 2。
+        control = open_conn(1, "hello(控制通道)")
+        data = open_conn(2, "hello(数据通道)")
+
+    if WHAT in ("down-min", "down-noctrl", "down-swap", "down-read-first"):
+        if WHAT == "down-read-first":
+            dir_read = (b"\x00\x01" + b"\x00\x1c\x00\x01\x00\x01\x00\x06" +
+                        b"\x00" * 20)
+            send(data, 0x21, 1, dir_read, "程序目录 0x06")
+            read_frame(data, "0x06 应答")
+        send(data, 0x11, 1, start_body(DIR), "0x11 下行 start")
+        read_frame(data, "0x11 应答")
+        send(data, 0x12, 4, PROGRAM, "0x12 数据")
+        send(data, 0x13, 1, b"", "0x13 end")
+        read_frame(data, "0x13 应答")
+        for sock in (control, data):
+            if sock is not None:
+                sock.close()
+        return 0
+
+    if WHAT == "down-both":
+        # 下行 start 之后**两条连接都读一下**：看机床是不是把应答发到另一条上。
+        send(data, 0x11, 1, start_body(DIR), "0x11 下行 start")
+        for name, sock in (("数据通道", data), ("控制通道", control)):
+            if sock is None:
+                continue
+            print("   ... 等 %s 的应答" % name)
+            read_frame(sock, name)
+
     send(data, 0x21, 1, probe, "会话探针")
     read_frame(data, "探针")
 
@@ -115,6 +148,18 @@ def main():
             read_frame(third, "hello3")
             data = third
         send(data, 0x11, 1, start_body(DIR), "0x11 下行 start")
+        read_frame(data, "0x11 应答")
+        send(data, 0x12, 4, PROGRAM, "0x12 数据")
+        send(data, 0x13, 1, b"", "0x13 end")
+        read_frame(data, "0x13 应答")
+    elif WHAT == "down-split":
+        # start 帧拆两次 send（先 10 字节头、再体），看机床是不是按"段"解帧。
+        raw = frame(0x11, 1, start_body(DIR))
+        time.sleep(PAUSE)
+        print("   -> 0x11 拆两次发：头 %d + 体 %d" % (10, len(raw) - 10))
+        data.sendall(raw[:10])
+        time.sleep(PAUSE)
+        data.sendall(raw[10:])
         read_frame(data, "0x11 应答")
         send(data, 0x12, 4, PROGRAM, "0x12 数据")
         send(data, 0x13, 1, b"", "0x13 end")

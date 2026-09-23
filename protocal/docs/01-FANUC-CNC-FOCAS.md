@@ -1556,6 +1556,22 @@ a0a0a0a0 0003 13 03 0008  | 00 00 00 05 00 01 00 00
 也就是说：**这一条不是"帧写错了"**，机床是在帧以外（TCP 层面/会话来源）区分的，
 机理还没找到，记在这儿当开口项：
 
+已经排除掉的（都试过）：
+
+| 试法 | 结果 |
+|---|---|
+| 逐字节对齐（含 `tag`），用 `focas_log_summary.py` 对过 | 帧一模一样 |
+| **原样重放 SDK 的字节**（`focas_replay_verbatim.py`）| 一样被关 |
+| 会话形状：只开一条连接 / 两条顺序反过来 / 不发探针 / 先读程序目录再传 | 一样被关 |
+| 发法：start 帧拆成"头 10 字节 + 体"两次 send | 一样被关 |
+| 时间：探针应答后停 600 ms（client）/ 2 s（重放，帧间全停）| 一样被关 |
+| 通道：把下行那三条发到控制通道 / 另开第三条连接 | 一样被关（第三条连接 hello 回 `dir 3` + 码 4 = EW_RANGE）|
+| **重启 CNC GUIDE 之后，先用 client 试**（在 SDK 之前）| 一样被关 —— 所以不是"机床卡在传输忙" |
+
+给 tap 加时间戳后看到的两边差别只有快慢（SDK：探针应答后 9 ms 发 start、机床 16 ms
+后回 256 字节；client：0.35 ms 就发、机床**立刻**关连接）—— 但把延时拉长也一样被拒，
+所以时间不是判据。
+
 ```
 python tools/site-probe/focas_capture.py "cnc_dwnstart4 --shape dwn4 0 --name //CNC_MEM/USER/PATH1/"   # SDK：start rc=0
 D:\downloads\simulators\tools\focas_transfer.exe 127.0.0.1 8193 //CNC_MEM/USER/PATH1/O0001           # client：0x11 无应答

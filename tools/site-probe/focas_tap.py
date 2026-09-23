@@ -18,6 +18,10 @@
 import socket
 import sys
 import threading
+import time
+
+# 时间轴：每段字节前打一个相对启动的毫秒数（比较两个客户端"什么时候发了什么"用）。
+START = time.monotonic()
 
 
 def hexdump(data):
@@ -46,8 +50,9 @@ def pump(src, dst, tag, out):
             data = src.recv(4096)
             if not data:
                 break
-            out.write("%s %d bytes\n%s%s" % (tag, len(data), hexdump(data),
-                                             frame_note(data, tag)))
+            out.write("%s [%7.3f ms] %d bytes\n%s%s"
+                      % (tag, (time.monotonic() - START) * 1000.0, len(data),
+                         hexdump(data), frame_note(data, tag)))
             out.flush()
             dst.sendall(data)
     except OSError:
