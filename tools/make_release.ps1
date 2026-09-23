@@ -10,7 +10,7 @@
 # needs a library and a header set to talk to a machine tool, not the protocol
 # implementation. src/, tests/, tools/ and the clients/plugins sources need
 # -WithSource. The adapter modules and the device program live in their own
-# package (tools/make_fanuc_release.ps1).
+# package (tools/make_adapter_release.ps1).
 # See the "vendor clients" section for the layout.
 #
 # After assembly a content guard runs over the package: a screened word fails
@@ -172,10 +172,11 @@ foreach ($exe in $exeSources) {
 # <platform> names are the ones under lib/, so a build directory that is not
 # present is skipped with a note: exactly like the core libraries above.
 #
-# The adapter modules and the device program are not in this package: an
-# adapter's binary release is a folder of its own (one host, one module, its
-# configuration - see tools/make_fanuc_release.ps1, which assembles
-# dist/nclink-fanuc-adapter-*-win-x64). This package ships the libraries both
+# The adapter modules and the device program are not in this package: the
+# adapter's binary release is a folder of its own, with the host, every driver
+# module and the configuration that picks one - see
+# tools/make_adapter_release.ps1, which assembles
+# dist/nclink-adapter-<version>-win-x64. This package ships the libraries both
 # sides link against.
 Copy-Tree "clients/include/nclink/clients" "include/nclink/clients" @("*.h")
 

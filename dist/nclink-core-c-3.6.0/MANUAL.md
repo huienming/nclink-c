@@ -80,8 +80,9 @@ build-linux.sh      Linux 免 cmake 构建
 
 > **发布包给的是头文件（含 `include/nclink/clients/`）、各平台静态库（核心库 + 协议客户端库）、
 > 文档与示例程序**；实现源码、测试套件以及协议客户端 / 适配器的 C 源码都在工程仓库里（需要自行
-> 重编时获取，见 2.5）。适配器模块与设备程序按厂商单独出包：一个目录里放 host、该厂商的**一个**
-> 模块、它的配置与运行脚本（FANUC 那份见 `tools/make_fanuc_release.ps1`）。
+> 重编时获取，见 2.5）。适配器模块与设备程序单独出包：一个目录 `nclink-adapter-<版本>-win-x64`
+> 里放 host、`plugins/` 下各厂商的驱动模块、每个驱动一份配置样例与运行脚本，**装载哪个驱动由
+> 配置里的 `plugins` 说**（见 `tools/make_adapter_release.ps1` 与包内 `README.md`）。
 
 ### 2.2 Windows（已验证环境）
 

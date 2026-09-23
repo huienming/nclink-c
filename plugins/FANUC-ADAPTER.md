@@ -29,13 +29,13 @@ bin/ncl_server.exe            设备程序（宿主）：一台 NC-Link 服务�
 plugins/ncl_driver_focas.dll   FANUC 适配器模块（FOCAS over TCP）——启动时动态装载；
                               它还负责文件那一链的**最后一段**（adapter → 机床：
                               程序上下行 `cnc_dwnstart4` 一族，见第 5 节末）
-conf/fanuc.json                设备配置：机床地址、采样周期、broker、要装载的模块
-                               （点位表在模块里，见第 5 节）
+conf/fanuc.json                设备配置：要装载哪个驱动（`"plugins": ["focas"]`）、机床地址、
+                               采样周期、broker（点位表在模块里，见第 5 节）
 conf/mqtt.cfg                  MQTT broker 配置样例
 run-once.ps1                   自检：轮询一遍全部点位，打印到屏幕并写日志
 run.ps1                        常驻运行（Ctrl+C 退出）
 list-plugins.ps1               列出装载到的适配器模块与协议（排查"模块没装上"）
-README.md                      本文件
+README.md                      适配器包的整体说明（多驱动、怎么选驱动）
 LICENSE                        MIT
 SHA256SUMS.txt                 包内每个文件的 SHA-256
 
@@ -43,6 +43,10 @@ docs/                          **只在内部资料版里**（打包时加 -With
 docs/FANUC-CNC-FOCAS.md        协议依据：帧格式、握手、应答块取值规则（含假机床实测记录）
 docs/plugins-README.md        适配器完整说明（写法、审计、模块 ABI）（点表写法、审计、各协议清单、模块 ABI）
 ```
+
+> 本手册在适配器包里是 `docs\FANUC-ADAPTER.md`：那是一个包里放**各厂商驱动模块**、由配置
+> 决定装载哪个的包（同包还有新代驱动等），包的整体说明与"装载哪个驱动"看包内 `README.md`。
+> 下文只讲 FANUC 这一侧：点位、参数、文件通道与现场排障。
 
 运行环境：Windows x64（Windows 10/11、Server 2016 及以上）。程序只依赖
 **VC++ 2015–2022 x64 运行库**（`vcruntime140.dll`、`msvcp140.dll`）；没有的话先装
@@ -59,8 +63,8 @@ docs/plugins-README.md        适配器完整说明（写法、审计、模块 A
 ```
 D:\fanuc\              <- <root>
 ├── bin\               SN 从这里生成（bin\sn.txt），删掉会重新生成
-├── plugins\           适配器模块（ncl_driver_focas.dll）；这是"这台机器会说哪种机床"的地方
-├── conf\              fanuc.json / mqtt.cfg
+├── plugins\           驱动模块（ncl_driver_focas.dll，包里还有别的驱动）；这是"这台机器会说哪种机床"的地方
+├── conf\              fanuc.json / syntec.json / mqtt.cfg（用哪个驱动就看 -c 指的那份）
 └── log\out.txt        运行日志（UTF-8）
 ```
 
@@ -71,6 +75,7 @@ D:\fanuc\              <- <root>
 
    ```json
    {
+     "plugins": ["focas"],
      "tools": [
        {
          "name": "focas",
@@ -97,7 +102,7 @@ D:\fanuc\              <- <root>
    | 顶层键 | 作用 | 默认 |
    |---|---|---|
    | `sample.intervalMs` / `sample.uploadMs` | 采样与上报周期 | `1000` / `1000`（也可以不写配置、直接改模型文件，见第 4 节） |
-   | `plugins.load` | 装载哪些模块 | 不写 = 装载 `plugins\` 里**全部**模块（本包只有一个） |
+   | `plugins`（数组）或 `plugins.load` | 装载哪些模块 | 不写 = 装载 `plugins\` 里**全部**模块（包里每个驱动都装一份） |
    | `sn` | 设备序列号（MQTT 主题用它） | 不写就用 `bin\sn.txt`（不存在时自动生成，见第 3 步） |
    | `model` | 用一份自己的模型文件 | 不写 = 由模块声明生成（见第 4 节） |
    | `device.id` / `device.name` | 模型里那台设备的 **ID 与显示名** | `01` / `适配器设备` |

@@ -5,6 +5,28 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 3.6.0
 
+### 发布：dist 入库、clients 出库 + 头文件、适配器一个包多驱动
+
+  * **`dist/` 入库**（原来只在本地）：`nclink-core-c-3.6.0`（库包）与
+    `nclink-adapter-3.6.0-win-x64`（适配器包），各带 zip 与 `.sha256`。`.gitattributes`
+    给 `dist/**` 按原字节保存（包内 `SHA256SUMS.txt` 得跟同包文件的实际字节对得上，不能被
+    换行归一化改掉）；`.gitignore` 放行包内二进制（`*.dll` / `*.exe` / `*.so`）但挡住包内
+    样例的 `obj/`。
+  * **库包**：新增 `include/nclink/clients/*.h`（10 个协议客户端的公共头，与核心头同一个
+    根）与 `lib/<平台>/nclink_clients.{lib,a}`（与同平台核心库配对：Windows 六种变体 +
+    Linux）。协议客户端的 **C 源码不进包**（只在 `-WithSource` 里）——库里给的是编译产物与
+    头文件；设备程序与适配器模块同样不在库包里。
+  * **适配器包**：一个目录 `nclink-adapter-<版本>-win-x64`，`plugins/` 下**各厂商驱动模块
+    并存**（`ncl_driver_focas.dll` + `ncl_driver_syntec.dll`），**装载哪个驱动由配置说**
+    （`"plugins": ["focas"]`，不写 = 目录里全部装载），配置样例每个驱动一份；驱动自己的现场
+    手册进 `docs/`，包内 `README.md` 换成 `plugins/ADAPTER-PACKAGE.md`（讲清单、怎么选驱动、
+    怎么跑）。打包脚本 `tools/make_fanuc_release.ps1` → `tools/make_adapter_release.ps1`：
+    打包版本号默认从 `include/nclink/ncl_common.h` 的 `NCL_VERSION` 读，不再手写。
+  * **Linux 库重编**：`build-linux` 在 gcc 13 容器里重建（**43 套件全通过**），包内
+    `lib/linux-x86_64-gcc/` 两份（核心库 + 客户端库）都是这次产物。
+  * **内容体检**：MTConnect 的 `severity` 是协议自身拼写（`severity="FAULT"`），扫描前先把
+    这个词从待检行剪掉，其余关键词照旧拦。
+
 ### 示例：振动只留主轴（X/Y/Z/C 四轴的 ACCELERATION 去掉）
 
   * **模型**（`examples/device_model.c` 与 `conf/model/nclink.json` —— 两份本来就是

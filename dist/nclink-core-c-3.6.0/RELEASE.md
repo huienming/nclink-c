@@ -50,9 +50,10 @@ SHA256SUMS.txt                         包内每个文件的 SHA-256
 手册第 3 章另有一份最小可用示例代码，可直接抄进你的工程。
 
 协议客户端的 C 源码、适配器模块（`plugins/`）与设备程序 `ncl_server` 也不在本包内：适配器
-按厂商单独出包——一个目录里放 host（`bin/ncl_server.exe`）、该厂商的**一个**模块
-（`plugins/ncl_driver_<工具>.dll`）、它的配置与运行脚本，见 `tools/make_fanuc_release.ps1`
-打出的 `nclink-fanuc-adapter-<版本>-win-x64`。本包给的是两侧各自链接的库与头文件。
+单独出包——一个目录 `nclink-adapter-<版本>-win-x64`，里面放 host（`bin/ncl_server.exe`）、
+`plugins/` 下**各厂商的驱动模块**（`ncl_driver_focas.dll`、`ncl_driver_syntec.dll` …）、
+每个驱动一份配置样例与运行脚本，**装载哪个驱动由配置里的 `plugins` 说**。见
+`tools/make_adapter_release.ps1`。本包给的是两侧各自链接的库与头文件。
 
 
 **同一个包里有两种构建**，按平台各放一份，目录名区分、文件名相同：
@@ -301,7 +302,7 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 ```powershell
 .\tools\make_release.ps1                # 默认：头文件 + 库 + 文档 + 示例（本包）
 .\tools\make_release.ps1 -WithSource    # 额外带上 src/tests/tools 与构建脚本
-.\tools\make_fanuc_release.ps1 -Version 3.6.0   # 适配器包：一个目录（host + 单个模块 + 配置 + 脚本）
+.\tools\make_adapter_release.ps1        # 适配器包：一个目录（host + 各驱动模块 + 配置 + 脚本）
 ```
 
 从源码手工编译时的三个要点（详见手册 2.3）：`-Iinclude -Isrc`、

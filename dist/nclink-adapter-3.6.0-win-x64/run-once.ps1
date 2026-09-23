@@ -1,8 +1,8 @@
 # Self check: poll every configured point once, print it, exit. No broker.
 #
 #   .\run-once.ps1
+#   .\run-once.ps1 -Config conf\syntec.json
 #   .\run-once.ps1 -Raw            # audit with the frames
-#   .\run-once.ps1 -Config conf\other.json
 param(
     [string]$Config = "",
     [switch]$Raw

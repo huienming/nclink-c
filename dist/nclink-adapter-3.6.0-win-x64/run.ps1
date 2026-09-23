@@ -1,9 +1,9 @@
 # Run for real: poll the machine, publish the samples, serve REST. Ctrl+C exits.
 #
 #   .\run.ps1
-#   .\run.ps1 -Broker tcp://10.0.0.9:1883
-#   .\run.ps1 -Broker tcp://10.0.0.9:1883 -Interval 500 -RestPort 8081 -Raw
-#   .\list-plugins.ps1          # show the loaded adapter modules
+#   .\run.ps1 -Config conf\syntec.json
+#   .\run.ps1 -Config conf\fanuc.json -Broker tcp://10.0.0.9:1883 -Interval 500 -RestPort 8081
+#   .\run.ps1 -Raw                 # audit every frame
 param(
     [string]$Config = "",
     [string]$Broker = "",
