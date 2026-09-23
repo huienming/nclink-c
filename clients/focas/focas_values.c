@@ -2739,14 +2739,17 @@ ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
             break;
         }
         chunk = ncl_json_obj_get_string(one, "text");
-        lines = ncl_json_obj_get_int(one, "lines", 0);
-        if (chunk == NULL || lines <= 0) {
+        if (chunk == NULL) {
             ncl_json_free(one);
             break; /* 读到头了 */
         }
         {
             size_t n = strlen(chunk);
 
+            if (n == 0) {
+                ncl_json_free(one);
+                break; /* 空载荷：读到头了 */
+            }
             if (used + n + 1u > FOCAS_PDF_PROGRAM_MAX) {
                 ncl_json_free(one);
                 rc = note(focas, "程序上传", NCL_ERR_RANGE);
@@ -2754,10 +2757,21 @@ ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
             }
             memcpy(text + used, chunk, n);
             used += n;
-            line += lines;
+            /*
+             * 推进的**行数自己数**：机床那份 `cnc_pdf_add` 建出来的程序内容是
+             * `O2200%`（末尾 `%`、**没有换行**），数出来是 0 行 —— 所以"读到没读到"
+             * 只能看**文字长度**，行数只用来推进（没进过行就说明到结尾了，别绕圈）。
+             */
+            lines = program_count_lines(chunk, n);
+            if (lines > 0) {
+                line += lines;
+            }
             ncl_json_free(one);
             if (chunk[n - 1u] != '\n') {
                 break; /* 末行没有 EOB：这一段就是程序结尾 */
+            }
+            if (lines == 0) {
+                break; /* 保险：一行都没进，别再问同一段 */
             }
             continue;
         }
@@ -2984,37 +2998,104 @@ ncl_err ncl_focas_program_select_main(ncl_focas *focas, const char *name)
  * EW_ATTRIB=5**（条 0x05 与 0xb6 两条都是），也就是"机床不收这条" —— 所以这台机器
  * 上删不了程序，但码与形状是官方库里那一条，站点接了真机就能用。
  */
-ncl_err ncl_focas_program_delete(ncl_focas *focas, const char *name)
+/**
+ * 建一个程序文件 / 文件夹（`cnc_pdf_add` = item `RDPDFADD` = **`0xb5`**，
+ * `d` = 0 文件 / 1 文件夹，载荷 = 256 字节路径）。
+ *
+ * 2026-09-23 实测（模拟器）：`//CNC_MEM/USER/PATH1/O1234` 建出来 `rc=0`，而且机床
+ * **自动把程序号那一行写进去**（读回来是 `O1234\n`）—— 也就是"建空程序"这一步机床自己会做。
+ */
+ncl_err ncl_focas_program_create(ncl_focas *focas, const char *name, bool folder)
 {
     ncl_json *params;
+    ncl_json *data;
     ncl_json *answer = NULL;
-    long long number = 0;
-    const char *p;
+    char path[FOCAS_PDF_PATH_SIZE];
+    size_t i;
     ncl_err rc;
 
     if (focas == NULL || ncl_str_is_blank(name)) {
         return NCL_ERR_INVALID_ARG;
     }
-    /* "O0001" / "1" / "0001" 都按程序号收；带 '/' 的是路径，这条路不走。 */
-    p = name;
-    if (*p == 'O' || *p == 'o') {
-        p++;
-    }
-    while (*p >= '0' && *p <= '9') {
-        number = number * 10 + (*p - '0');
-        p++;
-    }
-    if (number <= 0 || *p != '\0') {
-        return note(focas, "删程序", NCL_ERR_INVALID_ARG);
-    }
+    memset(path, 0, sizeof(path));
+    snprintf(path, sizeof(path), "%s", name);
     params = ncl_json_new_object();
-    if (params == NULL) {
+    data = ncl_json_new_array();
+    if (params == NULL || data == NULL) {
+        ncl_json_free(params);
+        ncl_json_free(data);
         return NCL_ERR_NOMEM;
     }
-    (void)ncl_json_obj_set_string(params, "item", "DELPROG");
+    for (i = 0; i < sizeof(path); i++) {
+        if (ncl_json_arr_push(data, ncl_json_new_int((unsigned char)path[i])) !=
+            NCL_OK) {
+            ncl_json_free(params);
+            ncl_json_free(data);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    (void)ncl_json_obj_set_string(params, "item", "RDPDFADD");
     (void)ncl_json_obj_set_int(params, "block", 0);
-    (void)ncl_json_obj_set_int(params, "d", number);
+    (void)ncl_json_obj_set_int(params, "d", folder ? 1 : 0);
+    (void)ncl_json_obj_set(params, "data", data);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    ncl_json_free(answer);
+    if (rc != NCL_OK) {
+        return note(focas, "建程序", rc);
+    }
+    return NCL_OK;
+}
+
+/*
+ * 删程序（`cnc_pdf_del` = item `RDPDFDEL` = **`0xb6`**，载荷 = 256 字节路径）。
+ *
+ * 2026-09-23 实测（模拟器）：`//CNC_MEM/USER/PATH1/O1234` 删掉 `rc=0`；路径不存在时
+ * 回 `EW_ATTRIB`。`name` 收完整路径，也收裸文件名/`O1234`（自动补默认文件夹）。
+ *
+ * 另有一条按**程序号**删的 `cnc_delete`（Cb `0x05`，item `DELPROG`）—— 官方手册里
+ * "任意机型都支持"，但帧记着的这条（0xb6）是实测通过的，所以默认走它。
+ */
+ncl_err ncl_focas_program_delete(ncl_focas *focas, const char *name)
+{
+    ncl_json *params;
+    ncl_json *data;
+    ncl_json *answer = NULL;
+    char path[FOCAS_PDF_PATH_SIZE];
+    size_t i;
+    ncl_err rc;
+
+    if (focas == NULL || ncl_str_is_blank(name)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    memset(path, 0, sizeof(path));
+    if (strchr(name, '/') != NULL) {
+        snprintf(path, sizeof(path), "%s", name);
+    } else if (name[0] == 'O' || name[0] == 'o') {
+        snprintf(path, sizeof(path), "//CNC_MEM/USER/PATH1/%s", name);
+    } else {
+        snprintf(path, sizeof(path), "//CNC_MEM/USER/PATH1/O%s", name);
+    }
+    params = ncl_json_new_object();
+    data = ncl_json_new_array();
+    if (params == NULL || data == NULL) {
+        ncl_json_free(params);
+        ncl_json_free(data);
+        return NCL_ERR_NOMEM;
+    }
+    for (i = 0; i < sizeof(path); i++) {
+        if (ncl_json_arr_push(data, ncl_json_new_int((unsigned char)path[i])) !=
+            NCL_OK) {
+            ncl_json_free(params);
+            ncl_json_free(data);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    (void)ncl_json_obj_set_string(params, "item", "RDPDFDEL");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", 0);
     (void)ncl_json_obj_set_int(params, "e", 0);
+    (void)ncl_json_obj_set(params, "data", data);
     rc = ncl_focas_call(focas, "payload", params, &answer);
     ncl_json_free(params);
     ncl_json_free(answer);

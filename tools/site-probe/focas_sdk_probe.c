@@ -296,6 +296,7 @@ int main(int argc, char **argv)
     const char *seed = NULL;   /* --in HEX：出参/入参那块缓冲的初值 */
     const char *shape = NULL;  /* --shape：临时改调用形状（表里的只是缺省） */
     const char *data_arg = NULL; /* --data TEXT：程序下行的正文（第一行 = 程序号） */
+    const char *data_file = NULL; /* --data-file F：正文从文件读（批处理里好传） */
     bool        hssb = false;  /* --hssb：走 cnc_allclibhndl（节点号，NCGuide 用 9） */
     int         node = 9;
     const char *positional[8];
@@ -335,6 +336,8 @@ int main(int argc, char **argv)
             seed = argv[++i];
         } else if (strcmp(argv[i], "--data") == 0 && i + 1 < (size_t)argc) {
             data_arg = argv[++i];
+        } else if (strcmp(argv[i], "--data-file") == 0 && i + 1 < (size_t)argc) {
+            data_file = argv[++i];
         } else if (strcmp(argv[i], "--shape") == 0 && i + 1 < (size_t)argc) {
             shape = argv[++i];
         } else if (strcmp(argv[i], "--node") == 0 && i + 1 < (size_t)argc) {
@@ -802,7 +805,18 @@ int main(int argc, char **argv)
          * 例如 `O0001`，这是 FANUC 的规矩 —— 目录给的是文件夹）。不给就铺 'A'
          * （只用来核帧形状，不是一份合法的程序）。
          */
-        if (data_arg != NULL) {
+        if (data_file != NULL) {
+            /* 从文件读正文（二进制原样）：批处理/并行测试里传多行文本省事。 */
+            FILE *fh = fopen(data_file, "rb");
+
+            if (fh == NULL) {
+                fprintf(stderr, "  (打不开 %s)\n", data_file);
+                freelibhndl(handle);
+                return 2;
+            }
+            want = (long)fread(buf, 1, sizeof(buf), fh);
+            fclose(fh);
+        } else if (data_arg != NULL) {
             size_t n = strlen(data_arg);
 
             if (n > sizeof(buf)) {

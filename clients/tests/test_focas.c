@@ -1811,6 +1811,28 @@ static void test_program_transfer(void)
                          25) == 0);
     }
 
+    /*
+     * 机床 `cnc_pdf_add` 建出来的小程序内容长这样：`O2200%`（末尾 `%`、**没有换行**）。
+     * 以前拿"数到的换行数"当"有没有读到东西"，这种内容数出来 0 行 → 误报"没有这个程序"。
+     */
+    NCL_TEST_CASE("单行且末尾没有换行的程序（`O2200%`）也要读得回来");
+    {
+        static const char kOne[] = "O2200%";
+
+        memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+        memcpy(mock->payload[0], kOne, sizeof(kOne) - 1u);
+        mock->payload_len[0] = sizeof(kOne) - 1u;
+        program = NULL;
+        len = 0;
+        NCL_CHECK_EQ_INT(
+            ncl_focas_program_upload(focas, 0, "//CNC_MEM/USER/PATH1/O2200",
+                                     &program, &len),
+            NCL_OK);
+        NCL_CHECK_EQ_INT((int)len, 6);
+        NCL_CHECK(program != NULL && memcmp(program, kOne, 6) == 0);
+        ncl_free_safe(program);
+    }
+
     NCL_TEST_CASE("只给文件名（没有 '/'）→ 自己补上默认文件夹再问");
     mock->payload_len[0] = 0;
     program = NULL;

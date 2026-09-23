@@ -358,6 +358,16 @@ ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
                                  size_t *len);
 
 /**
+ * 在机床的程序区**建一个程序文件（或文件夹）**（`cnc_pdf_add` = Cb `0xb5`）。
+ *
+ * 2026-09-23 实测（模拟器）：`//CNC_MEM/USER/PATH1/O1234` 建出来 `rc=0`，机床还会把
+ * 程序号那一行（`O1234`）自动写进去；路径要"盘名 + 路径 + 文件名"。
+ * `folder` = true 就建文件夹（本机没核过）。
+ */
+ncl_err ncl_focas_program_create(ncl_focas *focas, const char *name,
+                                 bool folder);
+
+/**
  * 把机床上的某个程序选成主程序（`cnc_pdf_slctmain`）。**还没实现**（帧待抓包）。
  */
 ncl_err ncl_focas_program_select_main(ncl_focas *focas, const char *name);
