@@ -64,19 +64,57 @@ static const char *focas_err_text(ncl_err code)
     }
 }
 
-/** 机床自己那套 EW_xxx 返回码的人话（传输三件套的状态回执里会带回来）。 */
+/**
+ * 机床自己那套 `EW_xxx` 返回码的人话（传输三件套的状态回执里会带回来）。
+ *
+ * 表照 `Fwlib64.h` 抄的（2026-09-23 从官方头文件里逐条对出来）—— 之前这一格
+ * 一直把 `5` 当 EW_ATTRIB，其实是 **EW_DATA（数据错）**；`4` 才是 EW_ATTRIB。
+ * 现场表现就是 §11.18 那条"程序号已存在"被说成"属性不对"，白绕了一圈。
+ */
 static const char *focas_ew_text(int code)
 {
     switch (code) {
     case 0: return "EW_OK";
-    case 1: return "EW_FUNC（这个机型没有这条功能）";
+    case 1: return "EW_FUNC（这个机型/状态没有这条功能）";
     case 2: return "EW_LENGTH（长度不对）";
-    case 3: return "EW_NUMBER（号不对）";
-    case 4: return "EW_RANGE（范围不对）";
-    case 5: return "EW_ATTRIB（属性/数据不对，机床不收）";
+    case 3: return "EW_NUMBER/EW_RANGE（号或范围不对）";
+    case 4: return "EW_ATTRIB/EW_TYPE（属性/类型不对，机床不收这条）";
+    case 5: return "EW_DATA（数据错）";
     case 6: return "EW_NOOPT（这个选件没开）";
     case 7: return "EW_PROT（写保护）";
+    case 8: return "EW_OVRFLOW（内存不够放下）";
+    case 9: return "EW_PARAM（参数不让写）";
+    case 10: return "EW_BUFFER（缓冲区空，再要一次）";
+    case 11: return "EW_PATH（路径不对）";
+    case 12: return "EW_MODE（模式不对）";
+    case 13: return "EW_REJECT（机床这个状态下不干这件事）";
+    case 14: return "EW_DTSRVR（数据服务器）";
+    case 15: return "EW_ALARM（机床报警）";
+    case 16: return "EW_STOP（急停/停止中）";
+    case 21: return "EW_RD_RSTFIN（读到程序尾了）";
     default: return "未知码";
+    }
+}
+
+/**
+ * 状态回执里的**细码**（体 `[4..6)` = `cnc_getdtailerr` 的 `ODBERR.err_no`）。
+ *
+ * 细码的含义**按帧分**（spec 的 `cnc_dwnstart4` / `cnc_dwnend4` / `cnc_upend4`
+ * 各有一张表），这里把同号的几种含义并在一起给 —— 现场看的是"机床到底是嫌
+ * 什么"，一个字都不给才是最难查的。
+ */
+static const char *focas_ew_detail_text(int code, int detail)
+{
+    if (code != 5) { /* 只有 EW_DATA 挂细码表 */
+        return NULL;
+    }
+    switch (detail) {
+    case 1: return "目录名不对（下行 start）/ 正文里有非法字符（下行 end）";
+    case 2: return "TV check 下块里字符数是奇数（下行 end）/ 指定范围里没有程序（上行 end）";
+    case 3: return "已登记的程序数满了（下行 end）/ 程序内存坏了（上行 end）";
+    case 4: return "这个程序号已经登记过（下行 end）";
+    case 5: return "这个程序号正被机床选中（下行 end）";
+    default: return NULL;
     }
 }
 
@@ -85,11 +123,19 @@ static ncl_err note(ncl_focas *focas, const char *what, ncl_err code)
 {
     if (focas != NULL) {
         if (NCL_FOCAS_ERR_IS_TRANSFER(code)) {
-            /* 程序上/下行的状态回执（应答方向 3，体前 4 字节 = 机床返回码）。 */
-            snprintf(focas->error, sizeof(focas->error),
-                     "%s: 机床回码 %d（%s）", what,
-                     NCL_FOCAS_TRANSFER_CODE(code),
-                     focas_ew_text(NCL_FOCAS_TRANSFER_CODE(code)));
+            /* 程序上/下行的状态回执（应答方向 3，体 = 返回码 + 细码，§11.14）。 */
+            int ew = NCL_FOCAS_TRANSFER_CODE(code);
+            int detail = NCL_FOCAS_TRANSFER_DETAIL(code);
+            const char *hint = focas_ew_detail_text(ew, detail);
+
+            if (hint != NULL) {
+                snprintf(focas->error, sizeof(focas->error),
+                         "%s: 机床回码 %d（%s），细码 %d（%s）", what, ew,
+                         focas_ew_text(ew), detail, hint);
+            } else {
+                snprintf(focas->error, sizeof(focas->error),
+                         "%s: 机床回码 %d（%s）", what, ew, focas_ew_text(ew));
+            }
         } else {
             snprintf(focas->error, sizeof(focas->error), "%s: %s", what,
                      focas_err_text(code));
@@ -1508,27 +1554,39 @@ ncl_err ncl_focas_executed_block(ncl_focas *focas, char *out, size_t cap)
 #define FOCAS_PROG_NUMBER_AT 2u
 #define FOCAS_PROG_COMMENT_AT 8u
 
-ncl_err ncl_focas_program_directory(ncl_focas *focas, ncl_json **value)
+/** 一次问机床要几条（item 表里 `RDPROGDIR3` 的 `e`）。 */
+#define FOCAS_PROG_DIR_PAGE 8
+/** 最多翻多少页：`d` = 起始程序号，机床要是不认它就会原地打转，兜个底。 */
+#define FOCAS_PROG_DIR_PAGES 64
+
+/**
+ * 读一页程序目录（`d` = 从哪个程序号开始），记录追加进 @p array，
+ * 回这一页**收下**的条数与最大程序号。
+ *
+ * @p floor 是"上一页已经拿到的最大号"：比它小的记录一律不收 —— 有的机床不认
+ * `d`（每页都把同一批号重铺一遍），照收就会把同一个程序列两遍。
+ */
+static ncl_err program_dir_page(ncl_focas *focas, long long start,
+                                long long floor, ncl_json *array,
+                                size_t *records, long long *last)
 {
     ncl_json *params = NULL;
     ncl_json *answer = NULL;
     ncl_json *bytes = NULL;
-    ncl_json *array = NULL;
     size_t length;
-    size_t records;
+    size_t count;
     size_t i;
     ncl_err rc;
 
-    if (focas == NULL || value == NULL) {
-        return NCL_ERR_INVALID_ARG;
-    }
-    *value = NULL;
+    *records = 0;
     params = ncl_json_new_object();
     if (params == NULL) {
         return NCL_ERR_NOMEM;
     }
     (void)ncl_json_obj_set_string(params, "item", "RDPROGDIR3");
     (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", start); /* 起始程序号（翻页靠它） */
+    (void)ncl_json_obj_set_int(params, "e", FOCAS_PROG_DIR_PAGE);
     rc = ncl_focas_call(focas, "payload", params, &answer);
     ncl_json_free(params);
     if (rc != NCL_OK) {
@@ -1540,13 +1598,8 @@ ncl_err ncl_focas_program_directory(ncl_focas *focas, ncl_json **value)
         return note(focas, "RDPROGDIR3", NCL_ERR_PARSE);
     }
     length = ncl_json_arr_len(bytes);
-    array = ncl_json_new_array();
-    if (array == NULL) {
-        ncl_json_free(answer);
-        return NCL_ERR_NOMEM;
-    }
-    records = length / FOCAS_PROG_RECORD;
-    for (i = 0; i < records; i++) {
+    count = length / FOCAS_PROG_RECORD;
+    for (i = 0; i < count; i++) {
         size_t at = i * FOCAS_PROG_RECORD;
         long long number = ((long long)bytes_at(bytes, at + FOCAS_PROG_NUMBER_AT)
                             << 8) |
@@ -1572,18 +1625,69 @@ ncl_err ncl_focas_program_directory(ncl_focas *focas, ncl_json **value)
         if (number == 0 && used == 0) {
             continue; /* 空槽（机床把没占的格子也铺出来了） */
         }
+        if (number <= floor) {
+            continue; /* 上一页已经收过的号 */
+        }
         entry = ncl_json_new_object();
         if (entry == NULL ||
             ncl_json_obj_set_int(entry, "number", number) != NCL_OK ||
             ncl_json_obj_set_string(entry, "comment", comment) != NCL_OK ||
             ncl_json_arr_push(array, entry) != NCL_OK) {
             ncl_json_free(entry);
-            ncl_json_free(array);
             ncl_json_free(answer);
             return NCL_ERR_NOMEM;
         }
+        if (number > *last) {
+            *last = number;
+        }
+        (*records)++;
     }
     ncl_json_free(answer);
+    return NCL_OK;
+}
+
+/*
+ * 翻页：一次只回 8 条，得顺着程序号问下去。
+ *
+ * 2026-09-23 在这台 NCGuide 0i-MF 上核的（01 册 §11.16.1）：库里当时有 12 个程序，
+ * 原来只发一条请求，目录就**少了一半**（回的是号最小的那八个）—— 现场"程序列表
+ * 不全"就是这么来的。`d` = 起始程序号，下一轮从这一页最大号 +1 接着问，问到空为止。
+ */
+ncl_err ncl_focas_program_directory(ncl_focas *focas, ncl_json **value)
+{
+    ncl_json *array = NULL;
+    long long start = 0;
+    size_t page;
+
+    if (focas == NULL || value == NULL) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    *value = NULL;
+    array = ncl_json_new_array();
+    if (array == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    for (page = 0; page < FOCAS_PROG_DIR_PAGES; page++) {
+        long long last = 0;
+        long long floor = start > 0 ? start - 1 : 0; /* 上一页收过的最大号 */
+        size_t records = 0;
+        ncl_err rc = program_dir_page(focas, start, floor, array, &records, &last);
+
+        if (rc != NCL_OK) {
+            if (page == 0) {
+                ncl_json_free(array);
+                return rc;
+            }
+            break; /* 后面几页出岔子：把已经拿到的交出去，别整张丢掉 */
+        }
+        if (records == 0) {
+            break; /* 这一页一条新的都没有 = 到头了（收录时已经滤掉旧号） */
+        }
+        if (last + 1 <= start) {
+            break; /* 防御：号没有往前推进，再问也是原地打转 */
+        }
+        start = last + 1;
+    }
     *value = array;
     return NCL_OK;
 }

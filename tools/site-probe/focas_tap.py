@@ -22,6 +22,15 @@ import time
 
 # 时间轴：每段字节前打一个相对启动的毫秒数（比较两个客户端"什么时候发了什么"用）。
 START = time.monotonic()
+# 两个方向各一个线程，写日志要加锁 —— 不然一条连接的两段会互相插进去
+# （§11.18 判断"这条帧走的是哪条连接"时，串行错位就会看错连接）。
+LOCK = threading.Lock()
+
+
+def emit(out, text):
+    with LOCK:
+        out.write(text)
+        out.flush()
 
 
 def hexdump(data):
@@ -50,10 +59,9 @@ def pump(src, dst, tag, out):
             data = src.recv(4096)
             if not data:
                 break
-            out.write("%s [%7.3f ms] %d bytes\n%s%s"
-                      % (tag, (time.monotonic() - START) * 1000.0, len(data),
-                         hexdump(data), frame_note(data, tag)))
-            out.flush()
+            emit(out, "%s [%7.3f ms] %d bytes\n%s%s"
+                 % (tag, (time.monotonic() - START) * 1000.0, len(data),
+                    hexdump(data), frame_note(data, tag)))
             dst.sendall(data)
     except OSError:
         pass
@@ -72,17 +80,15 @@ def handle(client, host, port, out, name):
         out.flush()
         client.close()
         return
-    out.write("== %s: connected to %s:%d\n" % (name, host, port))
-    out.flush()
-    t = threading.Thread(target=pump, args=(server, client, "<<", out),
+    emit(out, "== %s: connected to %s:%d\n" % (name, host, port))
+    t = threading.Thread(target=pump, args=(server, client, name + " <<", out),
                          daemon=True)
     t.start()
-    pump(client, server, ">>", out)
+    pump(client, server, name + " >>", out)
     t.join(5)
     server.close()
     client.close()
-    out.write("== %s: closed\n" % name)
-    out.flush()
+    emit(out, "== %s: closed\n" % name)
 
 
 def main(argv):

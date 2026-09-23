@@ -42,13 +42,17 @@ extern "C" {
 #define NCL_FOCAS_FUNC_BYE 0x02u   /**< session end (the SDK sends two)  */
 
 /**
- * 会话里两条 TCP 的 `hello` 计数器（§2.1）：**第一条**是控制通道，**第二条**是
- * 数据通道，命令一律走数据通道。2026-09 官方 SDK 对着一台真机（0i-MD）抄下来的：
- * 控制通道只发 hello，数据通道 hello 完接一条 `code 24` 的探针，然后才是业务调用。
- * 往控制通道上发命令，机床直接把连接 RST 掉（同轮实测）。
+ * 会话里两条 TCP 的 `hello` 计数器（§2.1 / §11.18）：**分工就写在计数器上**。
+ *
+ *   计数器 `1` 那条 = **传输通道**：`0x11/0x12/0x13`、`0x15/0x18/0x19` 走它；
+ *   计数器 `2` 那条 = **命令通道**：`func 0x21`（业务读写）走它。
+ *
+ * 发错一族机床**连应答都不给、直接断连接**（2026-09-23 在 0i-MF 上逐条核过，
+ * 见 01 册 §11.18）。官方 SDK 就是这么开的：两条都 hello，命令通道 hello 完接一条
+ * `code 24` 的探针，传输帧则全在计数器 1 那条上。
  */
-#define NCL_FOCAS_HELLO_CONTROL 1u
-#define NCL_FOCAS_HELLO_DATA 2u
+#define NCL_FOCAS_HELLO_TRANSFER 1u
+#define NCL_FOCAS_HELLO_COMMAND 2u
 
 /**
  * 会话探针的块码：`func 0x21` 一个 `code 24` 的块，应答载荷就是 `cnc_sysinfo` 的
@@ -103,21 +107,37 @@ typedef struct {
  */
 #define NCL_FOCAS_ERR_NO_DATA NCL_DRV_ERR_PROTOCOL(0xB6)
 
-/**
- * 传输三件套的**状态回执**（应答方向 3）里机床给的返回码 —— 低 8 位就是那个码。
+/*
+ * 传输三件套的**状态回执**：应答方向 3、体 8 字节
+ * `[返回码 4 字节][细码 2 字节][err_dtno 2 字节]`（都是大端）。
+ *
+ * 2026-09-23 在同一台 NCGuide 0i-MF 上逐条对出来的三条：
+ *   `00000005 0001 0000` —— 目录名不对（`0x11` start 时校验）
+ *   `00000005 0004 0000` —— 这个程序号已经存在（`0x13` end）
+ *   `0000000d 0000 0000` —— EW_REJECT：上行这一族机床直接拒（`0x19` upend）
+ *
+ * 返回码就是 `Fwlib64.h` 里的 `EW_xxx`（见 focas_values.c 的 focas_ew_text），
+ * 细码是 `cnc_getdtailerr` 的 `ODBERR.err_no`，含义按**是哪一条帧**查 spec：
+ *
+ *   `cnc_dwnstart4`：1 = 目录名不对
+ *   `cnc_dwnend4`  ：1 = 正文里有非法字符、2 = TV check 下块里字符数为奇数、
+ *                    3 = 已登记的程序数满了、4 = 这个程序号已存在、
+ *                    5 = 这个程序号正被机床选中
+ *   `cnc_upend4`   ：2 = 指定范围里没有程序、3 = 程序内存坏了
  *
  * 普通命令里方向 3 是"没有这个数"（§2.2 rule 3，翻成 `NCL_FOCAS_ERR_NO_DATA`）；
- * 但程序上/下行那一族（`0x11/0x13`、`0x15/0x17`）里**方向 3 是状态回执**，
- * 体前 4 字节是大端返回码：2026-09-23 官方 SDK 实测 `0x13` 的应答是
- * `a0a0a0a0 0003 13 03 0008 | 0000 0005 0001 0000` —— dir = 3、码 = 5（EW_ATTRIB，
- * 机床不收这份数据）。见 01 册 §11.14。
+ * 传输这一族才是状态回执。见 01 册 §11.14 / §11.18。
  */
-#define NCL_FOCAS_ERR_TRANSFER(code)                                           \
-    (NCL_DRV_ERR_BUSINESS(0x40) | (((int)(code) & 0xFF) << 8))
+#define NCL_FOCAS_ERR_TRANSFER2(code, detail)                                  \
+    (NCL_DRV_ERR_BUSINESS(0x40) | (((int)(code) & 0xFF) << 8) |                \
+     (((int)(detail) & 0xFF) << 16))
+/** 只有返回码、没有细码的那一类（细码 0 = 机床没给）。 */
+#define NCL_FOCAS_ERR_TRANSFER(code) NCL_FOCAS_ERR_TRANSFER2(code, 0)
 #define NCL_FOCAS_TRANSFER_CODE(err) (((err) >> 8) & 0xFF)
+#define NCL_FOCAS_TRANSFER_DETAIL(err) (((err) >> 16) & 0xFF)
 /** 是不是"传输状态回执"那一族（判据与上面那个宏成对，见 focas_values.c 的 note）。 */
 #define NCL_FOCAS_ERR_IS_TRANSFER(err)                                         \
-    (((err) & ~0xFF00) == NCL_DRV_ERR_BUSINESS(0x40))
+    (((err) & ~0x00FFFF00) == NCL_DRV_ERR_BUSINESS(0x40))
 
 /**
  * Build one frame: magic, type 0001, @p func, @p dir, big endian body length.

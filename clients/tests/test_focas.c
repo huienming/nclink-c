@@ -447,17 +447,33 @@ typedef struct {
     uint16_t    last_code; /**< 最后一次请求里第 1 个块的码 */
     uint8_t     hello[16u + 8u * 2u];
     size_t      hello_len;
-    /* 一块最多铺多少字节：参数那条真机回 264、程序目录 72×N，所以留 512。
+    /* 一块最多铺多少字节：参数那条真机回 264、程序目录一页 8×72 = 576，
+     * 所以留 1024。
      * （**别按"测试用不到"缩小**：读取端是按 payload_len 从这儿拷的，写超了就是
      * 越界读，症状是"第二条记录的内容不对"这种莫名其妙的失败。） */
-    uint8_t     payload[NCL_FOCAS_ITEM_CBS][512];
+    uint8_t     payload[NCL_FOCAS_ITEM_CBS][1024];
     size_t      payload_len[NCL_FOCAS_ITEM_CBS];
     size_t      payload_count;
+    /* 程序目录（`0x06`）的号表：填了它就照真机的样子按 `d`/`e` 分页回
+     * （一个块、载荷 = 72 字节一条）。§11.16.1 的翻页就拿它测。 */
+    uint16_t    dir_numbers[16];
+    size_t      dir_count;
+    bool        dir_ignore_range; /**< 不认 `d` 的坏样子：每页都把头条重铺 */
+    int         dir_requests;     /**< 目录请求发了几条 */
     int         short_by; /**< reply with fewer blocks than asked */
     uint16_t    block_rc; /**< 应答块里的返回码（机床说 1/6 就是"这台没有"） */
     /* 传输三件套的状态回执：非 0 时，`0x13` end 的应答按真机的样子回
-     * **方向 3 + 体前 4 字节的返回码**（01 册 §11.14）。 */
+     * **方向 3 + 体前 4 字节的返回码 + 接着 2 字节细码**（01 册 §11.14）。 */
     int         transfer_status;
+    int         transfer_detail; /**< 体 [4..6) 那个细码（ODBERR.err_no） */
+    /* 真机上 `0x11` start 也会用同一个形状回状态（目录名不对就是这条），
+     * 这里默认只挂在 end 上，要测 start 那条就把它打开。 */
+    bool        transfer_status_on_start;
+    /* 两条 TCP 的分工（§11.18）：真机上传输帧只认第一条、命令帧只认第二条，
+     * 发错的那一族**一声不响就断**。这里把那两条连接各自**服务过哪一族**记下来，
+     * 测试好断言"没发错道"。 */
+    int         transfer_channel; /**< 服务过传输帧的那条连接（1 起，0 = 没有） */
+    int         cmd_channel;      /**< 服务过命令帧的那条连接（1 起，0 = 没有） */
     /* 最后一次请求的**体**原样留一份：写那一侧的帧形状（块长、tag0/tag1、载荷）
      * 在 01 册 §11.13 里是逐字节核过的，这里就照那一份对。 */
     uint8_t     last_request[640]; /**< 程序下行的 start 体就有 516 字节 */
@@ -497,13 +513,36 @@ static size_t mock_block_body(uint8_t *out, size_t cap, size_t count,
     return used;
 }
 
-/** 一条连接（会话是两条：控制通道 hello 1、数据通道 hello 2，§2.1）。 */
+/** 一条连接（会话是两条：传输通道 hello 1、命令通道 hello 2，§2.1 / §11.18）。 */
 typedef struct {
     focas_mock *mock;
     ncl_socket *peer;
+    int         index;     /**< 第几条 TCP（1 起），只用来断言"没发错道" */
+    unsigned    hello;     /**< 这条连接 hello 里的计数器：**角色就是它定的** */
     uint8_t     buf[4096]; /**< 没读齐的字节留在这儿，等一下再来 */
     size_t      used;
 } mock_conn;
+
+/**
+ * 机床对两条 TCP 的分工（§11.18，2026-09-23 在这台 0i-MF 上核出来）。
+ *
+ * 分的是 **hello 里那个计数器**（不是"先连上的那条"：把两边的计数器对调，角色跟着
+ * 对调 —— 真机实测）：计数器 **1** 那条只收传输帧（`0x11/0x12/0x13`、`0x15/0x18/0x19`），
+ * 计数器 **2** 那条只收命令帧（`0x21`）。发错那一条的：**连应答都不给，直接把连接
+ * 断掉**。mock 照着做，这样"0x11 发到命令通道上"这种错就再也过不了测试。
+ */
+static bool mock_channel_accepts(unsigned hello, uint8_t func)
+{
+    bool transfer;
+
+    if (func == NCL_FOCAS_FUNC_HELLO || func == NCL_FOCAS_FUNC_BYE) {
+        return true; /* hello / bye 两条都收（§2.1） */
+    }
+    transfer = func == NCL_FOCAS_FUNC_DWN_START || func == NCL_FOCAS_FUNC_DWN_DATA ||
+               func == NCL_FOCAS_FUNC_DWN_END || func == NCL_FOCAS_FUNC_UP_START ||
+               func == 0x18u || func == 0x19u; /* 上行三件套（本实现还没发过） */
+    return (hello & 1u) != 0u ? transfer : !transfer;
+}
 
 /** 一帧的体处理：回 true 表示"回了，连接继续"。 */
 static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pdu *pdu)
@@ -520,6 +559,22 @@ static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pd
     if (mock->seen_count < sizeof(mock->seen)) {
         mock->seen[mock->seen_count++] = pdu->func;
     }
+    if (pdu->func == NCL_FOCAS_FUNC_HELLO) {
+        /* 这一条连接的角色就写在这个计数器里（§11.18），先把它记下来 */
+        conn->hello = pdu->length >= 2u ? frame[NCL_FOCAS_HEADER + 1u] : 0u;
+    } else if (pdu->func != NCL_FOCAS_FUNC_BYE) {
+        if (mock_channel_accepts(conn->hello, pdu->func)) {
+            bool transfer = (conn->hello & 1u) != 0u;
+
+            if (transfer) {
+                mock->transfer_channel = conn->index;
+            } else {
+                mock->cmd_channel = conn->index;
+            }
+        } else {
+            return false; /* 发错道了：机床就是这么断的 */
+        }
+    }
     if (pdu->func == NCL_FOCAS_FUNC_DWN_DATA) {
         /* 数据帧：收下程序文本，**不回**（官方 SDK 就是这么发的）。 */
         size_t keep = pdu->length;
@@ -532,6 +587,34 @@ static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pd
         mock->transfer_bytes += keep;
         mock->transfer_dir = pdu->dir;
         return true;
+    }
+    /*
+     * 程序目录那一族（`Cb 0x06`）且号表填了：按请求里的 `d`（起始号）/`e`（要几条）
+     * 铺一页 72 字节的记录 —— 真机就是这么回的（一页最多 8 条，翻页靠 `d`）。
+     */
+    if (pdu->func == NCL_FOCAS_FUNC_CMD && pdu->length >= 18u &&
+        get_u16be(frame + NCL_FOCAS_HEADER + 8u) == 0x06u && mock->dir_count > 0) {
+        long long d = (int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 10u);
+        long long e = (int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 14u);
+        size_t used = 0;
+        size_t k;
+
+        mock->dir_requests++;
+        if (e <= 0 || e > (long long)(sizeof(mock->dir_numbers) /
+                                      sizeof(mock->dir_numbers[0]))) {
+            e = 8;
+        }
+        memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+        for (k = 0; k < mock->dir_count && (long long)(used / 72u) < e; k++) {
+            if (!mock->dir_ignore_range &&
+                (long long)mock->dir_numbers[k] < d) {
+                continue;
+            }
+            put_u16be(mock->payload[0] + used + 2, mock->dir_numbers[k]);
+            used += 72u;
+        }
+        mock->payload_len[0] = used;
+        mock->payload_count = 1;
     }
     if (pdu->func == NCL_FOCAS_FUNC_HELLO) {
         body_len = mock->hello_len;
@@ -566,9 +649,13 @@ static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pd
     }
     /* 传输三件套的状态回执：真机上 `0x13` end 的应答是**方向 3**、体前 4 字节是
      * 机床返回码（`00000005` = EW_ATTRIB）。这里按那个形状回。 */
-    if (pdu->func == NCL_FOCAS_FUNC_DWN_END && mock->transfer_status != 0) {
+    if ((pdu->func == NCL_FOCAS_FUNC_DWN_END ||
+         (mock->transfer_status_on_start &&
+          pdu->func == NCL_FOCAS_FUNC_DWN_START)) &&
+        mock->transfer_status != 0) {
         memset(body, 0, 8);
-        body[3] = (uint8_t)mock->transfer_status; /* 前 4 字节 = 返回码（大端） */
+        body[3] = (uint8_t)mock->transfer_status;    /* 前 4 字节 = 返回码（大端） */
+        body[5] = (uint8_t)mock->transfer_detail;    /* [4..6) = 细码（大端） */
         frame_len = ncl_focas_build(reply, sizeof(reply), pdu->func, 3u, body, 8);
         if (frame_len == 0 ||
             ncl_socket_send(conn->peer, reply, frame_len) != NCL_OK) {
@@ -656,6 +743,7 @@ static void mock_main(void *arg)
         }
         conn->mock = mock;
         conn->peer = peer;
+        conn->index = (int)mock->conn_count + 1; /* 第一条 = 传输通道（§11.18） */
         thread = ncl_thread_start(mock_conn_main, conn);
         if (thread == NULL) {
             ncl_socket_close(peer);
@@ -1492,6 +1580,49 @@ static void test_semantics(void)
     }
 
     /*
+     * 翻页（§11.16.1）：真机一次只回 8 条，得顺着 `d`（起始程序号）问下去。
+     * 这一台库里 12 个程序，早先只发一条请求 → 列表少一半；现在要把整张表拿全，
+     * 而且**不认 `d` 的机床**（每页都把头条重铺）也不能列出重复的号。
+     */
+    NCL_TEST_CASE("程序目录翻页：一次 8 条，顺着 `d` 把整张表问全、不重复");
+    {
+        ncl_json *json = NULL;
+        size_t k;
+
+        mock->dir_count = 12;
+        for (k = 0; k < mock->dir_count; k++) {
+            mock->dir_numbers[k] = (uint16_t)(100u + (unsigned)k * 10u);
+        }
+        mock->dir_ignore_range = false;
+        mock->dir_requests = 0;
+        NCL_CHECK_EQ_INT(ncl_focas_program_directory(focas, &json), NCL_OK);
+        NCL_CHECK(json != NULL);
+        if (json != NULL) {
+            NCL_CHECK_EQ_INT((int)ncl_json_arr_len(json), 12);
+            NCL_CHECK_EQ_INT(ncl_json_obj_get_int(ncl_json_arr_get(json, 0),
+                                                  "number", -1), 100);
+            NCL_CHECK_EQ_INT(ncl_json_obj_get_int(ncl_json_arr_get(json, 11),
+                                                  "number", -1), 210);
+            ncl_json_free(json);
+        }
+        /* 8 + 4 + 0：机床不告诉你一共几条，最后那次"空页"是必须的 */
+        NCL_CHECK_EQ_INT(mock->dir_requests, 3);
+
+        /* 机床不认 `d`：第二页全是已经收过的号 → 收下 0 条就停，列表里没有重复 */
+        mock->dir_ignore_range = true;
+        mock->dir_requests = 0;
+        json = NULL;
+        NCL_CHECK_EQ_INT(ncl_focas_program_directory(focas, &json), NCL_OK);
+        if (json != NULL) {
+            NCL_CHECK_EQ_INT((int)ncl_json_arr_len(json), 8);
+            ncl_json_free(json);
+        }
+        NCL_CHECK_EQ_INT(mock->dir_requests, 2);
+        mock->dir_count = 0;
+        mock->dir_ignore_range = false;
+    }
+
+    /*
      * 执行中的程序段（`cnc_rdexecprog`，0x20）：体 = 4 字节 + ASCII 文本（0 补齐）。
      * 这台机器回的是**从执行位置起的整段程序文本**（真机 515 字节），所以这里也照
      * 多行铺，验证"整段都拿回来、尾部的 0 与空白去掉"。
@@ -1725,6 +1856,13 @@ static void test_program_transfer(void)
     }
     NCL_CHECK_EQ_INT(mock->transfer_dir, NCL_FOCAS_DIR_DATA);
     NCL_CHECK_EQ_INT(mock->last_func, NCL_FOCAS_FUNC_DWN_END);
+    /*
+     * 分道（§11.18）：传输三件套必须走**第一条**、命令帧必须走**第二条**。
+     * mock 已经在收帧时把发错道的连接断掉了，这里再明着记一笔 —— 万一以后
+     * 有人把 `focas_transfer_socket()` 又改回 `ctx->socket`，这条断言先红。
+     */
+    NCL_CHECK_EQ_INT(mock->transfer_channel, 1);
+    NCL_CHECK_EQ_INT(mock->cmd_channel, 2);
     /* 帧序：握手（hello + 两条探测）+ start / data / end 各一条 */
     NCL_CHECK_EQ_INT((int)mock->seen_count, 6);
     NCL_CHECK_EQ_INT(mock->seen[3], NCL_FOCAS_FUNC_DWN_START);
@@ -1764,12 +1902,27 @@ static void test_program_transfer(void)
      * 机床返回码。普通调用把方向 3 当"没有这个数"，传输这一族得按返回码解释 ——
      * 这条就是核这个（01 册 §11.14：SDK 对这份程序拿到的就是 `00000005`）。
      */
-    NCL_TEST_CASE("下行 end 的状态回执（方向 3 + EW_ATTRIB=5）→ 报模块错并带上原因");
+    NCL_TEST_CASE("下行 end 的状态回执（方向 3 + EW_DATA=5 + 细码）→ 报模块错并带上原因");
     mock->transfer_status = 5;
+    mock->transfer_detail = 4; /* = 这个程序号已经登记过（§11.18 实测） */
     NCL_CHECK_EQ_INT(ncl_focas_program_download(focas, 0, NULL, kProgram),
-                     NCL_FOCAS_ERR_TRANSFER(5));
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "EW_ATTRIB") != NULL);
+                     NCL_FOCAS_ERR_TRANSFER2(5, 4));
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "EW_DATA") != NULL);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "细码 4") != NULL);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "已经登记过") != NULL);
     mock->transfer_status = 0;
+    mock->transfer_detail = 0;
+
+    NCL_TEST_CASE("下行 start 的细码 1（目录名不对）也翻成人话");
+    mock->transfer_status = 5;
+    mock->transfer_detail = 1;
+    mock->transfer_status_on_start = true;
+    NCL_CHECK_EQ_INT(ncl_focas_program_download(focas, 0, NULL, kProgram),
+                     NCL_FOCAS_ERR_TRANSFER2(5, 1));
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "目录名不对") != NULL);
+    mock->transfer_status_on_start = false;
+    mock->transfer_status = 0;
+    mock->transfer_detail = 0;
 
     /*
      * 取程序：走 **`cnc_rdpdf_line`（Cb 0xf0）** —— 按文件名按行读内容。

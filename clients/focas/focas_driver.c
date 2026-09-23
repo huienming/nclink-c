@@ -31,8 +31,22 @@
 typedef struct {
     char      *host;
     unsigned   port;
-    ncl_socket *socket;  /**< 数据通道（hello 计数器 2）：命令都走这条      */
-    ncl_socket *control; /**< 控制通道（hello 计数器 1）：只发 hello        */
+    /*
+     * 两条 TCP 是**分工**的，不是主备（2026-09-23 实测，01 册 §11.18）：
+     *
+     *   hello 计数器 **1** 那条 = **传输通道**：0x11/0x12/0x13（下行）、
+     *                             0x15/0x18/0x19（上行）只能走这条；往它上面发普通
+     *                             命令块（func 0x21）机床直接 RST。
+     *   hello 计数器 **2** 那条 = **命令通道**：func 0x21 的读写都走这条；往它上面
+     *                             发传输帧同样 RST。
+     *
+     * 注意分的是**hello 里那个计数器**，不是"先连上的那条"：把两边的计数器对调，
+     * 角色跟着对调（同轮实测）。默认 `hello_counter = 1`，所以第一条正好是传输通道
+     * —— 只不过那是同一个数的两种说法，别按"第几条"去理解。
+     */
+    ncl_socket *socket;   /**< 命令通道（hello 计数器 2）：所有 func 0x21 走这条 */
+    ncl_socket *control;  /**< 先开的那条 TCP：只留个指针，角色见 transfer        */
+    ncl_socket *transfer; /**< 传输通道（hello 计数器 1）：程序上下行那一族走这条 */
     unsigned   connect_timeout_ms;
     unsigned   timeout_ms;
     unsigned   retries;
@@ -82,6 +96,10 @@ static void focas_drop_session(focas_ctx *ctx)
         ncl_socket_close(ctx->socket);
         ctx->socket = NULL;
     }
+    if (ctx->transfer != NULL && ctx->transfer != ctx->control) {
+        ncl_socket_close(ctx->transfer);
+    }
+    ctx->transfer = NULL;
     if (ctx->control != NULL) {
         ncl_socket_close(ctx->control);
         ctx->control = NULL;
@@ -93,7 +111,11 @@ static void focas_close_session(focas_ctx *ctx)
 {
     if (ctx->session) {
         (void)focas_bye(ctx, ctx->socket);
-        (void)focas_bye(ctx, ctx->control);
+        (void)focas_bye(ctx, ctx->transfer);
+        if (ctx->control != NULL && ctx->control != ctx->transfer &&
+            ctx->control != ctx->socket) {
+            (void)focas_bye(ctx, ctx->control);
+        }
     }
     focas_drop_session(ctx);
 }
@@ -167,7 +189,12 @@ static ncl_err focas_exchange_on(focas_ctx *ctx, ncl_socket *socket, uint8_t fun
             if (ctx->socket != NULL && ctx->socket != socket) {
                 ncl_socket_shutdown(ctx->socket);
             }
-            if (ctx->control != NULL && ctx->control != socket) {
+            if (ctx->transfer != NULL && ctx->transfer != socket &&
+                ctx->transfer != ctx->socket) {
+                ncl_socket_shutdown(ctx->transfer);
+            }
+            if (ctx->control != NULL && ctx->control != socket &&
+                ctx->control != ctx->transfer && ctx->control != ctx->socket) {
                 ncl_socket_shutdown(ctx->control);
             }
             ctx->session = false;
@@ -209,6 +236,23 @@ static ncl_err focas_exchange(focas_ctx *ctx, uint8_t func, const uint8_t *body,
 }
 
 /**
+ * 传输这一族（0x10..0x1f）该走哪条连接：**hello 计数器 1** 那条（§11.18）。
+ *
+ * 2026-09-23 在同一台 NCGuide 0i-MF 上核对官方 Fwlib64：它的 `cnc_dwnstart4` /
+ * `cnc_download4` / `cnc_dwnend4`（还有收尾那条 `func 0x02`）全发在 hello 计数器 1
+ * 的那条 TCP 上，而连接期那条 `func 0x21` 探针跟日常读写一样走计数器 2 那条。照发
+ * 才通；发到命令通道上机床连应答都不给，直接把连接 RST 掉 —— 这就是 §11.14.4 里
+ * "帧一模一样却不收"的根子。
+ */
+static ncl_socket *focas_transfer_socket(focas_ctx *ctx)
+{
+    if (ctx->transfer != NULL) {
+        return ctx->transfer;
+    }
+    return ctx->control != NULL ? ctx->control : ctx->socket;
+}
+
+/**
  * 程序上/下行的三件套专用交换：**应答方向 2 或者 3 都算数**。
  *
  * 方向 3 的体前 4 字节是机床的返回码（大端）：0 = 这一步成了、非 0 = 机床不收
@@ -226,11 +270,12 @@ static ncl_err focas_transfer_exchange(focas_ctx *ctx, uint8_t func,
     ncl_err err;
 
     memset(&pdu, 0, sizeof(pdu));
-    err = focas_exchange_on(ctx, ctx->socket, func, body, body_len, &pdu,
-                            &body_out, &body_out_len);
+    err = focas_exchange_on(ctx, focas_transfer_socket(ctx), func, body, body_len,
+                            &pdu, &body_out, &body_out_len);
     if (err == NCL_FOCAS_ERR_NO_DATA) {
         const uint8_t *rx = ctx->rx + NCL_FOCAS_HEADER;
         int code;
+        int detail = 0;
 
         if (ctx->last_rx_len < NCL_FOCAS_HEADER + 4u) {
             return err;
@@ -239,7 +284,13 @@ static ncl_err focas_transfer_exchange(focas_ctx *ctx, uint8_t func,
         if (code == 0) {
             return NCL_OK; /* 方向 3、码 0：这一步机床认了 */
         }
-        return NCL_FOCAS_ERR_TRANSFER(code);
+        /* 体 8 字节：`[返回码 4][细码 2][err_dtno 2]`（§11.14 实测）。细码那两字节
+         * 就是 `cnc_getdtailerr` 的 `ODBERR.err_no`，含义按帧查 spec —— 带上它，
+         * 上层才分得清"号重复"和"目录写错"（§11.18）。 */
+        if (ctx->last_rx_len >= NCL_FOCAS_HEADER + 6u) {
+            detail = (rx[4] << 8) | rx[5];
+        }
+        return NCL_FOCAS_ERR_TRANSFER2(code, detail);
     }
     if (err != NCL_OK) {
         return err;
@@ -279,8 +330,9 @@ static ncl_err focas_send_only(focas_ctx *ctx, uint8_t func, uint8_t dir,
     }
     ctx->last_tx_len = frame_len;
     ctx->last_rx_len = 0;
-    if (ncl_socket_send(ctx->socket, ctx->tx, frame_len) != NCL_OK) {
-        ncl_socket_shutdown(ctx->socket);
+    /* 数据帧跟 start/end 一条道：传输通道（第一条） */
+    if (ncl_socket_send(focas_transfer_socket(ctx), ctx->tx, frame_len) != NCL_OK) {
+        ncl_socket_shutdown(focas_transfer_socket(ctx));
         ctx->session = false;
         return NCL_DRV_ERR_TRANSPORT(0x90);
     }
@@ -478,39 +530,53 @@ static ncl_err focas_probe_system(focas_ctx *ctx)
  * 一条会话 = **两条 TCP**（§2.1，2026-09 真机实测；官方 SDK 就是这么开的）：
  *
  *   ```
- *   控制通道：  hello(计数器 1) → 应答（真机 360 字节）
- *   数据通道：  hello(计数器 2) → 应答 → func 0x21 一个 code 24 的块（ODBSYS）
+ *   hello(计数器 1) → 应答（真机 360 字节）              ← 传输通道
+ *   hello(计数器 2) → 应答 → func 0x21 一个 code 24 的块（ODBSYS）← 命令通道
  *   ```
  *
- * 之后业务调用**只走数据通道**：往控制通道上发 `func 0x21`，机床直接 RST（同轮
- * 实测）。原来把第二条连接当成"没应答时 SDK 的重试"，于是单连接、还按握手应答里的
- * 记录发一串 `code 24` 的探针 —— 真机上第一帧就被拒，会话建不起来。
+ * 分工写在 **hello 里那个计数器**上（§11.18）：计数器 1 那条收传输帧、计数器 2 那条
+ * 收命令帧，发错道机床直接断连接。所以这里把两条都 hello 完，再**按计数器**把角色
+ * 落到 `ctx->socket`（命令）/`ctx->transfer`（传输）上 —— 默认 `hello_counter = 1`，
+ * 也就是"先连的那条收传输"，但按"第几条"去理解会错（对调计数器，角色跟着对调）。
+ *
+ * 原来把第二条连接当成"没应答时 SDK 的重试"，于是单连接、还按握手应答里的记录发
+ * 一串 `code 24` 的探针 —— 真机上第一帧就被拒，会话建不起来。
  */
 static ncl_err focas_handshake(focas_ctx *ctx)
 {
+    ncl_socket *first = NULL;
+    ncl_socket *second = NULL;
     ncl_err err;
 
     ctx->hello_records = 0;
     ctx->hello_field2 = 0;
     ctx->probe_blocks = 0;
 
-    err = focas_connect(ctx, &ctx->control);
+    err = focas_connect(ctx, &first);
     if (err != NCL_OK) {
         return err;
     }
-    err = focas_hello(ctx, ctx->control, ctx->hello_counter, NULL, NULL);
+    ctx->control = first;
+    err = focas_hello(ctx, first, ctx->hello_counter, NULL, NULL);
     if (err != NCL_OK) {
         return err;
     }
 
-    err = focas_connect(ctx, &ctx->socket);
+    err = focas_connect(ctx, &second);
     if (err != NCL_OK) {
         return err;
     }
-    err = focas_hello(ctx, ctx->socket, ctx->hello_counter + 1u,
-                      &ctx->hello_records, &ctx->hello_field2);
+    err = focas_hello(ctx, second, ctx->hello_counter + 1u, &ctx->hello_records,
+                      &ctx->hello_field2);
     if (err != NCL_OK) {
         return err;
+    }
+    if ((ctx->hello_counter & 1u) != 0u) {
+        ctx->transfer = first;  /* 奇数计数器 = 传输通道 */
+        ctx->socket = second;
+    } else {
+        ctx->transfer = second;
+        ctx->socket = first;
     }
 
     if (ctx->negotiate) {
@@ -899,14 +965,14 @@ static ncl_err focas_call(ncl_driver *self, const char *operation,
         (void)ncl_json_obj_set_string(object, "host", ctx->host != NULL ? ctx->host : "");
         (void)ncl_json_obj_set_int(object, "port", ctx->port);
         (void)ncl_json_obj_set_bool(object, "negotiated", ctx->session);
-        /* §2.1：会话是两条 TCP，控制通道 hello 1、数据通道 hello 2 */
+        /* §2.1 / §11.18：会话是两条 TCP —— hello 1 那条收传输帧、hello 2 那条收命令帧 */
         (void)ncl_json_obj_set_int(object, "channels", 2);
-        (void)ncl_json_obj_set_int(object, "helloControl",
+        (void)ncl_json_obj_set_int(object, "helloTransfer",
                                    (long long)ctx->hello_counter);
-        (void)ncl_json_obj_set_int(object, "helloData",
+        (void)ncl_json_obj_set_int(object, "helloCommand",
                                    (long long)ctx->hello_counter + 1);
-        (void)ncl_json_obj_set_bool(object, "controlOpen", ctx->control != NULL);
-        (void)ncl_json_obj_set_bool(object, "dataOpen", ctx->socket != NULL);
+        (void)ncl_json_obj_set_bool(object, "transferOpen", ctx->transfer != NULL);
+        (void)ncl_json_obj_set_bool(object, "commandOpen", ctx->socket != NULL);
         (void)ncl_json_obj_set_int(object, "helloRecords",
                                    (long long)ctx->hello_records);
         (void)ncl_json_obj_set_int(object, "helloField2", ctx->hello_field2);
@@ -1218,7 +1284,7 @@ ncl_driver *ncl_focas_create(void)
     ctx->timeout_ms = 3000;
     ctx->retries = 0;
     ctx->negotiate = true;
-    ctx->hello_counter = 1;
+    ctx->hello_counter = NCL_FOCAS_HELLO_TRANSFER; /* 1：官方库默认就是这个 */
     ctx->mutex = ncl_mutex_create();
     if (ctx->mutex == NULL) {
         ncl_free_safe(ctx);
