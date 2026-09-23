@@ -166,6 +166,8 @@ static ncl_err note(ncl_focas *focas, const char *what, ncl_err code)
 /** 加工件数 / 加工总件数在 0i 上的参数号（现场那份服务的 getPartCount/getPartTotal）。 */
 #define FOCAS_PARAM_PART_COUNT 6711
 #define FOCAS_PARAM_PART_TOTAL 6712
+/** 参数记录的载荷长度：`0x8d` 读回来 264 字节、`0x8e` 写回去也是（§11.25）。 */
+#define NCL_FOCAS_PARAM_RECORD 264u
 
 /** `cnc_rdpdf_line` 那条载荷给的是**定长 256 字节**的程序路径（官方 SDK 就是这么发的）。 */
 #define FOCAS_PDF_PATH_SIZE 256u
@@ -4446,19 +4448,22 @@ ncl_err ncl_focas_program_delete(ncl_focas *focas, const char *name)
  * **绝不回成功**。站点看到这个错表明"参数写还没打通"，而不是"写成功了"。
  */
 ncl_err ncl_focas_parameter_write(ncl_focas *focas, long long number,
-                                  const char *value)
+                                   const char *value)
 {
-    ncl_json *params;
+    ncl_json *params = NULL;
     ncl_json *answer = NULL;
     ncl_json *bytes = NULL;
     ncl_json *before = NULL;
     ncl_json *after = NULL;
-    char *end = NULL;
+    uint8_t record[NCL_FOCAS_PARAM_RECORD];
     long long raw;
     long long was_raw = 0;
+    long long type = 0;
     bool had_raw = false;
+    size_t length;
     size_t i;
     ncl_err rc;
+    char *end = NULL;
 
     if (focas == NULL || ncl_str_is_blank(value) || number < 0) {
         return NCL_ERR_INVALID_ARG;
@@ -4467,6 +4472,44 @@ ncl_err ncl_focas_parameter_write(ncl_focas *focas, long long number,
     if (end == value) {
         return note(focas, "写参数", NCL_ERR_INVALID_ARG);
     }
+    /*
+     * 读参数是**两条帧**（2026-09-23 抓帧 + 用户打开 PWE 后实测，01 册 §11.25）：
+     *   ① `0xa0`：d = e = 参数号、**不带载荷** → 机床回这个参数的属性表
+     *      （载荷里"号"那一格之后 2 字节就是 `type`，这台 6711 是 3）
+     *   ② `0x8e`：**264 字节载荷** = `[@16 = 264][@20 = 号][@24 = type][@28 = 值]`
+     * 少发 ① 或把值塞进 ① 都不行（EW_LENGTH / EW_RCODE）。
+     */
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_string(params, "item", "WRPARAM");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", number);
+    (void)ncl_json_obj_set_int(params, "e", 1);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc != NCL_OK) {
+        return note(focas, "写参数", rc);
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes != NULL && ncl_json_type_of(bytes) == NCL_JSON_ARRAY) {
+        length = (size_t)ncl_json_arr_len(bytes);
+        for (i = 0; i + 6u <= length; i++) {
+            long long got = ((long long)bytes_at(bytes, i) << 24) |
+                            ((long long)bytes_at(bytes, i + 1u) << 16) |
+                            ((long long)bytes_at(bytes, i + 2u) << 8) |
+                            (long long)bytes_at(bytes, i + 3u);
+
+            if (got == number) {
+                type = ((long long)bytes_at(bytes, i + 4u) << 8) |
+                       (long long)bytes_at(bytes, i + 5u);
+                break;
+            }
+        }
+    }
+    ncl_json_free(answer);
+    /* 打底：先读一次（拿'原来是多少'给写后复核比）*/
     rc = ncl_focas_parameter(focas, number, &before);
     if (rc != NCL_OK) {
         ncl_json_free(before);
@@ -4475,40 +4518,57 @@ ncl_err ncl_focas_parameter_write(ncl_focas *focas, long long number,
     had_raw = ncl_json_obj_has(before, "raw");
     was_raw = ncl_json_obj_get_int(before, "raw", 0);
     ncl_json_free(before);
-    params = ncl_json_new_object();
-    bytes = ncl_json_new_array();
-    if (params == NULL || bytes == NULL) {
-        ncl_json_free(params);
-        ncl_json_free(bytes);
-        return NCL_ERR_NOMEM;
-    }
-    for (i = 0; i < 4u; i++) {
-        long long byte = (raw >> (8 * (3u - i))) & 0xFF;
+    /* 264 字节载荷 */
+    memset(record, 0, sizeof(record));
+    {
+        /* 四格都是大端 BE32：`@16 = 264`（记录自己的长度）、`@20 = 号`、
+         * `@24 = type`（第 ① 步属性表给的）、`@28 = 值`。 */
+        const uint32_t fields[4] = { (uint32_t)sizeof(record), (uint32_t)number,
+                                     (uint32_t)type, (uint32_t)raw };
+        size_t k;
 
-        if (ncl_json_arr_push(bytes, ncl_json_new_int(byte)) != NCL_OK) {
-            ncl_json_free(params);
-            ncl_json_free(bytes);
-            return NCL_ERR_NOMEM;
+        for (k = 0; k < 4u; k++) {
+            record[16u + k * 4u + 0u] = (uint8_t)(fields[k] >> 24);
+            record[16u + k * 4u + 1u] = (uint8_t)(fields[k] >> 16);
+            record[16u + k * 4u + 2u] = (uint8_t)(fields[k] >> 8);
+            record[16u + k * 4u + 3u] = (uint8_t)(fields[k]);
         }
     }
-    (void)ncl_json_arr_push(bytes, ncl_json_new_int(0));
-    (void)ncl_json_arr_push(bytes, ncl_json_new_int(0));
-    (void)ncl_json_arr_push(bytes, ncl_json_new_int(0xFF));
-    (void)ncl_json_arr_push(bytes, ncl_json_new_int(0xFF));
-    (void)ncl_json_obj_set_string(params, "item", "WRPARAM");
-    (void)ncl_json_obj_set_int(params, "block", 0);
-    (void)ncl_json_obj_set_int(params, "d", number);
-    (void)ncl_json_obj_set_int(params, "e", number);
-    (void)ncl_json_obj_set(params, "data", bytes);
-    rc = ncl_focas_call(focas, "payload", params, &answer);
-    ncl_json_free(params);
-    ncl_json_free(answer);
-    if (rc != NCL_OK) {
-        return note(focas, "写参数", rc);
+    {
+        ncl_json *data = ncl_json_new_array();
+
+        if (data == NULL) {
+            return NCL_ERR_NOMEM;
+        }
+        for (i = 0; i < sizeof(record); i++) {
+            if (ncl_json_arr_push(data, ncl_json_new_int(record[i])) != NCL_OK) {
+                ncl_json_free(data);
+                return NCL_ERR_NOMEM;
+            }
+        }
+        params = ncl_json_new_object();
+        if (params == NULL) {
+            ncl_json_free(data);
+            return NCL_ERR_NOMEM;
+        }
+        (void)ncl_json_obj_set_string(params, "item", "WRPARAM2");
+        (void)ncl_json_obj_set_int(params, "block", 0);
+        /*
+         * **块头四格全是 0**（官方库抓到的就是这样）：号、type、值都装在**载荷**里
+         * (`@20/@24/@28`)。早先把号写进 `d` 那格 → 机床不收（2026-09-23 定位）。
+         */
+        (void)ncl_json_obj_set_int(params, "d", 0);
+        (void)ncl_json_obj_set_int(params, "e", 0);
+        (void)ncl_json_obj_set(params, "data", data);
+        rc = ncl_focas_call(focas, "payload", params, &answer);
+        ncl_json_free(params);
+        ncl_json_free(answer);
+        if (rc != NCL_OK) {
+            return note(focas, "写参数", rc);
+        }
     }
+    /* 写后复核：比**原始整数**，没变就如实回"没写进去" */
     if (had_raw && was_raw != raw) {
-        /* 值本来就不同：写后复核（比**原始整数**，不跟小数位/量纲纠缠），
-         * 没变就是没写进去。 */
         rc = ncl_focas_parameter(focas, number, &after);
         if (rc == NCL_OK && ncl_json_obj_get_int(after, "raw", was_raw) != raw) {
             ncl_json_free(after);
