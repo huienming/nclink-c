@@ -5,6 +5,27 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 01 册：宏变量表做完、主轴倍率接上、`SUBPROGRAM` 删掉（2026-09-23）
+
+  * **`/CONTROLLER/VARIABLE`（宏变量表）做完**：`0x15` 本来就能**按号段读** ——
+    `d` = 起始号、`e` = 结束号（`cnc_rdmacror`），一段回"N 条 8 字节记录"（第 j 条 =
+    起始号 + j），记录形状与单条读一样。client 按 **16 个号一段**读 1..999（本机一次
+    要太多会只回 1 条 / 264 字节封顶），**空号（vacant：值 0 + dec −1）不进表**，
+    也不硬凑 0。`ncl_focas_macro_variables()` 与 `ncl_focas_variable_table()` 都实现。
+  * **主轴倍率接上**：`IODBSGNL.spdl_ovrd` 就在**进给倍率后面那一格**（`0x5d` 的
+    载荷 @0xa 是进给、**@0xc 是主轴**），码值 → 百分比与进给倍率同一张表
+    （0..20 = 0%..200%）。`ncl_focas_spindle_override()` 不再回"待抓包"。
+    如实记的两点：spec 的 `slct_data` 位表写着"bit6 只有 15i"，而 0i-D 头文件的
+    `IODBSGNL` 有这一格；**这台模拟器这块是空的**（`0x5d` 回没初始化的内容 →
+    落进码表就像 0%、落外面就报错），真机要复核。
+  * **`/CONTROLLER/SUBPROGRAM` 删掉**（用户口径不要了）：官方库对 `cnc_rdexecprog3`
+    自己就回 EW_PROT、一帧不发 —— 不摆一个永远读不到的点位。client 的
+    `ncl_focas_subprogram_number()` 一并删除。
+  * 顺带修一个真判定：`record_read()` 会把小数位夹到 0..9，"vacant"（dec = −1）会被
+    夹成 0 就判不出来 —— 新增 `record_is_vacant()` 直接看原始那两个字节。
+  * 单测：mock 加宏变量号段应答（1..3 号按摆的给、别的号回 vacant）与主轴倍率的
+    0x5d 载荷；新用例覆盖"vacant 不进表""码值 ×10""码表外如实报错"。43/43 绿。
+
 ### 01 册：坐标系 / 当前刀号 / 轴电流三条**通了**，轴温删掉（2026-09-23 抓帧）
 
   * **工件坐标系**（`/CONTROLLER/COORDINATE`）：原来问的是 `cnc_rdwkcdshft`（`0x63`，

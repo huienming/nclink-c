@@ -120,7 +120,6 @@ int main(int argc, char **argv)
     SHOW(ncl_focas_program_name(F, buf, sizeof(buf)));
     SHOW(ncl_focas_program_number(F, &n));
     SHOW(ncl_focas_main_program_number(F, &n));
-    SHOW(ncl_focas_subprogram_number(F, &n));
     memset(buf, 0, sizeof(buf));
     SHOW(ncl_focas_line_number(F, buf, sizeof(buf)));
     memset(buf, 0, sizeof(buf));

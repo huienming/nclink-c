@@ -212,6 +212,28 @@ static bool record_read(const ncl_json *payload, size_t index, int32_t *data,
     return true;
 }
 
+/**
+ * 这条记录是不是**空号**（spec 里 custom macro variable 的 "vacant"：`mcr_val = 0`
+ * 且 `dec_val = -1`）。
+ *
+ * 为什么要单独判：`record_read()` 会把小数位夹到 0..9（-1 那种"没定义"的写法会变成
+ * 0），拿夹过的 dec 判不出空号来。
+ */
+static bool record_is_vacant(const ncl_json *payload, size_t index)
+{
+    size_t at = index * FOCAS_AXIS_RECORD;
+
+    if (payload == NULL ||
+        ncl_json_type_of((ncl_json *)payload) != NCL_JSON_ARRAY ||
+        ncl_json_arr_len((ncl_json *)payload) < at + FOCAS_AXIS_RECORD) {
+        return false;
+    }
+    return bytes_at(payload, at) == 0 && bytes_at(payload, at + 1u) == 0 &&
+           bytes_at(payload, at + 2u) == 0 && bytes_at(payload, at + 3u) == 0 &&
+           bytes_at(payload, at + FOCAS_AXIS_DEC_AT) == 0xFF &&
+           bytes_at(payload, at + FOCAS_AXIS_DEC_AT + 1u) == 0xFF;
+}
+
 /** 缩放到实际值：`data / 10^dec`（dec 是小数点位数）。 */
 static double record_scale(int32_t data, int dec)
 {
@@ -740,15 +762,6 @@ ncl_err ncl_focas_program_number(ncl_focas *focas, long long *value)
 ncl_err ncl_focas_main_program_number(ncl_focas *focas, long long *value)
 {
     return program_number(focas, 6, value);
-}
-
-/* 子程序号（cnc_rdexecprog3 的 ODBEXEPRGINFO）：表 7 的 SUBPROGRAM。 */
-ncl_err ncl_focas_subprogram_number(ncl_focas *focas, long long *value)
-{
-    if (value == NULL) {
-        return NCL_ERR_INVALID_ARG;
-    }
-    return not_yet(focas, "子程序号", "cnc_rdexecprog3（ODBEXEPRGINFO）");
 }
 
 /* 当前刀具号（表 7 的 TOOL_NUMBER）：模态 T 码，cnc_rdgcode 一条里带 T/B/S/F。 */
@@ -1509,18 +1522,43 @@ ncl_err ncl_focas_feed_override(ncl_focas *focas, double *value)
 }
 
 /*
- * 主轴倍率：`IODBSGNL.spdl_ovrd` 在**现代系列上是 "(Not used)"**（官方文档：只有
- * Series 15i 有这一格），16/18/21、16i/18i/21i、0i、30i、PMi-A 都没有。所以这条路
- * 不是"还没抓包"，是**这一格读不到**；要拿主轴倍率得走主轴数据那一族
- * （`cnc_rdspdata`）或读相关参数 —— 两者都还没核，先如实回"待抓包"。
+ * 主轴倍率：操作面板信号 `IODBSGNL.spdl_ovrd` —— 就在**进给倍率后面那一格**
+ * （item 表里那张偏移图：`… rpd_ovrd@6、jog_ovrd@8、feed_ovrd@0xa、spdl_ovrd@0xc`），
+ * 还是 `cnc_rdopnlsgnl`（**0x5d**）。码值→百分比与进给倍率同一张表（0..20 = 0%..200%，
+ * 每级 10%）。
+ *
+ * 两点如实说清楚：
+ *  1. spec 的 `slct_data` 位上写着 **bit6 = 主轴倍率信号"只有 Series 15i"**，而 0i-D
+ *     那版头文件 `Fwlib64.h` 的 `IODBSGNL` **有** `spdl_ovrd` 这一格（15i 那版才标
+ *     "(not used)"）—— 所以字段存在、能不能填要看机型。这里按结构体偏移读，
+ *     读不到就如实报（不编一个 100%）。
+ *  2. **本机（NCGuide 0i-MF）没填这一块**：`0x5d` 回的载荷是没初始化的内容。
+ *     落进 0..20 码表时就"看着像 0%"（现场看到倍率一直是 0 先查这里），落在码表外
+ *     就如实报 `NCL_ERR_RANGE` —— 两种都是"这块是空的"，**换真机要复核**。
  */
 ncl_err ncl_focas_spindle_override(ncl_focas *focas, double *value)
 {
+    ncl_json *json = NULL;
+    long long code = 0;
+    ncl_err rc;
+
     if (value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    return not_yet(focas, "主轴倍率",
-                   "IODBSGNL.spdl_ovrd 现代系列没有（cnc_rdspdata 或参数待核）");
+    rc = ncl_focas_read_item(focas, "RDSGNL@12", 0, 1, NCL_DTYPE_INT16, &json);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    if (!ncl_json_as_int(json, &code)) {
+        ncl_json_free(json);
+        return note(focas, "RDSGNL", NCL_ERR_PARSE);
+    }
+    ncl_json_free(json);
+    if (code < 0 || code > 20) {
+        return note(focas, "RDSGNL", NCL_ERR_RANGE); /* 文档只定义 0..20 */
+    }
+    *value = (double)code * 10.0;
+    return NCL_OK;
 }
 
 /* 正在执行的程序段（cnc_rdexecprog）：应答里是"程序行文本"。 */
@@ -3168,18 +3206,99 @@ ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
 
 /* --------------------------------------------------- 表 7 的那几种表/对象 -- */
 
-/* 一段宏变量（cnc_rdmacror，一次最多 5 个）：表 7 的 VARIABLE（list）。 */
+/**
+ * 一段宏变量：`cnc_rdmacror`（**码还是 0x15**，只是 `d` = **起始号**、`e` = **结束号**
+ * 而不是"号/号"）。2026-09-23 抓帧（01 册 §11.20）：
+ *
+ *     >> code=0x15 [d=1][e=5] → 载荷 40 字节 = **5 条 8 字节记录**（一条一个号）
+ *     >> code=0x15 [d=100][e=100] → 载荷 8 字节 = 号 100 那一条
+ *
+ * 记录形状与单条读**完全一样**（`[值 BE32][00 0a][dec BE16]`），第 j 条就是
+ * `first + j` 号。**空号**（spec：`mcr_val = 0` 且 `dec_val = -1`）在这里如实跳过 ——
+ * "vacant"不是 0。
+ */
+static ncl_err macro_range(ncl_focas *focas, long long first, long long last,
+                           ncl_json **records)
+{
+    ncl_json *params;
+    ncl_json *answer = NULL;
+    ncl_json *bytes = NULL;
+    ncl_err rc;
+
+    *records = NULL;
+    params = ncl_json_new_object();
+    if (params == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    (void)ncl_json_obj_set_string(params, "item", "RDMACRO");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", first);
+    (void)ncl_json_obj_set_int(params, "e", last);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc == NCL_FOCAS_ERR_NO_DATA) {
+        return note(focas, "RDMACRO", NCL_ERR_NOT_FOUND);
+    }
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY ||
+        ncl_json_arr_len(bytes) < (long long)FOCAS_AXIS_RECORD) {
+        ncl_json_free(answer);
+        return note(focas, "RDMACRO", NCL_ERR_NOT_FOUND);
+    }
+    *records = ncl_json_clone(bytes);
+    ncl_json_free(answer);
+    return *records != NULL ? NCL_OK : NCL_ERR_NOMEM;
+}
+
+/** 一段宏变量 → `{ "号": 值, … }`（空号与读不到的号都不列）。 */
 ncl_err ncl_focas_macro_variables(ncl_focas *focas, long long first,
                                   long long count, ncl_json **value)
 {
+    ncl_json *records = NULL;
+    ncl_json *object = NULL;
+    size_t i;
+    ncl_err rc;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
-    if (first < 0 || count <= 0 || count > 5) {
-        return note(focas, "RDMACROR", NCL_ERR_INVALID_ARG);
+    if (first < 0 || count <= 0) {
+        return note(focas, "RDMACRO", NCL_ERR_INVALID_ARG);
     }
     *value = NULL;
-    return not_yet(focas, "宏变量表", "cnc_rdmacror（一次最多 5 个）");
+    rc = macro_range(focas, first, first + count - 1, &records);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    object = ncl_json_new_object();
+    if (object == NULL) {
+        ncl_json_free(records);
+        return NCL_ERR_NOMEM;
+    }
+    for (i = 0; i < (size_t)count; i++) {
+        int32_t data = 0;
+        int dec = 0;
+        char key[24];
+
+        if (!record_read(records, i, &data, &dec)) {
+            break;
+        }
+        if (record_is_vacant(records, i)) {
+            continue; /* vacant（spec：值 0 + dec -1）= 这个号没定义 */
+        }
+        snprintf(key, sizeof(key), "%lld", first + (long long)i);
+        (void)ncl_json_obj_set_double(object, key, record_scale(data, dec));
+    }
+    ncl_json_free(records);
+    if (ncl_json_obj_len(object) == 0) {
+        ncl_json_free(object);
+        return note(focas, "RDMACRO", NCL_ERR_NOT_FOUND);
+    }
+    *value = object;
+    return NCL_OK;
 }
 
 /*
@@ -3242,19 +3361,68 @@ ncl_err ncl_focas_parameter_table(ncl_focas *focas, ncl_json **value)
     return NCL_OK;
 }
 
+/**
+ * 宏变量表（表 7 的 VARIABLE，list）：按**号段**读（`cnc_rdmacror`，一次一段），
+ * 只列**已定义**的号 —— 空号（vacant）与读不到的号都不进表（表 4 那句是"运行变量"，
+ * 空号不是运行变量；也不硬凑一个 0）。
+ *
+ * 段宽取 `FOCAS_MACRO_TABLE_CHUNK`：本机一次要太多会拒/截断（实测 `d=33 e=64`
+ * 只回 1 条、`d=1 e=40` 回 33 条 = 264 字节封顶），所以按 16 个号一段问，
+ * 段里"第 j 条记录就是 `起始号 + j`"。
+ */
+#define FOCAS_MACRO_TABLE_CHUNK 16
+#define FOCAS_MACRO_TABLE_MAX   999 /**< 用户宏变量 #1..#999 */
+
 ncl_err ncl_focas_variable_table(ncl_focas *focas, ncl_json **value)
 {
+    ncl_json *table = NULL;
+    long long start;
+
     if (focas == NULL || value == NULL) {
         return NCL_ERR_INVALID_ARG;
     }
     *value = NULL;
-    /*
-     * 宏变量表（表 7 的 VARIABLE，list）：`cnc_rdmacror`（0x15 带号段）本来就能读
-     * 一段，但**这台机床没开用户宏变量**：读 0x15 回 **EW_NOOPT=6**（01 册 §11.13），
-     * 所以这里如实回"机床不提供"，不编一张空表。
-     */
-    return not_yet(focas, "宏变量表",
-                   "cnc_rdmacror（这台机床没开用户宏变量，回 EW_NOOPT=6）");
+    table = ncl_json_new_object();
+    if (table == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    for (start = 1; start <= FOCAS_MACRO_TABLE_MAX;
+         start += FOCAS_MACRO_TABLE_CHUNK) {
+        long long last = start + FOCAS_MACRO_TABLE_CHUNK - 1;
+        ncl_json *records = NULL;
+        size_t i;
+        ncl_err rc = macro_range(focas, start, last, &records);
+
+        if (rc != NCL_OK) {
+            continue; /* 这一段机床不收：跳过，别的段照读 */
+        }
+        for (i = 0; i < (size_t)FOCAS_MACRO_TABLE_CHUNK; i++) {
+            int32_t data = 0;
+            int dec = 0;
+            char key[24];
+
+            if (!record_read(records, i, &data, &dec)) {
+                break; /* 机床回的比要的少：这一段的剩余部分不猜 */
+            }
+            if (record_is_vacant(records, i)) {
+                continue; /* vacant = 没定义 */
+            }
+            snprintf(key, sizeof(key), "%lld", start + (long long)i);
+            if (ncl_json_obj_set_double(table, key, record_scale(data, dec)) !=
+                NCL_OK) {
+                ncl_json_free(records);
+                ncl_json_free(table);
+                return NCL_ERR_NOMEM;
+            }
+        }
+        ncl_json_free(records);
+    }
+    if (ncl_json_obj_len(table) == 0) {
+        ncl_json_free(table);
+        return note(focas, "宏变量表", NCL_ERR_NOT_FOUND);
+    }
+    *value = table;
+    return NCL_OK;
 }
 
 /** 整张坐标系表：外部 + G54…G59（每个号一次全轴读）。 */

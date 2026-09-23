@@ -420,18 +420,18 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表�
     NCL_CONFIG_STR("/MANUFACTURER", ncl_focas_manufacturer)
     NCL_CONFIG_STR("/MODEL", ncl_focas_model)
     NCL_CONFIG_STR("/VERSION", ncl_focas_version)
-    /* PROGRAM / PROGRAM_NUMBER / LINE_NUMBER / SUBPROGRAM 属 CONTROLLER 组件
+    /* PROGRAM / PROGRAM_NUMBER / LINE_NUMBER 属 CONTROLLER 组件（SUBPROGRAM 不要了：
+ * 官方库对 cnc_rdexecprog3 一帧都不发，见 01 册 §11.19.4）
      * （表 2：组件对象）。前三条是真读的（EXEPRGNAME2 / cnc_rdprgnum /
      * cnc_rdseqnum），子程序号要 cnc_rdexecprog3（帧待抓）。 */
     NCL_DATAITEM_STR_SAMPLED("/CONTROLLER/PROGRAM", ncl_focas_program_name)
     NCL_DATAITEM_I64("/CONTROLLER/PROGRAM_NUMBER", ncl_focas_program_number)
-    NCL_DATAITEM_I64("/CONTROLLER/SUBPROGRAM", ncl_focas_subprogram_number)
     NCL_DATAITEM_STR("/LINE_NUMBER", ncl_focas_line_number)
-    /* 当前刀具号（表 7 的 TOOL_NUMBER）：**还没找到可靠来源**（模态那条 0x96 只报
-     * G 组；cnc_rdexecprog 在这台机器上回的是整段程序，里面 T 码出现多次），所以
-     * 这一格如实答"读不到"，不编数（01 册 §2.8.5）。
-     * 倍率在操作面板信号（0x5d）里：进给倍率真机读得到；**主轴倍率那一格现代系列
-     * 没有**，且这台机器的 0x5d 载荷是桩（32 字节里除 @2=0xffff 全是 0）。 */
+    /* 当前刀号（表 7 的 TOOL_NUMBER）：`cnc_rdcommand`（0x97）指令值里 `adrs='T'`
+     * 那条的 `cmd_val`（2026-09-23 抓帧，01 册 §11.19.2）。
+     * 倍率都在操作面板信号（0x5d）里：进给倍率 @0xa、主轴倍率 @0xc（就在它后面一格），
+     * 码值 0..20 = 0%..200%。**这台机器的 0x5d 载荷是桩**（32 字节没填），所以两个
+     * 倍率在这台机器上都读不到真值 —— 进给那条落进码表看着像 0%，主轴那条直接报错。 */
     NCL_DATAITEM_I64("/TOOL_NUMBER", ncl_focas_tool_number)
     NCL_DATAITEM_F64("/FEED_OVERRIDE", ncl_focas_feed_override)
     NCL_DATAITEM_F64("/SPINDLE_OVERRIDE", ncl_focas_spindle_override)

@@ -220,8 +220,7 @@ ncl_err ncl_focas_program_name(ncl_focas *focas, char *out, size_t cap);
 ncl_err ncl_focas_program_number(ncl_focas *focas, long long *value);
 /** 主程序号（同一条应答的 @6）。 */
 ncl_err ncl_focas_main_program_number(ncl_focas *focas, long long *value);
-/** 子程序号（`cnc_rdexecprog3`，ODBEXEPRGINFO）。**还没实现**（帧待抓包）。 */
-ncl_err ncl_focas_subprogram_number(ncl_focas *focas, long long *value);
+
 /**
  * 当前程序行号（`cnc_rdseqnum`，item 0x1d，载荷 @0 的 BE32），文本形式 ——
  * 表 7 的 LINE_NUMBER 是 string，所以这里直接给字符串（例如 "N1234"）。

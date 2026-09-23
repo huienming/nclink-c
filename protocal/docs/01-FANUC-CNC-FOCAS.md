@@ -453,7 +453,7 @@ typedef struct { char name[36]; char cnc_type[2]; ... } ODBSYS;
 | `PART_COUNT` | `/PART_COUNT` | `cnc_rdcount`（`ODBTLIFE3`：`datano`@2、件数@20）| 🟢 假机床 rc=0；字段位置修正过一次 |
 | `WARNING` | `/WARNING` | `cnc_rdalmmsg2`（`ODBALMMSG2` 数组）| 🟡 码 `0x23` 已核，块形状还差 |
 | `PROGRAM` | `/CONTROLLER/PROGRAM` | `cnc_exeprgname2`（`0xfc`）| 🟢 rc=0 |
-| `PROGRAM_NUMBER` / `SUBPROGRAM` | `/CONTROLLER/PROGRAM_NUMBER`、`/CONTROLLER/SUBPROGRAM` | `cnc_rdprgnum`（`0x1c`）| 🟢 |
+| `PROGRAM_NUMBER` | `/CONTROLLER/PROGRAM_NUMBER` | `cnc_rdprgnum`（`0x1c`）| 🟢（`SUBPROGRAM` 不要了，§11.20.3）|
 | `LINE_NUMBER` | `/LINE_NUMBER` | `cnc_rdseqnum`（`0x1d`，载荷 @0 BE32）| 🟢 |
 | `TOOL_NUMBER` | `cnc_rdcommand`（`0x97`）| 指令值里 `adrs='T'` 那条的 `cmd_val` | 🟢 NCGuide（§11.19.2）|
 | `POSITION` | `/AXIS@<轴>/POSITION@REAL` | `cnc_rdposition`（`0x26` d=0，`POSELM` 每轴 12 字节）| 🟢 NCGuide 闭环 |
@@ -1193,10 +1193,10 @@ cls=5（速度）** 是好的（`cls=3/5` 见 §10.4.1 那条 8 字节记录）�
 | `/WARNING` | `ncl_focas_alarm()` | `cnc_alarm` + `cnc_rdalmmsg2` | 🟡 状态位 🟢 / 文本待块形状 |
 | `/MANUFACTURER` `/MODEL` `/VERSION` | `ncl_focas_manufacturer()` 等 | `cnc_sysinfo`（`ODBSYS`）| 🟢 |
 | `/CONTROLLER/PROGRAM` | `ncl_focas_program_name()` | `cnc_exeprgname2` | 🟢 |
-| `/CONTROLLER/PROGRAM_NUMBER` `/SUBPROGRAM` | `ncl_focas_program_number()`、`_subprogram_number()` | `cnc_rdprgnum` | 🟢 |
+| `/CONTROLLER/PROGRAM_NUMBER` | `ncl_focas_program_number()`、`_main_program_number()` | `cnc_rdprgnum` | 🟢（`SUBPROGRAM` 不要了）|
 | `/LINE_NUMBER` | `ncl_focas_line_number()` | `cnc_rdseqnum` | 🟢 |
 | `/FEED_SPEED` `/SPINDLE_SPEED` | `ncl_focas_feed_speed()`、`_spindle_speed()` | `cnc_actf` / `cnc_acts` | 🟢 rc=0 |
-| `/FEED_OVERRIDE` `/SPINDLE_OVERRIDE` | `ncl_focas_feed_override()` 等 | `cnc_rdopnlsgnl` | 🟢 进给倍率；主轴倍率只在 15i 有 |
+| `/FEED_OVERRIDE` `/SPINDLE_OVERRIDE` | `ncl_focas_feed_override()` / `_spindle_override()` | `cnc_rdopnlsgnl`（`0x5d`，@0xa/@0xc）| 🟡 帧已核；本机这块是空的（§11.20.2）|
 | `/AXIS@<轴>/POSITION@REAL` | `ncl_focas_axis_position()` | `cnc_rdposition`（`POSELM`）| 🟢 NCGuide |
 | `/AXIS@<轴>/POSITION@CMD` | `ncl_focas_axis_position_cmd()` | 实际 − `cnc_srvdelay` | 🟢 NCGuide |
 | `/AXIS@<轴>/MOTOR/VARIABLE@ABSOLUTE\|RELATIVE\|DISTANCE` | `_axis_position_machine/_relative/_distance` | `cnc_rdposition` 的四种（d=0..3）| 🟢 |
@@ -1204,7 +1204,7 @@ cls=5（速度）** 是好的（`cls=3/5` 见 §10.4.1 那条 8 字节记录）�
 | `/AXIS@X/TORQUE` `/CURRENT` | `ncl_focas_axis_torque()` / `_axis_current()` | `cnc_loadtorq` / `cnc_rdsvmeter`（`0x56` `d=3`）| 🟢 NCGuide（轴温没有这条 API，点位已删）|
 | `/MOTOR@S1/SPEED` | `ncl_focas_spindle_speed()` | `cnc_acts` | 🟢 |
 | `/CONTROLLER/PARAMETER`（HASH）| `ncl_focas_parameter_table()` | `cnc_rdparam` / `cnc_rdparar` | 🟡 字段已核 |
-| `/CONTROLLER/VARIABLE`（LIST）| `ncl_focas_variable_table()` | `cnc_rdmacro` / `cnc_rdmacror` | 🟡 长度待试 |
+| `/CONTROLLER/VARIABLE`（LIST）| `ncl_focas_variable_table()` | `cnc_rdmacror`（`0x15` 号段读）| 🟢 NCGuide（§11.20.1）|
 | `/CONTROLLER/TOOL`（LIST）| `ncl_focas_tool_list()` | `cnc_rdtooldata` / `cnc_rdtoolrng` | ⛔ 机床不提供 |
 | `/CONTROLLER/TOOLPARAM` | `ncl_focas_tool_param_table()` | `cnc_rdtofs` / `cnc_rdtofsinfo` | 🟢 |
 | `/CONTROLLER/COORDINATE` | `ncl_focas_work_offset/…s()` | `cnc_rdzofs`（`0x0b`）/ 写 `0xc` | 🟢 读 + 写（§11.19）|
@@ -1347,21 +1347,21 @@ work_offset  work_offsets
 
 | 类别 | 条目 | 卡在哪 |
 |---|---|---|
-| ① 模型里看得见、client 是桩（`rc=-15`）| `/CONTROLLER/SUBPROGRAM`、`/SPINDLE_OVERRIDE`、`/CONTROLLER/VARIABLE`（**刀具号/轴电流/坐标系已通、轴温已删**，见 §11.19）| 见下 |
+| ① 模型里看得见、client 是桩（`rc=-15`）| 只剩 `/SPINDLE_OVERRIDE` 一格（帧有了、机床那块空着）；`SUBPROGRAM` 已删、`/CONTROLLER/VARIABLE` 已做（§11.20）| 见下 |
 | ② 写这一侧 | **写参数**（`0xa0`）、**写宏变量**（`0x16` 刻度）| 帧形状/刻度没对 |
 | ③ 整格缺（点位都没有）| **PLC / 寄存器 / 位**（`pmc_*` 95 个一个没接）、**G 代码文件族的其余几条**（exist / copy / move / list…）、报警历史 | 要新做 |
-| ④ 口径要改（不是"没实现"）| `/CONTROLLER/SUBPROGRAM` 该是 **string（子程序名）**、刀具表上限 64 vs 机器 400 | 改声明 |
+| ④ 口径要改（不是"没实现"）| 刀具表上限 64 vs 机器 400 | 改声明 |
 
 ① 里每条的落点（都核过一遍）：
 
 | 点位 | 现在 | 该怎么做 |
 |---|---|---|
-| `/CONTROLLER/VARIABLE`（宏变量表）| 桩，理由写"这台没开用户宏变量" | **理由不准确**：单条 `cnc_rdmacro`（`0x15` d=e=号）实测**能读**（100 号有值、500/501 是 vacant=值 0+dec -1）。整表照参数表那样**逐号读**即可（便宜） |
+| `/CONTROLLER/VARIABLE`（宏变量表）| ✅ **已做**：`0x15` 的**号段读**（`d` = 起始号、`e` = 结束号），空号不列（§11.20.1）| — |
 | `/CONTROLLER/COORDINATE`（工件坐标系）| ✅ **已通**：`cnc_rdzofs`（`0x0b`）读、`cnc_wrzofs`（`0x0c`）写，读 + 写都实测过（§11.19）。原来问错的调用是 `cnc_rdwkcdshft` |
 | `/AXIS@X/CURRENT`（轴电流）| ✅ **已通**：`cnc_rdsvmeter`（`0x56`）`d=3` = 安培、`d=1` = 负载表 %（§11.19.3）|
 | `/AXIS@X/TEMPERATURE`（轴温）| ✅ **点位已删**（FOCAS 没有这条 API，见 §11.19.3）|
 | `/TOOL_NUMBER`（当前刀号）| ✅ **已通**：`cnc_rdcommand`（`0x97`）里 `adrs='T'` 那条的 `cmd_val`（§11.19.2）|
-| `/CONTROLLER/SUBPROGRAM`（子程序号）| 桩 | `cnc_rdexecprog3`（ODBEXEPRGINFO）要抓帧 |
+| `/CONTROLLER/SUBPROGRAM` | ✅ **点位已删**（用户口径不要了；官方库对 `cnc_rdexecprog3` 一帧不发，§11.20.3）| — |
 | `/SPINDLE_OVERRIDE`（主轴倍率）| 桩 | 现代系列 `IODBSGNL.spdl_ovrd` 没这格；试 `cnc_rdspdata` 或参数 |
 
 ② 写这一侧的具体卡点：
@@ -2027,3 +2027,47 @@ NCGuide 0i-MF 把这几条抓了个遍 —— 结论是"坐标系一直都在，
 | 当前刀号 | `0x97` | ✓ `ncl_focas_tool_number()` 取 `'T'` 那条；机床没给 T 那条时如实回 NOT_FOUND，**不报 0** |
 | 轴电流 | `0x56 d=3` | ✓ `ncl_focas_axis_current()`（安培）；X/Y/Z 三根都读得到 |
 | 轴温 | — | 点位删掉（FOCAS 没这条 API）|
+
+### 11.20 宏变量表（号段读）与主轴倍率（2026-09-23）
+
+用户口径：`SUBPROGRAM` 不要了、`SPINDLE_OVERRIDE` 需要、`/CONTROLLER/VARIABLE` 做完。
+
+#### 11.20.1 宏变量表 = `0x15` 的**号段**读（不是"一次最多 5 个"）
+
+`cnc_rdmacro`（`0x15`）一条码两种问法，抓帧（同一台 NCGuide 0i-MF）：
+
+```
+单条读   >> code=0x15 [d=100][e=100] → 载荷 8 字节 = 号 100 那一条
+号段读   >> code=0x15 [d=1][e=5]     → 载荷 40 字节 = **5 条 8 字节记录**（一条一个号）
+         >> code=0x15 [d=1][e=20]    → 载荷 160 字节 = 20 条
+```
+
+记录形状与单条读一样：`[值 BE32][00 0a][dec BE16]`，第 j 条就是 `起始号 + j`。
+**空号**（spec 的 vacant：`值 0` 且 `dec = -1`）**不进表** —— "运行变量"里不该出现没定义的
+号，也不硬凑一个 0。
+
+一段能要多少个号**别开太大**：本机实测 `d=33 e=64` 只回 **1 条**、`d=1 e=40` 回 33 条
+（264 字节封顶）—— 所以 client 按 **16 个号一段**问，1..999 一共 63 次调用。
+
+> ⚠️ 这台模拟器的宏变量区**不太自洽**：有些没定义的号回 `0 + dec 0`（看着像"定义了、
+> 值是 0"），有些回 `0 + dec -1`（vacant）。所以本机上这张表有 487 条 —— 按 spec 判
+> 没问题，真机上空的号一般就是 vacant。别拿条数当"这台只有这么多变量"。
+
+#### 11.20.2 主轴倍率 = `0x5d` 的 `spdl_ovrd`（就在进给倍率后面那一格）
+
+`IODBSGNL` 的偏移图（client 的 item 表里那张）：`… rpd_ovrd@6、jog_ovrd@8、feed_ovrd@0xa、
+spdl_ovrd@0xc、blck_del@0xe …` —— **主轴倍率与进给倍率同一条 `cnc_rdopnlsgnl`（`0x5d`）、
+同一张码值表**（0..20 = 0%..200%，每级 10%），只是格子在 @0xc。
+
+两点如实记：
+* spec 的 `slct_data` 位表上写着"bit6 = 主轴倍率信号**只有 Series 15i**"，而 0i-D 那版
+  头文件 `Fwlib64.h` 的 `IODBSGNL` **有** `spdl_ovrd` 这一格（15i 那版才标 "(not used)"）
+  —— 字段在、能不能填看机型；
+* **本机这块是空的**（`0x5d` 回的是没初始化的内容）：落在码表里就像"0%"、落在码表外
+  就报错。**真机要复核**（现场看到"倍率一直 0"先查这里，与进给倍率同一类现象）。
+
+#### 11.20.3 `SUBPROGRAM` 删掉
+
+用户口径"不要了"：官方库对 `cnc_rdexecprog3` 自己就回 `EW_PROT`、一帧都不发（§11.19.4），
+`cnc_rdexecprog2` 那条还没试 —— 与其挂一个永远"读不到"的点位，不如不摆。client 的
+`ncl_focas_subprogram_number()` 与 `/CONTROLLER/SUBPROGRAM` 一并删除。

@@ -469,6 +469,10 @@ typedef struct {
     int         zofs_writes;      /**< 收到几条 0x0c */
     int         zofs_write_axis;  /**< 最后一次写的轴号（arg2） */
     int32_t     zofs_write_raw;   /**< 最后一次写的原始值（载荷前 4 字节） */
+    /* 用户宏变量（`cnc_rdmacro` / `cnc_rdmacror` = 0x15）：只摆 1..3 号，别的号回空号 */
+    int32_t     macro_raw[4];
+    int         macro_dec[4];
+    bool        macro_enabled;    /**< 0x15 按号段摆记录（默认关，免得顶掉别的用例）*/
     int         short_by; /**< reply with fewer blocks than asked */
     uint16_t    block_rc; /**< 应答块里的返回码（机床说 1/6 就是"这台没有"） */
     /* 传输三件套的状态回执：非 0 时，`0x13` end 的应答按真机的样子回
@@ -640,6 +644,47 @@ static bool mock_serve(mock_conn *conn, const uint8_t *frame, const ncl_focas_pd
                       (uint16_t)mock->axis_names[k][0]);
         }
         mock->payload_len[0] = mock->axis_name_count * 4u;
+        mock->payload_count = 1;
+    }
+    /*
+     * 用户宏变量：`0x15` 一条码两种问法 —— `d = e = 号` = 单条读，`d = 起始号、`
+     * `e = 结束号` = **号段读**（`cnc_rdmacror`）。记录 = 8 字节 `[值][00 0a][dec]`；
+     * 号 1..3 按 mock 摆的给，别的号回**空号**（值 0 + dec -1，spec 的 vacant）。
+     */
+    if (mock->macro_enabled && pdu->func == NCL_FOCAS_FUNC_CMD &&
+        pdu->length >= 18u && get_u16be(frame + NCL_FOCAS_HEADER + 8u) == 0x15u) {
+        int s_no = (int)(int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 10u);
+        int e_no = (int)(int32_t)get_u32be(frame + NCL_FOCAS_HEADER + 14u);
+        int n;
+        size_t used = 0;
+
+        if (e_no < s_no) {
+            e_no = s_no;
+        }
+        memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+        for (n = s_no; n <= e_no && used + 8u <= sizeof(mock->payload[0]); n++) {
+            uint8_t *rec = mock->payload[0] + used;
+
+            if (n >= 1 && n <= 3) {
+                uint32_t raw = (uint32_t)mock->macro_raw[n];
+
+                rec[0] = (uint8_t)(raw >> 24);
+                rec[1] = (uint8_t)(raw >> 16);
+                rec[2] = (uint8_t)(raw >> 8);
+                rec[3] = (uint8_t)raw;
+                rec[4] = 0x00;
+                rec[5] = 0x0a;
+                rec[6] = (uint8_t)((mock->macro_dec[n] >> 8) & 0xFF); /* dec BE16 */
+                rec[7] = (uint8_t)(mock->macro_dec[n] & 0xFF);
+            } else {
+                rec[4] = 0x00; /* 空号：值 0 + dec -1（0xffff） */
+                rec[5] = 0x0a;
+                rec[6] = 0xff;
+                rec[7] = 0xff;
+            }
+            used += 8u;
+        }
+        mock->payload_len[0] = used;
         mock->payload_count = 1;
     }
     /*
@@ -1687,7 +1732,40 @@ static void test_semantics(void)
      * 第 i 根轴的值在 `@8×(i-1)`；键用**机床自己报的轴名**。写是 0x0c，载荷与写刀补
      * 同形（`[值][00 00][ff ff]`）、`arg2` = 轴号（1 起），写完读回来复核。
      */
-    NCL_TEST_CASE("工件坐标系：读 G54（每轴一条记录）、写 G54 X 后读回来复核");
+    /* 宏变量表：号段读 + 只列已定义的号（空号跳过）。 */
+    NCL_TEST_CASE("宏变量表：0x15 号段读，vacant（值 0 + dec -1）不进表");
+    {
+        ncl_json *table = NULL;
+
+        mock->macro_enabled = true;
+        mock->macro_raw[1] = 12345;
+        mock->macro_dec[1] = 3; /* 12.345 */
+        mock->macro_raw[2] = 0;
+        mock->macro_dec[2] = -1; /* vacant */
+        mock->macro_raw[3] = 500;
+        mock->macro_dec[3] = 0; /* 500 */
+        NCL_CHECK_EQ_INT(ncl_focas_variable_table(focas, &table), NCL_OK);
+        if (table != NULL) {
+            double one = ncl_json_obj_get_double(table, "1", -1.0);
+            double three = ncl_json_obj_get_double(table, "3", -1.0);
+
+            NCL_CHECK(one > 12.344 && one < 12.346);
+            NCL_CHECK(three > 499.9 && three < 500.1);
+            NCL_CHECK(ncl_json_obj_get(table, "2") == NULL); /* 空号不列 */
+            NCL_CHECK_EQ_INT((int)ncl_json_obj_len(table), 2);
+            ncl_json_free(table);
+        }
+        /* 单条/一段也走同一条码 */
+        table = NULL;
+        NCL_CHECK_EQ_INT(ncl_focas_macro_variables(focas, 1, 3, &table), NCL_OK);
+        if (table != NULL) {
+            NCL_CHECK_EQ_INT((int)ncl_json_obj_len(table), 2);
+            ncl_json_free(table);
+        }
+        mock->macro_enabled = false;
+    }
+
+        NCL_TEST_CASE("工件坐标系：读 G54（每轴一条记录）、写 G54 X 后读回来复核");
     {
         ncl_json *json = NULL;
         const ncl_json *g54;
@@ -1784,6 +1862,23 @@ static void test_semantics(void)
                          NCL_ERR_NOT_FOUND);
     }
 
+    /* 主轴倍率：0x5d 的 spdl_ovrd（@0xc，就在进给倍率后面），码值 ×10。 */
+    NCL_TEST_CASE("主轴倍率：0x5d 的 spdl_ovrd（@0xc）码值 ×10；码表外如实报错");
+    {
+        double percent = 0.0;
+
+        memset(mock->payload[0], 0, 64);
+        mock->payload_len[0] = 32;
+        mock->payload_count = 1;
+        mock->payload[0][12] = 0x00;
+        mock->payload[0][13] = 12; /* 12 → 120% */
+        NCL_CHECK_EQ_INT(ncl_focas_spindle_override(focas, &percent), NCL_OK);
+        NCL_CHECK(percent > 119.9 && percent < 120.1);
+        mock->payload[0][13] = 99; /* 码表只有 0..20：如实报错，不编百分数 */
+        NCL_CHECK_EQ_INT(ncl_focas_spindle_override(focas, &percent),
+                         NCL_ERR_RANGE);
+    }
+
     /* 轴电流（安培）= 0x56 的 d=3（同一格里 d=1 是负载表 %）。 */
     NCL_TEST_CASE("轴电流：cnc_rdsvmeter 0x56 的 d=3（安培）");
     {
@@ -1861,10 +1956,7 @@ static void test_semantics(void)
     {
         ncl_json *json = NULL;
 
-        /* 模态已经实现了（见上），这里换成子程序号 —— 要 `cnc_rdexecprog3`。 */
-        NCL_CHECK_EQ_INT(ncl_focas_subprogram_number(focas, &number),
-                         NCL_ERR_UNAVAILABLE);
-        NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdexecprog3") != NULL);
+        /* 模态已经实现了（见上），这里换成刀具寿命 —— 要 `cnc_rdlife`。 */
         NCL_CHECK_EQ_INT(ncl_focas_tool_life(focas, 1, &number),
                          NCL_ERR_UNAVAILABLE);
     }
@@ -2209,28 +2301,21 @@ static void test_not_yet(void)
     }
 
     NCL_TEST_CASE("还没抓到帧的几条调用回 NCL_ERR_UNAVAILABLE，并说清要抓哪一帧");
-    /* 报警、程序目录、工件坐标都实现了（见 test_semantics：0x0b/0x0c 那一族），
-     * 这里换成"子程序号"——官方库对 `cnc_rdexecprog3` 一帧都不发。 */
-    NCL_CHECK_EQ_INT(ncl_focas_subprogram_number(focas, &number),
+    /* 报警、程序目录、工件坐标、轴电流都实现了（见 test_semantics），这里换成
+     * "刀具寿命"——这台机床没开寿命管理选件，且帧还没别处核过。 */
+    NCL_CHECK_EQ_INT(ncl_focas_tool_life(focas, 1, &number),
                      NCL_ERR_UNAVAILABLE);
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdexecprog3") != NULL);
+    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdlife") != NULL);
 
-    /* 合成进给速度与模态都已经实现了（见 test_semantics），这里换一条还没核准的：
-     * 主轴倍率要 `IODBSGNL.spdl_ovrd`（现代系列没有那一格）。 */
-    NCL_CHECK_EQ_INT(ncl_focas_spindle_override(focas, &position),
-                     NCL_ERR_UNAVAILABLE);
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "spdl_ovrd") != NULL);
     /* 轴号越界仍旧是参数错，不是"还没有" */
     NCL_CHECK_EQ_INT(ncl_focas_axis_srv_delay(focas, (ncl_focas_axis)77,
                                               &position),
                      NCL_ERR_RANGE);
 
-    /* 刀具表已经是真读的（见 test_tool_tables）；这里换成"这台机床没开选件"的两条：
-     * 宏变量表（用户宏变量）与刀具寿命（寿命管理）在 0i-MF 上都回 EW_NOOPT。 */
-    NCL_CHECK_EQ_INT(ncl_focas_variable_table(focas, &value),
+    /* 刀具表已经是真读的（见 test_tool_tables）；这里换成"这台机床没开选件"的那条：
+     * 刀具寿命（寿命管理）在 0i-MF 上回 EW_NOOPT。 */
+    NCL_CHECK_EQ_INT(ncl_focas_tool_life(focas, 1, &number),
                      NCL_ERR_UNAVAILABLE);
-    NCL_CHECK(value == NULL);
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdmacror") != NULL);
     NCL_CHECK_EQ_INT(ncl_focas_tool_life(focas, 1, &number),
                      NCL_ERR_UNAVAILABLE);
     NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_rdlife") != NULL);
