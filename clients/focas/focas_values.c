@@ -2630,6 +2630,121 @@ ncl_err ncl_focas_pmc_read(ncl_focas *focas, char family, long long start,
 }
 
 /**
+ * 写一段 PMC 号（`pmc_wrpmcrng` = item `PMCWR` = **0x8002**）。
+ *
+ * 帧（2026-09-23 抓的，01 册 §11.22）：与读同一个四格载荷，末尾再跟
+ * `[数据长度 BE16][数据…]` —— 也就是驱动那句 `"data"`（这里给 `[len][值…]`）。
+ * 一次写 `count` 个点（单位与读一致：位族按字节、D 按字）。
+ *
+ * **不是所有族都能写**（spec 明说 `F`、`X` 有些区不能写；`X`/`F` 本身是机床/CNC
+ * 驱动的信号）：本实现照发，机床不收就如实把返回码带上来（`NCL_FOCAS_ERR_RB_CODE`
+ * 或 `NCL_ERR_UNAVAILABLE`），**绝不假装成功**。
+ */
+ncl_err ncl_focas_pmc_write(ncl_focas *focas, char family, long long start,
+                            const long long *values, size_t count, int width)
+{
+    ncl_json *params;
+    ncl_json *answer = NULL;
+    ncl_json *data = NULL;
+    int adr = ncl_focas_pmc_adr_type(family);
+    size_t point = width == 2 ? 4u : (width == 1 ? 2u : 1u);
+    size_t i;
+    ncl_err rc;
+
+    if (focas == NULL || values == NULL || count == 0u) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    if (adr < 0 || start < 0 || width < 0 || width > 2 || count > 128) {
+        return note(focas, "PMC", NCL_ERR_INVALID_ARG);
+    }
+    params = ncl_json_new_object();
+    data = ncl_json_new_array();
+    if (params == NULL || data == NULL) {
+        ncl_json_free(params);
+        ncl_json_free(data);
+        return NCL_ERR_NOMEM;
+    }
+    /*
+     * 载荷 = **[数据长度 BE32][每个点 point 字节，大端]**（官方库就是这么发的：
+     * 抓到的帧尾巴是 `00000002 AA 55` —— 长度 4 字节、数据 2 字节）。
+     */
+    (void)ncl_json_arr_push(data,
+                            ncl_json_new_int((long long)((count * point) >> 24) & 0xFF));
+    (void)ncl_json_arr_push(data,
+                            ncl_json_new_int((long long)((count * point) >> 16) & 0xFF));
+    (void)ncl_json_arr_push(data,
+                            ncl_json_new_int((long long)((count * point) >> 8) & 0xFF));
+    (void)ncl_json_arr_push(data,
+                            ncl_json_new_int((long long)(count * point) & 0xFF));
+    for (i = 0; i < count; i++) {
+        uint64_t v = (uint64_t)values[i];
+        size_t j;
+
+        for (j = 0; j < point; j++) {
+            size_t shift = 8u * (point - 1u - j);
+
+            (void)ncl_json_arr_push(data,
+                                    ncl_json_new_int((long long)((v >> shift) & 0xFF)));
+        }
+    }
+    (void)ncl_json_obj_set_string(params, "item", "PMCWR");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", start);
+    /*
+     * **写这一侧 `e` 给 "起始 + 1"**（官方库抓到的帧就是 `s=0 e=1`，而载荷里带了
+     * 2 个字节）—— 写几个由**载荷里的长度**说了算，`e` 这一格在这台机器上按 1 个
+     * 地址就认（01 册 §11.22 实测：写 R0..R1 = 0x33 0x44 → 读回 R1 = 0x44）。
+     * 真机上 `e` 要不要跟着个数走，抓一次再定。
+     */
+    (void)ncl_json_obj_set_int(params, "e", start + 1);
+    (void)ncl_json_obj_set_int(params, "arg2", adr);
+    (void)ncl_json_obj_set_int(params, "arg3", width);
+    (void)ncl_json_obj_set_int(params, "first", 2);
+    (void)ncl_json_obj_set(params, "data", data);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    ncl_json_free(answer);
+    if (rc != NCL_OK) {
+        return note(focas, "写 PMC", rc);
+    }
+    return NCL_OK;
+}
+
+/**
+ * 写一个 PMC **位**（位号 = 字节 × 8 + 位）：读回所在字节、改这一位、再写回去。
+ * 这样调用方不用关心字节里别的位。
+ */
+ncl_err ncl_focas_pmc_bit_write(ncl_focas *focas, char family, long long bit,
+                                bool on)
+{
+    ncl_json *one = NULL;
+    long long byte_value = 0;
+    long long out = 0;
+    size_t shift;
+    ncl_err rc;
+
+    if (focas == NULL || bit < 0) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    rc = ncl_focas_pmc_read(focas, family, bit / 8, 1, 0, &one);
+    if (rc != NCL_OK) {
+        return rc;
+    }
+    (void)ncl_json_as_int(ncl_json_arr_get(one, 0), &byte_value);
+    ncl_json_free(one);
+    shift = (size_t)(bit % 8);
+    if (on) {
+        out = byte_value | (1LL << shift);
+    } else {
+        out = byte_value & ~(1LL << shift);
+    }
+    if (out == byte_value) {
+        return NCL_OK; /* 已经是这个值：不用写 */
+    }
+    return ncl_focas_pmc_write(focas, family, bit / 8, &out, 1, 0);
+}
+
+/**
  * 读一个 PMC **位**（I/O 那几族的梯形图地址就是"字节.位"：`X0.0` = 字节 0 的第 0 位）。
  * @p bit 是**扁平位号**（`字节 × 8 + 位`），与模型那侧 `/CONTROLLER/REGISTER@X` 的号一致。
  */

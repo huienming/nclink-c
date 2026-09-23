@@ -317,6 +317,18 @@ ncl_err ncl_focas_pmc_bit(ncl_focas *focas, char family, long long bit,
                           bool *on);
 /** 族字母 → PMC 的 adr_type（0..9；认不出回 -1）。给适配器算号段用。 */
 int ncl_focas_pmc_adr_type(char family);
+/**
+ * 写一段 PMC（`pmc_wrpmcrng` = item `PMCWR` = **0x8002**）：同一族的 `count` 个点，
+ * 值在 @p values 里（单位与读一致：位族按字节、`D` 按字）。
+ *
+ * **不是所有族都能写**（`X`/`F` 是机床/CNC 驱动的信号，spec 也说有些区不能写）——
+ * 机床不收就如实回错，不假装成功。
+ */
+ncl_err ncl_focas_pmc_write(ncl_focas *focas, char family, long long start,
+                            const long long *values, size_t count, int width);
+/** 写一个 PMC 位（位号 = 字节 × 8 + 位）：读回所在字节、改那一位、写回去。 */
+ncl_err ncl_focas_pmc_bit_write(ncl_focas *focas, char family, long long bit,
+                                bool on);
 
 /**
  * 一个工件坐标系（工件零点偏移）：`cnc_rdzofs`（item `RDZOFS` = **0x0b**）。
