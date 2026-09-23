@@ -5,6 +5,16 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 01 册：`pmc_rdcntldata` 通了（枚举出了入参的含义）
+
+  * 病根：第三个参数不是"要几条"，而是 **`length` = `IODBPMCCNTL` 结构体字节数**
+    （spec 原文），而且**组号从 1 起**（`s=0` 回 EW_NUMBER）。
+  * `pmc_rdcntldata(1, 1, 16)` → **`rc=0`**；帧：`code = 0x8004`、载荷 `[s=1][e=1]`，
+    应答体 8 字节（`00002710 00000000`，逐格切法下一轮补）。
+  * `pmc_rdalmmsg`：枚举出 **`type = 1/2` 才被收**（`-1/0` → EW_NUMBER），
+    `type=1/2` 回 EW_DATA 是因为起始报警号还是 0 —— 下一轮传一个真报警号就能拿文本。
+  * `pmc_rdcntlgrp` / `pmc_rdcntl_exrelay_grp` 早已 `rc=0`（各回 `num=1`）。
+
 ### 01 册：先把 `pmc_rdalmmsg` 与 `pmc_rdcntl*` 看了一遍（还没接）
 
   * 签名与用途记进 §11.24（含 `IODBPMCCNTL` / `ODBPMCALM` 结构）。

@@ -2271,3 +2271,26 @@ R 8000 → 64000、K 100 → 800、D 8000 字）。**机器实际支持多少可
 
 > 和别处的分工一样：**`pmc_rdalmmsg` 那条是"PMC 自己的报警"**（PMC 报警号 + 文本），
 > 与 `cnc_alarm`/`cnc_rdalmmsg2`（CNC 侧报警）不是一回事 —— 现场要 PMC 报警才用这条。
+
+#### 11.24.1 参数枚举完成：`pmc_rdcntldata` 通了（2026-09-23）
+
+上一节卡在"入参没给对"，这一轮把参数枚举出来了 —— **第三个参数不是"要几条"，是
+`length` = `IODBPMCCNTL` 结构体的字节数**（spec 原文："Specify the length of data block
+(size of IODBPMCCNTL structure)"），而且**组号从 1 起**（`s=0` 回 EW_NUMBER=3）：
+
+```
+pmc_rdcntldata(1, 1, 16)          → rc=0   ← 读第 1 组（这台机器就 1 组）
+请求   func 0x21：code = 0x8004、块头第 2 格 2、载荷 = [s=1][e=1][0][0]
+应答   块 = [大小][2][1][0x8004][返回码 4 字节][长度 4 字节 = 8][8 字节数据]
+       实测这 8 字节 = `00002710 00000000`（0x2710 = 10000，像是这一组的
+       `data_size`/`data_dsp` 那一对；`IODBPMCCNTL` 的逐格切法还差最后一步）
+```
+
+`pmc_rdcntlexrelay` 是同一个签名、同一个形状（码待抓，下一轮顺手）。
+`pmc_rdalmmsg(h, type, short *num, short *nmsg, ODBPMCALM*)`：枚举出来 **`type = 1/2`
+才被收**（`-1/0` 回 EW_NUMBER=3），但 `type=1/2` 回 **EW_DATA=5** —— 因为探针那边把
+`*num`（起始报警号）固定成 0 了，**得给一个真的报警号**才会回数据；下一轮把一个
+≥1 的号传进去就能拿文本（`ODBPMCALM` = 128 字节文本）。
+
+**这一轮的净收获**：`pmc_rdcntldata` **通了**（枚举法的价值：`length` 那一格的含义
+spec 里写着、但一开始按"条数"猜错了）；`pmc_rdalmmsg` 只差"给一个真报警号"。
