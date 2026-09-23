@@ -1564,3 +1564,41 @@ python tools/site-probe/focas_replay_verbatim.py <SDK 那次的 tap 日志>     
 
 （client 这一侧**不会假装成功**：拿不到应答就是 `NCL_DRV_ERR_TRANSPORT`，上层看到的是
 "程序下行没通"。）
+
+### 11.15 "操作文件要做的配置"就是**数据格式**：开头 LF + 结尾 `%`（2026-09-23）
+
+官方 spec 里写得很死（`CNC Application Development Kit` 的
+`Document/SpecE/Program/cnc_download4.xml`，用户机器上那份 `FANUC_Focas_API-main.zip`
+里就有全套）：
+
+> **NC data format**: NC data to be registered to CNC is a string composed of ASCII
+> characters as the following format: `LF Block1 LF Block2 LF ... LF %`（LF = `\n`）
+> **'LF' must be placed at the top of the whole program, and `%` at the end.
+> Data before the first 'LF' are ignored.**
+> In case of NC program, **address 'O' and program number must be placed in the program**
+> to be registered.
+> 例子：把 `O1234 / G1 F0.3 W10. / M30 / %` 注册进去，就发
+> **`"\nO1234\nG1F0.3W10.\nM30\n%"`**。
+
+**现场实测（同一台 NCGuide 0i-MF）**：
+
+| 发出去的正文 | 结果 |
+|---|---|
+| `O0001\nG01 X100 Y100\nM30\n`（少开头 LF、少结尾 `%`）| start `0` → download4 `0` → **end `5`（EW_ATTRIB）**，程序目录不变化 |
+| **`\nO0001\nG01 X100 Y100\nM30\n%`**（按 spec）| start `0` → download4 `0` → **end `0`**，程序目录**立刻**出现 `{"number":1,"comment":"()"}` |
+
+所以上一节那个"EW_ATTRIB 收不下"根本不是配置开关，而是**帧里的正文没按 spec 的格式**。
+`ncl_focas_program_download()` 现在自己补齐并校验（`program_frame()`）：开头的 LF、结尾的
+`%`、`O<号>` 那一行（缺 `O` 号行本地就回参数错）；调用方给一份普通程序文件即可。
+
+#### 11.15.1 spec 里另外几条"现场要配/要注意"的（都跟程序文件有关）
+
+| 出处 | 原文/要点 |
+|---|---|
+| `cnc_dwnstart4` | `dir_name` = **目标文件夹**（例 `//CNC_MEM/USER/PATH1/`），最长 241 字符，NULL = 当前文件夹；**只有 type = 0 用得到** |
+| `cnc_upstart4` | 上传给 `file_name`：**文件名**（`O1234`，读当前文件夹里的）/ **文件夹**（`//CNC_MEM/USER/PATH1/`，读该文件夹里**所有**程序）/ **路径+文件名**（`//CNC_MEM/USER/PATH1/O1234`）；`cnc_upload4` 的 `*length` **必须 ≥ 256 且是 256 的倍数** |
+| `cnc_upload4` | 读回来的文本是 `% LF Block1 … LF %`，**最后一个字符是 `%`**；再读就是 `EW_RESET`。受保护的程序（O8000-/O9000- 保护、编码）读回来是 `"% LF % LF"`，然后 `cnc_upend4` 回 `EW_PROT` |
+| `cnc_dwnend4` | 错误在 end 这条上回（"error status for some cnc_download4 callings just before the finish is returned by cnc_dwnend4"），这正是我们先前看到 `EW_ATTRIB` 的位置 |
+| 错误码 | `EW_ATTRIB` 数据类型非法；`EW_DATA` 细码 1 = 文件夹名不对 / 字符非法、2 = TV check、3 = **程序数满**、4 = **同号程序已注册**、5 = 同号程序正在被选中；`EW_PROT` = **O8000-/O9000- 保护或编码**；`EW_OVRFLOW` = 内存不够；`EW_BUFFER` = 缓冲满/空，重试；**`EW_REJECT` = 加工中/复位中/换模式中不能传**；`EW_ALARM` = PW000；`EW_PARAM` = **参数要在屏幕上开"参数写入使能"** |
+| `GENERAL.HTM` | 文件夹名要以 `/` 结尾，否则当成文件名；**0i-D 上 CNC 内存里用不了"文件夹"这一层**；频繁注册/删除程序要用 `cnc_saveprog_start` / `cnc_saveprog_end`（否则每次都写非易失存储） |
+| 会话条数 | 第三条 TCP 连接 hello 得到的是 **`dir 3` + 码 4（EW_RANGE）** —— 一条会话就是**两条** TCP，别多开 |

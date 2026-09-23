@@ -12,6 +12,8 @@
     python focas_replay.py <host> <port> [帧间停顿秒] [down|up]
 
 `down` = 下行三件套（0x11 / 0x12 / 0x13），`up` = 上行（0x15 / 0x18）。
+`down-on-control` = 把下行那三条发到**控制通道**上；`down-on-third` = 另开**第三条**
+连接发（两者都是"换个通道试试"的排查手段）。
 """
 
 import socket
@@ -104,6 +106,19 @@ def main():
         read_frame(data, "0x15 应答")
         send(data, 0x18, 4, bytes(8), "0x18 数据请求")
         read_frame(data, "0x18 应答")
+    elif WHAT in ("down-on-control", "down-on-third"):
+        if WHAT == "down-on-third":
+            third = socket.create_connection((HOST, PORT), 5)
+            third.settimeout(5)
+            third.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            send(third, 0x01, 1, b"\x00\x03", "hello(第三条连接)")
+            read_frame(third, "hello3")
+            data = third
+        send(data, 0x11, 1, start_body(DIR), "0x11 下行 start")
+        read_frame(data, "0x11 应答")
+        send(data, 0x12, 4, PROGRAM, "0x12 数据")
+        send(data, 0x13, 1, b"", "0x13 end")
+        read_frame(data, "0x13 应答")
     else:
         send(data, 0x11, 1, start_body(DIR), "0x11 下行 start")
         read_frame(data, "0x11 应答")

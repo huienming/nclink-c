@@ -1712,8 +1712,17 @@ static void test_program_transfer(void)
     NCL_TEST_CASE("程序下发：0x11 start → 0x12 数据帧（dir 4，无应答）→ 0x13 end");
     NCL_CHECK_EQ_INT(ncl_focas_program_download(focas, 0, NULL, kProgram),
                      NCL_OK);
-    NCL_CHECK_EQ_INT((int)mock->transfer_bytes, (int)strlen(kProgram));
-    NCL_CHECK(memcmp(mock->transfer, kProgram, strlen(kProgram)) == 0);
+    /*
+     * 送出去的必须是**机床要的那份格式**（官方 spec `cnc_download4.xml` 的
+     * "NC data format" + 它给的例子 `"\nO1234\nG1F0.3W10.\nM30\n%"`）：
+     * 开头补一个 LF、结尾补一个 `%`。少了这两样机床在 end 回 `EW_ATTRIB`（§11.15）。
+     */
+    {
+        static const char kFramed[] = "\nO0001\nN100 G0 X0 Y0\nN110 M3 S1200\n%";
+
+        NCL_CHECK_EQ_INT((int)mock->transfer_bytes, (int)strlen(kFramed));
+        NCL_CHECK(memcmp(mock->transfer, kFramed, strlen(kFramed)) == 0);
+    }
     NCL_CHECK_EQ_INT(mock->transfer_dir, NCL_FOCAS_DIR_DATA);
     NCL_CHECK_EQ_INT(mock->last_func, NCL_FOCAS_FUNC_DWN_END);
     /* 帧序：握手（hello + 两条探测）+ start / data / end 各一条 */
@@ -1738,6 +1747,17 @@ static void test_program_transfer(void)
     NCL_CHECK(memcmp(mock->last_request + 4, "N:", 2) == 0);
     NCL_CHECK(memcmp(mock->last_request + 6, "//CNC_MEM/USER/PATH1/", 21) == 0);
     NCL_CHECK(mock->last_request[27] == 0x00); /* 文件名那一段没有被带进去 */
+
+    NCL_TEST_CASE("已经带 LF/% 的正文原样发（spec 的例子）");
+    mock->transfer_bytes = 0;
+    {
+        static const char kExample[] = "\nO1234\nG1F0.3W10.\nM30\n%";
+
+        NCL_CHECK_EQ_INT(ncl_focas_program_download(focas, 0, NULL, kExample),
+                         NCL_OK);
+        NCL_CHECK_EQ_INT((int)mock->transfer_bytes, (int)strlen(kExample));
+        NCL_CHECK(memcmp(mock->transfer, kExample, strlen(kExample)) == 0);
+    }
 
     /*
      * 传输三件套的状态回执：真机上 `0x13` end 的应答是**方向 3**、体前 4 字节是

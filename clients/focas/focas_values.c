@@ -2440,12 +2440,71 @@ static void program_dir_part(const char *name, char *out, size_t cap)
     out[len] = '\0';
 }
 
+/**
+ * 把正文整成机床真收的那份格式（官方 spec `cnc_download4.xml` 的 "NC data format"）：
+ *
+ *     LF Block1 LF Block2 LF ... LF %
+ *
+ *   - "**'LF' must be placed at the top of the whole program, and '%' at the end.
+ *     Data before the first 'LF' are ignored.**" —— 所以开头那个 LF 不能少；
+ *   - "**In case of NC program, address 'O' and program number must be placed in
+ *     the program to be registered.**" —— 所以正文里得有 `O<号>` 那一行；
+ *   - 它给的例子就是 `"\nO1234\nG1F0.3W10.\nM30\n%"`。
+ *
+ * 调用方给一份**普通的程序文件**就行：这里补开头的 LF 与结尾的 `%`（已经有了就不重复
+ * 补），并校验 `O` 号那一行（`program_has_number_line`）。2026-09-23 对 NCGuide 0i-MF
+ * 实测：少了这两样，机床在 `cnc_dwnend4` 回 `EW_ATTRIB=5`、程序**写不进去**；
+ * 补齐之后 `end4 rc=0`、程序立刻出现在程序目录里（§11.15）。
+ */
+static ncl_err program_frame(const char *program, char *out, size_t cap)
+{
+    size_t len;
+    size_t at = 0;
+    bool has_tail = false;
+    size_t end;
+
+    if (!program_has_number_line(program)) {
+        return NCL_ERR_INVALID_ARG;
+    }
+    len = strlen(program);
+    /* 结尾是不是已经有那个 '%'（允许后面跟空白）。 */
+    end = len;
+    while (end > 0 && (program[end - 1] == '\n' || program[end - 1] == '\r' ||
+                       program[end - 1] == ' ')) {
+        end--;
+    }
+    has_tail = end > 0 && program[end - 1] == '%';
+
+    if (program[0] != '\n') {          /* 开头的 LF：机床靠它认"程序从这儿开始" */
+        if (cap < 2u) {
+            return NCL_ERR_RANGE;
+        }
+        out[at++] = '\n';
+    }
+    /* 还要放得下结尾的 '\n'、'%' 和 NUL。 */
+    if (at + len + 3u > cap) {
+        return NCL_ERR_RANGE;
+    }
+    memcpy(out + at, program, len);
+    at += len;
+    if (!has_tail) {
+        if (at > 0 && out[at - 1] != '\n') {
+            out[at++] = '\n';
+        }
+        out[at++] = '%';
+    }
+    out[at] = '\0';
+    return NCL_OK;
+}
+
 ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
                                    const char *dir, const char *program)
 {
     ncl_json *params;
     ncl_json *result = NULL;
     char target[FOCAS_PATH_MAX];
+    char *framed = NULL;
+    const char *data = program;
     ncl_err rc;
 
     if (focas == NULL || program == NULL || program[0] == '\0') {
@@ -2454,11 +2513,24 @@ ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
     if (type < 0 || type > 255) {
         return note(focas, "DWNSTART4", NCL_ERR_INVALID_ARG);
     }
-    if (type == 0 && !program_has_number_line(program)) {
-        /* 机床从正文第一行认程序号（FANUC 的规矩）；没有这一行送下去就是被拒。
-         * 只有 type 0（NC 程序）查这一条 —— type 1..5 送的是刀补/参数/宏变量，
-         * 那些正文当然不是程序。 */
-        return note(focas, "PROGRAM_DOWNLOAD", NCL_ERR_INVALID_ARG);
+    if (type == 0) {
+        /*
+         * NC 程序：按官方 spec 的格式补齐（开头的 LF + 结尾的 `%`），并校验程序号行。
+         * 只有 type 0 走这一套 —— type 1..5 送的是刀补/参数/宏变量，那些正文当然
+         * 不是程序。
+         */
+        size_t need = strlen(program) + 4u;
+
+        framed = (char *)ncl_mem_calloc(need, 1u);
+        if (framed == NULL) {
+            return NCL_ERR_NOMEM;
+        }
+        rc = program_frame(program, framed, need);
+        if (rc != NCL_OK) {
+            ncl_mem_free(framed);
+            return note(focas, "PROGRAM_DOWNLOAD", rc);
+        }
+        data = framed;
     }
     program_dir_part(dir, target, sizeof(target));
     params = ncl_json_new_object();
@@ -2469,10 +2541,11 @@ ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
     if (!ncl_str_is_blank(target)) {
         (void)ncl_json_obj_set_string(params, "dir", target);
     }
-    (void)ncl_json_obj_set_string(params, "data", program);
+    (void)ncl_json_obj_set_string(params, "data", data);
     rc = ncl_focas_call(focas, "download", params, &result);
     ncl_json_free(params);
     ncl_json_free(result);
+    ncl_mem_free(framed);
     if (rc != NCL_OK) {
         return note(focas, "PROGRAM_DOWNLOAD", rc);
     }

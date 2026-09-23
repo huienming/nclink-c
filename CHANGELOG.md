@@ -5,6 +5,25 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 01 册：程序下行的"配置"就是数据格式 —— 开头 LF + 结尾 `%`（用户提示后查官方 spec 查出来的）
+
+  * 官方 spec（`Document/SpecE/Program/cnc_download4.xml`）写死：`LF Block1 LF … LF %`，
+    "**'LF' must be placed at the top of the whole program, and `%` at the end**"、
+    "**address 'O' and program number must be placed in the program**"；例子就是
+    `"\nO1234\nG1F0.3W10.\nM30\n%"`。
+  * **实测**：同一台 NCGuide 0i-MF，正文少开头 LF、少结尾 `%` → end 回 `EW_ATTRIB=5`、
+    程序进不去；按 spec 补上 → start/download4/end **全 0**，程序目录立刻出现
+    `{"number":1}`。所以先前那个"机床收不下"不是开关没配，是**正文格式不对**。
+  * client：`ncl_focas_program_download()` 现在自己补齐并校验（`program_frame()`：
+    开头 LF、结尾 `%`、`O<号>` 行），调用方给一份普通程序文件即可；start 帧要的仍是
+    **目录**（`program_dir_part()` 取目录那一段）。
+  * spec 里另外几条现场注意事项也记进 §11.15.1：上传的 `file_name` 三种写法与
+    `*length ≥ 256 且为 256 的倍数`、读回来最后一个字符是 `%` 再读是 `EW_RESET`、
+    `EW_DATA` 细码（文件夹名错/程序数满/同号已注册/同号正被选中）、`EW_PROT`
+    （O8000-/O9000- 保护）、`EW_REJECT`（加工/复位/换模式中不能传）、`EW_PARAM`
+    （参数写入使能）、`cnc_saveprog_start/end`（频繁注册删除时用），以及"会话只有两条
+    TCP"（第三条连接 hello 回 `dir 3` + 码 4）。
+
 ### 01 册：程序上下行的两条现场口径 + 传输状态回执在方向 3（同一天，接着写这一侧）
 
   * **现场口径（用户给的，FANUC 的规矩）**：程序正文**第一行必须是程序号**
