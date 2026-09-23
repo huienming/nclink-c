@@ -235,6 +235,8 @@ static const struct {
     /* 按文件名按行读内容（手册标"以太网不支持"，但模拟器可能照答） */
     { "cnc_rdpdf_line", "rdline", 0 },
     { "cnc_rdpdf_alldir", "alldir", 0 }, { "cnc_rdpdf_inf", "rdinf", 0 },
+    /* 写这一侧的文件接口：建文件 + 按行写（手册也标 HSSB 专用，但先问一句） */
+    { "cnc_pdf_add", "pdfadd", 0 }, { "cnc_wrpdf_line", "wrline", 0 },
     { "cnc_download4", "dwn4", 0 }, { "cnc_upload4", "up4", 0 },
     { "cnc_dwnend4", "dwn4", 0 }, { "cnc_upend4", "up4", 0 },
 };
@@ -448,7 +450,38 @@ int main(int argc, char **argv)
     }
     printf("\n");
 
-    if (strcmp(kind, "rdline") == 0) {
+    if (strcmp(kind, "pdfadd") == 0) {
+        /*
+         * `cnc_pdf_add(h, char *name, short type, char *comment)`：
+         * `type` 0 = 文件 / 1 = 文件夹（照手册），`--name` 给路径，
+         * 注释用 `--data`（可省）。
+         */
+        typedef short (NCL_PROBE_CALL *add_fn)(unsigned short, char *, short,
+                                               char *);
+
+        rc = ((add_fn)sym("cnc_pdf_add"))(handle, (char *)name_arg, (short)a0,
+                                          (char *)name_arg);
+        printf("  cnc_pdf_add('%s', type=%d) rc = %d\n", name_arg, a0, (int)rc);
+    } else if (strcmp(kind, "wrline") == 0) {
+        /*
+         * `cnc_wrpdf_line(h, char *prog_name, unsigned long line_no, char *prog_data,
+         *                 unsigned long *line_len, unsigned long *data_len)`：
+         * 从第 `a0` 行起把 `--in` 那段文本写进去（`--len` 是文本长度）。
+         */
+        typedef short (NCL_PROBE_CALL *wrline_fn)(unsigned short, char *, 
+                                                  unsigned long, char *,
+                                                  unsigned long *,
+                                                  unsigned long *);
+        unsigned long line_len = 1;
+        unsigned long data_len = (unsigned long)strlen(seed != NULL ? seed : "");
+
+        rc = ((wrline_fn)sym("cnc_wrpdf_line"))(handle, (char *)name_arg,
+                                                (unsigned long)a0,
+                                                (char *)(seed != NULL ? seed : ""),
+                                                &line_len, &data_len);
+        printf("  cnc_wrpdf_line('%s', line %d, %lu 行 / %lu 字符) rc = %d\n",
+               name_arg, a0, line_len, data_len, (int)rc);
+    } else if (strcmp(kind, "rdline") == 0) {
         /*
          * `cnc_rdpdf_line(h, char *prog_name, unsigned long line_no, char *prog_data,
          *                 unsigned long *line_len, unsigned long *data_len)`

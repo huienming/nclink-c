@@ -66,6 +66,12 @@ def recv_frame(sock, timeout):
 
 # 候选帧：`0x18`（数据请求）的各种体形状，外加别的功能码/dir。
 CANDIDATES = [
+    # 先看"传输 start"落在**被机床接受的会话**上会不会被答 ——
+    # 用来判定"能不能传"是会话属性还是帧属性。
+    ("0x11 下行 start（目录 //CNC_MEM/USER/PATH1/）", 0x11, 1,
+     (b"\x00\x00\x00\x01" + b"N:" + b"//CNC_MEM/USER/PATH1/").ljust(516, b"\x00")),
+    ("0x15 上行 start（O3001）", 0x15, 1,
+     (b"\x00\x00\x00\x01" + b"N:" + b"O3001").ljust(516, b"\x00")),
     # `0x19` 是**唯一被答的**（回 dir 3 + 码 13 = EW_REJECT），先把它的体扫细。
     ("0x19 dir 4，体 8 个 0", 0x19, 4, bytes(8)),
     ("0x19 dir 4，BE32 长度在前", 0x19, 4, (1024).to_bytes(4, "big") + bytes(4)),
