@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
 # -*- coding: utf-8 -*-
 """扫 0x8e 写参数的记录形状
 

@@ -14,6 +14,12 @@
  * 采样通道两个：sample_channel0（1 s / 1 s，运行状态八项）与
  * EdgeSersors（1 ms / 100 ms：5 个功率 + 15 个加速度，振动每槽 4 点 =
  * 0.25 ms 一位，即 MANUAL 4.5 的亚毫秒采样）。
+ *
+ * ⚠️ EdgeSersors 这条**贴着设备能力上限**：一轮 = 20 项取值，实测（2026-09-23，
+ * Windows）约 1~2 ms，而 sampleInterval = 1 ms 一拍。所以这个通道**拍不满**：
+ * 上报周期照 uploadInterval = 100 ms 走（≈9 包/秒），没采到的拍在报文里留空批
+ * `[]`，并且启动后打一条 warn。要有满槽的数据：把 sampleInterval 调到 ≥5 ms
+ * （5 ms → 20 轮/包，全部拍得到），或者让取值一次多给几点（振动那条已经是一次 4 点）。
  */
 static const char kDeviceModel[] =
     "{\n"

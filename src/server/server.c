@@ -54,6 +54,7 @@ typedef struct ncl_sample_task {
     ncl_mutex  *mutex;
     ncl_cond   *cond;
     bool        stop;
+    bool        warned_slow;  /**< "跟不上模型"那条 warn 只打一次，别每秒刷屏 */
 } ncl_sample_task;
 
 struct ncl_server {
@@ -2020,7 +2021,11 @@ static void ncl_sample_collect(ncl_sample_task *task, ncl_message *sample)
     size_t item;
     long long sample_interval = task->config->sample_interval;
     long long upload_interval = task->config->upload_interval;
+    long long start;
+    int sampled = 0;
     int rounds;
+    int round;
+    int missed = 0;
 
     if (sample_interval <= 0) {
         sample_interval = 1000;
@@ -2035,63 +2040,101 @@ static void ncl_sample_collect(ncl_sample_task *task, ncl_message *sample)
 
     for (item = 0; item < count; item++) {
         ncl_sample_item *sample_item = ncl_sample_item_new();
+
         if (sample_item != NULL) {
             ncl_message_add_sample_item(sample, sample_item);
         }
     }
 
-    for (int round = 0; round < rounds && !ncl_sample_stopping(task); round++) {
-        long long started = ncl_time_monotonic_millis();
+    start = ncl_time_monotonic_millis();
 
-        for (item = 0; item < count; item++) {
-            ncl_message *request = ncl_message_new(NCL_MSG_QUERY_REQUEST);
-            ncl_query_request_item *request_item = NULL;
-            ncl_message *response = NULL;
-            ncl_sample_item *target =
-                (ncl_sample_item *)ncl_message_item_at(sample, item);
-            const char *path = ncl_strvec_at(&task->paths, item);
-            char uuid[37];
+    /*
+     * 一包 = `rounds` 拍（uploadInterval / sampleInterval），**每拍每列正好一格**：
+     *
+     *   - 这一拍还没到        → 睡到那一刻；
+     *   - 已经落后一整拍以上  → 这一拍**不补采**，给每列补一格空批 `[]`
+     *                           （"这一拍没数据"，客户端 normalise 时会摊成 null）。
+     *
+     * 为什么非得按墙钟排拍：一轮（把该通道的采样项挨个取一遍）**是有成本的**。
+     * 2026-09-23 在 Windows 上量的：示例模型 EdgeSersors 一轮 20 项约 4 ms。模型写
+     * `sampleInterval = 1 ms` 时一轮塞不进一拍；老实现只在"还有富余"时才睡，塞不进
+     * 就背靠背连着跑，于是**整包时间 = rounds × 一轮时间**，上报周期从 100 ms 被悄悄
+     * 拉成 420 ms —— 现场看到的就是"设置了 uploadInterval = 100，每秒却只有两包"。
+     * 现在上报周期始终等于 uploadInterval，没采到的拍如实留空，并且**说一句**。
+     */
+    for (round = 0; round < rounds && !ncl_sample_stopping(task); round++) {
+        long long tick = start + (long long)round * sample_interval;
+        long long now = ncl_time_monotonic_millis();
 
-            if (request == NULL || target == NULL) {
-                ncl_message_free(request);
-                continue;
-            }
-            ncl_uuid4(uuid, sizeof(uuid));
-            ncl_message_set_message_id(request, uuid);
-            request_item = ncl_query_request_item_new(path);
-            if (request_item == NULL ||
-                ncl_message_add_query_request_item(request, request_item) != NCL_OK) {
-                ncl_message_free(request);
-                continue;
-            }
+        if (now < tick) {
+            ncl_sample_sleep(task, tick - now); /* 还有富余：睡到这一拍 */
+        } else if (now - tick >= sample_interval) {
+            /* 这一拍已经错过：留空批，**不补采**（补采的值时间戳是假的，还会接着拖后面） */
+            for (item = 0; item < count; item++) {
+                ncl_sample_item *target =
+                    (ncl_sample_item *)ncl_message_item_at(sample, item);
 
-            response = ncl_server_invoke_query(server, request);
-            ncl_message_free(request);
-            if (response != NULL && ncl_message_has_data(response)) {
-                ncl_json *value = ncl_message_get_data(response);
-                ncl_sample_item_add_value(target,
-                                          value != NULL ? ncl_json_clone(value) : NULL);
-            } else {
-                /* A failed invocation contributes a null value. */
-                ncl_sample_item_add_value(target, NULL);
+                if (target != NULL) {
+                    ncl_sample_item_add_value(target, ncl_json_new_array());
+                }
             }
-            ncl_message_free(response);
+            missed++;
+            continue;
         }
 
         {
-            long long elapsed = ncl_time_monotonic_millis() - started;
-            ncl_sample_sleep(task, sample_interval - elapsed);
+            for (item = 0; item < count; item++) {
+                ncl_sample_item *target =
+                    (ncl_sample_item *)ncl_message_item_at(sample, item);
+                const char *path = ncl_strvec_at(&task->paths, item);
+                ncl_binding *binding;
+                ncl_json *value = NULL;
+                char *reason = NULL;
+                ncl_err rc;
+
+                if (target == NULL) {
+                    continue;
+                }
+                /*
+                 * **直接叫绑定**，不走"请求报文 → 应答报文 → 克隆"那一套：采样这一路
+                 * 每秒要跑几万次，报文开销比取值本身还大（老实现每项约 200 µs）。
+                 * 值拿到手直接交给样本项（`ncl_sample_item_add_value` 接管所有权，
+                 * 所以不用克隆）；取不到就记 null，与走查询那条路的行为一致。
+                 */
+                binding = ncl_server_lookup(server, "get_value", path);
+                if (binding == NULL) {
+                    ncl_sample_item_add_value(target, NULL);
+                    continue;
+                }
+                rc = ncl_server_call_binding(binding, NULL, &value, &reason);
+                ncl_free_safe(reason);
+                if (rc == NCL_OK && value != NULL) {
+                    ncl_sample_item_add_value(target, value);
+                } else {
+                    ncl_json_free(value);
+                    ncl_sample_item_add_value(target, NULL);
+                }
+            }
+            sampled++;
         }
+    }
+
+    if (missed > 0 && !task->warned_slow) {
+        task->warned_slow = true;
+        ncl_log_warn("采样通道 %s 跟不上模型：sampleInterval = %lld ms，一轮（%u 项）打不进一拍 —— "
+                     "这一包只有 %d/%d 拍采到，没采到的留了空批 []。上报周期仍按 "
+                     "uploadInterval = %lld ms 走（老实现会把这一包整个拖长，现在不会了）。"
+                     "要有密数据：把 sampleInterval 调大，或者让取值一次多给几点。",
+                     task->id, sample_interval, (unsigned)count, sampled, rounds,
+                     upload_interval);
     }
 
     ncl_message_set_sample_id(sample, task->id);
     {
-        /* A wall clock stamp the peer can compare with its own clock. @p window_start
-         * is the monotonic value used for the scheduling maths, so it must not
-         * be published. */
+        /* 壁钟时间戳，对端拿来跟自己的钟对时。 */
         char begin[32];
-        snprintf(begin, sizeof(begin), "%lld",
-                 (long long)ncl_time_millis()); /* int64_t is "long" on Linux */
+
+        snprintf(begin, sizeof(begin), "%lld", (long long)ncl_time_millis());
         ncl_message_set_begin_time(sample, begin);
     }
     ncl_message_set_sample_interval(sample, sample_interval);

@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 huienming
 # -*- coding: utf-8 -*-
 """抓官方 SDK 的 cnc_wrparam：0x8e 那条请求的记录整段打出来
 
