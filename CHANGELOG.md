@@ -5,6 +5,23 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 01 册：**取程序通了** —— 按文件名按行读（`cnc_rdpdf_line`，Cb `0xf0`）
+
+  * 流式上行（`cnc_upstart4`/`cnc_upload4`）在这台模拟器上卡死在 `0x18` 不答
+    （机床连理由都不给：`cnc_getdtailerr` 细码 0）。换**文件那一家族**试通了：
+    `cnc_rdpdf_line` = Cb **`0xf0`**、`d` = 起始行号、`e` = 一次读几行、
+    **载荷 = 256 字节的程序路径**（`tag1` = 256、块长 = `0x1c + 256`），
+    **应答体就是程序正文**。
+  * client：`ncl_focas_program_upload(type = 0, name, &program, &len)` 现在**真读**：
+    一次 64 行分页读、末行没有 `'\n'` 或机床报错就收尾、上限 256 KiB；`name` 带 `/`
+    原样用，裸文件名自动补 `//CNC_MEM/USER/PATH1/`；读不到如实回 `NOT_FOUND`。
+    实测读 O3001 → `rc=0`、384 字节正文（`O3001(SUBPOCKET) … M99 %`）。
+  * ⚠️ 手册把 `cnc_rdpdf_line` 标成 **HSSB 专用**（支持表 `O-O-`），这台模拟器的
+    以太网照答 —— 真机上要复核（换机器先打一次，见 §11.16）。
+  * 新增 `tools/site-probe/focas_inject.py`：**借官方 SDK 的会话、代理在中间插帧**，
+    用来扫那些"自己的客户端连 start 都被关"的传输帧（就是靠它扫出 `0x19` 会被答、
+    回 `dir 3` + `EW_REJECT`/`EW_PATH`）。01 册新增 §11.16。
+
 ### 01 册：程序下行的"配置"就是数据格式 —— 开头 LF + 结尾 `%`（用户提示后查官方 spec 查出来的）
 
   * 官方 spec（`Document/SpecE/Program/cnc_download4.xml`）写死：`LF Block1 LF … LF %`，

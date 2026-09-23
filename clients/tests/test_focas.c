@@ -1771,11 +1771,63 @@ static void test_program_transfer(void)
     NCL_CHECK(strstr(ncl_focas_last_error(focas), "EW_ATTRIB") != NULL);
     mock->transfer_status = 0;
 
-    NCL_TEST_CASE("程序上传：请求码已核、应答待核，先回 NCL_ERR_UNAVAILABLE");
-    NCL_CHECK_EQ_INT(ncl_focas_program_upload(focas, 0, NULL, &program, &len),
+    /*
+     * 取程序：走 **`cnc_rdpdf_line`（Cb 0xf0）** —— 按文件名按行读内容。
+     * 帧（01 册 §11.16 抓的）：`d` = 起始行号、`e` = 读几行、`tag1` = 载荷长度、
+     * 块长 = 0x1c + 载荷、载荷 = **256 字节**的程序路径（NUL 补齐）；应答体就是正文。
+     *
+     * 末行没有 `'\n'` = 这一段就是程序结尾（spec："最后一行没读到 EOB 就不算一行"），
+     * 所以下面铺的假正文结尾不带换行 —— 一次就收，不会绕圈。
+     */
+    NCL_TEST_CASE("取程序：Cb 0xf0 + 256 字节路径，应答体就是程序正文");
+    {
+        static const char kText[] = "O3001(SUBPOCKET)\nM99\n%";
+
+        memset(mock->payload[0], 0, sizeof(mock->payload[0]));
+        mock->payload_count = 1;
+        memcpy(mock->payload[0], kText, sizeof(kText) - 1u);
+        mock->payload_len[0] = sizeof(kText) - 1u;
+        program = NULL;
+        len = 0;
+        NCL_CHECK_EQ_INT(
+            ncl_focas_program_upload(focas, 0, "//CNC_MEM/USER/PATH1/O3001",
+                                     &program, &len),
+            NCL_OK);
+        NCL_CHECK(program != NULL);
+        if (program != NULL) {
+            NCL_CHECK_EQ_INT((int)len, (int)strlen(kText));
+            NCL_CHECK(memcmp(program, kText, strlen(kText)) == 0);
+        }
+        ncl_free_safe(program);
+        /* 请求帧：一块、码 0xf0、d = 0（第一行）、e = 64（一次读几行）、
+         * 块长 284 = 28 + 256、tag1 = 256、载荷第 6 个字节起是路径。 */
+        NCL_CHECK_EQ_INT((int)mock->last_request_len, 2 + 28 + 256);
+        NCL_CHECK_EQ_INT(get_u16be(mock->last_request + 2), 284);
+        NCL_CHECK_EQ_INT(get_u16be(mock->last_request + 8), 0xF0);
+        NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(mock->last_request + 10), 0);
+        NCL_CHECK_EQ_INT((int)(int32_t)get_u32be(mock->last_request + 14), 64);
+        NCL_CHECK_EQ_INT(get_u16be(mock->last_request + 28), 256); /* tag1 */
+        NCL_CHECK(memcmp(mock->last_request + 30, "//CNC_MEM/USER/PATH1/O3001",
+                         25) == 0);
+    }
+
+    NCL_TEST_CASE("只给文件名（没有 '/'）→ 自己补上默认文件夹再问");
+    mock->payload_len[0] = 0;
+    program = NULL;
+    NCL_CHECK_EQ_INT(ncl_focas_program_upload(focas, 0, "O3001", &program,
+                                              &len),
+                     NCL_ERR_NOT_FOUND); /* 假机床回空载荷 = 读不到 */
+    NCL_CHECK(program == NULL);
+    NCL_CHECK_EQ_INT(mock->last_request_len, 2 + 28 + 256);
+    NCL_CHECK(memcmp(mock->last_request + 30, "//CNC_MEM/USER/PATH1/O3001",
+                     25) == 0);
+
+    NCL_TEST_CASE("只有 NC 程序（type 0）能这么读，别的类型如实回 UNAVAILABLE");
+    mock->payload_len[0] = 0;
+    program = NULL;
+    NCL_CHECK_EQ_INT(ncl_focas_program_upload(focas, 1, "O3001", &program, &len),
                      NCL_ERR_UNAVAILABLE);
     NCL_CHECK(program == NULL);
-    NCL_CHECK(strstr(ncl_focas_last_error(focas), "cnc_upload4") != NULL);
 
     ncl_focas_close(focas);
     mock_stop(mock);

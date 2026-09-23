@@ -339,11 +339,19 @@ ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
                                    const char *dir, const char *program);
 
 /**
- * 把机床上的程序**取回来**（`cnc_upstart4` → `cnc_upload4` → `cnc_upend4`）。
+ * 把机床上的某个程序**当文件读回来**（`type` = 0 = NC 程序；别的类型回
+ * `NCL_ERR_UNAVAILABLE`）。
  *
- * **还没实现**：请求码已经核出来了（0x15 / 0x18，数据请求 8 字节体、dir 4），
- * 差的是**应答里程序文本的切法**（SDK 在内部函数里解，2026-09 反汇编到那一层没
- * 再往下；真机抓一次就知道前缀/长度字段在哪）。现在回 NCL_ERR_UNAVAILABLE。
+ * 走的是 **`cnc_rdpdf_line`（Cb `0xf0`）**：`d` = 起始行号、`e` = 一次读几行、
+ * 载荷 = **256 字节**的程序路径；应答体就是程序正文。一次读
+ * `FOCAS_PDF_LINES_PER_CALL` 行、按回来的行数往后接着读，末行没有 `'\n'` 或机床
+ * 报错就收尾；`name` 可以给完整路径（`//CNC_MEM/USER/PATH1/O0001`），也可以只给
+ * 文件名（自动补默认文件夹 `//CNC_MEM/USER/PATH1/`）。读不到就如实回
+ * `NCL_ERR_NOT_FOUND`（不编内容）。
+ *
+ * 2026-09-23 对 NCGuide 0i-MF 实测：读 O3001 拿回 384 字节正文（`O3001(SUBPOCKET)
+ * … M99 %`）。⚠️ 官方手册把 `cnc_rdpdf_line` 标成 **HSSB 专用**（以太网列是 `-`），
+ * 这台模拟器的以太网照答，**真机未必** —— 换机器时先核一次（01 册 §11.16）。
  */
 ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
                                  const char *name, char **program,

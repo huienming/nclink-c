@@ -121,6 +121,13 @@ static ncl_err note(ncl_focas *focas, const char *what, ncl_err code)
 #define FOCAS_PARAM_PART_COUNT 6711
 #define FOCAS_PARAM_PART_TOTAL 6712
 
+/** `cnc_rdpdf_line` 那条载荷给的是**定长 256 字节**的程序路径（官方 SDK 就是这么发的）。 */
+#define FOCAS_PDF_PATH_SIZE 256u
+
+/** 一次读几行 / 整段程序最多读多少字节（防"要一个巨大的程序"吃爆内存）。 */
+#define FOCAS_PDF_LINES_PER_CALL 64
+#define FOCAS_PDF_PROGRAM_MAX (256u * 1024u)
+
 /*
  * "同一个 item、每次问不同的号"那条读法（刀补/宏变量/参数/工件坐标都走它），
  * 定义在文件后半段 —— 这里先声明，前面的件数/程序目录也要用。
@@ -1896,6 +1903,115 @@ ncl_err ncl_focas_tool_offset_typed(ncl_focas *focas, long long index,
 }
 
 /**
+ * 数一段文本里有几**整行**—— `cnc_rdpdf_line` 每次只回"文字"，回了多少行得自己数，
+ * 才知道下一段从第几行接着读。
+ *
+ * 按 spec 的口径：**最后一行没有读到 EOB（'\n'）就不算一行**（"読込まれた最後の行が
+ * その行の終わりEOB('\n')まで読込まれていない場合、読込んだ行数としてはカウントされ
+ * ません"）。所以这里只数 '\n'，而"末尾不是 '\n'"正好当**程序读完**的标志用（见下面
+ * `ncl_focas_program_upload` 的循环）。
+ */
+static long long program_count_lines(const char *text, size_t len)
+{
+    long long lines = 0;
+    size_t i;
+
+    for (i = 0; i < len; i++) {
+        if (text[i] == '\n') {
+            lines++;
+        }
+    }
+    return lines;
+}
+
+/**
+ * 按文件名按行读一段程序（`cnc_rdpdf_line`，item `RDPDFLINE` = Cb **`0xf0`**）。
+ *
+ * 帧（2026-09-23 抓的，01 册 §11.16）：
+ *
+ *     Cb       code 0xf0、`d` = 起始行号（程序头 = 0）、`e` = 读几行、
+ *              **`tag1` = 载荷长度**、块长 = `0x1c + 载荷`
+ *     载荷     程序路径（**256 字节，NUL 补齐**；`//CNC_MEM/USER/PATH1/O3001`）
+ *     应答     体就是**程序正文**（本机对 O3001 回了 384 字节）
+ *
+ * 路径必须是"盘名 + 路径 + 文件名"：给裸文件名（`O3001`）机床回 `EW_DATA`（细码 1 =
+ * 程序路径错）。
+ */
+static ncl_err program_read_lines(ncl_focas *focas, const char *path,
+                                  long long start_line, long long lines,
+                                  ncl_json **value)
+{
+    ncl_json *params;
+    ncl_json *data;
+    ncl_json *answer = NULL;
+    ncl_json *bytes;
+    ncl_json *out;
+    char padded[FOCAS_PDF_PATH_SIZE];
+    size_t i;
+    ncl_err rc;
+
+    memset(padded, 0, sizeof(padded));
+    snprintf(padded, sizeof(padded), "%s", path);
+    params = ncl_json_new_object();
+    data = ncl_json_new_array();
+    if (params == NULL || data == NULL) {
+        ncl_json_free(params);
+        ncl_json_free(data);
+        return NCL_ERR_NOMEM;
+    }
+    for (i = 0; i < sizeof(padded); i++) {
+        if (ncl_json_arr_push(data, ncl_json_new_int((unsigned char)padded[i])) !=
+            NCL_OK) {
+            ncl_json_free(params);
+            ncl_json_free(data);
+            return NCL_ERR_NOMEM;
+        }
+    }
+    (void)ncl_json_obj_set_string(params, "item", "RDPDFLINE");
+    (void)ncl_json_obj_set_int(params, "block", 0);
+    (void)ncl_json_obj_set_int(params, "d", start_line);
+    (void)ncl_json_obj_set_int(params, "e", lines);
+    (void)ncl_json_obj_set(params, "data", data);
+    rc = ncl_focas_call(focas, "payload", params, &answer);
+    ncl_json_free(params);
+    if (rc != NCL_OK) {
+        return note(focas, "RDPDFLINE", rc);
+    }
+    bytes = ncl_json_obj_get(answer, "bytes");
+    if (bytes == NULL || ncl_json_type_of(bytes) != NCL_JSON_ARRAY) {
+        ncl_json_free(answer);
+        return note(focas, "RDPDFLINE", NCL_ERR_PARSE);
+    }
+    out = ncl_json_new_object();
+    if (out == NULL) {
+        ncl_json_free(answer);
+        return NCL_ERR_NOMEM;
+    }
+    {
+        size_t n = ncl_json_arr_len(bytes);
+        char *text = (char *)ncl_mem_calloc(n + 1u, 1u);
+
+        if (text == NULL) {
+            ncl_json_free(answer);
+            ncl_json_free(out);
+            return NCL_ERR_NOMEM;
+        }
+        for (i = 0; i < n; i++) {
+            text[i] = (char)bytes_at(bytes, i);
+        }
+        (void)ncl_json_obj_set_string(out, "path", path);
+        (void)ncl_json_obj_set_int(out, "line", start_line);
+        (void)ncl_json_obj_set_int(out, "lines",
+                                   program_count_lines(text, n));
+        (void)ncl_json_obj_set_string(out, "text", text);
+        ncl_mem_free(text);
+    }
+    ncl_json_free(answer);
+    *value = out;
+    return NCL_OK;
+}
+
+/**
  * 读一条刀补的**原始记录**（值 + 小数位）。写之前要靠它拿机床自己的 dec：
  * 值是按"最低输入单位"送的，dec 不对值就差 10 倍。
  */
@@ -2370,6 +2486,7 @@ ncl_err ncl_focas_system(ncl_focas *focas, ncl_json **value)
 /** 程序上下行里那个目录/文件名的上限（start 帧的体是 516 字节，扣掉 6 字节头）。 */
 #define FOCAS_PATH_MAX 509u
 
+
 /*
  * 程序的上下行不是"读一个 item"，是三件套（01 册 §2.4 与 §11.14，官方 SDK 实测）：
  *
@@ -2565,22 +2682,100 @@ ncl_err ncl_focas_program_download(ncl_focas *focas, long long type,
  *
  * **卡在哪**：这台 NCGuide 模拟器收下 start（回 256 字节），但对 `0x18` 那条
  * **一声不响**（SDK 自己回 `EW_DATA=10`；`cnc_getdtailerr` 的细码是 0，即机床没给
- * 任何理由）。上行的三代（`cnc_upstart`/`cnc_upstart3`/`cnc_upstart4`）都试过，
- * 把 O3001 选成主程序也试过 —— 一样不答。所以**回读程序文本的切法这台机器上取不到**，
- * 要一台肯答 `0x18` 的真机才能定；在那之前这一格如实回"读不到"。
+ * 任何理由）。上行的三代（`cnc_upstart`/`cnc_upstart3`/`cnc_upstart4`）、三种
+ * `file_name` 写法、选主程序、EDIT/MDI 都试过 —— 一样不答。
+ *
+ * **所以改用"按文件名按行读"这条**（`cnc_rdpdf_line` = Cb `0xf0`，见 §11.16）：
+ * 机床**答**这条，而且回的正是程序正文。`ncl_focas_program_upload()` 就是这么实现的
+ * —— 一次要 `FOCAS_PDF_LINES_PER_CALL` 行、按回来的行数往后接着读，直到读到空，
+ * 把各段拼起来交给上层（读不动就如实回错，不编内容）。
  */
 ncl_err ncl_focas_program_upload(ncl_focas *focas, long long type,
                                  const char *name, char **program, size_t *len)
 {
-    if (focas == NULL || program == NULL) {
+    char path[FOCAS_PDF_PATH_SIZE];
+    char *text = NULL;
+    size_t used = 0;
+    long long line = 0;
+    ncl_err rc = NCL_OK;
+
+    if (focas == NULL || program == NULL || ncl_str_is_blank(name)) {
         return NCL_ERR_INVALID_ARG;
     }
-    (void)type;
-    (void)name;
-    (void)len;
     *program = NULL;
-    return not_yet(focas, "程序上传",
-                   "cnc_upload4：0x18 那条机床不答应答（模拟器上三代上行都试过）");
+    if (len != NULL) {
+        *len = 0;
+    }
+    if (type != 0) {
+        /* 只有 NC 程序能这么读（刀补/参数/宏变量那几张表另有读法）。 */
+        return note(focas, "程序上传", NCL_ERR_UNAVAILABLE);
+    }
+    /* 路径要"盘名+路径+文件名"；只给文件名就补上默认文件夹（0i 的用户区）。 */
+    if (strchr(name, '/') == NULL) {
+        snprintf(path, sizeof(path), "//CNC_MEM/USER/PATH1/%s", name);
+    } else {
+        snprintf(path, sizeof(path), "%s", name);
+    }
+    text = (char *)ncl_mem_calloc(FOCAS_PDF_PROGRAM_MAX, 1u);
+    if (text == NULL) {
+        return NCL_ERR_NOMEM;
+    }
+    for (;;) {
+        ncl_json *one = NULL;
+        const char *chunk;
+        long long lines;
+
+        rc = program_read_lines(focas, path, line, FOCAS_PDF_LINES_PER_CALL,
+                                &one);
+        if (rc != NCL_OK) {
+            if (used > 0) {
+                /*
+                 * 已经读到东西了，再往后读机床回错（真机上读完是 `EW_DATA`：
+                 * "行号超过登记行数"）—— 那就是**读到头**了，把拿到的交出去。
+                 */
+                ncl_json_free(one);
+                rc = NCL_OK;
+            }
+            break;
+        }
+        chunk = ncl_json_obj_get_string(one, "text");
+        lines = ncl_json_obj_get_int(one, "lines", 0);
+        if (chunk == NULL || lines <= 0) {
+            ncl_json_free(one);
+            break; /* 读到头了 */
+        }
+        {
+            size_t n = strlen(chunk);
+
+            if (used + n + 1u > FOCAS_PDF_PROGRAM_MAX) {
+                ncl_json_free(one);
+                rc = note(focas, "程序上传", NCL_ERR_RANGE);
+                break;
+            }
+            memcpy(text + used, chunk, n);
+            used += n;
+            line += lines;
+            ncl_json_free(one);
+            if (chunk[n - 1u] != '\n') {
+                break; /* 末行没有 EOB：这一段就是程序结尾 */
+            }
+            continue;
+        }
+    }
+    if (rc != NCL_OK) {
+        ncl_mem_free(text);
+        return rc;
+    }
+    if (used == 0) {
+        ncl_mem_free(text);
+        /* 一段正文都没读到：这台没有这个程序（或路径不对）—— 如实报"没有"。 */
+        return note(focas, "程序上传", NCL_ERR_NOT_FOUND);
+    }
+    *program = text;
+    if (len != NULL) {
+        *len = used;
+    }
+    return NCL_OK;
 }
 
 /* --------------------------------------------------- 表 7 的那几种表/对象 -- */
@@ -3065,3 +3260,7 @@ ncl_err ncl_focas_macro_write(ncl_focas *focas, long long number, double value)
     }
     return NCL_OK;
 }
+/* ------------------------------------------------------------ 程序上下行 -- */
+
+/** 程序上下行里那个目录/文件名的上限（start 帧的体是 516 字节，扣掉 6 字节头）。 */
+#define FOCAS_PATH_MAX 509u

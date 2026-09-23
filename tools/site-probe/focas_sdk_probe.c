@@ -224,6 +224,17 @@ static const struct {
      * 但 `0x18` 数据请求机床不答 —— 换代际试试是不是另一条路能读。
      */
     { "cnc_upstart", "up1", 0 }, { "cnc_upstart3", "up3", 0 },
+    /* 同一个会话里"先下行一小段、再上行" —— 试机床的上行要不要先被下行"点着"。 */
+    { "cnc_up-after-dwn", "upafter", 0 },
+    /* 程序文件夹/主程序那一族：上传的 0x18 很可能跟"当前文件夹"有关。 */
+    { "cnc_pdf_rdmain", "pdfinfo", 0 }, { "cnc_rdpdf_curdir", "pdfinfo", 0 },
+    { "cnc_wrpdf_curdir", "pdfset", 0 },
+    /* 读整段程序：cnc_pdf_wractpt（指针挪到第 N 块）+ cnc_rdexecprog（读指针处的文本）循环 */
+    { "cnc_pdf_rdactpt", "progread", 0 }, { "cnc_pdf_wractpt", "progread", 0 },
+    { "cnc_rdexecprog", "progread", 0 },
+    /* 按文件名按行读内容（手册标"以太网不支持"，但模拟器可能照答） */
+    { "cnc_rdpdf_line", "rdline", 0 },
+    { "cnc_rdpdf_alldir", "alldir", 0 }, { "cnc_rdpdf_inf", "rdinf", 0 },
     { "cnc_download4", "dwn4", 0 }, { "cnc_upload4", "up4", 0 },
     { "cnc_dwnend4", "dwn4", 0 }, { "cnc_upend4", "up4", 0 },
 };
@@ -437,7 +448,134 @@ int main(int argc, char **argv)
     }
     printf("\n");
 
-    if (strcmp(kind, "seq") == 0) {
+    if (strcmp(kind, "rdline") == 0) {
+        /*
+         * `cnc_rdpdf_line(h, char *prog_name, unsigned long line_no, char *prog_data,
+         *                 unsigned long *line_len, unsigned long *data_len)`
+         * —— **按文件名、按行读程序内容**（手册标以太网不支持，但先问一句试）。
+         * `a0` = 起始行号（0 = 程序头），`a1` = 要读几行，`--len` 不用于这里，
+         * 读的字符数给 `--count`（缺省 1024）。
+         */
+        typedef short (NCL_PROBE_CALL *rdline_fn)(unsigned short, char *,
+                                                  unsigned long, char *,
+                                                  unsigned long *,
+                                                  unsigned long *);
+        unsigned long line_len = (unsigned long)(a1 > 0 ? a1 : 32);
+        unsigned long data_len = (unsigned long)(num > 0 ? num : 1024);
+
+        memset(buf, 0, sizeof(buf));
+        rc = ((rdline_fn)sym("cnc_rdpdf_line"))(handle, (char *)name_arg,
+                                                (unsigned long)a0, (char *)buf,
+                                                &line_len, &data_len);
+        printf("  cnc_rdpdf_line('%s', line %d, %lu 行 / %lu 字符) rc = %d\n",
+               name_arg, a0, line_len, data_len, (int)rc);
+        printf("  读回 %lu 字符：\n%.*s\n", data_len, (int)data_len,
+               (char *)buf);
+    } else if (strcmp(kind, "alldir") == 0) {
+        /* `cnc_rdpdf_alldir(h, short *num, IDBPDFADIR *id, ODBPDFADIR *od)` */
+        typedef short (NCL_PROBE_CALL *alldir_fn)(unsigned short, short *, void *,
+                                                  void *);
+        short count = (short)(num > 0 ? num : 8);
+
+        memset(buf, 0, sizeof(buf));
+        rc = ((alldir_fn)sym("cnc_rdpdf_alldir"))(handle, &count, buf,
+                                                  buf + 1024);
+        printf("  cnc_rdpdf_alldir('%s', num=%d) rc = %d\n", name_arg, (int)count,
+               (int)rc);
+        dump(buf + 1024, 128);
+    } else if (strcmp(kind, "rdinf") == 0) {
+        /* `cnc_rdpdf_inf(h, char *name, short type, ODBPDFINF *inf)` */
+        typedef short (NCL_PROBE_CALL *inf_fn)(unsigned short, char *, short,
+                                               void *);
+
+        memset(buf, 0, 256);
+        rc = ((inf_fn)sym("cnc_rdpdf_inf"))(handle, (char *)name_arg  ,
+                                            (short)a0, buf);
+        printf("  cnc_rdpdf_inf('%s', type=%d) rc = %d\n", name_arg, a0, (int)rc);
+        dump(buf, 64);
+    } else if (strcmp(kind, "pdfinfo") == 0) {
+        /*
+         * 程序文件夹/主程序这一族（`cnc_pdf_rdmain` / `cnc_rdpdf_curdir` /
+         * `cnc_rdpdf_drive`）—— 上行的 `0x18` 一直没人答，先看看机床自己认为
+         * "当前文件夹 / 主程序 / 盘"是什么。
+         */
+        typedef short (NCL_PROBE_CALL *rdmain_fn)(unsigned short, char *);
+        typedef short (NCL_PROBE_CALL *curdir_fn)(unsigned short, short, char *);
+        typedef short (NCL_PROBE_CALL *drive_fn)(unsigned short, void *);
+        char path[256];
+        int t;
+
+        memset(path, 0, sizeof(path));
+        rc = ((rdmain_fn)sym("cnc_pdf_rdmain"))(handle, path);
+        printf("  cnc_pdf_rdmain rc = %d, main = '%s'\n", (int)rc, path);
+        for (t = 0; t <= 2; t++) {
+            memset(path, 0, sizeof(path));
+            rc = ((curdir_fn)sym("cnc_rdpdf_curdir"))(handle, (short)t, path);
+            printf("  cnc_rdpdf_curdir(type=%d) rc = %d, cur = '%s'\n", t,
+                   (int)rc, path);
+        }
+        memset(buf, 0, 128);
+        rc = ((drive_fn)sym("cnc_rdpdf_drive"))(handle, buf);
+        printf("  cnc_rdpdf_drive rc = %d\n", (int)rc);
+        dump(buf, 64);
+    } else if (strcmp(kind, "pdfset") == 0) {
+        /* 把"当前文件夹"设成 //CNC_MEM/USER/PATH1/，然后立刻试上行。 */
+        typedef short (NCL_PROBE_CALL *curdir_fn)(unsigned short, short, char *);
+        typedef short (NCL_PROBE_CALL *start4_fn)(unsigned short, short, char *);
+        typedef short (NCL_PROBE_CALL *xfer4_fn)(unsigned short, long *, char *);
+        typedef short (NCL_PROBE_CALL *end4_fn)(unsigned short);
+        long got = 1024;
+        short r2 = 0;
+        short r3 = 0;
+        int t;
+
+        for (t = 0; t <= 1; t++) {
+            rc = ((curdir_fn)sym("cnc_wrpdf_curdir"))(handle, (short)t,
+                                                      (char *)name_arg);
+            printf("  cnc_wrpdf_curdir(type=%d, '%s') rc = %d\n", t, name_arg,
+                   (int)rc);
+        }
+        rc = ((start4_fn)sym("cnc_upstart4"))(handle, 0, "O3001");
+        printf("  upstart4('O3001') rc = %d\n", (int)rc);
+        memset(buf, 0, sizeof(buf));
+        r2 = ((xfer4_fn)sym("cnc_upload4"))(handle, &got, (char *)buf);
+        printf("  upload4 rc = %d, got = %ld, 取回：%.120s\n", (int)r2, got,
+               (char *)buf);
+        r3 = ((end4_fn)sym("cnc_upend4"))(handle);
+        printf("  upend4 rc = %d\n", (int)r3);
+        rc = r2 != 0 ? r2 : r3;
+    } else if (strcmp(kind, "upafter") == 0) {
+        /*
+         * 同一个会话里先做一次**下行**（写一份很小的程序），紧接着做**上行**：
+         * 试机床的上行要不要先被一次成功的下行"点着"（它现在对 0x18 一声不响）。
+         */
+        typedef short (NCL_PROBE_CALL *start4_fn)(unsigned short, short, char *);
+        typedef short (NCL_PROBE_CALL *xfer4_fn)(unsigned short, long *, char *);
+        typedef short (NCL_PROBE_CALL *end4_fn)(unsigned short);
+        static const char kProg[] = "\nO0009\nM30\n%";
+        long len = (long)sizeof(kProg) - 1;
+        long got = 1024;
+        short r2 = 0;
+        short r3 = 0;
+
+        rc = ((start4_fn)sym("cnc_dwnstart4"))(handle, 0,
+                                               "//CNC_MEM/USER/PATH1/");
+        printf("  [先下行] start4 rc = %d\n", (int)rc);
+        memcpy(buf, kProg, (size_t)len);
+        r2 = ((xfer4_fn)sym("cnc_download4"))(handle, &len, (char *)buf);
+        printf("  [先下行] download4 rc = %d, len = %ld\n", (int)r2, len);
+        r3 = ((end4_fn)sym("cnc_dwnend4"))(handle);
+        printf("  [先下行] dwnend4 rc = %d\n", (int)r3);
+        memset(buf, 0, sizeof(buf));
+        rc = ((start4_fn)sym("cnc_upstart4"))(handle, 0, "O0009");
+        printf("  [再上行] upstart4 rc = %d\n", (int)rc);
+        r2 = ((xfer4_fn)sym("cnc_upload4"))(handle, &got, (char *)buf);
+        printf("  [再上行] upload4 rc = %d, got = %ld, 取回：%.120s\n", (int)r2,
+               got, (char *)buf);
+        r3 = ((end4_fn)sym("cnc_upend4"))(handle);
+        printf("  [再上行] upend4 rc = %d\n", (int)r3);
+        rc = r2 != 0 ? r2 : r3;
+    } else if (strcmp(kind, "seq") == 0) {
         n_fn rdaxisname_fn = (n_fn)sym("cnc_rdaxisname");
         s2_fn srvdelay_fn = (s2_fn)sym("cnc_srvdelay");
         short num = 8;
@@ -621,7 +759,8 @@ int main(int argc, char **argv)
         typedef short (*start4_fn)(unsigned short, short, char *);
         typedef short (*xfer4_fn)(unsigned short, long *, char *);
         typedef short (*end4_fn)(unsigned short);
-        long want = 1024;
+        /* `--count N` 可以改读/写长度（上行 `*length` 按 spec 要 ≥256 且是 256 的倍数）。 */
+        long want = num > 0 ? (long)num : 1024;
         short rc2 = 0;
         short rc3 = 0;
 

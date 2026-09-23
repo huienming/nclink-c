@@ -1644,3 +1644,62 @@ cnc_upend4(h)                   收尾
 
 所以"回读程序文本"这一格仍旧是 `NCL_ERR_UNAVAILABLE`，但**缺的只剩机床那一侧的应答**：
 哪天在真机（或补上这块的模拟器）上抓一次 `0x18` 的应答，切法就能定。
+
+### 11.16 取程序改用 `cnc_rdpdf_line`：**按文件名按行读**，模拟器上通了（2026-09-23）
+
+§11.15.2 那条路子（`cnc_upstart4`/`cnc_upload4` 的流式上行）在这台模拟器上卡死在
+`0x18` 不答。换到**文件那一家族**试，通了：
+
+#### 11.16.1 帧（官方 SDK 抓的）
+
+```
+请求   func 0x21、一个块：size = 284 = 0x1c + 256、first = 1、index = 1、code = 0xf0
+                          d = 0（起始行号，程序头是 0）、e = 32（读几行）、
+                          arg2 = arg3 = 0、tag0 = 0、**tag1 = 256**（载荷长度）
+       载荷 = **256 字节**的程序路径（NUL 补齐）→ //CNC_MEM/USER/PATH1/O3001
+应答   块 size = 400 = 16 + 384、code = 0xf0、返回码 0，体 = **程序正文**：
+       O3001(SUBPOCKET)\nG1990(GROUPSTART)\n…\nM99\n%
+```
+
+要点：
+
+* 路径必须是"**盘名 + 路径 + 文件名**"：给裸名 `O3001` 机床回 `EW_DATA`（细码 1 =
+  程序路径错）；`//CNC_MEM/USER/PATH1/O3001` 才对（"只给文件名 = 当前文件夹"那条
+  是**手册**的口径，这台机器照它回错，所以 client 自己把默认文件夹补上前缀）。
+* **一次读几行**（`e`）+ 起始行号（`d`）就能分页把整份程序读完；末行没有 EOB（`'\n'`）
+  的那一段就是结尾（spec："最后一行没读到 EOB 不算一行"）。
+* 手册把 `cnc_rdpdf_line` 标成 **HSSB 专用**（支持表 `O-O-`，以太网列是 `-`），
+  **可这台 NCGuide 模拟器的以太网照答** —— 真机上要复核（改用 §11.15.2 的
+  `cnc_upload4`，或退回 HSSB）。
+
+#### 11.16.2 client 怎么实现的
+
+`ncl_focas_program_upload(type = 0, name, &program, &len)`：
+
+* 用 item `RDPDFLINE`（Cb `0xf0`）+ `call("payload")` 带上 256 字节路径载荷
+  （块的 `tag1`/块长由 `ncl_focas_body_add_payload()` 写对）；
+* 一次要 `FOCAS_PDF_LINES_PER_CALL`（64）行，按"回了几行"推进 `d`，末行没有 `'\n'`
+  或机床报错就收尾；上限 `FOCAS_PDF_PROGRAM_MAX`（256 KiB）；
+* `name` 带 `/` 就原样用，裸文件名自动补 `//CNC_MEM/USER/PATH1/`；
+* 一段都没读到 → `NCL_ERR_NOT_FOUND`（不编内容）。
+
+**实测**（`focas_transfer.exe`，模拟器）：
+
+| 调用 | 结果 |
+|---|---|
+| `ncl_focas_program_upload(f, 0, "//CNC_MEM/USER/PATH1/O3001", …)` | `rc=0`、**384 字节正文** |
+| `ncl_focas_program_upload(f, 0, "O3001", …)` | `rc=0`、384 字节（自动补文件夹）|
+| `type != 0` | `NCL_ERR_UNAVAILABLE`（只有 NC 程序能这么读）|
+
+#### 11.16.3 顺带：怎么"借 SDK 的会话"扫传输帧
+
+本仓库 client 发传输 start（`0x11`/`0x15`）会被这台机床直接关连接（§11.14.4），
+所以**自己的客户端扫不了这一族帧**。办法是让官方 SDK 去建会话、代理在中间**插帧**：
+
+```
+python tools/site-probe/focas_inject.py 8290 127.0.0.1 8193 inj.log 0.6
+focas_sdk_probe64.exe 127.0.0.1 8290 cnc_upstart4 --shape up4 0 --name O3001
+```
+
+就是靠这个扫出 `0x19` 会被答（回 `dir 3` + 码 13 = `EW_REJECT`、11 = `EW_PATH`）——
+机床**是**实现了文件/程序那一族的，只是状态不对时它就回"拒绝执行"。
