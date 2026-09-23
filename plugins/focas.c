@@ -654,7 +654,10 @@ static ncl_err focas_file_remove(void *user, const char *name, char **reason)
 #define FOCAS_REGISTER_OPS                                                     \
     (NCL_OP_BIT(NCL_OP_GET_LENGTH) | NCL_OP_BIT(NCL_OP_GET_VALUE) |           \
      NCL_OP_BIT(NCL_OP_GET_ATTRIBUTES))
-/** 能写的族再带上 `set_value`（`X`/`F` 是机床/CNC 驱动的信号，只读）。 */
+/*
+ * 能写的族本来要带上 `set_value`，但本 client 的写**还没落地**（§11.22.1），
+ * 所以暂时收着 —— 留着这个宏，等写通了把上面几条声明换回来就行。
+ */
 #define FOCAS_REGISTER_RW_OPS (FOCAS_REGISTER_OPS | NCL_OP_BIT(NCL_OP_SET_VALUE))
 
 NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表可写）", "MACHINE", 1000, 1000,
@@ -774,22 +777,24 @@ NCL_TOOL_BEGIN("focas", "FANUC FOCAS / Fwlib32 over TCP（读为主，刀补表�
 
     /*
      * PMC / 寄存器（`/CONTROLLER/REGISTER@<族>`）：位族答位（true/false），
-     * `@D` 答字。号是各族自己的编号（位族按"字节 × 8 + 位"）。只读这一轮。
+     * `@D` 答字。号是各族自己的编号（位族按"字节 × 8 + 位"）。
+     * **只读**：写（`0x8002`）的帧抓到了、官方库写也能落，可**本 client 发出去的值
+     * 还没落地**（§11.22.1）—— 所以先不声明 `set_value`，等那一轮 diff 做完再开。
      */
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@X", focas_register_table, "X",
                    FOCAS_REGISTER_OPS) /* X = 机床驱动的输入：只读 */
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@Y", focas_register_table, "Y",
-                   FOCAS_REGISTER_RW_OPS)
+                   FOCAS_REGISTER_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@G", focas_register_table, "G",
-                   FOCAS_REGISTER_RW_OPS)
+                   FOCAS_REGISTER_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@F", focas_register_table, "F",
                    FOCAS_REGISTER_OPS) /* F = CNC 驱动的：只读 */
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@R", focas_register_table, "R",
-                   FOCAS_REGISTER_RW_OPS)
+                   FOCAS_REGISTER_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@K", focas_register_table, "K",
-                   FOCAS_REGISTER_RW_OPS)
+                   FOCAS_REGISTER_OPS)
     NCL_CONFIG_OPS("/CONTROLLER/REGISTER@D", focas_register_table, "D",
-                   FOCAS_REGISTER_RW_OPS)
+                   FOCAS_REGISTER_OPS)
 
     /* 方法：会话状态与数据项清单（现场调试用，不进模型、不参与采样）。 */
     NCL_METHOD_CALL("/SESSION", session_method)

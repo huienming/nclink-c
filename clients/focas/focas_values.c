@@ -2707,7 +2707,45 @@ ncl_err ncl_focas_pmc_write(ncl_focas *focas, char family, long long start,
     if (rc != NCL_OK) {
         return note(focas, "写 PMC", rc);
     }
-    return NCL_OK;
+    /*
+     * **写后复核**（与写刀具坐标/宏变量同一个口径）：读回来比一遍，对不上就如实回
+     * "没写进去"（`NCL_ERR_UNAVAILABLE`），**绝不回成功**。
+     *
+     * 为什么非比不可：PMC 有些位是**梯形图在驱动**的 —— 回 rc=0 而值被当场改回去是
+     * 常态（01 册 §11.22 实测：写 R0 = 0x33、读回 0x32）。读几遍、每遍隔 20 ms，
+     * 给机床/梯形图一个扫描周期。
+     */
+    {
+        unsigned attempt;
+
+        for (attempt = 0; attempt < 3u; attempt++) {
+            ncl_json *back = NULL;
+            size_t j;
+            bool same = true;
+
+            rc = ncl_focas_pmc_read(focas, family, start, (long long)count, width,
+                                    &back);
+            if (rc != NCL_OK) {
+                return rc;
+            }
+            for (j = 0; j < count && same; j++) {
+                long long got = -1;
+
+                (void)ncl_json_as_int(ncl_json_arr_get(back, j), &got);
+                if (got != values[j]) {
+                    same = false;
+                }
+            }
+            ncl_json_free(back);
+            if (same) {
+                return NCL_OK;
+            }
+            if (attempt + 1u < 3u) {
+                ncl_sleep_millis(20u);
+            }
+        }
+        return note(focas, "写 PMC", NCL_ERR_UNAVAILABLE);
+    }
 }
 
 /**
