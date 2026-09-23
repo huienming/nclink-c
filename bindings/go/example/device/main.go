@@ -240,7 +240,7 @@ func main() {
 	}
 	model := loadModel(root)
 
-	// 方法表与绑定表：9 个标量 + 5 个轴功率 + 15 个方向加速度。
+	// 方法表与绑定表：9 个标量 + 5 个轴功率 + 3 个主轴方向加速度（只留主轴）。
 	var methods []nclink.ToolMethod
 	var bindings []nclink.Binding
 	for i, name := range scalars {
@@ -259,7 +259,8 @@ func main() {
 			Path: "/MACHINE/AXIS@" + axis + "/MACHINE/POWER@1", Operation: nclink.OpGetValue,
 			Method: name})
 	}
-	for _, axis := range axes {
+	// 振动只留主轴：模型里 X/Y/Z/C 四轴已经没有 ACCELERATION 数据项了。
+	for _, axis := range []string{"S"} {
 		for _, dir := range dirs {
 			name := "getAcceleration" + axis + dir
 			methods = append(methods, nclink.ToolMethod{Name: name})

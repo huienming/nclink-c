@@ -221,7 +221,8 @@ public final class DeviceDemo {
             bindings.add(new Server.Binding("/MACHINE/AXIS@" + axis + "/MACHINE/POWER@1",
                     Operation.GET_VALUE, "getPower" + axis));
         }
-        for (String axis : AXES) {
+        // 振动只留主轴：模型里 X/Y/Z/C 四轴已经没有 ACCELERATION 数据项了。
+        for (String axis : new String[] {"S"}) {
             for (String dir : DIRS) {
                 methods.add("getAcceleration" + axis + dir);
                 bindings.add(new Server.Binding(

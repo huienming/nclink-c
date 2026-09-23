@@ -480,6 +480,26 @@ int64_t ncl_time_monotonic_millis(void)
 #endif
 }
 
+int64_t ncl_time_monotonic_us(void)
+{
+#if defined(NCL_OS_WINDOWS)
+    LARGE_INTEGER freq;
+    LARGE_INTEGER now;
+
+    if (!QueryPerformanceFrequency(&freq) || freq.QuadPart == 0 ||
+        !QueryPerformanceCounter(&now)) {
+        return (int64_t)GetTickCount64() * 1000; /* 退回到毫秒钟 */
+    }
+    return (int64_t)((now.QuadPart / freq.QuadPart) * 1000000LL +
+                     ((now.QuadPart % freq.QuadPart) * 1000000LL) / freq.QuadPart);
+#else
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + (int64_t)(ts.tv_nsec / 1000);
+#endif
+}
+
 void ncl_sleep_millis(unsigned ms)
 {
 #if defined(NCL_OS_WINDOWS)

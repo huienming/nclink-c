@@ -286,7 +286,8 @@ namespace Nclink.Demo
                                                 NclOperation.GetValue,
                                                 "getPower" + axis));
             }
-            foreach (string axis in Axes)
+            // 振动只留主轴：模型里 X/Y/Z/C 四轴已经没有 ACCELERATION 数据项了。
+            foreach (string axis in new[] { "S" })
             {
                 foreach (string dir in Dirs)
                 {

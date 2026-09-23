@@ -2022,6 +2022,7 @@ static void ncl_sample_collect(ncl_sample_task *task, ncl_message *sample)
     long long sample_interval = task->config->sample_interval;
     long long upload_interval = task->config->upload_interval;
     long long start;
+    long long step_us;
     int sampled = 0;
     int rounds;
     int round;
@@ -2046,7 +2047,13 @@ static void ncl_sample_collect(ncl_sample_task *task, ncl_message *sample)
         }
     }
 
-    start = ncl_time_monotonic_millis();
+    /*
+     * 排拍用**微秒钟**（`ncl_time_monotonic_us`）：毫秒钟在 Windows 上是
+     * GetTickCount64，粒度 ~15.6 ms，拿它判"1 ms 这一拍到了没"纯属瞎猜，
+     * 会把大量拍误判成"错过"（修这个 bug 时先踩过这一脚）。
+     */
+    start = ncl_time_monotonic_us();
+    step_us = sample_interval * 1000;
 
     /*
      * 一包 = `rounds` 拍（uploadInterval / sampleInterval），**每拍每列正好一格**：
@@ -2063,12 +2070,17 @@ static void ncl_sample_collect(ncl_sample_task *task, ncl_message *sample)
      * 现在上报周期始终等于 uploadInterval，没采到的拍如实留空，并且**说一句**。
      */
     for (round = 0; round < rounds && !ncl_sample_stopping(task); round++) {
-        long long tick = start + (long long)round * sample_interval;
-        long long now = ncl_time_monotonic_millis();
+        long long tick = start + (long long)round * step_us;
+        long long now = ncl_time_monotonic_us();
 
-        if (now < tick) {
-            ncl_sample_sleep(task, tick - now); /* 还有富余：睡到这一拍 */
-        } else if (now - tick >= sample_interval) {
+        if (tick - now >= 2000) {
+            /*
+             * 还有富余就睡到这一拍 —— **只差 1 ms 不睡**：Windows 上 Sleep(1)
+             * 实际要 1.5~2 ms，睡下去反而把自己睡过一拍（下一拍被判成"错过"），
+             * 于是拍几乎全被留空。宁可早采这一拍（±1 ms 的抖动），也别睡出个空拍。
+             */
+            ncl_sample_sleep(task, (unsigned)((tick - now) / 1000));
+        } else if (now - tick >= step_us) {
             /* 这一拍已经错过：留空批，**不补采**（补采的值时间戳是假的，还会接着拖后面） */
             for (item = 0; item < count; item++) {
                 ncl_sample_item *target =

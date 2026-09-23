@@ -45,6 +45,15 @@ int64_t ncl_time_millis(void);
 
 /** Monotonic milliseconds, suitable for measuring intervals. */
 int64_t ncl_time_monotonic_millis(void);
+/**
+ * Monotonic clock in **microseconds**.
+ *
+ * The millisecond clock is not fine enough for sub-millisecond scheduling:
+ * on Windows it is GetTickCount64(), whose granularity is the system timer
+ * tick (typically 15.6 ms). Anything that paces faster than that - the
+ * sampler's sampleInterval, for one - must use this one.
+ */
+int64_t ncl_time_monotonic_us(void);
 
 /** Sleep for the given number of milliseconds. */
 void ncl_sleep_millis(unsigned ms);

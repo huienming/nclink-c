@@ -5,6 +5,24 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 未发布
 
+### 示例：振动只留主轴（X/Y/Z/C 四轴的 ACCELERATION 去掉）
+
+  * **模型**（`examples/device_model.c` 与 `conf/model/nclink.json` —— 两份本来就是
+    一模一样的同一份文本，按同一套渲染一起改）：去掉 X/Y/Z/C 四轴的 12 条
+    `ACCELERATION` 数据项；EdgeSersors 采样通道 **20 项 → 8 项**（5 个功率 + 3 个主轴
+    加速度）；模型版本 1.1.0 → 1.2.0。现场只有主轴装了振动传感器，别的轴不该凭空摆。
+  * **工具**：`examples/ncl_device_demo.c` 删掉那 12 个 getter/方法/绑定（留主轴
+    SX/SY/SZ）；四个绑定的设备端示例（Java/Go/C#/Python）同步只注册主轴那 3 条。
+  * **顺带修好"拍不满"的另一半原因**：
+    1. 排拍改用**微秒钟** `ncl_time_monotonic_us()`（Windows 走 QueryPerformanceCounter）
+       —— 原来的 `ncl_time_monotonic_millis()` 在 Windows 上是 `GetTickCount64()`，
+       粒度 ~15.6 ms，拿它判"1 ms 这一拍到了没"会把大量拍误判成"错过"（8 项也会只
+       采到 4 成）；
+    2. 离这一拍不到 2 ms 就**不睡**（Windows `Sleep(1)` 实际 1.5~2 ms，睡下去反而把
+       自己睡过一拍）。
+  * **实测**（离线跑示例，Windows，日志时间戳算的）：EdgeSersors 8 项 / 1 ms / 100 ms →
+    **9.7 包/秒、满槽、不再打 warn**（去振动之前 20 项是拍不满的）。
+
 ### 采样：上报周期不再被"采样跟不上"偷偷拉长（示例 EdgeSersors 每秒只有 2 包）
 
   * **现象**：示例模型里 EdgeSersors = `sampleInterval 1 ms` / `uploadInterval 100 ms`，

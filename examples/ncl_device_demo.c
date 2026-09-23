@@ -60,12 +60,12 @@
  *
  * 模型要点（细节见文件本身）：
  *   - 一台数控机床：X/Y/Z/C 四个进给轴 + 主轴 S + 数控系统（CONTROLLER）；
- *   - 每个轴一个功率（/AXIS@<轴>/POWER@1）与**三个加速度**
- *     （/AXIS@<轴>/ACCELERATION@X|Y|Z）—— 振动信号在 X/Y/Z 三个方向上的分量，
+ *   - 每个轴一个功率（/AXIS@<轴>/POWER@1）；**振动只留主轴**
+ *     （/AXIS@S/ACCELERATION@X|Y|Z）—— 现场只有主轴装了振动传感器，
  *     方向写在数据项的 number 里，路径就是 /AXIS@<轴>/ACCELERATION@<方向>；
  *   - 两个采样通道：sample_channel0（1 s / 1 s，机床运行状态八项）与
  *     EdgeSersors（1 ms / 100 ms：功率一槽 1 点，振动一槽 4 点 = 0.25 ms 一位，
- *     即 MANUAL 4.5 的亚毫秒采样；共 5 + 15 = 20 列）。
+ *     即 MANUAL 4.5 的亚毫秒采样；共 5 + 3 = 8 列）。
  */
 /**
  * 取设备模型文本（堆字符串，调用方 free）。
@@ -245,7 +245,7 @@ static ncl_err tool_get_machining_mode(void *instance, const ncl_json *params,
  * 示例的"传感器寄存器"：每次被取值就往前推进（真机是硬件按自己的节拍刷新，设备端
  * 只是读寄存器）。按查询次数推进，采样调度快慢都不影响曲线的连续性。
  *
- * 功率每轴一格；振动**每轴每方向**一格 —— X/Y/Z 三条曲线各走各的相位。
+ * 功率每轴一格；振动只留主轴 —— S 轴 X/Y/Z 三条曲线各走各的相位。
  */
 enum { DEMO_DIR_X = 0, DEMO_DIR_Y, DEMO_DIR_Z, DEMO_DIR_COUNT };
 
@@ -301,7 +301,7 @@ static ncl_json *demo_axis_vibration_block(int axis, int direction)
 
 /*
  * 服务端按"路径 → 方法"取值，而方法签名里拿不到路径，所以每条路径要一套绑定、
- * 一个方法体。样板用宏生成：功率 5 个，加速度 5 轴 × 3 方向 = 15 个。
+ * 一个方法体。样板用宏生成：功率 5 个（每轴一个），加速度只留主轴 3 个（S 轴 X/Y/Z 向）。
  */
 #define DEMO_DEFINE_POWER_GETTER(fn, axis_slot)                                \
     static ncl_err fn(void *instance, const ncl_json *params,                  \
@@ -331,18 +331,6 @@ DEMO_DEFINE_POWER_GETTER(tool_get_power_z, DEMO_AXIS_Z)
 DEMO_DEFINE_POWER_GETTER(tool_get_power_c, DEMO_AXIS_C)
 DEMO_DEFINE_POWER_GETTER(tool_get_power_s, DEMO_AXIS_S)
 
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_xx, DEMO_AXIS_X, DEMO_DIR_X)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_xy, DEMO_AXIS_X, DEMO_DIR_Y)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_xz, DEMO_AXIS_X, DEMO_DIR_Z)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_yx, DEMO_AXIS_Y, DEMO_DIR_X)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_yy, DEMO_AXIS_Y, DEMO_DIR_Y)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_yz, DEMO_AXIS_Y, DEMO_DIR_Z)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_zx, DEMO_AXIS_Z, DEMO_DIR_X)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_zy, DEMO_AXIS_Z, DEMO_DIR_Y)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_zz, DEMO_AXIS_Z, DEMO_DIR_Z)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_cx, DEMO_AXIS_C, DEMO_DIR_X)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_cy, DEMO_AXIS_C, DEMO_DIR_Y)
-DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_cz, DEMO_AXIS_C, DEMO_DIR_Z)
 DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_sx, DEMO_AXIS_S, DEMO_DIR_X)
 DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_sy, DEMO_AXIS_S, DEMO_DIR_Y)
 DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_sz, DEMO_AXIS_S, DEMO_DIR_Z)
@@ -360,7 +348,7 @@ DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_sz, DEMO_AXIS_S, DEMO_DIR_Z)
     "\"required\":[\"value\"]}"
 
 /*
- * 工具方法表：8 个状态量 + 5 个轴功率 + 15 个方向加速度 —— 每条绑定路径一个方法。
+ * 工具方法表：8 个状态量 + 5 个轴功率 + 3 个主轴方向加速度 —— 每条绑定路径一个方法。
  * 方法名里的轴与方向直接对应路径 /AXIS@<轴>/ACCELERATION@<方向>
  * （getAccelerationXY = X 轴、Y 方向的振动）。
  */
@@ -379,18 +367,6 @@ static const ncl_tool_method kMethods[] = {
     {"getPowerZ", tool_get_power_z, NULL},
     {"getPowerC", tool_get_power_c, NULL},
     {"getPowerS", tool_get_power_s, NULL},
-    {"getAccelerationXX", tool_get_acceleration_xx, NULL},
-    {"getAccelerationXY", tool_get_acceleration_xy, NULL},
-    {"getAccelerationXZ", tool_get_acceleration_xz, NULL},
-    {"getAccelerationYX", tool_get_acceleration_yx, NULL},
-    {"getAccelerationYY", tool_get_acceleration_yy, NULL},
-    {"getAccelerationYZ", tool_get_acceleration_yz, NULL},
-    {"getAccelerationZX", tool_get_acceleration_zx, NULL},
-    {"getAccelerationZY", tool_get_acceleration_zy, NULL},
-    {"getAccelerationZZ", tool_get_acceleration_zz, NULL},
-    {"getAccelerationCX", tool_get_acceleration_cx, NULL},
-    {"getAccelerationCY", tool_get_acceleration_cy, NULL},
-    {"getAccelerationCZ", tool_get_acceleration_cz, NULL},
     {"getAccelerationSX", tool_get_acceleration_sx, NULL},
     {"getAccelerationSY", tool_get_acceleration_sy, NULL},
     {"getAccelerationSZ", tool_get_acceleration_sz, NULL}};
@@ -398,7 +374,7 @@ static const ncl_tool_method kMethods[] = {
 /*
  * 绑定：<operation>#<模型路径>。路径要和统一模型里数据项的路径一致（设备端收到的
  * 请求项是节点 id，服务端先按 id 找到节点、再取路径匹配绑定）。两个采样通道里的
- * 28 项全都按这些路径取值，缺一条那一列只能是 null。
+ * 16 项全都按这些路径取值，缺一条那一列只能是 null。
  */
 static const ncl_tool_binding kBindings[] = {
     {"/MACHINE/STATUS", NCL_OP_GET_VALUE, "getValue", "plc"},
@@ -415,18 +391,6 @@ static const ncl_tool_binding kBindings[] = {
     {"/MACHINE/AXIS@Z/POWER@1", NCL_OP_GET_VALUE, "getPowerZ", "plc"},
     {"/MACHINE/AXIS@C/POWER@1", NCL_OP_GET_VALUE, "getPowerC", "plc"},
     {"/MACHINE/AXIS@S/POWER@1", NCL_OP_GET_VALUE, "getPowerS", "plc"},
-    {"/MACHINE/AXIS@X/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationXX", "plc"},
-    {"/MACHINE/AXIS@X/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationXY", "plc"},
-    {"/MACHINE/AXIS@X/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationXZ", "plc"},
-    {"/MACHINE/AXIS@Y/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationYX", "plc"},
-    {"/MACHINE/AXIS@Y/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationYY", "plc"},
-    {"/MACHINE/AXIS@Y/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationYZ", "plc"},
-    {"/MACHINE/AXIS@Z/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationZX", "plc"},
-    {"/MACHINE/AXIS@Z/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationZY", "plc"},
-    {"/MACHINE/AXIS@Z/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationZZ", "plc"},
-    {"/MACHINE/AXIS@C/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationCX", "plc"},
-    {"/MACHINE/AXIS@C/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationCY", "plc"},
-    {"/MACHINE/AXIS@C/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationCZ", "plc"},
     {"/MACHINE/AXIS@S/ACCELERATION@X", NCL_OP_GET_VALUE, "getAccelerationSX", "plc"},
     {"/MACHINE/AXIS@S/ACCELERATION@Y", NCL_OP_GET_VALUE, "getAccelerationSY", "plc"},
     {"/MACHINE/AXIS@S/ACCELERATION@Z", NCL_OP_GET_VALUE, "getAccelerationSZ", "plc"}};
@@ -865,7 +829,7 @@ int main(int argc, char **argv)
     ncl_log_info("轴的功率与振动（路径 含义 #方向）:");
     log_axis_quantities(ncl_server_model(server));
 
-    /* 7. 工具：8 个状态量 + 5 个轴功率 + 15 个方向加速度（一条路径一个方法）。 */
+    /* 7. 工具：8 个状态量 + 5 个轴功率 + 3 个主轴方向加速度（一条路径一个方法）。 */
     if (ncl_server_register_tool(server, "plc", &device, kMethods,
                                  sizeof(kMethods) / sizeof(kMethods[0]), kBindings,
                                  sizeof(kBindings) / sizeof(kBindings[0])) != NCL_OK) {
