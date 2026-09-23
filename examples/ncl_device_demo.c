@@ -350,7 +350,7 @@ DEMO_DEFINE_VIBRATION_GETTER(tool_get_acceleration_sz, DEMO_AXIS_S, DEMO_DIR_Z)
 /*
  * 工具方法表：8 个状态量 + 5 个轴功率 + 3 个主轴方向加速度 —— 每条绑定路径一个方法。
  * 方法名里的轴与方向直接对应路径 /AXIS@<轴>/ACCELERATION@<方向>
- * （getAccelerationXY = X 轴、Y 方向的振动）。
+ * （getAccelerationSY = 主轴、Y 方向的振动）。
  */
 static const ncl_tool_method kMethods[] = {
     {"getValue", tool_get_status, NULL},

@@ -620,28 +620,28 @@ MQTT 5.0 broker（mochi-mqtt v2.7.9，匿名 1883；更早几次实测用的是 
     [5] /MACHINE/STATUS
     [6] /MACHINE/MACHINING_MODE
     [7] /MACHINE/CONTROLLER/WARNING
-模型里的采集通道 EdgeSersors: 12 个采样项
+模型里的采集通道 EdgeSersors: 8 个采样项
     [0] /AXIS@X/POWER@1
-    [1] /AXIS@X/ACCELERATION@X
-    ...（X/Y/Z/C 各一路 + 主轴两路，共 12 项）
+    [1] /AXIS@S/ACCELERATION@X
+    ...（5 个功率 + 主轴 3 路振动 = 8 项）
 GET /MACHINE/STATUS = 1
 SET /MACHINE/STATUS = 42 成功
 check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
 文件回传路径: D:\...\166587125\demo.txt
   远端文件 demo.txt (14 字节)
-收到采样 [Sample/166587125/EdgeSersors] 通道=EdgeSersors 采样周期=1ms 上报周期=100ms 采样项=12
-    表头 paths(20 项) = ["/MACHINE/AXIS@X/POWER@1","/MACHINE/AXIS@X/ACCELERATION@X",...,"/MACHINE/AXIS@S/ACCELERATION@Y"]
-    原始报文: {"paths":[...同上 12 项...],"id":"EdgeSersors","beginTime":"1789573512114",
+收到采样 [Sample/166587125/EdgeSersors] 通道=EdgeSersors 采样周期=1ms 上报周期=100ms 采样项=8
+    表头 paths(8 项) = ["/MACHINE/AXIS@X/POWER@1",...,"/MACHINE/AXIS@S/ACCELERATION@Z"]
+    原始报文: {"paths":[...同上 8 项...],"id":"EdgeSersors","beginTime":"1789573512114",
               "data":[{"data":[800.0,812.5,...(中间省略)...,1100.0]},        ← 功率：100 个值
                       {"data":[[-1.0,-0.875,-0.75,-0.625],...]},          ← 振动：每槽一批
                       ...],"interval":1,"uploadInterval":100}
     /AXIS@X/POWER@1  编码=raw 本轮 100 个值: [800.0, 812.5, 825.0, 837.5, ...]
     ...
-    /MACHINE/AXIS@S/POWER@2  编码=raw 本轮 100 个值: [2175.0, 2187.5, 2200.0, ...]   ← 主轴第二路
+    /MACHINE/AXIS@S/POWER@1  编码=raw 本轮 100 个值: [2175.0, 2187.5, 2200.0, ...]
     /MACHINE/AXIS@S/ACCELERATION@Y 批量采样: 100 个槽位 × 每槽约 4 点 = 400 点，首个=0.875
     按行消费: 400 行（数据最多的那一列的点数）
-      行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-1.0  /AXIS@Y/POWER@1=1137.5  ...
-      行[1] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-0.875  /AXIS@Y/POWER@1=1137.5  ...
+      行[0] /AXIS@X/POWER@1=800.0  /AXIS@S/ACCELERATION@X=-1.0  /AXIS@Y/POWER@1=1137.5  ...
+      行[1] /AXIS@X/POWER@1=800.0  /AXIS@S/ACCELERATION@X=-0.875  /AXIS@Y/POWER@1=1137.5  ...
       ...（共 400 行，这里只打前 8 行）
 收到采样 [Sample/166587125/sample_channel0] 通道=sample_channel0 采样周期=1000ms 上报周期=1000ms 采样项=8
     表头 paths(8 项) = ["/MACHINE/PART_COUNT","/MACHINE/FEED_OVERRIDE","/MACHINE/CONTROLLER/PROGRAM","/MACHINE/CONTROLLER/TOOL_NUMBER","/MACHINE/AXIS@S/SPEED","/MACHINE/STATUS","/MACHINE/MACHINING_MODE","/MACHINE/CONTROLLER/WARNING"]
@@ -699,7 +699,7 @@ build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 
 | 文件 | 首次启动写什么 |
 |------|----------------|
 | `bin/sn.txt` | 设备 SN：`V2` + 9 位**十六进制**（大写，且保证含 A~F 字母，不会是一串纯数字），由 `ncl_sn_read()` 在文件缺失时生成并落盘（见 4.1）。示例不自己造 SN，跟着库走 |
-| `conf/model/nclink.json` | 设备模型：一台数控机床（X/Y/Z/C 四轴 + 主轴 S + 数控系统），带两个采样通道：`sample_channel0`（机床运行状态，1 s 采样 / 1 s 上报，八项）、`EdgeSersors`（5 轴的功率与振动，**二十项** = 每轴 1 个功率 + 3 个方向的加速度；路径形如 `/MACHINE/AXIS@S/POWER@1`、`/MACHINE/AXIS@S/ACCELERATION@X`）。首次启动时由示例自举（模型编译在代码里：`examples/device_model.c`，五个语言的示例共用这一份），之后以这个文件为准 |
+| `conf/model/nclink.json` | 设备模型：一台数控机床（X/Y/Z/C 四轴 + 主轴 S + 数控系统），带两个采样通道：`sample_channel0`（机床运行状态，1 s 采样 / 1 s 上报，八项）、`EdgeSersors`（5 轴的功率 + **主轴 S 的振动**，**八项** = 每轴 1 个功率 + 主轴 3 个方向的加速度；路径形如 `/MACHINE/AXIS@S/POWER@1`、`/MACHINE/AXIS@S/ACCELERATION@X`）。首次启动时由示例自举（模型编译在代码里：`examples/device_model.c`，五个语言的示例共用这一份），之后以这个文件为准 |
 | `conf/mqtt.cfg` | 本机 broker：`url=tcp://127.0.0.1:1883`，`username=`/`password=` 留空 = 匿名连接（空值不会写进 MQTT 连接报文） |
 
 之后以文件为准，示例不再覆盖：换模型改 `conf/model/nclink.json`（或走 REST 的
@@ -726,14 +726,14 @@ build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 
 要采就把 id 加进 `ids`（见 4.5 的 `addSample`）。
 
 功率与振动（= 加速度）挂在 `AXIS` 组件下，路径形如
-`/AXIS@<轴号>/<类型>@<方向或传感器号>`，**二十项**都在通道 1 `EdgeSersors` 里
+`/AXIS@<轴号>/<类型>@<方向或传感器号>`，**八项**都在通道 1 `EdgeSersors` 里
 （`sampleInterval` 1 ms 槽位 / `uploadInterval` 100 ms 上报，即 100 个槽位一条报文）：
 
 - 每个轴一个功率：`/AXIS@<轴>/POWER@1`（X/Y/Z/C/S 各一路，每槽 1 点）；
-- 每个轴**三个加速度**：`/AXIS@<轴>/ACCELERATION@X|Y|Z` —— 振动信号在 X/Y/Z 三个
-  方向上的分量，方向写在数据项的 `number` 里（同 `type`、不同 `number`、不同 id，
-  见下面的"路径的组成"）。振动每槽 4 点（0.25 ms 一个 = 4 kHz），就是 4.5 里的
-  亚毫秒采样。
+- **振动只留主轴**：`/AXIS@S/ACCELERATION@X|Y|Z` —— 现场只有主轴装了振动传感器，
+  X/Y/Z/C 四轴没有 `ACCELERATION` 数据项。方向写在数据项的 `number` 里（同 `type`、
+  不同 `number`、不同 id，见下面的"路径的组成"）。振动每槽 4 点（0.25 ms 一个 =
+  4 kHz），就是 4.5 里的亚毫秒采样。
 
 | 采样项 id | 路径（表头里的名字） | 示例工具 | 每槽点数 |
 |-----------|----------------------|----------|----------|
@@ -742,26 +742,14 @@ build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 
 | `01035204` | `/AXIS@Z/POWER@1` | `plc/getPowerZ` | 1 |
 | `01035304` | `/AXIS@C/POWER@1` | `plc/getPowerC` | 1 |
 | `01035504` | `/MACHINE/AXIS@S/POWER@1` | `plc/getPowerS` | 1 |
-| `01035005` | `/AXIS@X/ACCELERATION@X` | `plc/getAccelerationXX` | 4 |
-| `01035006` | `/AXIS@X/ACCELERATION@Y` | `plc/getAccelerationXY` | 4 |
-| `01035007` | `/AXIS@X/ACCELERATION@Z` | `plc/getAccelerationXZ` | 4 |
-| `01035105` | `/AXIS@Y/ACCELERATION@X` | `plc/getAccelerationYX` | 4 |
-| `01035106` | `/AXIS@Y/ACCELERATION@Y` | `plc/getAccelerationYY` | 4 |
-| `01035107` | `/AXIS@Y/ACCELERATION@Z` | `plc/getAccelerationYZ` | 4 |
-| `01035205` | `/AXIS@Z/ACCELERATION@X` | `plc/getAccelerationZX` | 4 |
-| `01035206` | `/AXIS@Z/ACCELERATION@Y` | `plc/getAccelerationZY` | 4 |
-| `01035207` | `/AXIS@Z/ACCELERATION@Z` | `plc/getAccelerationZZ` | 4 |
-| `01035305` | `/AXIS@C/ACCELERATION@X` | `plc/getAccelerationCX` | 4 |
-| `01035306` | `/AXIS@C/ACCELERATION@Y` | `plc/getAccelerationCY` | 4 |
-| `01035307` | `/AXIS@C/ACCELERATION@Z` | `plc/getAccelerationCZ` | 4 |
 | `01035505` | `/MACHINE/AXIS@S/ACCELERATION@X` | `plc/getAccelerationSX` | 4 |
 | `01035506` | `/MACHINE/AXIS@S/ACCELERATION@Y` | `plc/getAccelerationSY` | 4 |
 | `01035507` | `/MACHINE/AXIS@S/ACCELERATION@Z` | `plc/getAccelerationSZ` | 4 |
 
 消费端按行读（见 4.5 的"按行消费"）：行数 400（振动列的点数），功率
 列在同一个槽位的 4 行里读到同一个点。上报周期写 100 ms：Linux 上实测 ≈118 ms 一条，
-Windows 上（库里对短等待走高精度计时器，见 4.5）实测 ≈222 ms 一条 —— 多出来的那部分
-主要是取值本身的开销（每槽 12 次完整 Query）。C 与 C++ 两个客户端示例的回调都这么消费。
+Windows 上实测 ≈110 ms 一条（1 ms 槽位；库的短等待走 QPC + 高精度计时器，见 4.5）——
+多出来的那点主要是取值本身的开销（每槽 8 次取值）。C 与 C++ 两个客户端示例的回调都这么消费。
 
 轴上的量都按"轴 + 物理量"写：主轴转速就是主轴 S 轴的 `SPEED` 数据项（`01035506` →
 `/MACHINE/AXIS@S/SPEED`，工具 `plc/getSpeedS`），它是 S 轴上的单路量，走的是通道 0（见上）。
@@ -1173,9 +1161,9 @@ for (size_t row = 0; row < rows; row++) {
 按行消费: 400 行（数据最多的那一列的点数；100 个槽位 × 每槽 4 点）
   行[0] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-1.0      ← 功率 4 行共用同一个点
   行[1] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-0.875
-  行[2] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-0.75
-  行[3] /AXIS@X/POWER@1=800.0  /AXIS@X/ACCELERATION@X=-0.625
-  行[4] /AXIS@X/POWER@1=812.5  /AXIS@X/ACCELERATION@X=-0.5
+  行[2] /AXIS@X/POWER@1=800.0  /AXIS@S/ACCELERATION@X=-0.75
+  行[3] /AXIS@X/POWER@1=800.0  /AXIS@S/ACCELERATION@X=-0.625
+  行[4] /AXIS@X/POWER@1=812.5  /AXIS@S/ACCELERATION@X=-0.5
 ```
 
 C 与 C++ 两个客户端示例的回调都是这么消费的（各打前 8 行）。

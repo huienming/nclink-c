@@ -267,7 +267,7 @@ namespace Nclink.Demo
                                                              : brokerArg);
             string model = LoadModel(root);
 
-            // 方法表与绑定表：9 个标量 + 5 个轴功率 + 15 个方向加速度。
+            // 方法表与绑定表：9 个标量 + 5 个轴功率 + 3 个主轴方向加速度（只留主轴）。
             List<string> methods = new List<string>();
             List<NclToolBinding> bindings = new List<NclToolBinding>();
             for (int i = 0; i < Scalars.Length; i++)

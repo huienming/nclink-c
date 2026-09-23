@@ -404,7 +404,7 @@ probe、路径绑定取值/写值、`MethodCall`（应答文本要解析成 `Ncl
 ```
 connected: tcp://127.0.0.1:1883 (nclink 3.1.0)
 probe: model root id=01 name=机床模型文件
-各轴的功率与振动（路径 含义）:
+各轴的功率与主轴振动（路径 含义）:
 /AXIS@X/POWER            X轴功率
 /AXIS@S/ACCELERATION     主轴加速度
 GET /STATUS = 1
@@ -413,9 +413,9 @@ subscribed: Sample/011533226/# and Event/011533226
 event Event/011533226: key=PART_COUNT value=120
 sample Sample/011533226/EdgeSersors: id=EdgeSersors interval=1ms upload=1000ms columns=10 rows=4000
   /AXIS@X/POWER: 1000 个槽位 × 每槽约 1 点 = 1000 点
-  /AXIS@X/ACCELERATION: 1000 个槽位 × 每槽约 4 点 = 4000 点（批量）
-  行[0] /AXIS@X/POWER=800  /AXIS@X/ACCELERATION=-1  /AXIS@Y/POWER=1112.5 ...
-  行[1] /AXIS@X/POWER=800  /AXIS@X/ACCELERATION=-0.875  /AXIS@Y/POWER=1112.5 ...
+  /AXIS@S/ACCELERATION: 100 个槽位 × 每槽约 4 点 = 400 点（批量）
+  行[0] /AXIS@X/POWER=800  /AXIS@S/ACCELERATION=-1  /AXIS@Y/POWER=1112.5 ...
+  行[1] /AXIS@X/POWER=800  /AXIS@S/ACCELERATION=-0.875  /AXIS@Y/POWER=1112.5 ...
   ...（共 4000 行，这里只打前 8 行）
 received 2 samples, 4 events
 ```

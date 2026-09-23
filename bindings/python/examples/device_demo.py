@@ -16,8 +16,8 @@
 **五个语言的设备端示例是同一台设备**：同一个模型（编译在垫片里：
 nclink.device_model()，首次启动拷进 <root>/conf/model/nclink.json）、同一批
 工具方法与 <operation>#<path> 绑定、同样的两个采样通道与事件节拍（100 ms 一跳，
-每秒一条 PART_COUNT 事件）。模型里每个轴都有一个功率（/AXIS@<轴>/POWER@1）与
-三个加速度（/AXIS@<轴>/ACCELERATION@X|Y|Z）—— 振动信号在三个方向上的分量。
+每秒一条 PART_COUNT 事件）。模型里每个轴都有一个功率（/AXIS@<轴>/POWER@1）；**振动只留主轴**
+    （/AXIS@S/ACCELERATION@X|Y|Z）—— 现场只有主轴装了振动传感器，信号是三个方向上的分量。
 
 用仓库里任意一个客户端都能读它，例如 C 的示例：
 

@@ -206,7 +206,7 @@ public final class DeviceDemo {
                 : (brokerArg.isEmpty() ? readMqttCfg(root) : brokerArg);
         String model = loadModel(root);
 
-        // 方法表与绑定表：9 个标量 + 5 个轴功率 + 15 个方向加速度（与其它语言一致）。
+        // 方法表与绑定表：9 个标量 + 5 个轴功率 + 3 个主轴方向加速度（只留主轴，与其它语言一致）。
         List<String> methods = new ArrayList<String>();
         List<Server.Binding> bindings = new ArrayList<Server.Binding>();
         for (int i = 0; i < SCALARS.length; i++) {

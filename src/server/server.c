@@ -2063,7 +2063,8 @@ static void ncl_sample_collect(ncl_sample_task *task, ncl_message *sample)
      *                           （"这一拍没数据"，客户端 normalise 时会摊成 null）。
      *
      * 为什么非得按墙钟排拍：一轮（把该通道的采样项挨个取一遍）**是有成本的**。
-     * 2026-09-23 在 Windows 上量的：示例模型 EdgeSersors 一轮 20 项约 4 ms。模型写
+     * 2026-09-23 在 Windows 上量的：示例模型 EdgeSersors 一轮 20 项（含各轴振动）
+     * 约 4 ms；去掉那些项之后 8 项约 1 ms。模型写
      * `sampleInterval = 1 ms` 时一轮塞不进一拍；老实现只在"还有富余"时才睡，塞不进
      * 就背靠背连着跑，于是**整包时间 = rounds × 一轮时间**，上报周期从 100 ms 被悄悄
      * 拉成 420 ms —— 现场看到的就是"设置了 uploadInterval = 100，每秒却只有两包"。
