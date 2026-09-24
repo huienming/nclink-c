@@ -15,7 +15,7 @@ include/nclink/clients/*.h             厂商协议客户端（FOCAS / 新代 / 
 lib/windows-x64-msvc/nclink_core.lib   Windows x64 静态库（MSVC，Release）
 lib/windows-x86-msvc/nclink_core.lib   Windows x86（32 位）静态库（MSVC，Release）
 lib/windows-x64-msvc-tls/…             x64 + TLS（ssl://，OpenSSL 静态链接，无 DLL 依赖）
-lib/windows-amd64-mingw/*.a            Windows x64 静态库（mingw-w64 16.2.0 编，供 Go/cgo 链接；含非 TLS 与 `libnclink_core_tls.a`）
+lib/windows-amd64-mingw/*.a            Windows x64 静态库（mingw-w64 GCC 13.2.0 编，供 Go/cgo 链接；含非 TLS 与 `libnclink_core_tls.a`）
 lib/linux-x86_64-gcc/libnclink_core.a  Linux x86_64 静态库（gcc，-O2）
 lib/linux-x86_64-gcc-tls/…             同上，但启用了 TLS（ssl://，链接 -lssl -lcrypto）
 lib/windows-x64-msvc-staticmem/* 静态内存版（无堆）x64 静态库，池默认 20 MiB
@@ -113,7 +113,7 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 |----|------|
 | Windows 编译 | x64 与 x86 均零警告（`/W4 /utf-8 /O2`，MSVC 14.44.35207） |
 | Windows 测试 | **25/25**：x64（堆 / 静态内存 / 堆+TLS / 静态内存+TLS 各一套）、x86（堆 / 静态内存） |
-| mingw-w64（Windows 目标的 GCC） | 库 / 示例 / 测试全量 **25/25**（gcc 16.2.0，UCRT，posix-threads；`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw`），Go 绑定的 cgo 走的就是这份库 |
+| mingw-w64（Windows 目标的 GCC） | 库 / 示例 / 测试全量 **43/43** —— 在容器里用 mingw-w64 gcc 13.2.0-posix（Debian/Ubuntu 包，msvcrt）编，再把 PE 产物拿回 Windows 上跑（`CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar CXX=x86_64-w64-mingw32-g++ NCL_RUN_TESTS=0 sh build-linux.sh build-mingw`），Go 绑定的 cgo 走的就是这份库 |
 | 内存检查 | Linux：ASan + LeakSanitizer（`tools/asan-linux.sh`，含并发用例）**0 发现**、ThreadSanitizer **0 数据竞争**；Windows：MSVC `/fsanitize=address` 构建同样可跑 |
 | 断开握手 | 客户端断开前先收干净在途字节再 FIN（避免 RST 吞掉 DISCONNECT），`mqtt_client` 套件由 40 次里 10 次失败 → 40/40 通过 |
 | 测试并发提示 | 套件之间用固定端口（FTP 2323/3131 等）与相对路径，**同一构建目录里别并发跑两份 ctest**，否则互相抢端口/文件 |
@@ -124,13 +124,13 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | x86（32 位） | 库 / 示例 / 测试全部通过；产物 PE 头 Machine = 0x014c（i386），与 x64 同一套源码、同一套编译选项 |
 | TLS | Windows（MSVC + OpenSSL 3.0.18 静态链接）与 Linux（gcc + OpenSSL 3.0.20）四套 TLS 构建都编过并 **25/25** 通过；**x86 暂未出 TLS 版** |
 | 托管绑定自检 | C# 106 项（`bindings/csharp/tests/Nclink.SelfTest`，net472 与 net8.0 各跑一遍）、Java 107 项、Python 46 项，全部 0 失败；覆盖客户端、设备端（工具注册 / 采样通道 / 事件 / 离线 dispatch / 自研传输）、HTTP/REST 端点（OpenAPI、swagger-ui、工具端点、配置端点、自定义路由）与文件小工具（压缩判断、分片数、SHA-256、属性），都不需要 broker |
-| Go 绑定自检 | `cd bindings/go && go test ./...`（cgo）：**Windows（mingw-w64 gcc 16.2.0）与 Linux（gcc 12/13）两侧都跑通**，客户端 + 设备端（工具注册与路径绑定、离线 dispatch、采样通道、事件、内建工具、文件工具、HTTP 端点与自定义路由、关闭语义、注册上限），离线跑，不需要 broker；`-tags nclink_tls` 那份在 **Windows 与 Linux 两侧也都跑通**（链 `libnclink_core_tls.a` + OpenSSL，`nclink.TLSAvailable()` 为 true） |
+| Go 绑定自检 | `cd bindings/go && go test ./...`（cgo）：**Windows（mingw-w64 gcc 13.2.0-posix）与 Linux（gcc 12/13）两侧都跑通**，客户端 + 设备端（工具注册与路径绑定、离线 dispatch、采样通道、事件、内建工具、文件工具、HTTP 端点与自定义路由、关闭语义、注册上限），离线跑，不需要 broker；`-tags nclink_tls` 那份在 **Windows 与 Linux 两侧也都跑通**（链 `libnclink_core_tls.a` + OpenSSL，`nclink.TLSAvailable()` 为 true） |
 | 绑定对真 broker | `NCLINK_TEST_BROKER=tcp://host:port` 打开的可选用例（设备端 + 客户端同进程，报文真的过 MQTT）：C# 132 项、Java 12 项、Python 46 项，对 **Mosquitto 2** 与 **EMQX 5.8.9** 各跑一遍都 0 失败（probe、路径绑定读写、methodCall、采样、事件、文件通道上传下载与带文件参数的方法调用） |
 | 文件通道 | 3.4.0 起要**显式握手**（`file/openFileChannel`）或由设备钉静态对端（`ncl_server_set_file_peer`）；托管绑定：上传 / 列目录 / 下载 / 建目录 / 删文件 / 带文件参数的方法调用（含"工具返回文件"的反向）、自定义 FTP 端口与显式指定对端，都实测通过；跨语言也过一遍：C 客户端示例对 **C# 设备端示例** 的 `上传 /demo.txt` → `文件回读路径` → `远端文件 demo.txt (14 字节)` 全通 |
 | 绑定 + TLS | 三份托管绑定都过一遍（`build-shim.ps1 -Tls` / Java 的 `build-native.ps1 -Tls`）+ Mosquitto 的 8883 TLS 监听：`ssl://` 设备端与客户端都用 CA 连通（C# 134 项、Java 13 项、Python 46 项，对 Mosquitto 2 与 EMQX 5.8.9 都 0 失败），不给 CA 时握手被拒（证书校验），`verify_peer=false` 放行；库没编 TLS 时 `ssl://` 返回明确的 `NCL_ERR_NOT_SUPPORTED` |
 | 跨语言互读 | C# 设备端 ← C 客户端 / Python 客户端（Mosquitto 与 EMQX）、C# 客户端 ← Java 设备端（`GET`、采样、事件；`SET /STATUS` 按对端模型拒绝）、C# 与 Java 设备端的 REST 端点实测（`/api/schema`、`/swagger-ui`、工具端点、自定义路由） |
 | HTTP/REST 端点实跑 | C# 设备端示例（离线 + REST）与 Java / Python 设备端示例都挂上了端点：`GET /api/schema`、`GET /swagger-ui`、`POST /api/<工具>/<方法>`、`GET /api/cfg/*` 与自定义路由实测通过 |
-| Go 绑定用的 mingw 库 | 随包提供 `lib/windows-amd64-mingw/` 两份（gcc 16.2.0 编的 x64 库：`libnclink_core.a` 与 `libnclink_core_tls.a`），Windows 上 `go test ./...` 与 `go test -tags nclink_tls ./...` 都实测通过 |
+| Go 绑定用的 mingw 库 | 随包提供 `lib/windows-amd64-mingw/` 两份（mingw-w64 gcc 13.2.0-posix 编的 x64 库：`libnclink_core.a` 与 `libnclink_core_tls.a`），Windows 上 `go test ./...` 与 `go test -tags nclink_tls ./...` 都实测通过 |
 
 测试套件：json、common、topic、model、message、codec、thread、mqtt、mqtt_client、
 client、server、http、rest、config、ftp、file、schema、event、license、broker、
@@ -158,12 +158,12 @@ tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认�
 |------|------|
 | Windows（MSVC 14.44.35207，Release） | x64 全量 **25/25**（`file` 套件 **271 项断言**：握手、`conf/ftp.txt`、64 MiB 大文件、两种续传起点、数据连接中途掐断后的续传重试）；x86 / 静态内存 / TLS / 静态内存+TLS / x86 静态内存 各 **25/25** |
 | Linux（gcc 13.4，容器内） | 默认堆 / TLS / 静态内存 / 静态内存+TLS 四套各 **25/25**（`docker run --rm -v <repo>:/work -w /work gcc:13 sh build-linux.sh <目录>`） |
-| mingw-w64（gcc 16.2.0，UCRT + posix threads） | 库 / 示例 / 测试 **25/25**（`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw`）；TLS 变体（Strawberry Perl 的 OpenSSL 头/导入库）同样 **25/25**，`test_tls` 通过 |
+| mingw-w64（gcc 13.2.0-posix，msvcrt；容器内交叉编，PE 产物回 Windows 跑） | 库 / 示例 / 测试 **43/43**（`CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar CXX=x86_64-w64-mingw32-g++ NCL_RUN_TESTS=0 sh build-linux.sh build-mingw`，`NCL_RUN_TESTS=0` 只编译不执行）；TLS 变体（`NCL_WITH_TLS=1 NCL_OPENSSL_ROOT=/opt/mingw-openssl NCL_EXTRA_LIBS=-lcrypt32`，链 OpenSSL 3 的导入库 —— 运行时需要 `libssl-3-x64.dll`/`libcrypto-3-x64.dll`）同样 **43/43**，`test_tls` 通过 |
 | 内存检查 | Linux ASan + LeakSanitizer（`tools/asan-linux.sh --docker`，6 个套件）**0 发现**；ThreadSanitizer（分配器并发用例）**0 数据竞争** |
 | 托管绑定自检（离线） | C# 106 项、Java 107 项、Python 46 项，**0 失败** |
 | 异步方法调用 | `Method/Status`、`Method/Result` 两对已实现并接入设备端线程池：`async: true` 立刻回 `code=OK`+`handler`，状态/结果按句柄查询（未完成 `PENDING`、完成 `finished|error` 并释放句柄）；`test_server` 端到端用例通过 |
 | 托管绑定对真 broker（EMQX 5.x，`NCLINK_TEST_BROKER`） | C# **135 项**、Java **15 项**、Python 46 项，**0 失败**——含文件通道握手全流程（上传 / 列目录 / 下载 / 建目录 / 带文件参数的方法调用 / close 撤销） |
-| Go 绑定 | Linux（golang:1.22 容器）与 Windows（cgo + mingw gcc 16.2.0）`go test ./...` 均通过；`-tags nclink_tls`（链 `libnclink_core_tls.a`）两侧同样通过 |
+| Go 绑定 | Linux（golang:1.22 容器）与 Windows（cgo + mingw gcc 13.2.0-posix）`go test ./...` 均通过；`-tags nclink_tls`（链 `libnclink_core_tls.a`）两侧同样通过 |
 | 文件通道握手 | 新增用例覆盖：无通道时文件方法被拒（`NoFileChannelException`）、握手后可用、同租约重复握手幂等、换租约需 `force`、`closeFileChannel` 撤销临时账号后登录失败、重复 close 幂等；`conf/ftp.txt` 往返 / 坏文件容忍 / 端点跟随文件里的端口与账号 / 函数参数优先于文件 |
 | 文件传输（流式 / 续传 / 效率） | 传输改成流式（256 KiB 读、64 KiB 写，内存不随文件大小增长）+ 可续传（上传按对端 SIZE 用 APPE、下载按本地大小用 REST；单次调用内 3 次重试都从断点继续）。用例：64 MiB 大文件、对端已有前半、本地已有前半、数据连接第 3 MiB 被掐断。吞吐实测见 **TRANSFER_PERF.md**（同机上传 128~512 MiB/s、下载 106~140 MiB/s；跨容器上传 786~901 MiB/s、下载 136~155 MiB/s；续传行线上字节恰好一半且逐字节一致） |
 | 跨主机（容器 ↔ 容器） | 客户端与设备端各占一个容器（同桥接网络 + EMQX 控制面），设备按握手里的 `ncl-client:2323` **被动模式**回拨，16 / 64 / 256 / 512 MiB 上传下载与续传全部逐字节一致；Windows 客户端 ←→ 容器设备、以及两台容器之间都已跑到 |
