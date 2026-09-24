@@ -91,6 +91,14 @@ NCL_DATAITEM_SAMPLED("/STATUS", status_dispatch, NULL)
 见 [`clients/README.md`](../clients/README.md)。最小面是 `read_batch` 加
 `create/open/close/destroy`，其余回调留 `NULL`，骨架替你答 `NCL_ERR_NOT_SUPPORTED`。
 
+### ④ 模拟器：知识在模块自己手里，连 client 都不需要
+
+[`plugins/pseudo.c`](pseudo.c)（伪机床）是这一种的活样例：没有协议、没有套接字，值由模块
+内置的模拟器算出来，点位模型照新代摆 —— 用来在**没有机床**的情况下把整条链路跑通。
+写法上只有两点不同：点位函数用 dispatch 形状（要认得自己的 `self->path`，因为注入开关
+按路径生效），以及不实现 `last_raw`（没有线上字节就不编帧，见 §2.5 的同一套道理）。
+现场说明见 [`PSEUDO-ADAPTER.md`](PSEUDO-ADAPTER.md)。
+
 ---
 
 ## 2. 声明语法速查
@@ -289,6 +297,7 @@ sh build-linux.sh               # Linux：同样全跑一遍
 |---|---|
 | 绑定 + 覆盖混用、真实协议 | `plugins/focas.c`（FANUC，20 点位 + 2 方法） |
 | 只读适配器、九项现场闭环 | `plugins/syntec.c`（新代，9 点位 + 1 方法；形状见 10 册 §3.1/§3.2） |
+| 零协议：自带模拟器、故障注入 | `plugins/pseudo.c`（伪机床，新代形状的 72 点位 + 1 方法，不接硬件） |
 | 最小适配器（零协议代码） | `stack/test/module_tool_basic.c`（夹具，98 行） |
 | 绑定层本身的测试 | `stack/test/tool/test_bind.c` |
 | 各协议怎么说话 | [`clients/README.md`](../clients/README.md) |

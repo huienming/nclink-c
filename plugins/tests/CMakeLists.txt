@@ -49,7 +49,10 @@ target_link_libraries(ncl_test_host_tool PRIVATE nclink_core)
 target_include_directories(ncl_test_host_tool PRIVATE "${CMAKE_SOURCE_DIR}/stack/test")
 target_compile_definitions(ncl_test_host_tool PRIVATE
         NCL_TEST_PLUGIN_DIR="$<TARGET_FILE_DIR:ncl_driver_test_tool_basic>"
-        NCL_TEST_MODULE_DIR="$<TARGET_FILE_DIR:ncl_driver_test_bad_abi>")
+        NCL_TEST_MODULE_DIR="$<TARGET_FILE_DIR:ncl_driver_test_bad_abi>"
+        # 伪机床是 plugins/ 里的真适配器（不是夹具）：同一套用例顺带把它按现场那套
+        # 走一遍 —— 装载、建模、取值、写回、四张表、遥控。
+        NCL_TEST_PSEUDO_DIR="$<TARGET_FILE_DIR:ncl_driver_pseudo>")
 add_dependencies(ncl_test_host_tool ncl_driver_test_tool_basic
-        ncl_driver_test_bad_abi ncl_driver_test_no_entry)
+        ncl_driver_test_bad_abi ncl_driver_test_no_entry ncl_driver_pseudo)
 add_test(NAME host_tool COMMAND ncl_test_host_tool)

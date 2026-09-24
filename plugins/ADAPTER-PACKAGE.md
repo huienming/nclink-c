@@ -21,8 +21,10 @@ bin/ncl_server.exe            设备程序（宿主）：一台 NC-Link 服务�
                               **文件工具（/CONTROLLER/FILE）也编在这里面**，它不是模块
 plugins/ncl_driver_focas.dll  FANUC 驱动（FOCAS over TCP）
 plugins/ncl_driver_syntec.dll 新代驱动（Syntec RemoteCNC over TCP）
+plugins/ncl_driver_pseudo.dll 伪机床驱动（内置模拟器，不接硬件；点位模型照新代摆）
 conf/fanuc.json               配置样例：装载 focas，机床 192.168.1.100:8193
 conf/syntec.json              配置样例：装载 syntec，机床 192.168.1.100:8000
+conf/pseudo.json              配置样例：装载 pseudo，不接任何机床也能跑通整条链路
 conf/mqtt.cfg                 MQTT broker 配置样例
 docs/*-ADAPTER.md             各驱动自己的现场手册（点位、参数、注意事项）
 run-once.ps1                  自检：轮询一遍全部点位，打印到屏幕并写日志
@@ -56,13 +58,13 @@ SHA256SUMS.txt                包内每个文件的 SHA-256
 
 | 键 | 作用 | 说明 |
 |----|------|------|
-| `plugins` | **装载哪几个驱动模块** | 写驱动名（就是 `tools[].name` 那个名字）：`focas` → `plugins\ncl_driver_focas.dll`，`syntec` → `plugins\ncl_driver_syntec.dll`。装载器自己补前缀与后缀，也可以直接写文件名（`ncl_driver_focas.dll`）。写成对象时是 `plugins.load`（数组）+ `plugins.dir` + `plugins.auto`；**不写这一项 = 把 `plugins\` 里的模块全部装载**（本包两个驱动都会进来） |
+| `plugins` | **装载哪几个驱动模块** | 写驱动名（就是 `tools[].name` 那个名字）：`focas` → `plugins\ncl_driver_focas.dll`，`syntec` → `plugins\ncl_driver_syntec.dll`，`pseudo` → `plugins\ncl_driver_pseudo.dll`。装载器自己补前缀与后缀，也可以直接写文件名（`ncl_driver_focas.dll`）。写成对象时是 `plugins.load`（数组）+ `plugins.dir` + `plugins.auto`；**不写这一项 = 把 `plugins\` 里的模块全部装载**（本包三个驱动都会进来） |
 | `tools[].name` | 这台设备用哪个驱动 | 名字必须是已装载模块声明的名字，否则启动直接报"工具 xxx 未装载：plugins 里没有 ncl_driver_xxx.dll"，不会悄悄跑起来 |
 | `tools[].parameters` | 驱动自己的参数 | 各驱动支持哪些见它的现场手册：host / port / timeoutMs / connectTimeoutMs / retries … |
 | `plugins.dir` | 模块目录 | 不写就是包里的 `plugins\`（`run.ps1` 会带 `-P <包根>\plugins`）；要放别处就写绝对路径 |
 
 > 不带 `-c` 时 `ncl_server` 读 `<root>\conf\device.json`（`bin\ncl_server.exe --help` 里写着这个默认）；
-> 包里给的是按驱动命名的样例（`conf\fanuc.json` / `conf\syntec.json`），所以要么用 `-c` 指过去
+> 包里给的是按驱动命名的样例（`conf\fanuc.json` / `conf\syntec.json` / `conf\pseudo.json`），所以要么用 `-c` 指过去
 > （`run.ps1` / `run-once.ps1` 默认就带 `-c conf\fanuc.json`），要么把自己的那份复制成
 > `conf\device.json` 当默认。
 
@@ -97,6 +99,11 @@ SHA256SUMS.txt                包内每个文件的 SHA-256
 `run.ps1` / `run-once.ps1` 把参数原样转给 `ncl_server`：`-Config`（默认 `conf\fanuc.json`）、
 `-Broker`、`-Interval`、`-RestPort`、`-PluginDir`、`-Raw`。完整选项见
 `bin\ncl_server.exe --help`；自检的退出码 = 读不到的点位数，可以直接给现场脚本判"通没通"。
+
+**手上还没有机床？**`.\run-once.ps1 -Config conf\pseudo.json` —— 伪机床（pseudo）自带模拟器，
+点位模型照新代摆，不接任何硬件也能把整条链路跑通（自检 72/72）。它有哪些点位、怎么用
+`pseudo/SESSION` 把这台假机床遥控到 RUN / HOLD / ALARM / 慢响应、怎么注入失败，见
+`docs\PSEUDO-ADAPTER.md`。
 
 ## 4. 校验与许可
 

@@ -5,6 +5,37 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 3.6.0
 
+### 新增：伪机床适配器（`plugins/pseudo.c`）—— 不接硬件的机床
+
+  * **为什么**：整条链路（声明 → 模型 → 采样通道 → 绑定 → 请求应答 → 上位机）的验证
+    平时要等一台真机床。伪机床把"机床"换成模块内置的模拟器：**点位模型照
+    `plugins/syntec.c` 摆**（同一套路径与类型、同一个 1000/1000 周期、同样四张配置表与
+    操作位、同名字面量 `running`/`holding`/`free`），客户端不需要知道对面是真是假。
+  * **点位面**：72 个点位 + 1 个方法 —— 采样四项（`/STATUS`、`/PART_COUNT`、
+    `/CONTROLLER/PROGRAM`、`/CONTROLLER/WARNING`）、覆盖量五项、轴 **九字母 × 六格 = 54**
+    （`SCREW`/`SERVO_DRIVER`/`MOTOR`/`VARIABLE@ABSOLUTE|RELATIVE|DISTANCE`）、四张配置表
+    （`PARAMETER` / `TOOL` / `REGISTER@R|I|O|C|S|A` / `VARIABLE`）、`/SESSION`。没配进
+    `axes` 的轴照新代的规矩回 `NotFound`。
+  * **值从哪来**：一条相位时钟（`cycleMs` 一循环）—— 轴位置走三角波（所以采样画出来是
+    连续曲线）、状态按相位给、计件每循环 +1、报警按 `alarmEvery`/`alarmFor` 出现；
+    **写进去的值（倍率、参数、刀补、寄存器、变量）落在模拟器内存里，读回来就是新值**。
+    `frozen: true` 把时钟钉住，用例可以断言精确值。
+  * **故障注入**（平时要拔网线才能验的那几条路，改一行配置就能验）：`latencyMs` 拖慢、
+    `fail` 前 N 次取值失败、`unavailable` 让指定路径回"还读不了"。
+  * **`pseudo/SESSION` 是遥控器**：`{"status":"holding"}`、`{"alarm":{...}}`、
+    `{"fail":{...}}`、`{"reset":true}`、`{"frozen":true}` …… **通过 NC-Link 协议本身**
+    把这台假机床拨到任意状态，自动化用例从客户端侧就能跑完全流程。
+  * **有意与新代不同的两处**（文档里写明）：`SERVO_DRIVER/POSITION` 新代那边还待抓包，
+    伪机床给值；`/FEED_OVERRIDE`、`/SPINDLE_OVERRIDE` 新代只读，伪机床可写（权限仍在
+    适配器外面控）。
+  * **不做什么**：不实现 `last_raw`（没有线上字节，审计里如实"无帧"，不编一串 JSON 冒充
+    报文）；不与静态内存版混（模块设计的已知边界）。
+  * **配置与文档**：`conf/pseudo.json` 样例（`/conf/*` 仍然整体忽略，只放行这一份），
+    `plugins/PSEUDO-ADAPTER.md` 现场手册，`plugins/README.md` 新增"④ 模拟器"一种写法。
+  * **验证**：`ncl_server --once` 自检 **72/72、0 待抓包、0 失败**（九轴全开）；
+    `plugins/tests/test_host_tool.c` 里同一个套件加载这个真模块，**245 项检查 0 失败**
+    （形状、frozen 下的精确值、写后读回、四张表、遥控、注入、`axes` 收窄后的 NotFound）。
+
 ### 文档：Linux 工具链口径 gcc 13.4 → 13.5.0
 
   * **原因**：`gcc:13` 是滚动 tag，现在拉到的镜像已经是 **13.5.0**（判定方式：包内 Linux

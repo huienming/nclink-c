@@ -1,0 +1,24 @@
+{
+  "plugins": ["pseudo"],
+  "tools": [
+    {
+      "name": "pseudo",
+      "parameters": {
+        "cycleMs": 8000,
+        "axes": "XYZABCUVW",
+        "seed": 7,
+        "programs": ["O1000", "O1001", "O1002"],
+        "feedRate": 800,
+        "spindleRpm": 1200,
+        "alarmEvery": 5,
+        "alarmFor": 1,
+        "alarms": [
+          {
+            "number": 1201,
+            "text": "伺服轴过载（伪机床）"
+          }
+        ]
+      }
+    }
+  ]
+}
