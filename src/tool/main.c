@@ -61,7 +61,7 @@ static void usage(const char *program)
 {
     printf("用法: %s [选项]\n", program);
     printf("  -r, --root <目录>     安装根目录（conf/ bin/ plugins/ log/ 都在它下面；默认当前目录）\n");
-    printf("  -c, --config <文件>   设备配置（默认 <root>/conf/host.json）\n");
+    printf("  -c, --config <文件>   设备配置（默认 <root>/conf/device.json）\n");
     printf("  -b, --broker <URL>    MQTT broker；\"-\" 表示不接（省略 = conf/mqtt.cfg）\n");
     printf("  -P, --plugin-dir <目录>  适配器模块目录（默认 <root>/plugins）\n");
     printf("      --plugin <名字|文件> 再加载一个模块（可重复；名字= <dir>/ncl_driver_<名字>.*）\n");
