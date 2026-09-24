@@ -11,7 +11,7 @@ foreach(name IN LISTS NCLINK_CLIENT_TESTS)
     add_executable(ncl_test_${name} test_${name}.c)
     target_link_libraries(ncl_test_${name} PRIVATE nclink_clients)
     target_include_directories(ncl_test_${name} PRIVATE
-            "${CMAKE_SOURCE_DIR}/tests")
+            "${CMAKE_SOURCE_DIR}/stack/test")
     add_test(NAME ${name} COMMAND ncl_test_${name})
 endforeach()
 
@@ -19,5 +19,5 @@ endforeach()
 add_executable(ncl_test_syntec_driver test_syntec_driver.c)
 target_link_libraries(ncl_test_syntec_driver PRIVATE nclink_clients)
 target_include_directories(ncl_test_syntec_driver PRIVATE
-        "${CMAKE_SOURCE_DIR}/tests")
+        "${CMAKE_SOURCE_DIR}/stack/test")
 add_test(NAME syntec_driver COMMAND ncl_test_syntec_driver)

@@ -63,7 +63,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 if ($Version -eq "") {
-    $common = Join-Path $root "include\nclink\ncl_common.h"
+    $common = Join-Path $root "stack\include\nclink\ncl_common.h"
     $match = [regex]::Match((Get-Content -LiteralPath $common -Raw),
                             'NCL_VERSION\s+"([0-9]+\.[0-9]+\.[0-9]+)"')
     if (-not $match.Success) {
@@ -127,12 +127,17 @@ function Copy-Tree([string]$from, [string]$to, [string[]]$include,
 Write-Host "assembling $pkg$(if ($WithSource) { ' (with source)' } else { ' (binaries + docs only)' })"
 
 # headers
-Copy-Tree "include" "include" @("*.h", "*.hpp")
+Copy-Tree "stack/include" "include" @("*.h", "*.hpp")
 
-# examples ship with every release: they are part of the documentation
-# *.h: the device model header (device_model.h) travels with the examples, so
-# that the packaged sources still compile.
-Copy-Tree "examples" "examples" @("*.c", "*.cpp", "*.h", "*.txt")
+# examples ship with every release: they are part of the documentation.
+# The layout inside the package matches the repository (client/ device/), so the
+# packaged CMakeLists.txt is the repository's own file and the "compile this
+# file" instructions in the manual read the same in both trees. The prebuilt
+# executables land in examples/bin/<platform>/ (below).
+Copy-Tree "examples/client" "examples/client" @("*.c", "*.cpp", "*.h", "*.txt") "\\log\\|\\uploadFile\\|\\build\\|\\bin\\"
+Copy-Tree "examples/device" "examples/device" @("*.c", "*.cpp", "*.h", "*.txt") "\\log\\|\\uploadFile\\|\\build\\|\\bin\\"
+Copy-Item -LiteralPath (Join-Path $root "examples\CMakeLists.txt") `
+    -Destination (Join-Path $pkg "examples\CMakeLists.txt") -Force
 
 # Prebuilt example executables: run them straight from the package.
 #   build\examples\*.exe    -> examples/bin/windows-x64-msvc/  (same MSVC x64 Release as the lib)
@@ -229,24 +234,51 @@ foreach ($vendor in $vendorPlatforms) {
 
 # implementation source and tests: only when explicitly requested
 if ($WithSource) {
-    Copy-Tree "src" "src" @("*.c", "*.h")
-    Copy-Tree "tests" "tests" @("*.c", "*.h", "*.json", "*.txt")
+    Copy-Tree "stack/src" "src" @("*.c", "*.h")
+    Copy-Tree "stack/test" "tests" @("*.c", "*.h", "*.cpp", "*.json", "*.txt")
     Copy-Tree "tools" "tools" @("*.py", "*.mjs", "*.ps1")
     # the vendor side in full: the protocol clients and the adapter modules
     Copy-Tree "clients" "clients" @("*.c", "*.h", "*.md", "*.txt")
     Copy-Tree "plugins" "plugins" @("*.c", "*.h", "*.md", "*.txt")
 }
 
-# Language bindings: sources only, they link the packaged static libraries
-# (the Go binding also carries nclink_thunks.c: cgo cannot hand a Go function
-# pointer to C, so its callbacks live on the C side)
-Copy-Tree "bindings/go" "bindings/go" @("*.go", "*.mod", "*.md", "*.c", "*.h")
+# Language bindings: sources only, they link the packaged static libraries.
+# The repository keeps the SDK and the examples apart (examples/sdk/<lang> and
+# examples/client|device/<lang>); the package keeps its own layout - the SDK
+# under bindings/<lang> with the examples tucked back into the slots the
+# packaged project files expect (samples/, demo/, examples/, example/).
+#
+# The Go binding also carries nclink_thunks.c: cgo cannot hand a Go function
+# pointer to C, so its callbacks live on the C side.
+Copy-Tree "examples/sdk/go" "bindings/go" @("*.go", "*.mod", "*.md", "*.c", "*.h")
+Copy-Tree "examples/client/go" "bindings/go/example" @("*.go")
+Copy-Tree "examples/device/go" "bindings/go/example/device" @("*.go")
 # obj/ and bin/ are build output (.gitignore excludes them too), not shipped
-Copy-Tree "bindings/csharp" "bindings/csharp" @("*.cs", "*.csproj", "*.md", "*.c", "*.h", "*.ps1", "*.config") "\\obj\\|\\bin\\"
+Copy-Tree "examples/sdk/csharp" "bindings/csharp" @("*.cs", "*.csproj", "*.md", "*.c", "*.h", "*.ps1", "*.config") "\\obj\\|\\bin\\"
+Copy-Tree "examples/client/csharp" "bindings/csharp/samples/Nclink.Demo.Cli" @("*.cs", "*.csproj") "\\obj\\|\\bin\\"
+Copy-Tree "examples/device/csharp" "bindings/csharp/samples/Nclink.Demo.Device" @("*.cs", "*.csproj") "\\obj\\|\\bin\\"
+# The two demo projects sit one level deeper in the package than in the
+# repository, so their relative references to the core project and to the shared
+# shim are rewritten to the package's own shape (the package keeps its
+# layout: bindings/csharp/{src,samples,tests} + bindings/native/bin).
+foreach ($demo in @("bindings\csharp\samples\Nclink.Demo.Cli\Nclink.Demo.Cli.csproj",
+                    "bindings\csharp\samples\Nclink.Demo.Device\Nclink.Demo.Device.csproj")) {
+    $file = Join-Path $pkg $demo
+    if (-not (Test-Path -LiteralPath $file)) { continue }
+    $text = [System.IO.File]::ReadAllText($file)
+    $text = $text.Replace('..\..\sdk\csharp\src\Nclink.Core\Nclink.Core.csproj',
+                          '..\..\src\Nclink.Core\Nclink.Core.csproj')
+    $text = $text.Replace('..\..\sdk\native\bin\', '..\..\..\native\bin\')
+    [System.IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
 # The shared native shim (C source + header + build scripts)
-Copy-Tree "bindings/native" "bindings/native" @("*.c", "*.h", "*.ps1", "*.sh", "*.md") "\\bin\\"
-Copy-Tree "bindings/java" "bindings/java" @("*.java", "*.c", "*.h", "*.md", "*.ps1", "*.sh") "\\bin\\|\\build\\"
-Copy-Tree "bindings/python" "bindings/python" @("*.py", "*.md", "*.ps1", "*.sh") "\\bin\\|__pycache__\\"
+Copy-Tree "examples/sdk/native" "bindings/native" @("*.c", "*.h", "*.ps1", "*.sh", "*.md") "\\bin\\"
+Copy-Tree "examples/sdk/java" "bindings/java" @("*.java", "*.c", "*.h", "*.md", "*.ps1", "*.sh") "\\bin\\|\\build\\"
+Copy-Tree "examples/client/java" "bindings/java/demo/com/nclink/demo" @("*.java")
+Copy-Tree "examples/device/java" "bindings/java/demo/com/nclink/demo" @("*.java")
+Copy-Tree "examples/sdk/python" "bindings/python" @("*.py", "*.md", "*.ps1", "*.sh") "\\bin\\|__pycache__\\"
+Copy-Tree "examples/client/python" "bindings/python/examples" @("*.py")
+Copy-Tree "examples/device/python" "bindings/python/examples" @("*.py")
 
 # libraries
 New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x64-msvc") -Force | Out-Null

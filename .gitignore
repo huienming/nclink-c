@@ -35,36 +35,27 @@ __pycache__/
 # 文档生成的临时预览
 /build/manual-preview.html
 
-# Go 绑定链接的静态库（由 tools/stage-go-libs.sh 暂存，不入库）
-/bindings/go/lib/
 # 示例客户端（ncl_client_demo）默认 SN 是 HNC_VDEV_00000，它会在当前目录下建同名目录
 /HNC_VDEV_*/
 # 设备端 SN 是 "V2" + 9 位十六进制，上面的 /V*/ 已经覆盖它建的运行期目录
 
-# C# 绑定的构建产物（源码在 bindings/csharp，产物不入库）
-/bindings/csharp/**/bin/
-/bindings/csharp/**/obj/
-# 共用原生垫片 / Java 绑定的构建产物
-/bindings/native/bin/
-/bindings/native/bin-tls/
-/bindings/java/build/
-/bindings/java/native/bin/
-/bindings/java/native/bin-tls/
+# 示例与绑定（examples/{client,device,sdk}）的构建产物与运行期目录：
+# 原生垫片 / Java 的构建输出、C# 的 bin/obj、Go 绑定的静态库与运行期文件、
+# 自检与示例在自己目录下建的 log/conf/uploadFile/V<sn>/temp。
+/examples/**/bin/
+/examples/**/bin-tls/
+/examples/**/obj/
+/examples/**/build/
+/examples/**/lib/
+/examples/**/log/
+/examples/**/conf/
+/examples/**/temp/
+/examples/**/uploadFile/
+/examples/**/V*/
 *.dll
 *.exp
 *.so
 
-# Bindings: runtime logs/samples the self-tests and demos create next to the code
-/bindings/*/log/
-
-# Bindings: runtime dirs the self-tests and demos create under their own folder
-/bindings/**/V*/
-/bindings/**/uploadFile/
-/bindings/**/temp/
-/bindings/**/conf/
-/bindings/**/log/
-# Go 绑定：库在 <root>/bin/ 下落的运行期文件（sn.txt 等）
-/bindings/go/bin/
 # scratch output of tools/site-probe (it copies the site package under run/ and
 # builds its probes in place)
 tools/site-probe/run/

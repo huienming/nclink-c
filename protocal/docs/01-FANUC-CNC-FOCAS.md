@@ -884,7 +884,7 @@ client 里 item `ODBSYS`（`code 24`）是主路径，`VERSION`（`code 0x0e`）
 
 **改了什么**（同一轮，见 CHANGELOG 3.4.x）：会话改成两条 TCP（控制 + 数据），
 握手应答的体长判据放宽，`code 24` 探针进握手、`ODBSYS` 成为 `system`/`model`/
-`version` 的主路径。假机床（`clients/tests/test_focas.c`）跟着改成"一条连接一个
+`version` 的主路径。假机床（`clients/clients/tests/test_focas.c`）跟着改成"一条连接一个
 线程"，42 个套件全绿。
 
 **改完之后对着这台机器跑一遍**（`focas_live.ps1`，同一份 client，不是 SDK）：

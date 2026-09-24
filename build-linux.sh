@@ -43,7 +43,7 @@ esac
 TEST_BIN_DIR="$TEST_OUT_DIR/bin"
 
 CFLAGS="-std=c11 -O2 -Wall -Wextra -Wshadow -Wstrict-prototypes"
-CFLAGS="$CFLAGS -Wmissing-prototypes -Iinclude -Isrc"
+CFLAGS="$CFLAGS -Wmissing-prototypes -Istack/include -Istack/src"
 # -fPIC：静态库也要能链进共享库 —— C# / Java / Python 绑定的原生垫片就是 .so，
 # 非 PIC 的 .a 在 x86_64 上会以 "relocation R_X86_64_32 ... recompile with -fPIC"
 # 直接链接失败。可执行文件用 PIC 库没有任何问题。
@@ -105,7 +105,7 @@ rm -rf "$OUT/obj"
 mkdir -p "$OUT/obj" "$OUT/bin"
 
 echo "== 编译静态库 ($CC) =="
-find src -name '*.c' ! -path 'src/tool/main.c' | sort | while read -r src; do
+find stack/src -name '*.c' ! -path 'stack/src/tool/main.c' | sort | while read -r src; do
     obj="$OUT/obj/$(echo "$src" | tr '/' '_').o"
     $CC $CFLAGS -c "$src" -o "$obj"
 done
@@ -134,7 +134,7 @@ echo "   -> $OUT/libnclink_clients.a"
 # 设备程序：唯一的可执行文件。它装载 <root>/plugins 下的适配器模块，把模块声明好
 # 的工具注册到设备上，然后跑 MQTT + REST + 轮询。
 echo "== 编译设备程序 =="
-$CC $CFLAGS src/tool/main.c -o "$OUT/bin/ncl_server" \
+$CC $CFLAGS stack/src/tool/main.c -o "$OUT/bin/ncl_server" \
     "$OUT/libnclink_core.a" $LDLIBS
 echo "   -> $OUT/bin/ncl_server"
 
@@ -156,27 +156,25 @@ done
 # 声明式的那个要连核心库：它用 ncl_json_*/ncl_tool_* 这些核心符号，Linux 上动态
 # 装载时这些符号得在模块自己身上找到（CMake 的 MODULE 目标同样把 core 链进去）。
 mkdir -p "$OUT/plugins-tool-fixture" "$OUT/plugins-refused-fixture"
-$CC $CFLAGS -Iinclude -shared \
+$CC $CFLAGS -Istack/include -shared \
     -o "$OUT/plugins-tool-fixture/${MODPREFIX}ncl_driver_test_tool_basic$MODSUF" \
-    tests/module_tool_basic.c "$OUT/libnclink_core.a" $LDLIBS
+    plugins/tests/module_tool_basic.c "$OUT/libnclink_core.a" $LDLIBS
 for fixture in bad_abi no_entry; do
-    $CC $CFLAGS -Iinclude -shared \
+    $CC $CFLAGS -Istack/include -shared \
         -o "$OUT/plugins-refused-fixture/${MODPREFIX}ncl_driver_test_$fixture$MODSUF" \
-        "tests/module_$fixture.c"
+        "plugins/tests/module_$fixture.c"
 done
 echo "== 编译示例 =="
-for ex in examples/*.c; do
-    # device_model.c 不是程序：它是设备模型（被示例与垫片 #include 进去的）
-    if [ "$ex" = "examples/device_model.c" ]; then
-        continue
-    fi
-    name=$(basename "$ex" .c)
-    # 设备端示例要把模型一起编进去（模型是它的一部分）
-    extra=""
-    if [ "$name" = "ncl_device_demo" ] || [ "$name" = "ncl_file_bench" ]; then
-        extra="examples/device_model.c"
-    fi
-    $CC $CFLAGS "$ex" $extra -o "$OUT/bin/$name" "$OUT/libnclink_core.a" $LDLIBS
+# 示例分两侧放：examples/device/c/（设备端，带 device_model.c）与
+# examples/client/c/（客户端）。device_model.c 不是程序，它被设备端示例编进去。
+MODEL="examples/device/c/device_model.c"
+for ex in "examples/device/c/ncl_device_demo.c:$MODEL" \
+          "examples/device/c/ncl_file_bench.c:$MODEL" \
+          "examples/client/c/ncl_client_demo.c:"; do
+    src=${ex%%:*}
+    extra=${ex#*:}
+    name=$(basename "$src" .c)
+    $CC $CFLAGS "$src" $extra -o "$OUT/bin/$name" "$OUT/libnclink_core.a" $LDLIBS
     echo "   -> $OUT/bin/$name"
 done
 
@@ -189,10 +187,11 @@ built=0
 RUN_TESTS=${NCL_RUN_TESTS:-1}
 CXX=${CXX:-g++}
 
-# 动态加载的夹具模块（tests/test_library.c 要装载它；文件名与测试里的拼法一致）
-$CC $CFLAGS -shared -o "$OUT/bin/ncl_test_module$MODSUF" tests/test_module.c
+# 动态加载的夹具模块（stack/test/core/test_library.c 要装载它；文件名与测试里
+# 的拼法一致）
+$CC $CFLAGS -shared -o "$OUT/bin/ncl_test_module$MODSUF" stack/test/core/test_module.c
 
-for t in tests/test_*.c; do
+for t in $(find stack/test -name 'test_*.c' | sort); do
     name=$(basename "$t" .c)
     # 夹具模块不是测试：它没有 main，只给 test_library 当被装载的对象
     if [ "$name" = "test_module" ]; then
@@ -200,15 +199,15 @@ for t in tests/test_*.c; do
     fi
     extra=""
     case "$name" in
-        test_client|test_server) extra="tests/fake_nclink_server.c" ;;
+        test_client|test_server) extra="$ROOT/stack/test/fake_nclink_server.c" ;;
     esac
     case "$name" in
         test_model|test_message)
-            extra="$extra -DNCL_TEST_DATA_DIR=\"$ROOT/tests/data\"" ;;
+            extra="$extra -DNCL_TEST_DATA_DIR=\"$ROOT/stack/test/data\"" ;;
     esac
     case "$name" in
         test_tls)
-            extra="$extra -DNCL_TEST_DATA_DIR=\"$ROOT/tests/data\"" ;;
+            extra="$extra -DNCL_TEST_DATA_DIR=\"$ROOT/stack/test/data\"" ;;
     esac
     case "$name" in
         test_license)
@@ -219,13 +218,8 @@ for t in tests/test_*.c; do
         test_library)
             extra="$extra -DNCL_TEST_MODULE_DIR=\"$TEST_BIN_DIR\"" ;;
     esac
-    case "$name" in
-        # 宿主端到端：装载声明的适配器夹具（含两个必须被拒的），绝对路径同上
-        test_host_tool)
-            extra="$extra -DNCL_TEST_PLUGIN_DIR=\"$TEST_OUT_DIR/plugins-tool-fixture\" -DNCL_TEST_MODULE_DIR=\"$TEST_OUT_DIR/plugins-refused-fixture\"" ;;
-    esac
     # shellcheck disable=SC2086
-    if ! $CC $CFLAGS -Itests -Iclients "$t" $extra -o "$OUT/bin/$name" \
+    if ! $CC $CFLAGS -Istack/test -Iclients "$t" $extra -o "$OUT/bin/$name" \
             "$OUT/libnclink_clients.a" "$OUT/libnclink_core.a" $LDLIBS 2>"$OUT/bin/$name.build.log"; then
         echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"; fail=$((fail+1)); continue
     fi
@@ -245,7 +239,7 @@ for t in clients/tests/test_*.c; do
     [ -e "$t" ] || continue
     name=$(basename "$t" .c)
     # shellcheck disable=SC2086
-    if ! $CC $CFLAGS $CLI_CFLAGS -Itests "$t" -o "$OUT/bin/$name" \
+    if ! $CC $CFLAGS $CLI_CFLAGS -Istack/test "$t" -o "$OUT/bin/$name" \
             "$OUT/libnclink_clients.a" "$OUT/libnclink_core.a" $LDLIBS \
             2>"$OUT/bin/$name.build.log"; then
         echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"; fail=$((fail+1)); continue
@@ -261,12 +255,31 @@ for t in clients/tests/test_*.c; do
     fi
 done
 
+# 适配器这一侧：宿主 + 模块装载的端到端（夹具模块已经编好在上面的 fixture 目录）。
+if [ -e plugins/tests/test_host_tool.c ]; then
+    name=test_host_tool
+    # shellcheck disable=SC2086
+    if ! $CC $CFLAGS -Istack/test plugins/tests/test_host_tool.c \
+            -DNCL_TEST_PLUGIN_DIR="\"$TEST_OUT_DIR/plugins-tool-fixture\"" \
+            -DNCL_TEST_MODULE_DIR="\"$TEST_OUT_DIR/plugins-refused-fixture\"" \
+            -o "$OUT/bin/$name" "$OUT/libnclink_core.a" $LDLIBS \
+            2>"$OUT/bin/$name.build.log"; then
+        echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"; fail=$((fail+1))
+    elif [ "$RUN_TESTS" = "0" ]; then
+        echo "   [仅编译] $name"; built=$((built+1))
+    elif (cd "$OUT/bin" && ./"$name" >"$name.log" 2>&1); then
+        echo "   [通过] $name"; pass=$((pass+1))
+    else
+        echo "   [失败] $name"; tail -8 "$OUT/bin/$name.log"; fail=$((fail+1))
+    fi
+fi
+
 if [ "${NCL_BUILD_CPP:-1}" = "1" ] && command -v "$CXX" >/dev/null 2>&1; then
-    for t in tests/test_*.cpp; do
+    for t in stack/test/cpp/test_*.cpp; do
         [ -e "$t" ] || continue
         name=$(basename "$t" .cpp)
         # shellcheck disable=SC2086
-        if ! $CXX -std=c++"${NCLINK_CXX_STANDARD:-17}" -Wall -Wextra -Iinclude -Itests "$t" \
+        if ! $CXX -std=c++"${NCLINK_CXX_STANDARD:-17}" -Wall -Wextra -Istack/include -Istack/test "$t" \
                 "$OUT/libnclink_core.a" $LDLIBS -o "$OUT/bin/$name" \
                 2>"$OUT/bin/$name.build.log"; then
             echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"

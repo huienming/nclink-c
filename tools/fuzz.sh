@@ -15,13 +15,13 @@ SECONDS_PER_TARGET=${1:-30}
 OUT=${2:-"$ROOT/build-fuzz"}
 mkdir -p "$OUT"
 
-CFLAGS="-std=c11 -g -O1 -I$ROOT/include -I$ROOT/src -D_POSIX_C_SOURCE=200809L"
+CFLAGS="-std=c11 -g -O1 -I$ROOT/stack/include -I$ROOT/stack/src -D_POSIX_C_SOURCE=200809L"
 LIBS="$OUT/libnclink_core.a"
 
 if [ ! -f "$LIBS" ]; then
     echo "== 编译库 =="
     mkdir -p "$OUT/obj"
-    for f in $(find "$ROOT/src" -name '*.c' | sort); do
+    for f in $(find "$ROOT/stack/src" -name '*.c' | sort); do
         cc $CFLAGS -c "$f" -o "$OUT/obj/$(echo "$f" | tr '/' '_').o" || exit 1
     done
     ar rcs "$LIBS" "$OUT"/obj/*.o
@@ -33,7 +33,7 @@ if command -v clang >/dev/null 2>&1; then
     for t in 0 1 2; do
         echo "-- target $t --"
         clang $CFLAGS -fsanitize=fuzzer,address -DNCL_FUZZER -DFUZZ_TARGET=$t \
-            "$ROOT/tests/fuzz/fuzz_codec.c" "$LIBS" -lpthread -o "$OUT/fuzz$t" || exit 1
+            "$ROOT/stack/test/fuzz/fuzz_codec.c" "$LIBS" -lpthread -o "$OUT/fuzz$t" || exit 1
         "$OUT/fuzz$t" -max_total_time="$SECONDS_PER_TARGET" -print_final_stats=1 \
             -artifact_prefix="$OUT/" || fail=1
     done
@@ -42,7 +42,7 @@ fi
 
 echo "== 无 clang，改用随机输入回归（每目标 5 万次）=="
 for t in 0 1 2; do
-    cc $CFLAGS -DFUZZ_TARGET=$t "$ROOT/tests/fuzz/fuzz_codec.c" "$LIBS" \
+    cc $CFLAGS -DFUZZ_TARGET=$t "$ROOT/stack/test/fuzz/fuzz_codec.c" "$LIBS" \
         -lpthread -o "$OUT/regress$t" || exit 1
     "$OUT/regress$t" 50000 || exit 1
 done

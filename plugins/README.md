@@ -261,13 +261,13 @@ broker 没起来不致命：宿主按退避重试（1 s 起、上限 30 s），�
 ## 7. 构建与测试
 
 ```sh
-.\build.ps1                     # Windows：配置 + 编译 + 全部测试（当前 42 套）
+.\build.ps1                     # Windows：配置 + 编译 + 全部测试（当前 43 套）
 sh build-linux.sh               # Linux：同样全跑一遍
 ```
 
 - 适配器模块跟着默认构建一起出（`<build>/plugins/`）。
-- 加一套适配器的测试：放 `tests/` 里，用 `ncl_tool_*` 与 `ncl_host_*` 的公开 API 驱动，
-  不碰内部结构（`tests/test_bind.c` 是模板）。
+- 加一套适配器的测试：放 `stack/test/` 里，用 `ncl_tool_*` 与 `ncl_host_*` 的公开 API 驱动，
+  不碰内部结构（`stack/test/tool/test_bind.c` 是模板）。
 - 静态内存版（`NCL_STATIC_MEM`）与插件模块**不能混**：两边各有一块内存池，谁也释放不了
   对方的内存块 —— 这是模块设计的已知边界。
 
@@ -289,7 +289,7 @@ sh build-linux.sh               # Linux：同样全跑一遍
 |---|---|
 | 绑定 + 覆盖混用、真实协议 | `plugins/focas.c`（FANUC，20 点位 + 2 方法） |
 | 只读适配器、九项现场闭环 | `plugins/syntec.c`（新代，9 点位 + 1 方法；形状见 10 册 §3.1/§3.2） |
-| 最小适配器（零协议代码） | `tests/module_tool_basic.c`（夹具，98 行） |
-| 绑定层本身的测试 | `tests/test_bind.c` |
+| 最小适配器（零协议代码） | `stack/test/module_tool_basic.c`（夹具，98 行） |
+| 绑定层本身的测试 | `stack/test/tool/test_bind.c` |
 | 各协议怎么说话 | [`clients/README.md`](../clients/README.md) |
 | FANUC 现场手册（随包发布） | [`FANUC-ADAPTER.md`](FANUC-ADAPTER.md) |

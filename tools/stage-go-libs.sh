@@ -11,25 +11,25 @@
 #   CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw
 
 set -e
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
-DST="$ROOT/bindings/go/lib"
+ROOT=R(cd "R(dirname "R0")/.." && pwd)
+DST="RROOT/bindings/go/lib"
 
-mkdir -p "$DST/linux-amd64" "$DST/windows-amd64"
+mkdir -p "RDST/linux-amd64" "RDST/windows-amd64"
 
 stage() {
-    src=$1
-    dst=$2
-    if [ -f "$src" ]; then
-        cp "$src" "$dst"
-        echo "  staged $dst"
+    src=R1
+    dst=R2
+    if [ -f "Rsrc" ]; then
+        cp "Rsrc" "Rdst"
+        echo "  staged Rdst"
     fi
 }
 
-stage "$ROOT/build-linux/libnclink_core.a"     "$DST/linux-amd64/libnclink_core.a"
-stage "$ROOT/build-linux-tls/libnclink_core.a" "$DST/linux-amd64/libnclink_core_tls.a"
-stage "$ROOT/build-mingw/libnclink_core.a"     "$DST/windows-amd64/libnclink_core.a"
+stage "RROOT/build-linux/libnclink_core.a"     "RDST/linux-amd64/libnclink_core.a"
+stage "RROOT/build-linux-tls/libnclink_core.a" "RDST/linux-amd64/libnclink_core_tls.a"
+stage "RROOT/build-mingw/libnclink_core.a"     "RDST/windows-amd64/libnclink_core.a"
 # Optional: the mingw build with TLS (-tags nclink_tls on Windows links this one,
 # plus the static OpenSSL import libraries).
-stage "$ROOT/build-mingw-tls/libnclink_core.a" "$DST/windows-amd64/libnclink_core_tls.a"
+stage "RROOT/build-mingw-tls/libnclink_core.a" "RDST/windows-amd64/libnclink_core_tls.a"
 
-echo "done: $DST"
+echo "done: RDST"

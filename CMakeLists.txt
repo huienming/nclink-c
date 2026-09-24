@@ -58,23 +58,23 @@ option(NCLINK_MEM_FIRST_FIT
 
 # ---------------------------------------------------------------- library ----
 file(GLOB_RECURSE NCLINK_CORE_SOURCES CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/general/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/message/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/codec/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/http/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/rest/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/config/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/ftp/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/schema/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/model/*.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/tool/*.c")
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/core/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/general/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/message/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/codec/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/http/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/rest/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/config/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/ftp/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/schema/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/model/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/tool/*.c")
 
 # The one program of this library is not part of it: src/tool/main.c is the
 # device program's entry point (ncl_server). A site that would rather compile
 # its adapter in writes its own main() and links the library instead.
 list(REMOVE_ITEM NCLINK_CORE_SOURCES
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/tool/main.c")
+        "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/tool/main.c")
 
 add_library(nclink_core STATIC ${NCLINK_CORE_SOURCES})
 add_library(nclink::core ALIAS nclink_core)
@@ -86,8 +86,8 @@ add_library(nclink::core ALIAS nclink_core)
 set_target_properties(nclink_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(nclink_core
-        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
-        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/stack/include"
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/stack/src")
 
 if(NCLINK_STATIC_MEM)
     target_compile_definitions(nclink_core PRIVATE
@@ -151,16 +151,16 @@ endif()
 # ------------------------------------------------------------------ tests ----
 if(NCLINK_BUILD_TESTS)
     enable_testing()
-    add_subdirectory(tests)
+    add_subdirectory(stack/test)
 endif()
 
 # ------------------------------------------------------------------- apps ----
 if(NCLINK_WITH_MQTT)
     file(GLOB_RECURSE NCLINK_TRANSPORT_SOURCES CONFIGURE_DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/mqtt/*.c"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/client/*.c"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/server/*.c"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/file/*.c")
+            "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/mqtt/*.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/client/*.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/server/*.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/stack/src/file/*.c")
     if(NCLINK_TRANSPORT_SOURCES)
         target_sources(nclink_core PRIVATE ${NCLINK_TRANSPORT_SOURCES})
     endif()
@@ -188,9 +188,9 @@ endif()
 
 # ---------------------------------------------------------------- program ----
 # 唯一的设备程序：装载 plugins/，把模块声明好的工具注册到设备上，启动。
-add_executable(ncl_server src/tool/main.c)
+add_executable(ncl_server stack/src/tool/main.c)
 target_link_libraries(ncl_server PRIVATE nclink_core)
-target_include_directories(ncl_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(ncl_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/stack/src")
 
 if(MSVC)
     target_compile_options(ncl_server PRIVATE /W4 /wd4996 /utf-8)

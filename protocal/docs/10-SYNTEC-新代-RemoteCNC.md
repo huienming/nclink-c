@@ -666,7 +666,7 @@ worker → 每个 worker 的 IL 里只有一个 `ldc.i4` 常量（脚本在参�
 | `clients/syntec/syntec_codec.c` | `kItems[]`：九项逐字段照 §3.1 的表；查找大小写 / 下划线不敏感、`READ_` 前缀可省 |
 | `clients/syntec/syntec_driver.c` | 会话（TCP + uSerial 回显校验 + 重试）、九项取数（FEED_SPEED 三帧 700 → 12 → 76）、以及原来的 `ncl_driver` 门面 |
 | `plugins/syntec.c` | 适配器：9 个点位 + `/SESSION` 调试方法 + 审计原始帧。绑定沿用 client 的语义函数，只有一处覆盖（`LINE_NUMBER` 落成 string）。**路径按 iNC-BOX 的模型定义**：`/STATUS`、`/PART_COUNT`、`/FEED_SPEED`、`/FEED_OVERRIDE`、`/SPINDLE_OVERRIDE`、`/SPINDLE_SPEED`、`/CONTROLLER/PROGRAM`、`/CONTROLLER/LINE_NUMBER`、`/CONTROLLER/WARNING`（§11.2） |
-| `clients/tests/test_syntec_driver.c` | 对 mock 控制器：STATUS 请求**逐字节**对照本节那张完整帧；九项各读一次；FEED_SPEED 的 700/12/76 顺序；WARNING 空正文 = `[]`；非 (0,0) 单位档与**非空报警**如实回"还读不了"。最后一段把 `plugins/syntec.c` 当模块装载、由宿主读九个点位 —— 就是本节说的"整机仿真" |
+| `clients/clients/tests/test_syntec_driver.c` | 对 mock 控制器：STATUS 请求**逐字节**对照本节那张完整帧；九项各读一次；FEED_SPEED 的 700/12/76 顺序；WARNING 空正文 = `[]`；非 (0,0) 单位档与**非空报警**如实回"还读不了"。最后一段把 `plugins/syntec.c` 当模块装载、由宿主读九个点位 —— 就是本节说的"整机仿真" |
 | `conf/syntec.json` | 交付配置（只有 `host` 一定要改） |
 
 **如实标注的两处缺口**（不是猜，是没抓到）：
@@ -913,7 +913,7 @@ iNC-BOX 的格子是**按轴 × 驱动链**分层的（`/AXIS@<轴>/MOTOR/POSITI
 | `/AXIS@<轴>/MOTOR/VARIABLE@RELATIVE` | 相对坐标（区 141） |
 | `/AXIS@<轴>/MOTOR/VARIABLE@DISTANCE` | 剩余距离（区 221） |
 
-实际/指令这一对的摆放照 `examples/device_model.c` 的设备模型：**实际位置在丝杠侧、
+实际/指令这一对的摆放照 `examples/device/c/device_model.c` 的设备模型：**实际位置在丝杠侧、
 指令位置在驱动侧**。加上原来那几个坐标组（63 个点位 = 9 项 + 9 轴 × 6 格）一次配全，
 以后不再改模型。**路径写死、轴号在取值时现查**（§11.4）：这台机器没配的轴
 （控制器轴表里没这个名字）照实报 `NCL_ERR_NOT_FOUND`，不给数、也不会读到别的轴上。
@@ -1020,7 +1020,7 @@ UNAVAILABLE”。
 
 ### 11.5 参数：按设备模型做成**配置对象** `/CONTROLLER/PARAMETER`（2026-09-22，21A 实测）
 
-**摆法照 `examples/device_model.c`**：参数挂在 CONTROLLER 组件的 `configs` 里，`type` 就是
+**摆法照 `examples/device/c/device_model.c`**：参数挂在 CONTROLLER 组件的 `configs` 里，`type` 就是
 `PARAMETER`；册 4 说这类"配置信息"归 `configs`、`dataType` 是 **`HASH`**（参数本身是字典，
 跟 `COORDINATE` 那种 LIST 不同）。所以适配器声明的是**配置点**，不是方法：
 
@@ -1254,7 +1254,7 @@ CKrnlAPI::MultiTCPNcPutToolCompensation(link, nToolNo, TToolOffset)
 > **操作按取值形状分**（册 4）：HASH（dict）答 `get_keys`，LIST 答 `get_length`，
 > 两者**不是**同一件事、也不该同时声明。参数表是 dict（HASH）→ 只答 `get_keys`；
 > 刀具表 / 变量表 / 寄存器表都是 list（LIST）→ 只答 `get_length`。这条规则已经在
-> `src/tool/tool.c` 里做成装载时的告警（声明反了会点出来）。
+> `stack/src/tool/tool.c` 里做成装载时的告警（声明反了会点出来）。
 
 **现场核对记录（21A，2026-09-22）**：
 

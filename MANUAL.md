@@ -53,24 +53,39 @@
 
 ### 2.1 目录结构
 
-```
-include/nclink/     公共头文件（-I 只需要指向 include；协议客户端的头在 include/nclink/clients/）
-lib/<平台>/         预编译静态库（发布包：windows-x64-msvc / linux-x86_64-gcc，另有 -staticmem 静态内存版；
-                    nclink_clients.lib / libnclink_clients.a 是同平台的协议客户端静态库）
-examples/           两个可运行示例：设备端 / 客户端
-clients/            协议实现：一个协议一个目录（报文与会话），外加现场用的语义函数   ← 仅源码仓库有
-plugins/            厂商适配器源码：一个 .c 一个适配器，编成 <build>/plugins/ncl_driver_<工具名>.dll|.so  ← 仅源码仓库有
-MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
+源码仓库（交付包的布局见下一段）：
 
-src/<模块>/         实现，共 15 个模块目录        ← 以下仅源码仓库有
-src/tool/           tool 层：声明 → 模型/绑定、驱动骨架、模块装载、审计、宿主；
-                    src/tool/main.c 是唯一的设备程序 ncl_server 的入口
-tests/              31 套核心与工具层测试（含 mem 分配器不变量、mem_mc 蒙特卡洛、mem_mt 并发压测，
-                    以及可选的 broker 互操作与 TLS 套件）+ 协议黄金样本
-clients/tests/      11 套协议客户端测试（各协议黄金报文与靶机）
-tools/              许可头检查、broker 互操作、文档生成与发布打包脚本
-build.ps1           Windows 一键：配置 + 编译 + ctest
-build-linux.sh      Linux 免 cmake 构建
+```
+stack/include/nclink/    公共头文件（-I 指向 stack/include；协议客户端的头在 stack/include/nclink/clients/）
+stack/src/<模块>/        实现，共 15 个模块目录
+stack/src/tool/          tool 层：声明 → 模型/绑定、驱动骨架、模块装载、审计、宿主；
+                         stack/src/tool/main.c 是唯一的设备程序 ncl_server 的入口
+stack/test/<模块>/       单元测试，与模块一一对应（core/ general/ model/ message/ codec/ mqtt/
+                         client/ server/ http/ rest/ config/ ftp/ file/ schema/ tool/ cpp/ license/，
+                         共 43 个套件）；共用夹具在同层（ncl_test.h、fake_nclink_server.*、data/、fuzz/）
+examples/client/<语言>/  客户端示例（c/ cpp/ java/ python/ csharp/ go/）
+examples/device/<语言>/  设备端示例（五个语言共用同一份设备模型 device_model.c）
+examples/sdk/<语言>/     各语言绑定：native 垫片 / csharp / java / python / go（含各自自检）
+clients/                 协议实现：一个协议一个目录（报文与会话），外加现场用的语义函数
+clients/tests/           11 套协议客户端测试（各协议黄金报文与靶机）
+plugins/                 厂商适配器源码：一个 .c 一个适配器，编成 <build>/plugins/ncl_driver_<工具名>.dll|.so
+plugins/tests/           适配器端到端：声明 → 模型 → 绑定 → 请求应答（含装载器必须拒收的两个夹具）
+tools/                   许可头检查、broker 互操作、文档生成与发布打包脚本
+dist/                    发布包（库包 + 适配器包，已入库）
+build/ build-*/          构建目录（不入库）
+build.ps1                Windows 一键：配置 + 编译 + ctest
+build-linux.sh           Linux / mingw 交叉构建（免 cmake）
+```
+
+发布包（`dist/nclink-core-c-<版本>/`，包的布局与仓库无关，面向交付）：
+
+```
+include/nclink/     公共头文件（与源码仓库同一套）
+lib/<平台>/         预编译静态库（windows-x64-msvc / linux-x86_64-gcc，另有 -staticmem 静态内存版；
+                    nclink_clients.lib / libnclink_clients.a 是同平台的协议客户端静态库）
+examples/           两个可运行示例的源码与编好的可执行文件（设备端 / 客户端）
+bindings/           各语言绑定源码（native 垫片 / csharp / java / python / go）
+MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 ```
 
 > 接一台机床（写一个适配器）看 [`plugins/README.md`](plugins/README.md)：三条命令跑起来、
@@ -78,7 +93,7 @@ build-linux.sh      Linux 免 cmake 构建
 > 各协议"实机前必看"与怎么加一个新协议看 [`clients/README.md`](clients/README.md)。
 > FANUC 现场手册（随发行包发布）看 [`plugins/FANUC-ADAPTER.md`](plugins/FANUC-ADAPTER.md)。
 
-> **发布包给的是头文件（含 `include/nclink/clients/`）、各平台静态库（核心库 + 协议客户端库）、
+> **发布包给的是头文件（含 `stack/include/nclink/clients/`）、各平台静态库（核心库 + 协议客户端库）、
 > 文档与示例程序**；实现源码、测试套件以及协议客户端 / 适配器的 C 源码都在工程仓库里（需要自行
 > 重编时获取，见 2.5）。适配器模块与设备程序单独出包：一个目录 `nclink-adapter-<版本>-win-x64`
 > 里放 host、`plugins/` 下各厂商的驱动模块、每个驱动一份配置样例与运行脚本，**装载哪个驱动由
@@ -134,7 +149,7 @@ ctest --test-dir build --output-on-failure
 **默认堆版**已在 Windows/MSVC 与 MinGW/gcc 16.2 上复测 **42/42**，Linux 容器里跑同一条
 命令即可；静态池版的尺寸边界见 4.9（那组数字是 39 套口径，未随这套重跑）：64 KiB 池
 **38/39**（只剩 `file` 一套，它读回比较时要 1 MiB 连续块），1.5 MiB 池 **39/39**。
-真 broker 互操作（`tests/test_broker`）对 **Mosquitto 2.1.2** 与 **EMQX 5.8.9** 各
+真 broker 互操作（`stack/test/test_broker`）对 **Mosquitto 2.1.2** 与 **EMQX 5.8.9** 各
 **44 项检查全过**。
 
 内存门禁：`./tools/asan-linux.sh`（`--docker` 可在 Windows/macOS 上一键跑）用
@@ -164,7 +179,7 @@ ctest --test-dir build-linux --output-on-failure
 
 | 要点 | 原因 |
 |------|------|
-| `-Iinclude -Isrc` | 公共头在 `include/`，极少数内部头在 `src/` 下（如 `file/file_internal.h`） |
+| `-Istack/include -Istack/src` | 公共头在 `stack/include/`，极少数内部头在 `stack/src/` 下（如 `file/file_internal.h`） |
 | `-D_POSIX_C_SOURCE=200809L` | `-std=c11` 会隐藏 `strdup`、`getaddrinfo`、`localtime_r`、`pthread_*` 等 POSIX 接口 |
 | `-lpthread` | 线程、互斥量、条件变量 |
 | 可加 `-Wno-format-truncation` | 库内用定长路径缓冲（4096），GCC 对此的保守告警没有意义 |
@@ -190,7 +205,7 @@ ctest --test-dir build-linux --output-on-failure
 
 ### 2.4.1 C++ 封装（C++17，header-only）
 
-`include/nclink/ncl.hpp` 在 C 库之上提供 RAII + 异常的薄封装，协议核心仍是 C：
+`stack/include/nclink/ncl.hpp` 在 C 库之上提供 RAII + 异常的薄封装，协议核心仍是 C：
 
 ```cpp
 #include "nclink/ncl.hpp"
@@ -208,11 +223,11 @@ ncl::Client::shutdown();
 `ncl::Json` / `ncl::Message` / `ncl::Model` 是独占所有权的包装（禁拷贝、可移动、
 可 `release()`），析构自动释放；`ncl::Server` 接管已有 `ncl_server*`。
 构建开关：CMake `-DNCLINK_BUILD_CPP=ON`（默认开，加 `cpp` 测试套件）；
-`build-linux.sh` 在检测到 `g++` 时会一并编译 `tests/test_*.cpp` 与 C++ 示例。
+`build-linux.sh` 在检测到 `g++` 时会一并编译 `stack/test/test_*.cpp` 与 C++ 示例。
 
 ### 2.4.2 Go 绑定（cgo）
 
-`bindings/go/` 是 cgo 绑定（模块 `github.com/huienming/nclink-c/bindings/go`），
+`examples/sdk/go/` 是 cgo 绑定（模块 `github.com/huienming/nclink-c/examples/sdk/go`），
 用法与 C/C++ 示例一一对应：
 
 ```go
@@ -231,7 +246,7 @@ client.SubscribeSamples(2, func(topic string, msg *nclink.Message) {
 ```
 
 链接：`tools/stage-go-libs.sh` 把 `build-linux/libnclink_core.a`（Linux）与
-`build-mingw/libnclink_core.a`（Windows）暂存到 `bindings/go/lib/<goos>-<goarch>/`
+`build-mingw/libnclink_core.a`（Windows）暂存到 `examples/sdk/go/lib/<goos>-<goarch>/`
 （不入库）。**Windows 上 cgo 只认 mingw 工具链，且必须链 mingw 编的库**——
 MSVC 的 `nclink_core.lib` 链不上；装 mingw 后用
 `CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw` 编一份即可，本机没有
@@ -245,7 +260,7 @@ TLS 用 `-tags nclink_tls`（那份库也在同一个目录里，`libnclink_core
 
 ### 2.4.3 Java 绑定（JNI）
 
-`bindings/java/` 是 JNI 绑定，**零第三方依赖**（不用 Maven / Gradle），字节码是
+`examples/sdk/java/` 是 JNI 绑定，**零第三方依赖**（不用 Maven / Gradle），字节码是
 Java 8：
 
 ```java
@@ -262,13 +277,13 @@ Nclink.shutdown();
 ```
 
 构建：`.\bindings\java\build.ps1`（native + javac + 自检）/ Linux
-`./bindings/java/build.sh`（需要 `JAVA_HOME` 找 `jni.h`）。
+`./examples/sdk/java/build.sh`（需要 `JAVA_HOME` 找 `jni.h`）。
 
 设备端同样包了：`new Server(sn, modelJson, broker)` + `registerTool()` +
 `new Server.Binding(路径, Operation.GET_VALUE, 方法名)` + `subscribe()` +
 `initSamples()` + `pushEvent()`，即"这个 Java 进程就是一台机床"；不接 broker 也能用
 `dispatch()` / `invokeMethodCall()` 离线驱动。示例见
-`bindings/java/demo/com/nclink/demo/DeviceDemo.java`。
+`examples/device/java/DeviceDemo.java`。
 
 HTTP / REST 端点：`device.startHttp(9008, true)`（`0` = 随机端口）挂上库自带的
 `GET /api/schema`（OpenAPI 3.0）、`GET /swagger-ui`、`POST /api/<工具>/<方法>`
@@ -295,7 +310,7 @@ root, user, pass)` 用来换进程级端点的端口 / 根目录 / 账号）。
 
 ### 2.4.4 Python 绑定（ctypes）
 
-`bindings/python/` 是 ctypes 绑定，只用标准库：
+`examples/sdk/python/` 是 ctypes 绑定，只用标准库：
 
 ```python
 import nclink
@@ -310,11 +325,11 @@ nclink.shutdown()
 ```
 
 构建：`bindings\native\build-shim.ps1`（原生垫片）→
-`python -m unittest discover -s bindings/python/tests`（自检，不需要 broker）。
+`python -m unittest discover -s examples/sdk/python/tests`（自检，不需要 broker）。
 
 设备端同样包了：`nclink.Server(sn=..., model=..., broker=...)` + `register_tool()` +
 `subscribe()` + `init_samples()` + `push_event()`；示例
-`bindings/python/examples/device_demo.py`（可以拿仓库里任意客户端去读它）。
+`examples/device/python/device_demo.py`（可以拿仓库里任意客户端去读它）。
 
 HTTP / REST 端点用 `device.start_http(port, with_config=True)`：库自带
 `GET /api/schema`（OpenAPI 3.0）、`GET /swagger-ui`、`POST /api/<工具>/<方法>` 与
@@ -337,7 +352,7 @@ HTTP / REST 端点用 `device.start_http(port, with_config=True)`：库自带
 
 ### 2.4.5 C# 绑定（P/Invoke）
 
-`bindings/csharp/` 是 P/Invoke 绑定，**同一份代码三个目标**：`netstandard2.0`
+`examples/sdk/csharp/` 是 P/Invoke 绑定，**同一份代码三个目标**：`netstandard2.0`
 （.NET Framework 4.6.1+ / .NET Core 2.0+ / .NET 5+）与 `net472` / `net8.0`；零第三方
 依赖（JSON 走库自己的解析器，不用 Newtonsoft.Json 也不用 System.Text.Json）。
 
@@ -358,7 +373,7 @@ Nclink.Shutdown();
 
 构建：`powershell -ExecutionPolicy Bypass -File .\bindings\csharp\build.ps1`
 （垫片 + 三个工程 + 自检 106 项）/ Linux 用
-`dotnet run --project bindings/csharp/tests/Nclink.SelfTest -c Release`（都不需要
+`dotnet run --project examples/sdk/csharp/tests/Nclink.SelfTest -c Release`（都不需要
 broker）；想看"报文真的过 MQTT"的那一段，设 `NCLINK_TEST_BROKER=tcp://host:port`
 再跑一遍自检（设备端 + 客户端同进程，132 项）。
 
@@ -383,10 +398,10 @@ broker）；想看"报文真的过 MQTT"的那一段，设 `NCLINK_TEST_BROKER=t
 示例：`Nclink.Demo.Cli`（客户端）与 `Nclink.Demo.Device`（设备端，`broker` 传 `-`
 即离线，出站报文走自研传输打到控制台）。
 
-**三种托管绑定共用同一份原生垫片** `bindings/native/nclink_shim.c`：它把 C API
+**三种托管绑定共用同一份原生垫片** `examples/sdk/native/nclink_shim.c`：它把 C API
 摊平成"不透明句柄 + 标量 + UTF-8 文本"，托管侧不依赖 C 结构体的内存布局。C# 走
 P/Invoke、Java 走 JNI（`nclink_jni` 把垫片一起编进去）、Python 走 ctypes；C# 绑定
-见 `bindings/csharp/README.md`。
+见 `examples/sdk/csharp/README.md`。
 3.2.0 起垫片还多了连接选项那组入口：`nclshim_open_ex` / `nclshim_tls_available`
 （客户端 TLS）、`nclshim_server_create_ex`（设备端连 `ssl://` broker）、
 `nclshim_server_set_file_peer` 与 `nclshim_file_start_ftp_ex`（文件通道对端可配）。
@@ -423,7 +438,7 @@ vcpkg 里找 OpenSSL；用 `-OpenSslRoot <目录>` 指定），运行时需要
 
 ### 2.5 集成到自己的工程
 
-最小做法：把 `include/` 与 `src/` 纳入你的构建，或先编出静态库再链接。
+最小做法：把 `include/` 与 `stack/src/` 纳入你的构建，或先编出静态库再链接。
 
 ```cmake
 add_subdirectory(nclink-c)                       # 或自行 add_library(... STATIC)
@@ -719,7 +734,7 @@ build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 
 | 文件 | 首次启动写什么 |
 |------|----------------|
 | `bin/sn.txt` | 设备 SN：`V2` + 9 位**十六进制**（大写，且保证含 A~F 字母，不会是一串纯数字），由 `ncl_sn_read()` 在文件缺失时生成并落盘（见 4.1）。示例不自己造 SN，跟着库走 |
-| `conf/model/nclink.json` | 设备模型：一台数控机床（X/Y/Z/C 四轴 + 主轴 S + 数控系统），带两个采样通道：`sample_channel0`（机床运行状态，1 s 采样 / 1 s 上报，八项）、`EdgeSersors`（5 轴的功率 + **主轴 S 的振动**，**八项** = 每轴 1 个功率 + 主轴 3 个方向的加速度；路径形如 `/MACHINE/AXIS@S/POWER@1`、`/MACHINE/AXIS@S/ACCELERATION@X`）。首次启动时由示例自举（模型编译在代码里：`examples/device_model.c`，五个语言的示例共用这一份），之后以这个文件为准 |
+| `conf/model/nclink.json` | 设备模型：一台数控机床（X/Y/Z/C 四轴 + 主轴 S + 数控系统），带两个采样通道：`sample_channel0`（机床运行状态，1 s 采样 / 1 s 上报，八项）、`EdgeSersors`（5 轴的功率 + **主轴 S 的振动**，**八项** = 每轴 1 个功率 + 主轴 3 个方向的加速度；路径形如 `/MACHINE/AXIS@S/POWER@1`、`/MACHINE/AXIS@S/ACCELERATION@X`）。首次启动时由示例自举（模型编译在代码里：`examples/device/c/device_model.c`，五个语言的示例共用这一份），之后以这个文件为准 |
 | `conf/mqtt.cfg` | 本机 broker：`url=tcp://127.0.0.1:1883`，`username=`/`password=` 留空 = 匿名连接（空值不会写进 MQTT 连接报文） |
 
 之后以文件为准，示例不再覆盖：换模型改 `conf/model/nclink.json`（或走 REST 的
@@ -1346,7 +1361,7 @@ C 没有 GC，规则统一为「谁申请谁负责，转移要显式」：
 ### 4.9 静态内存（无堆）构建
 
 库内每一次分配都走 `ncl_mem_alloc()` / `ncl_mem_calloc()` / `ncl_mem_realloc()` /
-`ncl_mem_free()`（`src/core/ncl_mem.c` 是唯一知道内存从哪来的文件，471 处分配点
+`ncl_mem_free()`（`stack/src/core/ncl_mem.c` 是唯一知道内存从哪来的文件，471 处分配点
 已经全部改道）。默认实现直接转发给 C 运行库；打开 `NCLINK_STATIC_MEM` 后换成
 **静态数组里的一个固定池**：库不再调用 `malloc`，池耗尽就返回 `NULL`（上层统一
 翻成 `NCL_ERR_NOMEM`），绝不会偷偷回退到堆。
@@ -1383,7 +1398,7 @@ ncl_mem: static-pool peak 25632 of 65536 bytes, live 269 blocks, 3236 allocation
 ncl_mem: refused 81920 bytes with 59296 free bytes (largest contiguous 44000)
 ```
 
-Linux 上再加 `-DNCL_MEM_TRACE=1`（`src/core/ncl_mem.c`，glibc `backtrace`）会把调用栈
+Linux 上再加 `-DNCL_MEM_TRACE=1`（`stack/src/core/ncl_mem.c`，glibc `backtrace`）会把调用栈
 一起打出来，纯粹用于定位"到底谁在要这块内存"，不随发行包提供。`build-linux.sh`
 侧对应 `NCL_MEM_REPORT=1`（与 `build.ps1 -MemReport` 同一份统计）：
 
@@ -1439,7 +1454,7 @@ NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 NCL_MEM_REPORT=1 ./build-linux.sh buil
 **碎片是怎么处理的**（这部分给的是实测，不是设计承诺）：
 
 1. **不留永久空洞**：同一套流量反复跑，工作负载回到空闲态时，它用过的空间必须重新
-   变成一整块。`tests/test_mem.c` 的 `test_pool_fragmentation` 就是这条：长期块
+   变成一整块。`stack/test/core/test_mem.c` 的 `test_pool_fragmentation` 就是这条：长期块
    （模拟模型/服务端表）留在池里，周围做 6 轮 × 300 次混合尺寸的分配/重分配/释放，
    每轮结束断言**空闲块数 == 1**、最大连续空闲块**逐字节等于**轮次开始前的值。
 2. **拒绝要能归因**：非紧凑分配器有一种固有失败——**单次请求大于最大连续空闲块**，
@@ -1478,7 +1493,7 @@ NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 NCL_MEM_REPORT=1 ./build-linux.sh buil
 
 ### 4.9.1 蒙特卡洛压测（`mem_mc` 套件）
 
-`tests/test_mem_mc.c` 用随机流量把池往死里逼，比库自身的访问模式狠得多：
+`stack/test/core/test_mem_mc.c` 用随机流量把池往死里逼，比库自身的访问模式狠得多：
 
 - **随机尺寸**跨三个数量级（对数均匀 8 B～pool/64，另有 5% 概率落在 pool/64～pool/8 的
   大块档），**随机操作**按权重分配/释放/重分配，长期把池维持在约半满，4 个固定种子 ×
@@ -1636,7 +1651,7 @@ NCL_SOAK_MT=1 NCL_SOAK_SECONDS=600 NCL_MEM_MT_THREADS=8 ./tools/soak-linux.sh --
 - 单上下文/裸机可用 `NCLINK_MEM_SINGLE_THREAD=ON` 去掉锁；**去掉之后就不能再有第二个
   线程碰池**（`mem_mt` 套件在这种构建下会自己跳过）。
 
-**怎么验证的**（`tests/test_mem_mt.c`，套件名 `mem_mt`，已进常规 ctest）：
+**怎么验证的**（`stack/test/core/test_mem_mt.c`，套件名 `mem_mt`，已进常规 ctest）：
 
 - 多个线程共享同一个池做随机流量，每块带图案、释放前校验——**同一块被同时交给两个所有者**
   会直接表现为内容不符；
@@ -1692,7 +1707,7 @@ cd build-static-64k\tests; .\ncl_test_mem_mt.exe
 
 **② 库用不了宿主的池。** 分配接缝是编译期的两种实现（转发运行库 / 静态池），没有
 "注册自定义分配器"这类接口。宿主自己有池时，进程里就是**两个独立的池**：RAM 叠加、
-互不共享、空闲也不归还谁。要做"整进程一个池"，唯一的路是把 `src/core/ncl_mem.c` 换成
+互不共享、空闲也不归还谁。要做"整进程一个池"，唯一的路是把 `stack/src/core/ncl_mem.c` 换成
 自己的实现——它是唯一知道内存从哪来的文件，对外只有 4 个分配函数加
 `ncl_mem_get_stats()` / `ncl_mem_check()` / `ncl_mem_mode()`。
 
@@ -2856,7 +2871,7 @@ Copyright (c) 2026 huienming
 
 ## 附录 A · API 索引
 
-按头文件分组，由 `tools/gen_api_index.py` 从 `include/nclink/*.h` 自动生成（重新生成：`python tools/gen_api_index.py`）。
+按头文件分组，由 `tools/gen_api_index.py` 从 `stack/include/nclink/*.h` 自动生成（重新生成：`python tools/gen_api_index.py`）。
 
 ### `nclink/ncl_client.h`
 

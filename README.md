@@ -15,55 +15,69 @@ FTP、TCP）、以及客户端与服务端模块，全部已完成并有测试�
 ```
 nclink-c/
 ├── CMakeLists.txt
-├── build.ps1              # Windows 一键配置+编译+测试
-├── include/nclink/        # 公共头文件（对外 API）
-│   ├── ncl_common.h       # 错误码、字符串、缓冲区、容器
-│   ├── ncl_charset.h      # GB2312 → UTF-8（机床的中文文本量）
-│   ├── ncl_platform.h     # 平台抽象（时间、线程、互斥量、条件变量）
-│   ├── ncl_json.h         # JSON DOM（解析/序列化/访问器）
-│   ├── ncl_general.h      # 常量、Code/Operation 枚举、校验工具
-│   ├── ncl_topic.h        # MQTT 主题构造
-│   ├── ncl_model.h        # 设备数据模型（节点树、路径、采样绑定）
-│   ├── ncl_message.h      # 全部 NC-Link 消息类型
-│   ├── ncl_codec.h        # 十六进制 / zlib 编解码
-│   ├── ncl_mqtt.h         # MQTT 5.0 报文编解码
-│   ├── ncl_socket.h       # 跨平台 TCP 套接字
-│   ├── ncl_client.h       # NC-Link 客户端 API
-│   ├── ncl_server.h       # NC-Link 服务端（工具注册、请求分发、采样管理）
-│   ├── ncl_http.h         # HTTP/1.1 服务端（路由、请求解析、应答）
-│   ├── ncl_rest.h         # REST 层：应答封装、/api/schema、Swagger 页面
-│   ├── ncl_config.h       # 设备配置：SN、模型、驱动、服务器列表、mqtt.cfg
-│   ├── ncl_thread.h       # 线程池与 TTL 缓存
-│   ├── ncl_logger.h       # 日志
-│   ├── ncl_env.h          # 运行环境、conf/mqtt.cfg、sn.txt
-│   ├── ncl_ftp.h          # FTP 服务端与客户端（自研，无第三方依赖）
-│   ├── ncl_file.h         # 文件传输：文件属性、校验和、FTP 文件工具、file 工具
-│   ├── ncl_schema.h       # JSON Schema 校验（draft-07 子集）与正则引擎
-│   ├── ncl_tool.h         # 声明式适配器：一个文件一台设备的点位声明宏
-│   ├── ncl_driver.h       # 厂商协议驱动接口（地址模型、错误分级、会话规则）
-│   ├── ncl_audit.h        # 审计轨迹（§6）：计数、写记录、原始报文
-│   ├── ncl_module.h       # 适配器模块装载器（plugins/ncl_driver_*.dll|.so）
-│   └── ncl_host.h         # 宿主：声明 + 配置 → 一台活的 NC-Link 设备
-├── src/core/              # JSON、字符串、日志、环境、线程、平台
-├── src/general/           # 常量、主题
-├── src/message/           # 消息与消息项
-├── src/model/             # 数据模型
-├── src/codec/             # 编解码
-├── src/mqtt/              # MQTT 5.0 报文层
-├── src/client/            # 客户端与进程级客户端管理器
-├── src/server/            # 服务端
-├── src/tool/              # tool 层：声明→模型/绑定、驱动骨架、审计、装载器、宿主
-│   └── main.c             # 唯一的设备程序 ncl_server（装载 plugins/ 后启动）
-├── src/http/              # HTTP/1.1 服务端基础层
-├── src/rest/              # REST 应答封装与 schema/UI 端点
-├── src/config/            # 设备配置文件读写
-├── src/ftp/               # FTP 协议两端（RFC 959/2389 子集）
-├── src/file/              # 文件属性/SHA-256/FTP 文件工具/临时目录交换
-├── src/schema/            # JSON Schema 校验器 + 正则引擎
-├── clients/               # 厂商协议实现（Modbus/MC/FINS/S7/FOCAS/...），一个协议一个目录
-├── plugins/               # 厂商适配器：一个 .c 一个适配器，编成可动态装载的模块
-├── tests/                 # 单元测试 + 协议黄金样本
-└── tools/                 # 许可头检查、broker 互操作、文档生成与发布打包脚本
+├── build.ps1                    # Windows 一键配置+编译+测试
+├── build-linux.sh               # Linux / 交叉编译（mingw）一键脚本
+├── stack/                       # 协议栈：库 + 单元测试
+│   ├── include/nclink/          # 公共头文件（对外 API）
+│   │   ├── ncl_common.h         # 错误码、字符串、缓冲区、容器
+│   │   ├── ncl_charset.h        # GB2312 → UTF-8（机床的中文文本量）
+│   │   ├── ncl_platform.h       # 平台抽象（时间、线程、互斥量、条件变量）
+│   │   ├── ncl_json.h           # JSON DOM（解析/序列化/访问器）
+│   │   ├── ncl_general.h        # 常量、Code/Operation 枚举、校验工具
+│   │   ├── ncl_topic.h          # MQTT 主题构造
+│   │   ├── ncl_model.h          # 设备数据模型（节点树、路径、采样绑定）
+│   │   ├── ncl_message.h        # 全部 NC-Link 消息类型
+│   │   ├── ncl_codec.h          # 十六进制 / zlib 编解码
+│   │   ├── ncl_mqtt.h           # MQTT 5.0 报文编解码
+│   │   ├── ncl_socket.h         # 跨平台 TCP 套接字
+│   │   ├── ncl_client.h         # NC-Link 客户端 API
+│   │   ├── ncl_server.h         # NC-Link 服务端（工具注册、请求分发、采样管理）
+│   │   ├── ncl_http.h           # HTTP/1.1 服务端（路由、请求解析、应答）
+│   │   ├── ncl_rest.h           # REST 层：应答封装、/api/schema、Swagger 页面
+│   │   ├── ncl_config.h         # 设备配置：SN、模型、驱动、服务器列表、mqtt.cfg
+│   │   ├── ncl_thread.h         # 线程池与 TTL 缓存
+│   │   ├── ncl_logger.h         # 日志
+│   │   ├── ncl_env.h            # 运行环境、conf/mqtt.cfg、sn.txt
+│   │   ├── ncl_ftp.h            # FTP 服务端与客户端（自研，无第三方依赖）
+│   │   ├── ncl_file.h           # 文件传输：文件属性、校验和、FTP 文件工具、file 工具
+│   │   ├── ncl_schema.h         # JSON Schema 校验（draft-07 子集）与正则引擎
+│   │   ├── ncl_tool.h           # 声明式适配器：一个文件一台设备的点位声明宏
+│   │   ├── ncl_driver.h         # 厂商协议驱动接口（地址模型、错误分级、会话规则）
+│   │   ├── ncl_audit.h          # 审计轨迹（§6）：计数、写记录、原始报文
+│   │   ├── ncl_module.h         # 适配器模块装载器（plugins/ncl_driver_*.dll|.so）
+│   │   └── ncl_host.h           # 宿主：声明 + 配置 → 一台活的 NC-Link 设备
+│   ├── src/                     # 实现：一个模块一个目录
+│   │   ├── core/                # JSON、字符串、日志、环境、线程、平台
+│   │   ├── general/             # 常量、主题
+│   │   ├── message/             # 消息与消息项
+│   │   ├── model/               # 数据模型
+│   │   ├── codec/               # 编解码
+│   │   ├── mqtt/                # MQTT 5.0 报文层
+│   │   ├── client/              # 客户端与进程级客户端管理器
+│   │   ├── server/              # 服务端
+│   │   ├── tool/                # tool 层：声明→模型/绑定、驱动骨架、审计、装载器、宿主
+│   │   │   └── main.c           # 唯一的设备程序 ncl_server（装载 plugins/ 后启动）
+│   │   ├── http/                # HTTP/1.1 服务端基础层
+│   │   ├── rest/                # REST 应答封装与 schema/UI 端点
+│   │   ├── config/              # 设备配置文件读写
+│   │   ├── ftp/                 # FTP 协议两端（RFC 959/2389 子集）
+│   │   ├── file/                # 文件属性/SHA-256/FTP 文件工具/临时目录交换
+│   │   └── schema/              # JSON Schema 校验器 + 正则引擎
+│   └── test/                    # 单元测试：与各模块一一对应（core/ model/ message/ mqtt/ ...）
+│       ├── core/                # json/common/charset/mem/thread/library ...
+│       ├── model/ message/ codec/ mqtt/ client/ server/ tool/ ...
+│       ├── data/                # 共用夹具（模型文件、TLS 证书）
+│       └── fuzz/                # 编解码 fuzz 目标
+├── examples/                    # 示例：按"哪一侧"分
+│   ├── client/{c,cpp,java,python,csharp,go}/   # 客户端示例
+│   ├── device/{c,cpp,java,python,csharp,go}/   # 设备端示例
+│   └── sdk/{native,csharp,java,python,go}/     # 各语言绑定（SDK 本体 + 自检）
+├── clients/                     # 厂商协议实现（Modbus/MC/FINS/S7/FOCAS/...），一个协议一个目录
+├── plugins/                     # 厂商适配器：一个 .c 一个适配器，编成可动态装载的模块
+│   └── tests/                   # 适配器端到端：夹具模块 + 宿主装载
+├── tools/                       # 许可头检查、broker 互操作、文档生成与发布打包脚本
+├── dist/                        # 发布包（入库：库包 + 适配器包）
+└── build/ build-*/              # 构建目录（不入库）
 ```
 
 ## 构建与测试
@@ -117,7 +131,7 @@ cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release
 cmake --build build-linux -j && ctest --test-dir build-linux --output-on-failure
 ```
 
-自行手工编译（不用上面两个脚本）时注意两点：`-Iinclude -Isrc`，以及
+自行手工编译（不用上面两个脚本）时注意两点：`-Istack/include -Istack/src`，以及
 `-D_POSIX_C_SOURCE=200809L`（`-std=c11` 会隐藏 `strdup`/`getaddrinfo`/
 `localtime_r`/`pthread_*` 等 POSIX 接口）。
 
@@ -126,7 +140,7 @@ cmake --build build-linux -j && ctest --test-dir build-linux --output-on-failure
 套件之间用固定端口（FTP 2323/3131 等）与相对路径：**别在同一个构建目录里并发跑两份
 ctest**，否则会互相抢端口/文件，表现为偶发失败（单跑稳定通过）。
 
-`tests/test_broker.c` 需要真实 broker，默认跳过；用 Docker 一键跑
+`stack/test/mqtt/test_broker.c` 需要真实 broker，默认跳过；用 Docker 一键跑
 EMQX 与 Mosquitto（各自监听 18830 / 18831，不动你本机 1883 上的 broker）：
 
 ```bash
@@ -205,7 +219,7 @@ docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh
 `-MemPoolBytes 65536`（Linux 用 `NCL_MEM_POOL_BYTES=65536`）往下压。
 库内的 471 处分配已经全部走 `ncl_mem_*()` 这一层，池耗尽返回 `NCL_ERR_NOMEM` 而不是
 回退到堆；池用**最佳适配 + 释放时双向合并**，所以同一套流量反复跑不会留下永久空洞
-（`tests/test_mem.c` 有逐轮断言的用例，`tests/test_mem_mc.c` 是蒙特卡洛压测）。
+（`stack/test/core/test_mem.c` 有逐轮断言的用例，`stack/test/core/test_mem_mc.c` 是蒙特卡洛压测）。
 
 实测（Linux / gcc 13，**39 套口径**——适配器插件化之前的测量，本轮未重跑）：
 **32 KiB 池 37/39**（`file`、`ftp` 被拒）、**64 KiB 池 38/39**（只剩 `file`）、
@@ -222,17 +236,17 @@ docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh
 
 ## 语言绑定
 
-C++ 封装在 `include/nclink/ncl.hpp`（header-only，RAII + 异常）；四个语言绑定都在
+C++ 封装在 `stack/include/nclink/ncl.hpp`（header-only，RAII + 异常）；四个语言绑定都在
 `bindings/`，其中 C# / Java / Python 三种托管绑定**共用同一份原生垫片**
-`bindings/native/nclink_shim.c`——它把 C API 摊平成"不透明句柄 + 标量 + UTF-8 文本"，
+`examples/sdk/native/nclink_shim.c`——它把 C API 摊平成"不透明句柄 + 标量 + UTF-8 文本"，
 托管侧不依赖 C 结构体的内存布局：
 
 | 绑定 | 目录 | 覆盖 | 构建与自检 |
 |------|------|------|------------|
-| Go（cgo） | `bindings/go/` | 客户端 + **设备端**（工具注册 / 采样 / 事件 / HTTP、离线 dispatch、自研传输） | `sh tools/stage-go-libs.sh` 后 `cd bindings/go && go test ./...` |
-| C#（P/Invoke，net472 + net8.0） | `bindings/csharp/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `.\bindings\csharp\build.ps1`（垫片 + 三个工程 + 自检 106 项） |
-| Java（JNI，Java 8 字节码） | `bindings/java/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `.\bindings\java\build.ps1`（native + javac + 自检 107 项） |
-| Python（ctypes，只用标准库） | `bindings/python/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `python -m unittest discover -s bindings/python/tests`（46 项） |
+| Go（cgo） | `examples/sdk/go/` | 客户端 + **设备端**（工具注册 / 采样 / 事件 / HTTP、离线 dispatch、自研传输） | `sh tools/stage-go-libs.sh` 后 `cd examples/sdk/go && go test ./...` |
+| C#（P/Invoke，net472 + net8.0） | `examples/sdk/csharp/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `.\bindings\csharp\build.ps1`（垫片 + 三个工程 + 自检 106 项） |
+| Java（JNI，Java 8 字节码） | `examples/sdk/java/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `.\bindings\java\build.ps1`（native + javac + 自检 107 项） |
+| Python（ctypes，只用标准库） | `examples/sdk/python/` | 客户端 + **设备端**（HTTP/REST、文件通道、TLS 选项） | `python -m unittest discover -s examples/sdk/python/tests`（46 项） |
 
 每个目录的 `README.md` 里都有用法、内存/线程规则与示例输出。C# / Java / Python 三个
 托管绑定**两边都包**：既能当客户端（`DeviceClient`/`NclDeviceClient`），也能当设备端
@@ -247,7 +261,7 @@ C++ 封装在 `include/nclink/ncl.hpp`（header-only，RAII + 异常）；四个
 钉一个静态 FTP 对端（布局要 `/<sn>/...`）。示例里有
 "Python 当机床、C 客户端来读"这种跨语言跑法。Go 绑定走 cgo 直接链 C API（不过垫片），
 客户端与设备端（`nclink.NewServer` + `RegisterTool` / `InitSamples` / `PushEvent` /
-`StartHTTP`）都在 `bindings/go/server.go`，设备端示例是 `example/device`。
+`StartHTTP`）都在 `examples/sdk/go/server.go`，设备端示例是 `example/device`。
 
 自检默认不需要 broker；想看"报文真的过 MQTT"的那一段，设
 `NCLINK_TEST_BROKER=tcp://host:port` 再跑一遍（C# / Java / Python 三份绑定都支持）。
@@ -600,7 +614,7 @@ Go `MethodsJSON()` / `FindMethodJSON()`）；设备端给自己也留了一份
 3. **错误码**。19 条协议域校验规则各有一个 `NCL_ERR_INVALID_*`，
    `ncl_err_name()` 返回稳定的文本名称。所有会失败的接口统一返回 `ncl_err`。
 4. **字节级兼容**。JSON 字段顺序、`@id` 命名、空值省略规则、路径计算规则
-   都按规范固定；`tests/data/model_nclink.json` 是协议黄金样本，测试要求
+   都按规范固定；`stack/test/data/model_nclink.json` 是协议黄金样本，测试要求
    **往返序列化字节完全一致**。
 5. **单一节点结构**。设备/组件/数据项/配置项/采样通道共用一个带 `type`
    判别字段的 `ncl_node`，避免层层继承与强制转换。
@@ -643,7 +657,7 @@ Go `MethodsJSON()` / `FindMethodJSON()`）；设备端给自己也留了一份
 Copyright (c) 2026 huienming
 ```
 
-所有源文件（`include/`、`src/`、`tests/`、`examples/`、`tools/`）都带
+所有源文件（`include/`、`stack/src/`、`stack/test/`、`examples/`、`tools/`）都带
 `SPDX-License-Identifier: MIT` 头，复制单个文件出去时许可信息不会丢。
 静态库（`nclink_core.lib` / `libnclink_core.a`）与文档同样以 MIT 授权；
 引用时请保留版权声明。

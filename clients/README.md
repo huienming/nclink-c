@@ -264,7 +264,7 @@ HTTP 客户端（`clients/http/ncl_http_client.c`）与 MTConnect 驱动共用�
    `2048` 项就是 80 KiB，静态池版本里一次三点的读就会被拒（`modbus`/`mc`/`fins`
    都踩过，现在按"字符串地址算一项、其余每个元素算一项"算容量）。
 6. 测试放 `clients/tests/test_<协议>.c`：报文级黄金样本（字节 diff，真实抓包做 case）
-   ＋对着自建靶机跑连接—读写—重连；`tests/test_point_map.h` 是那座桥。
+   ＋对着自建靶机跑连接—读写—重连；`stack/test/test_point_map.h` 是那座桥。
 7. `clients/mock/` 是最小样板：内存点位模型 + 错误注入 + 事件触发，零网络代码。
 
 ### 语义层（可选，但推荐给"能叫出名字的量"）
@@ -294,7 +294,7 @@ FOCAS 是样板（`clients/focas/focas_values.c` + 公开头 `nclink/clients/foc
 sh build-linux.sh                # Linux：同样全跑一遍
 ```
 
-42 套 = **31 套核心与工具层**（`tests/`）+ **11 套协议客户端**（`clients/tests/`）。
+42 套 = **31 套核心与工具层**（`stack/test/`）+ **11 套协议客户端**（`clients/tests/`）。
 本目录的套件：`modbus` `mc` `fins` `s7` `mtconnect` `meldas` `lsv2` `syntec`
 `syntec_driver` `knd` `focas`（`ctest -R <名字>` 单跑）。
 

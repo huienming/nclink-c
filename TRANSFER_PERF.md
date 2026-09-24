@@ -10,7 +10,7 @@
 | 传输实现 | `ncl_ftp_client_upload()` / `ncl_ftp_client_download()`：**流式**（256 KiB 一块读、64 KiB 一块写，内存不随文件大小增长）、**可续传**（上传按对端 SIZE 用 APPE 续、下载按本地大小用 REST 续），单次调用内自带 3 次重试，每次重试都从断点继续 |
 | 校验 | 客户端工具在每次 write/read 前会先比一次 SHA-256（设备端属性 vs 本地镜像），一致就跳过传输；本报告的"校验"列是传输后用 SHA-256 逐字节核对 |
 | 计时口径 | **`ncl_client_write()` / `ncl_client_read()` 的墙钟时间**，包含握手后的协议往返、设备端落盘、以及上面那次 SHA-256 比对；线上字节数取 FTP 端点的计数（`ncl_ftp_server_bytes_sent/received()`，实测与"字节数 × 1"完全相等，说明没有重复传输） |
-| 测试台 | `examples/ncl_file_bench.c`（`device` / `client` 两个角色），载荷是按位置生成的确定性字节流 |
+| 测试台 | `examples/device/c/ncl_file_bench.c`（`device` / `client` 两个角色），载荷是按位置生成的确定性字节流 |
 | "resume (half)" 行 | 先把接收侧的镜像写成前一半，再发起传输：线上字节数应恰为后一半——实测每行都精确等于一半 |
 
 ## 2. 环境

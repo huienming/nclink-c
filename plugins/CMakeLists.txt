@@ -25,7 +25,7 @@ foreach(source IN LISTS NCLINK_PLUGIN_SOURCES)
     add_library(${target} MODULE "${source}")
     target_link_libraries(${target} PRIVATE ${NCLINK_PLUGIN_LIBS})
     target_include_directories(${target} PRIVATE
-            "${CMAKE_SOURCE_DIR}/include")
+            "${CMAKE_SOURCE_DIR}/stack/include")
     set_target_properties(${target} PROPERTIES
             OUTPUT_NAME "ncl_driver_${name}"
             LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
@@ -54,3 +54,6 @@ foreach(source IN LISTS NCLINK_PLUGIN_SOURCES)
 endforeach()
 
 message(STATUS "nclink: adapter modules -> ${CMAKE_BINARY_DIR}/plugins")
+
+# 适配器这一侧的测试（夹具模块 + 宿主端到端）。
+add_subdirectory(tests)

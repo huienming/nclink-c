@@ -26,7 +26,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SECONDS_TO_RUN=${NCL_SOAK_SECONDS:-3600}
 SIZES=${NCL_SOAK_SIZES:-"16384 32768 65536 131072 524288 4194304 20971520"}
 OUT="$ROOT/build-soak"
-CFLAGS="-std=c11 -O2 -Wall -Wextra -I$ROOT/include -I$ROOT/src -Isrc"
+CFLAGS="-std=c11 -O2 -Wall -Wextra -I$ROOT/stack/include -I$ROOT/stack/src"
 CFLAGS="$CFLAGS -D_POSIX_C_SOURCE=200809L -Wno-format-truncation"
 
 if [ "${1:-}" = "--docker" ]; then
@@ -37,7 +37,7 @@ fi
 # per pool size) and the multithreaded one (several threads per process, all
 # sharing that pool, handing blocks across threads).
 if [ "${NCL_SOAK_MT:-0}" = "1" ]; then
-    TEST_SRC="$ROOT/tests/test_mem_mt.c"
+    TEST_SRC="$ROOT/stack/test/core/test_mem_mt.c"
     SECONDS_VAR="NCL_MEM_MT_SECONDS"
     OPS_VAR="NCL_MEM_MT_OPS"
     # The build directory carries the mode: the single threaded and the
@@ -45,7 +45,7 @@ if [ "${NCL_SOAK_MT:-0}" = "1" ]; then
     # reusing one for the other would silently test the wrong thing.
     OUT_SUB="mt"
 else
-    TEST_SRC="$ROOT/tests/test_mem_mc.c"
+    TEST_SRC="$ROOT/stack/test/core/test_mem_mc.c"
     SECONDS_VAR="NCL_MEM_MC_SECONDS"
     OPS_VAR="NCL_MEM_MC_OPS"
     OUT_SUB="st"

@@ -192,7 +192,7 @@ for _ in range(10):
 
 | 来源 | 说明 |
 |---|---|
-| `ur_rtde-1.6.5`（参考架，未随仓库提供） | **官方 C++ 库 + Python 绑定**：`include/ur_rtde/rtde.h`（协议常量）· `robot_state.h`（变量表）· `dashboard_client.h`（32 命令）· `src/robot_state.cpp`（变量类型表） |
+| `ur_rtde-1.6.5`（参考架，未随仓库提供） | **官方 C++ 库 + Python 绑定**：`include/ur_rtde/rtde.h`（协议常量）· `robot_state.h`（变量表）· `dashboard_client.h`（32 命令）· `stack/src/robot_state.cpp`（变量类型表） |
 | 提取产物 | 84 变量+类型 · 32 Dashboard API（原始素材未随本目录提供） |
 | 官方文档 | UR RTDE Guide（变量清单/版本差异）· `ur_rtde` 官方文档站 |
 | 备注 | CB 系列（3.x）与 e-Series 的变量集有差异，以控制器版本为准 |

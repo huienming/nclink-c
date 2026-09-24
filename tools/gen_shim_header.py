@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 huienming
 
-"""Regenerate bindings/native/nclink_shim.h from bindings/native/nclink_shim.c.
+"""Regenerate examples/sdk/native/nclink_shim.h from examples/sdk/native/nclink_shim.c.
 
-The header is the contract the JNI glue (bindings/java/native/nclink_jni.c)
+The header is the contract the JNI glue (examples/sdk/java/native/nclink_jni.c)
 compiles against, so it has to list exactly the exported functions of the shim.
 Generating it from the implementation keeps the two from drifting:
 
@@ -17,7 +17,7 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NATIVE = os.path.join(ROOT, "bindings", "native")
+NATIVE = os.path.join(ROOT, "examples", "sdk", "native")
 SOURCE = os.path.join(NATIVE, "nclink_shim.c")
 HEADER = os.path.join(NATIVE, "nclink_shim.h")
 

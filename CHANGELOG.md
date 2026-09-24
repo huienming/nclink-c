@@ -5,6 +5,33 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 3.6.0
 
+### 目录重排：stack / examples / clients / plugins / tools / dist，测试与模块一一对应
+
+  原来的顶层是 `include/ + src/ + tests/ + examples/ + bindings/`，测试全堆在 `tests/` 里。
+  现在：
+
+  * **`stack/` 是协议栈**：`stack/include`（公共头，对外仍是 `<nclink/*.h>`）、
+    `stack/src/<模块>`、`stack/test/<模块>` —— 单元测试与模块一一对应（core、general、model、
+    message、codec、mqtt、client、server、http、rest、config、ftp、file、schema、tool、cpp、
+    license），共用的夹具与测试头在同一层（`stack/test/`：`ncl_test.h`、`fake_nclink_server.*`、
+    `data/`、`fuzz/`）。
+  * **`plugins/tests/`**：适配器那一侧的测试与夹具（声明式夹具、两个"装载器必须拒收"的夹具、
+    宿主端到端），原来散在 `tests/test_host_tool.c` 与 `tests/module_*.c`。`clients/tests/` 不动。
+  * **`examples/` 合并了原来的 `examples/` 与 `bindings/`，按"哪一侧"分**：
+    `examples/client/<语言>`、`examples/device/<语言>`（c/cpp/java/python/csharp/go），语言绑定
+    本体（含各自自检）在 `examples/sdk/<语言>`（native 垫片、csharp、java、python、go）。
+    Go 的两个示例各自是自己的模块，用 `replace` 指回 `examples/sdk/go`，`go run .` 照旧能跑。
+  * **跟着改的**：根 `CMakeLists.txt`（`add_subdirectory(stack/test)`、`plugins/CMakeLists.txt`
+    里 `add_subdirectory(tests)`）、`build-linux.sh`、`tools/*`（asan/fuzz/soak/interop/
+    stage-go-libs/gen_api_index/gen_shim_header/make_release）、五个绑定的构建脚本与 csproj、
+    `.gitignore`、文档（README 与 MANUAL 的目录结构、RELEASE 的验证口径、各语言的 README）。
+  * **发布包内部布局不变**（`include/ lib/ examples/ bindings/` 那套，面向交付）：打包脚本从新
+    目录取值、按老布局拼装，包里"`bindings/…`"那几句说明仍然成立；包内的 Go 示例仍在同一模块
+    里（不需要 `replace`）。
+  * **验证**：Windows 六个变体（x64/x86 堆、x64 TLS、x64/x86 静态内存、x64 静态内存+TLS）各
+    **43/43**；Linux 堆 / TLS / 静态内存 / 静态内存+TLS（gcc:13 容器内）各 **43/43**；mingw
+    两份库 **43/43**（PE 产物拿回 Windows 跑）；dist 重建入库。
+
 ### 构建：mingw 库换工具链重建（GCC 13.2.0-posix，容器内交叉编）
 
   * **原因**：`lib/windows-amd64-mingw/` 两份 `.a` 是另一台机器上用 mingw-w64 16.2.0

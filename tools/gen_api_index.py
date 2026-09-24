@@ -14,7 +14,7 @@ import os
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INCLUDE = os.path.join(ROOT, "include", "nclink")
+INCLUDE = os.path.join(ROOT, "stack", "include", "nclink")
 MANUAL = os.path.join(ROOT, "MANUAL.md")
 
 DECL = re.compile(
@@ -96,7 +96,7 @@ def api_index():
     out = [
         "## 附录 A · API 索引",
         "",
-        "按头文件分组，由 `tools/gen_api_index.py` 从 `include/nclink/*.h` 自动生成"
+        "按头文件分组，由 `tools/gen_api_index.py` 从 `stack/include/nclink/*.h` 自动生成"
         "（重新生成：`python tools/gen_api_index.py`）。",
         "",
     ]

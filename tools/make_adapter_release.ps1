@@ -47,7 +47,7 @@ $root = Split-Path -Parent $PSScriptRoot
 # from the source unless it is given: a package whose name disagrees with the
 # program inside it is a support call waiting to happen.
 if ($Version -eq "") {
-    $common = Join-Path $root "include\nclink\ncl_common.h"
+    $common = Join-Path $root "stack\include\nclink\ncl_common.h"
     $match = [regex]::Match((Get-Content -LiteralPath $common -Raw),
                             'NCL_VERSION\s+"([0-9]+\.[0-9]+\.[0-9]+)"')
     if (-not $match.Success) {

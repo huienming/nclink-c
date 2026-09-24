@@ -29,7 +29,7 @@ MOSQUITTO_PORT=18830
 EMQX_PORT=18831
 MOSQUITTO_TLS_PORT=18832
 MOSQUITTO_TLS_DIR=${NCL_INTEROP_TLS_DIR:-$ROOT/build-linux/interop-tls}
-TLS_CERT=$ROOT/tests/data/tls_localhost_cert.pem
+TLS_CERT=$ROOT/stack/test/data/tls_localhost_cert.pem
 
 # Git Bash rewrites absolute paths in arguments; hand Docker real Windows paths
 # and switch that rewriting off for the calls that mount directories.
@@ -52,9 +52,9 @@ find_binary() {
     for candidate in \
         "$ROOT/build-linux/bin/test_broker" \
         "$ROOT/build/bin/ncl_test_broker" \
-        "$ROOT/build/tests/ncl_test_broker.exe" \
+        "$ROOT/build/stack/test/ncl_test_broker.exe" \
         "$ROOT/build/bin/ncl_test_broker.exe" \
-        "$ROOT/build-asan/tests/ncl_test_broker.exe"; do
+        "$ROOT/build-asan/stack/test/ncl_test_broker.exe"; do
         if [ -x "$candidate" ]; then
             echo "$candidate"
             return
@@ -129,8 +129,8 @@ start_mosquitto() {
 # tests/data (SAN: DNS:localhost, IP:127.0.0.1) so the client can verify them.
 prepare_mosquitto_tls() {
     mkdir -p "$MOSQUITTO_TLS_DIR"
-    cp "$ROOT/tests/data/tls_localhost_cert.pem" "$MOSQUITTO_TLS_DIR/server.crt"
-    cp "$ROOT/tests/data/tls_localhost_key.pem" "$MOSQUITTO_TLS_DIR/server.key"
+    cp "$ROOT/stack/test/data/tls_localhost_cert.pem" "$MOSQUITTO_TLS_DIR/server.crt"
+    cp "$ROOT/stack/test/data/tls_localhost_key.pem" "$MOSQUITTO_TLS_DIR/server.key"
     chmod 644 "$MOSQUITTO_TLS_DIR/server.key" 2>/dev/null || true
     return 0
 }
@@ -160,7 +160,7 @@ run_broker_tls() {
                 --add-host host.docker.internal:host-gateway \
                 -v "$(host_path "$ROOT"):/work" -w /work \
                 -e "NCL_TEST_MQTT_BROKER=ssl://host.docker.internal:$port" \
-                -e "NCL_TEST_MQTT_CA=/work/tests/data/tls_localhost_cert.pem" \
+                -e "NCL_TEST_MQTT_CA=/work/stack/test/data/tls_localhost_cert.pem" \
                 -e "NCL_TEST_MQTT_SERVER_NAME=127.0.0.1" \
                 gcc:13 "$container_bin"; then
             echo "  mosquitto+tls: PASS"
