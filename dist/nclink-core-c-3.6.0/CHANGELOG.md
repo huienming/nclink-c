@@ -5,6 +5,22 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 3.6.0
 
+### 适配器包：加一份默认配置 `conf\device.json`（开箱就能跑）
+
+  * **之前**：包里只有按驱动命名的样例（`fanuc` / `syntec` / `pseudo`），而不带 `-c`
+    （或 `-Config`）时读的是 `<root>\conf\device.json` —— 那份不在包里，于是**裸跑必然报
+    "读不到配置"**，站点拿到包的第一件事就是先撞一次墙。
+  * **现在**：打包时把 `conf\pseudo.json` 复制成 `conf\device.json`（新开关
+    `-DefaultConfig <名字>` 换一份，`-DefaultConfig ""` = 不生成）。裸跑 `bin\ncl_server.exe`、
+    `.\run-once.ps1`、`.\run.ps1`、`.\list-plugins.ps1`（都不带参数）用的都是这一份 ——
+    **开箱即跑**：默认装的是伪机床，不接硬件也有数据；接了真机就改这一份。
+  * **优先级**：仓库 `conf\` 里已经有的 `device.json`（站点自己放的）优先，打包不覆盖它。
+  * **升级提醒**写进包 README：别直接盖掉 `conf\device.json`（那是站点配置），要么先拷出来，
+    要么把站点配置放在包外、用 `run.ps1 -Config <路径>` 指过去。
+  * **验证**：包内从 `bin\` 里裸跑 `ncl_server.exe --plugins` 与 `--once`（都定位到包根、
+    自检 72/72）；`.\run-once.ps1` 与 `.\list-plugins.ps1` 不带参数都用 `device.json`；
+    包内 17 文件，`SHA256SUMS.txt` 独立复算 0 不符、`zip.sha256` 与字节一致。
+
 ### 宿主：安装根目录自动定位，配置读不到时把话说清楚
 
   * **现象**：拿到发布包，双击（或从 `bin\` 里敲）`bin\ncl_server.exe`，直接报

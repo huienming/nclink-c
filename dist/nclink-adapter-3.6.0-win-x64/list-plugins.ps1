@@ -15,7 +15,11 @@ $exe = Join-Path $root "bin\ncl_server.exe"
 if ($All) {
     & $exe -r $root --plugins
 } else {
-    if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
+    # No -Config: the package default - the same file a bare exe picks up.
+    if ($Config -eq "") {
+        $Config = Join-Path $root "conf\device.json"
+        if (-not (Test-Path -LiteralPath $Config)) { $Config = Join-Path $root "conf\fanuc.json" }
+    }
     elseif (-not [System.IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $root $Config }
     & $exe -r $root -c $Config --plugins
 }

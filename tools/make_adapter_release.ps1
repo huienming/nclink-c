@@ -15,6 +15,13 @@
 #   .\tools\make_adapter_release.ps1 -Version 3.6.0
 #   .\tools\make_adapter_release.ps1 -NoZip
 #   .\tools\make_adapter_release.ps1 -WithProtocolDocs  # internal notes too
+#   .\tools\make_adapter_release.ps1 -DefaultConfig syntec   # conf\device.json = that sample
+#   .\tools\make_adapter_release.ps1 -DefaultConfig ""      # ship no default configuration
+#
+# conf\device.json is the configuration a bare bin\ncl_server.exe and the three
+# convenience scripts pick up when nothing is named, so the package runs out of
+# the box; it defaults to a copy of conf\pseudo.json (the simulator runs with no
+# machine attached). A device.json that came from the repo's conf\ wins.
 #
 # -WithProtocolDocs also ships plugins/README.md (how to write an adapter) and
 # the protocol notes under protocal/docs/. They are engineering material, so
@@ -37,7 +44,12 @@ param(
     [string]$BuildDir = "builds/build",
     [string]$Name = "",
     [switch]$NoZip,
-    [switch]$WithProtocolDocs
+    [switch]$WithProtocolDocs,
+    # Which conf\ sample to ship as conf\device.json - the configuration a bare
+    # bin\ncl_server.exe reads and the convenience scripts use when -Config is
+    # omitted. The simulator ("pseudo") is the default because it is the one
+    # that runs with no machine attached. Empty = ship no default.
+    [string]$DefaultConfig = "pseudo"
 )
 
 $ErrorActionPreference = "Stop"
@@ -143,6 +155,22 @@ if (Test-Path -LiteralPath $mqttConfig) {
     Write-Host "  note: conf/mqtt.cfg not found, the site writes its own broker file"
 }
 
+# The default configuration: conf\device.json. A bare bin\ncl_server.exe reads
+# it, and the three convenience scripts use it when -Config is omitted - so the
+# package runs out of the box (the sample it is copied from is the simulator's:
+# no machine needed). A device.json that came from the repo's conf\ wins: a
+# site's own default is never overwritten here.
+$defaultJson = Join-Path $pkg "conf\device.json"
+if ($DefaultConfig -ne "" -and -not (Test-Path -LiteralPath $defaultJson)) {
+    $defaultSource = Join-Path $configDir ("{0}.json" -f $DefaultConfig)
+    if (Test-Path -LiteralPath $defaultSource) {
+        Copy-Item -LiteralPath $defaultSource -Destination $defaultJson -Force
+        Write-Host ("  + conf/device.json  (default = {0}.json)" -f $DefaultConfig)
+    } else {
+        Write-Host ("  note: conf/{0}.json not found, so no conf/device.json" -f $DefaultConfig)
+    }
+}
+
 # The site manual of each driver (plugins/<PROTOCOL>-ADAPTER.md), next to the
 # package README. FANUC has one; a driver without one is documented by its
 # configuration sample and its header.
@@ -180,7 +208,7 @@ if ($WithProtocolDocs) {
 $runOnce = @'
 # Self check: poll every configured point once, print it, exit. No broker.
 #
-#   .\run-once.ps1
+#   .\run-once.ps1                 # conf\device.json (the package's default)
 #   .\run-once.ps1 -Config conf\syntec.json
 #   .\run-once.ps1 -Raw            # audit with the frames
 param(
@@ -189,7 +217,11 @@ param(
 )
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $exe = Join-Path $root "bin\ncl_server.exe"
-if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
+# No -Config: the package default - the same file a bare exe picks up.
+if ($Config -eq "") {
+    $Config = Join-Path $root "conf\device.json"
+    if (-not (Test-Path -LiteralPath $Config)) { $Config = Join-Path $root "conf\fanuc.json" }
+}
 # A relative -Config is relative to the package, not to the caller's directory
 elseif (-not [System.IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $root $Config }
 $forward = @("-r", $root, "-c", $Config, "--once", "--stats", "-b", "-")
@@ -203,7 +235,7 @@ Write-Host "  + run-once.ps1"
 $run = @'
 # Run for real: poll the machine, publish the samples, serve REST. Ctrl+C exits.
 #
-#   .\run.ps1
+#   .\run.ps1                      # conf\device.json (the package's default)
 #   .\run.ps1 -Config conf\syntec.json
 #   .\run.ps1 -Config conf\fanuc.json -Broker tcp://10.0.0.9:1883 -Interval 500 -RestPort 8081
 #   .\run.ps1 -Raw                 # audit every frame
@@ -217,7 +249,11 @@ param(
 )
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $exe = Join-Path $root "bin\ncl_server.exe"
-if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
+# No -Config: the package default - the same file a bare exe picks up.
+if ($Config -eq "") {
+    $Config = Join-Path $root "conf\device.json"
+    if (-not (Test-Path -LiteralPath $Config)) { $Config = Join-Path $root "conf\fanuc.json" }
+}
 # relative paths mean "inside the package", wherever the caller stands
 elseif (-not [System.IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $root $Config }
 if ($PluginDir -eq "") { $PluginDir = Join-Path $root "plugins" }
@@ -250,7 +286,11 @@ $exe = Join-Path $root "bin\ncl_server.exe"
 if ($All) {
     & $exe -r $root --plugins
 } else {
-    if ($Config -eq "") { $Config = Join-Path $root "conf\fanuc.json" }
+    # No -Config: the package default - the same file a bare exe picks up.
+    if ($Config -eq "") {
+        $Config = Join-Path $root "conf\device.json"
+        if (-not (Test-Path -LiteralPath $Config)) { $Config = Join-Path $root "conf\fanuc.json" }
+    }
     elseif (-not [System.IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $root $Config }
     & $exe -r $root -c $Config --plugins
 }
