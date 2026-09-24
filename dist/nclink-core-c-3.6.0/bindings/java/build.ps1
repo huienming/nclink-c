@@ -34,7 +34,7 @@ $java = (Get-Command java -ErrorAction SilentlyContinue)
 if (-not $javac -or -not $java) { throw "javac / java not found: install a JDK (17+ recommended)" }
 
 $sources = @()
-foreach ($tree in @("src", "demo", "tests")) {
+foreach ($tree in @("src", "tests", "..\..\client\java", "..\..\device\java")) {
     $path = Join-Path $here $tree
     if (Test-Path -LiteralPath $path) {
         $sources += Get-ChildItem -Path $path -Recurse -File -Filter *.java |

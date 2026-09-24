@@ -1,14 +1,14 @@
 # NC-Link Go 绑定（cgo）
 
-`go get github.com/huienming/nclink-c/bindings/go`（或直接把本目录拷进工程）。
+`go get github.com/huienming/nclink-c/examples/sdk/go`（或直接把本目录拷进工程）。
 
 ## 链接
 
 包内默认链接 `lib/<goos>-<goarch>/` 下的静态库：
 
 ```
-bindings/go/lib/windows-amd64/libnclink_core.a   # 用 mingw 编的（cgo 的 Windows 工具链是 mingw）
-bindings/go/lib/linux-amd64/libnclink_core.a
+examples/sdk/go/lib/windows-amd64/libnclink_core.a   # 用 mingw 编的（cgo 的 Windows 工具链是 mingw）
+examples/sdk/go/lib/linux-amd64/libnclink_core.a
 ```
 
 `tools/stage-go-libs.sh` 会把各平台的库拷到这里（库本身不入库）。
@@ -16,7 +16,7 @@ bindings/go/lib/linux-amd64/libnclink_core.a
 - **Windows**：cgo 需要 mingw-w64（不认 MSVC），且必须链 **mingw 编的库**；
   MSVC 的 `nclink_core.lib` 不能用于 Go。
   编库：`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw`
-  或直接：`for f in $(find src -name '*.c'); do gcc -c -O2 -Iinclude -Isrc $f; done` + `ar rcs`。
+  或直接：`for f in $(find src -name '*.c'); do gcc -c -O2 -Istack/include -Istack/src $f; done` + `ar rcs`。
 - **Linux**：`sh build-linux.sh build-linux` 出的 `libnclink_core.a` 直接用。
 - **TLS**：加 `-tags nclink_tls`，此时链的是 `libnclink_core_tls.a`（`NCL_WITH_TLS=1`
   编的那份）加 `-lssl -lcrypto`；Windows 上还需要静态 OpenSSL 的导入库。用
@@ -98,11 +98,12 @@ endpoint.Route("GET", "/api/hello", func(r *nclink.HTTPRequest) *nclink.HTTPRepl
 
 离线（`Broker: ""`）时不给 `Publish` 也能跑：`Dispatch` / `InvokeQuery` /
 `InvokeSet` / `InvokeMethodCall` / `CheckMethodCall` 直接把报文喂进去取应答，
-离线自检就是这么测的。设备端示例见 `example/device`：
+离线自检就是这么测的。设备端示例在 `examples/device/go`
+（`examples/client/go` 是客户端示例；两边各自是一个小模块，用 `replace` 指回本目录）：
 
 ```sh
-go run ./example/device                      # 离线，出站报文打到控制台
-go run ./example/device tcp://127.0.0.1:1883 # 过 broker
+cd ../../device/go && go run .                      # 离线，出站报文打到控制台
+cd ../../device/go && go run . tcp://127.0.0.1:1883 # 过 broker
 ```
 
 自检：`go test ./...`（不需要 broker；Linux 上 cgo 用系统 gcc，Windows 上要 mingw）。

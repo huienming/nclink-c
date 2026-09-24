@@ -10,9 +10,9 @@
 #   .\build.ps1 -Framework net8.0
 #
 # On Linux / macOS run the same dotnet commands by hand (the native shim there is
-# sh bindings/native/build-shim.sh):
+# sh examples/sdk/native/build-shim.sh):
 #
-#   dotnet build bindings/csharp/src/Nclink.Core/Nclink.Core.csproj -c Release
+#   dotnet build examples/sdk/csharp/src/Nclink.Core/Nclink.Core.csproj -c Release
 #   dotnet run --project bindings/csharp/tests/Nclink.SelfTest -c Release
 #
 # Keep this file ASCII-only: Windows PowerShell 5.1 reads .ps1 files with the OEM
@@ -27,7 +27,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
-$root = (Resolve-Path (Join-Path $here "..\..")).Path
+$root = (Resolve-Path (Join-Path $here "..\..\..")).Path
 
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw "dotnet not found: install the .NET SDK (8.0+ recommended)"
@@ -40,7 +40,7 @@ if (-not $SkipNative) {
         & (Join-Path $here "..\native\build-shim.ps1") @nativeArgs
         if ($LASTEXITCODE -ne 0) { throw "native shim build failed ($LASTEXITCODE)" }
     } else {
-        Write-Host "skipping the native shim (run: sh bindings/native/build-shim.sh)"
+        Write-Host "skipping the native shim (run: sh examples/sdk/native/build-shim.sh)"
     }
 }
 
@@ -53,8 +53,8 @@ if ($Framework -ne "") {
 
 foreach ($project in @(
         "src\Nclink.Core\Nclink.Core.csproj",
-        "samples\Nclink.Demo.Cli\Nclink.Demo.Cli.csproj",
-        "samples\Nclink.Demo.Device\Nclink.Demo.Device.csproj",
+        "..\..\client\csharp\Nclink.Demo.Cli.csproj",
+        "..\..\device\csharp\Nclink.Demo.Device.csproj",
         "tests\Nclink.SelfTest\Nclink.SelfTest.csproj")) {
     $path = Join-Path $here $project
     Write-Host "build $project"

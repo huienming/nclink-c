@@ -3,7 +3,7 @@
 
 // 设备端示例：这个 Go 进程就是一台机床。
 //
-//	go run ./example/device [broker] [sn] [seconds] [http-port]
+//	cd examples/device/go && go run . [broker] [sn] [seconds] [http-port]
 //
 //	broker    tcp://… / ssl://…；"-" = 离线（不接 MQTT，出站报文打控制台）；
 //	          省略 = 读 <root>/conf/mqtt.cfg（没有就先写一份默认的）
@@ -28,7 +28,7 @@ import (
 	"syscall"
 	"time"
 
-	nclink "github.com/huienming/nclink-c/bindings/go"
+	nclink "github.com/huienming/nclink-c/examples/sdk/go"
 )
 
 var (

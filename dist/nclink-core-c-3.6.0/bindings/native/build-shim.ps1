@@ -4,7 +4,7 @@
 # Build the shared native shim (nclink_shim.dll on Windows, libnclink_shim.so on
 # Linux) used by the C#, Java and Python bindings.
 #
-#   .\build-shim.ps1                    # -> bindings/native/bin/nclink_shim.dll
+#   .\build-shim.ps1                    # -> examples/sdk/native/bin/nclink_shim.dll
 #   .\build-shim.ps1 -OutDir <dir>      # e.g. next to your program
 #   .\build-shim.ps1 -CoreLib <path>    # links another static core library
 #   .\build-shim.ps1 -Arch x86          # 32-bit (vcvars32)
@@ -25,7 +25,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
-$root = (Resolve-Path (Join-Path $here "..\..")).Path
+$root = (Resolve-Path (Join-Path $here "..\..\..")).Path
 $out = if ($OutDir -ne "") { $OutDir }
        elseif ($Tls) { Join-Path $here "bin-tls" }
        else { Join-Path $here "bin" }
@@ -63,7 +63,7 @@ $dll = Join-Path $out "nclink_shim.dll"
 # /MD must match how the core library was built (CMake Release uses -MD); mixing
 # /MT and /MD makes the linker ask for both CRTs and fail on __imp_* symbols.
 $cl = 'cl /nologo /LD /MD /O2 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS ' +
-      ('/I "{0}\include" /Fe:"{1}" "{2}" "{3}" ws2_32.lib ' -f $root, $dll, $source, $lib) +
+      ('/I "{0}\stack\include" /Fe:"{1}" "{2}" "{3}" ws2_32.lib ' -f $root, $dll, $source, $lib) +
       $tlsLibs + 'iphlpapi.lib crypt32.lib msvcrt.lib'
 # cd into the output directory so the object files land next to the DLL.
 $script = "@echo off`r`ncall `"$vcvars`" >nul`r`ncd /d `"$out`"`r`n$cl`r`n"

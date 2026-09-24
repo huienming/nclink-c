@@ -15,18 +15,18 @@ Newtonsoft.Json，.NET 8 上也不需要 System.Text.Json。
 ## 目录
 
 ```
-bindings/csharp/
-  src/Nclink.Core/            托管封装（多目标：netstandard2.0 / net472 / net8.0）
+examples/sdk/csharp/
+  stack/src/Nclink.Core/            托管封装（多目标：netstandard2.0 / net472 / net8.0）
   samples/Nclink.Demo.Cli/    客户端示例（net472 + net8.0 两个产物）
   samples/Nclink.Demo.Device/ 设备端示例（"这个进程就是一台机床"）
-  tests/Nclink.SelfTest/      自检（不需要 broker）：106 项检查
+  stack/test/Nclink.SelfTest/      自检（不需要 broker）：106 项检查
   build.ps1                   一键构建：垫片 + 三个工程 + 自检
 ```
 
 ## 为什么要垫片
 
 C 库是静态库、没有导出宏，而且托管侧不该依赖 C 结构体的内存布局（库里改个字段就会
-静默错位）。所以中间加一层 `nclink_shim`（源码在 `bindings/native/`，**C#/Java/Python
+静默错位）。所以中间加一层 `nclink_shim`（源码在 `examples/sdk/native/`，**C#/Java/Python
 三份绑定共用同一份**）：
 
 - 只暴露三样东西：不透明句柄（`void*`）、标量、UTF-8 文本；
@@ -47,13 +47,13 @@ Linux：
 
 ```sh
 ./build-linux.sh build-linux               # 出 build-linux/libnclink_core.a
-sh bindings/native/build-shim.sh           # 出 bindings/native/bin/libnclink_shim.so
-dotnet build bindings/csharp/src/Nclink.Core/Nclink.Core.csproj -c Release
-dotnet run --project bindings/csharp/tests/Nclink.SelfTest -c Release    # 自检
+sh examples/sdk/native/build-shim.sh           # 出 examples/sdk/native/bin/libnclink_shim.so
+dotnet build examples/sdk/csharp/src/Nclink.Core/Nclink.Core.csproj -c Release
+dotnet run --project examples/sdk/csharp/tests/Nclink.SelfTest -c Release    # 自检
 ```
 
 `nclink_shim.dll` / `libnclink_shim.so` 必须和你的程序在同一个目录（或者在 `PATH` /
-`LD_LIBRARY_PATH` 上）；几个工程的 csproj 已经把 `bindings/native/bin/` 下的那个作为
+`LD_LIBRARY_PATH` 上）；几个工程的 csproj 已经把 `examples/sdk/native/bin/` 下的那个作为
 `None ... CopyToOutputDirectory` 拷进输出目录了。
 
 ## 用法
@@ -383,7 +383,7 @@ dotnet run --project .\bindings\csharp\tests\Nclink.SelfTest -c Release
 # TLS 端到端（再 +2 项）：垫片要带 TLS 编（build-shim.ps1 -Tls），
 # 并把 bin-tls 里的 nclink_shim.dll 与两个 OpenSSL DLL 放到程序旁边
 $env:NCLINK_TEST_TLS_BROKER = "ssl://127.0.0.1:18832"
-$env:NCLINK_TEST_TLS_CA = "tests/data/tls_localhost_cert.pem"
+$env:NCLINK_TEST_TLS_CA = "stack/test/data/tls_localhost_cert.pem"
 dotnet run --project .\bindings\csharp\tests\Nclink.SelfTest -c Release
 ```
 

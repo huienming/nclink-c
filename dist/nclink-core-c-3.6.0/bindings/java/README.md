@@ -4,12 +4,12 @@
 库），JDK 8 以上都能跑（编译出的字节码是 Java 8）。
 
 ```
-bindings/java/
+examples/sdk/java/
   native/nclink_jni.c           JNI 胶水：Java 字符串 <-> UTF-8、句柄、回调
   native/build-native.ps1/.sh   编出 nclink_jni.dll / libnclink_jni.so
-  src/com/nclink/               托管封装（Nclink / DeviceClient / Json / Model ...）
+  stack/src/com/nclink/               托管封装（Nclink / DeviceClient / Json / Model ...）
   demo/com/nclink/demo/          控制台示例 ClientDemo
-  tests/com/nclink/SelfTest.java 自检（不需要 broker）
+  stack/test/com/nclink/SelfTest.java 自检（不需要 broker）
   build.ps1 / build.sh          一条命令：native + javac + 自检
 ```
 
@@ -17,7 +17,7 @@ bindings/java/
 
 C 库是静态库、没有导出符号，而且 Java 侧不该依赖 C 结构体的内存布局（库里改个字段
 就静默错位）。所以三种托管绑定（C# / Java / Python）共用
-`bindings/native/nclink_shim.c` 这层扁平的 C ABI：
+`examples/sdk/native/nclink_shim.c` 这层扁平的 C ABI：
 
 - 只暴露三样东西：不透明句柄（`long`）、标量、UTF-8 文本；
 - 报文/模型/JSON 都由库自己编解码，Java 侧不做 JSON 解析；
@@ -41,16 +41,16 @@ powershell -ExecutionPolicy Bypass -File .\bindings\java\build.ps1
 
 # 4) TLS 端到端（再 +1 项：设备端与客户端都走 ssl://；要带 TLS 的库 + JNI 库）
 $env:NCLINK_TEST_TLS_BROKER = "ssl://127.0.0.1:18832"
-$env:NCLINK_TEST_TLS_CA = "tests/data/tls_localhost_cert.pem"
-java "-Djava.library.path=bindings/java/native/bin-tls" `
-     -cp bindings/java/build/classes com.nclink.BrokerE2E
+$env:NCLINK_TEST_TLS_CA = "stack/test/data/tls_localhost_cert.pem"
+java "-Djava.library.path=examples/sdk/java/native/bin-tls" `
+     -cp examples/sdk/java/build/classes com.nclink.BrokerE2E
 ```
 
 Linux：
 
 ```sh
 ./build-linux.sh build-linux        # 出 build-linux/libnclink_core.a
-./bindings/java/build.sh            # 需要 JAVA_HOME（找 jni.h）
+./examples/sdk/java/build.sh            # 需要 JAVA_HOME（找 jni.h）
 ```
 
 原生库的位置（`Native` 的加载顺序）：
@@ -58,7 +58,7 @@ Linux：
 1. 环境变量 `NCLINK_JNI` 指向的文件；
 2. `NCLINK_JNI_DIR` 目录下的 `nclink_jni.dll` / `libnclink_jni.so`；
 3. 显式给的 `-Djava.library.path=...`（TLS 版就靠它指到 `bin-tls/`，见下文）；
-4. 当前目录、`bindings/java/native/bin/`、`native/bin/`、class 文件旁边；
+4. 当前目录、`examples/sdk/java/native/bin/`、`native/bin/`、class 文件旁边；
 5. 交给系统：`System.loadLibrary`。
 
 没有 Maven/Gradle 也能用：把 `src`（或编译出的 classes/jar）和 `nclink_jni.dll`
@@ -323,8 +323,8 @@ new Server(sn, modelJson, "ssl://broker.example.com:8883", null, null, null,
 .\build.ps1 -Tls                                     # 出 build-tls\nclink_core.lib
 .\bindings\java\native\build-native.ps1 -Tls       # 出 bindings\java\native\bin-tls\nclink_jni.dll
 ```
-跑的时候把原生库指到那个目录：`-Djava.library.path=bindings/java/native/bin-tls`（或
-`NCLINK_JNI_DIR=bindings/java/native/bin-tls`）。OpenSSL 的两个 DLL 已经拷进
+跑的时候把原生库指到那个目录：`-Djava.library.path=examples/sdk/java/native/bin-tls`（或
+`NCLINK_JNI_DIR=examples/sdk/java/native/bin-tls`）。OpenSSL 的两个 DLL 已经拷进
 `bin-tls/`，不用再动 PATH。
 
 库没带 TLS 时用 `ssl://` 会拿到明确的 `NOT_SUPPORTED`（-8）。

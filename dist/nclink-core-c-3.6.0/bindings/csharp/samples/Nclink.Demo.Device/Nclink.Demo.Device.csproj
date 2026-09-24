@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 三种托管绑定共用 bindings/native/bin 下的原生垫片 -->
+    <!-- 三种托管绑定共用 examples/sdk/native/bin 下的原生垫片 -->
     <None Include="..\..\..\native\bin\nclink_shim.dll" Link="nclink_shim.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\..\native\bin\nclink_shim.dll')" />
     <None Include="..\..\..\native\bin\libnclink_shim.so" Link="libnclink_shim.so" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\..\native\bin\libnclink_shim.so')" />
   </ItemGroup>

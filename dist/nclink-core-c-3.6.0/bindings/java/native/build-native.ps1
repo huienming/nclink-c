@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
-$root = (Resolve-Path (Join-Path $here "..\..\..")).Path
+$root = (Resolve-Path (Join-Path $here "..\..\..\..")).Path
 $out = if ($OutDir -ne "") { $OutDir }
         elseif ($Tls) { Join-Path $here "bin-tls" }
         else { Join-Path $here "bin" }
@@ -85,12 +85,12 @@ if (-not (Test-Path -LiteralPath $vcvars)) {
 }
 
 $jni = Join-Path $here "nclink_jni.c"
-$native = Join-Path $root "bindings\native"
+$native = Join-Path $root "examples\sdk\native"
 $shim = Join-Path $native "nclink_shim.c"
 $dll = Join-Path $out "nclink_jni.dll"
 # /MD must match how the core library was built (CMake Release uses -MD).
 $cl = 'cl /nologo /LD /MD /O2 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS ' +
-      ('/I "{0}\include" /I "{2}" /I "{1}\include" /I "{1}\include\win32" ' -f $root, $jdk, $native) +
+      ('/I "{0}\stack\include" /I "{2}" /I "{1}\include" /I "{1}\include\win32" ' -f $root, $jdk, $native) +
       ('/Fe:"{0}" "{1}" "{2}" "{3}" ws2_32.lib ' -f $dll, $jni, $shim, $lib) +
       $tlsLibs + 'iphlpapi.lib crypt32.lib msvcrt.lib'
 $script = "@echo off`r`ncall `"$vcvars`" >nul`r`ncd /d `"$out`"`r`n$cl`r`n"

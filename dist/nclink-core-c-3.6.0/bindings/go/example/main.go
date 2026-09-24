@@ -4,7 +4,11 @@
 // Go client example: connect, probe the model, read a value and print the
 // device's sample reports.
 //
-//	go run ./example tcp://127.0.0.1:1883 V2023A7B762
+//	cd examples/client/go && go run . tcp://127.0.0.1:1883 V2023A7B762
+//
+// The SDK lives next door (examples/sdk/go); this directory is its own small
+// module that points at it with a replace directive, so the two sides stay
+// separate without breaking `go run`.
 package main
 
 import (
@@ -12,7 +16,7 @@ import (
 	"os"
 	"time"
 
-	nclink "github.com/huienming/nclink-c/bindings/go"
+	nclink "github.com/huienming/nclink-c/examples/sdk/go"
 )
 
 func main() {

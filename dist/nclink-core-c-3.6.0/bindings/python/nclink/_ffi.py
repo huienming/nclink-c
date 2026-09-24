@@ -98,14 +98,22 @@ def _candidates():
     if override:
         yield override
     here = os.path.dirname(os.path.abspath(__file__))
-    repo = os.path.dirname(os.path.dirname(os.path.dirname(here)))  # <repo>/bindings/python/nclink
+    # 仓库布局是 <repo>/examples/sdk/python/nclink（往上四层到仓库根），发布包
+    # 布局是 <pkg>/bindings/python/nclink（往上两层到包根）——两种都给出候选。
+    python_dir = os.path.dirname(here)                      # …/python
+    sdk_dir = os.path.dirname(python_dir)                   # …/sdk（仓库）或 <pkg>/bindings（包）
+    repo = os.path.dirname(os.path.dirname(sdk_dir))
     roots = [
         here,                                   # 包目录（pip 安装 / 手工拷贝）
-        os.path.join(repo, "bindings", "native", "bin"),
+        # 仓库布局
+        os.path.join(repo, "examples", "sdk", "native", "bin"),
         os.path.join(repo, "build"),
         os.path.join(repo, "build", "bin"),
         os.path.join(repo, "build-linux"),
         os.path.join(repo, "build-linux", "bin"),
+        # 发布包布局
+        os.path.join(os.path.dirname(sdk_dir), "bindings", "native", "bin"),
+        os.path.join(os.path.dirname(sdk_dir), "bindings", "native", "bin-tls"),
     ]
     for root in roots:
         for name in _LIB_NAMES:
@@ -132,7 +140,7 @@ def _load():
     raise ImportError(
         "找不到 nclink_shim（nclink_shim.dll / libnclink_shim.so）。"
         "先在仓库根跑 .\\build.ps1，再跑 "
-        "powershell -ExecutionPolicy Bypass -File .\\bindings\\native\\build-shim.ps1；"
+        "powershell -ExecutionPolicy Bypass -File .\\examples\\sdk\\native\\build-shim.ps1；"
         "或者用环境变量 NCLINK_SHIM 指向它。" + detail
     )
 

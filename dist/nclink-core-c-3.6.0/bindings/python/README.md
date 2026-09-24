@@ -4,14 +4,14 @@
 JSON 也走库自己的解析器/序列化器。
 
 ```
-bindings/python/
+examples/sdk/python/
   nclink/__init__.py     init / shutdown / get_device / 日志 / 安装根目录
   nclink/_ffi.py         ctypes 桥：找 nclink_shim、声明原型、错误码 -> 异常
   nclink/_json.py        Json（库自己的 JSON）
   nclink/_model.py       Model / Node（模型树）
   nclink/_message.py     Sample / Event / Message + parse(topic, payload)
   nclink/client.py       DeviceClient（读值/写值/探测/订阅）
-  tests/test_nclink.py   自检（不需要 broker）
+  stack/test/test_nclink.py   自检（不需要 broker）
   examples/client_demo.py 客户端示例（对着设备端示例跑）
 ```
 
@@ -19,7 +19,7 @@ bindings/python/
 
 C 库是静态库、没有导出符号，而且 Python 侧不该依赖 C 结构体的内存布局（库里改个
 字段就静默错位）。所以三种托管绑定（C# / Java / Python）共用
-`bindings/native/nclink_shim.c` 这层扁平的 C ABI：
+`examples/sdk/native/nclink_shim.c` 这层扁平的 C ABI：
 
 - 只暴露三样东西：不透明句柄（`void*`）、标量、UTF-8 文本；
 - 报文/模型/JSON 都由库自己编解码，Python 侧不做 JSON 解析；
@@ -31,25 +31,25 @@ C 库是静态库、没有导出符号，而且 Python 侧不该依赖 C 结构�
 # 1) 先编核心静态库（仓库根）
 .\build.ps1
 
-# 2) 编原生垫片 → bindings/native/bin/nclink_shim.dll
+# 2) 编原生垫片 → examples/sdk/native/bin/nclink_shim.dll
 powershell -ExecutionPolicy Bypass -File .\bindings\native\build-shim.ps1
 
 # 3) 自检（客户端 + 设备端，不需要 broker）
-python -m unittest discover -s bindings/python/tests -v
+python -m unittest discover -s examples/sdk/python/tests -v
 
 # 4) 想连真 broker 再跑一遍端到端（设备端 + 客户端同进程，报文真的过 MQTT）
-NCLINK_TEST_BROKER=tcp://127.0.0.1:1883 python -m unittest discover -s bindings/python/tests -v
+NCLINK_TEST_BROKER=tcp://127.0.0.1:1883 python -m unittest discover -s examples/sdk/python/tests -v
 ```
 
 Linux：
 
 ```sh
 ./build-linux.sh build-linux          # 出 build-linux/libnclink_core.a
-sh bindings/native/build-shim.sh      # 出 bindings/native/bin/libnclink_shim.so
-python -m unittest discover -s bindings/python/tests -v
+sh examples/sdk/native/build-shim.sh      # 出 examples/sdk/native/bin/libnclink_shim.so
+python -m unittest discover -s examples/sdk/python/tests -v
 ```
 
-`tests/test_broker_e2e.py` 默认跳过（没设 `NCLINK_TEST_BROKER` 时）；设了就跑
+`stack/test/test_broker_e2e.py` 默认跳过（没设 `NCLINK_TEST_BROKER` 时）；设了就跑
 "设备端 + 客户端同进程"的端到端：probe、路径绑定取值/写值、methodCall、
 采样上报、事件推送，以及整条文件通道（上传 / 列目录 / 下载 / 建目录 / 删文件 /
 带文件参数的方法调用）——离线自检覆盖不到的"过 MQTT 那一段"靠它守住。
@@ -58,7 +58,7 @@ python -m unittest discover -s bindings/python/tests -v
 
 1. 环境变量 `NCLINK_SHIM` 指向的文件；
 2. 包目录（把 DLL 放在 `nclink/` 旁边，pip/拷贝安装就用这种）；
-3. 仓库布局 `bindings/native/bin/`、`build/`、`build/bin/`、`build-linux/`；
+3. 仓库布局 `examples/sdk/native/bin/`、`build/`、`build/bin/`、`build-linux/`；
 4. 交给系统（`find_library` / `PATH` / `LD_LIBRARY_PATH`）。
 
 把本目录加进 `sys.path`（或拷进工程）即可 `import nclink`，不需要装包。
@@ -224,7 +224,7 @@ with nclink.get_device("V2JAVA00001") as client:
 - 设备侧不用做异步的事：工具方法就是普通函数；想报进度用
   `device.report_method_progress(handler, process, status)`（可选）。
 - 不接 broker 也能自检这条链路：`device.invoke_method_call_async()` /
-  `invoke_method_status()` / `invoke_method_result()`（见 `tests/test_nclink.py`）。
+  `invoke_method_status()` / `invoke_method_result()`（见 `stack/test/test_nclink.py`）。
 
 ### 文件通道（上传 / 下载）
 
@@ -305,7 +305,7 @@ nclink.Server(sn="V2PY0000001", broker="ssl://broker.example.com:8883",
               tls=nclink.TlsOptions(ca_file="ca.pem"))
 ```
 
-**TLS 构建**：`sh bindings/native/build-shim.sh` 那套在 Linux 上要带 `NCL_WITH_TLS=1` 编库
+**TLS 构建**：`sh examples/sdk/native/build-shim.sh` 那套在 Linux 上要带 `NCL_WITH_TLS=1` 编库
 （见手册 2.4），Windows 上：
 
 ```powershell
@@ -315,7 +315,7 @@ powershell -ExecutionPolicy Bypass -File .\bindings\native\build-shim.ps1 -Tls
 ```
 
 库没带 TLS 时用 `ssl://` 会拿到明确的 `NOT_SUPPORTED`（-8）。用例：设
-`NCLINK_TEST_TLS_BROKER=ssl://127.0.0.1:18832` 与 `NCLINK_TEST_TLS_CA=tests/data/tls_localhost_cert.pem`
+`NCLINK_TEST_TLS_BROKER=ssl://127.0.0.1:18832` 与 `NCLINK_TEST_TLS_CA=stack/test/data/tls_localhost_cert.pem`
 就多跑两个 TLS 端到端（设备端 + 客户端都过真 TLS broker；不给 CA 必须被拒）。
 
 ## 内存与所有权

@@ -8,8 +8,8 @@
 ## 1. 包内清单
 
 ```
-include/nclink/*.h                     公共头文件（全部对外 API）
-include/nclink/clients/*.h             厂商协议客户端（FOCAS / 新代 / Modbus / MC / FINS /
+include/nclink/*.h                           公共头文件（全部对外 API）
+include/nclink/clients/*.h                   厂商协议客户端（FOCAS / 新代 / Modbus / MC / FINS /
                                        S7 / KND / MELDAS / LSV2 / MTConnect）的公共头文件，
                                        与核心头文件同一个根：`#include <nclink/clients/focas.h>`
 lib/windows-x64-msvc/nclink_core.lib   Windows x64 静态库（MSVC，Release）
@@ -25,18 +25,18 @@ lib/windows-x64-msvc-staticmem-tls/* 静态内存版 + TLS（x64）
 lib/linux-x86_64-gcc-staticmem-tls/* 静态内存版 + TLS（Linux）
 lib/<平台>/nclink_clients.lib|.a       协议客户端静态库：与同平台的核心库配套（Windows 六种
                                        变体 + Linux 各一份），里面对应上面那些头文件的 API
-examples/*.c, *.cpp, CMakeLists.txt    两个示例程序的源码（设备端 / 客户端）
-examples/device_model.c, device_model.h  设备模型（编译进设备端示例与各语言绑定的垫片：
+examples/client/, examples/device/      两个示例程序的源码（设备端 / 客户端，目录与仓库一致）+ CMakeLists.txt
+examples/device/c/device_model.c, device_model.h  设备模型（编译进设备端示例与各语言绑定的垫片：
                                       五个语言的设备端示例共用同一份，不依赖外部文件）
 examples/bin/windows-x64-msvc/*.exe    **编好的示例可执行文件**（x64、MSVC Release）
 examples/bin/windows-x86-msvc/*.exe    同上，32 位
 examples/bin/linux-x86_64-gcc/*        Linux 版示例可执行文件（gcc 13 + glibc）
 examples/bin/*-staticmem/               链接静态内存版构建的示例可执行文件（x64 / x86 / Linux）
-bindings/go/                           Go 绑定源码（cgo，链接上面的静态库；客户端 + 设备端，含 nclink_thunks.c）
-bindings/csharp/                       C# 绑定源码（客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项；netstandard2.0 / .NET 8 / .NET Framework 4.7.2 三目标，含设备端示例与自检）
-bindings/java/                         Java 绑定源码（JNI，Java 8 字节码，无第三方依赖；客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项）
-bindings/python/                       Python 绑定源码（ctypes，只用标准库；客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项）
-bindings/native/                       三种托管绑定共用的原生垫片（C#/Java/Python）
+bindings/go/                            Go 绑定源码（cgo，链接上面的静态库；客户端 + 设备端，含 nclink_thunks.c）
+bindings/csharp/                        C# 绑定源码（客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项；netstandard2.0 / .NET 8 / .NET Framework 4.7.2 三目标，含设备端示例与自检）
+bindings/java/                          Java 绑定源码（JNI，Java 8 字节码，无第三方依赖；客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项）
+bindings/python/                        Python 绑定源码（ctypes，只用标准库；客户端 + 设备端 + HTTP/REST + 文件通道 + TLS 选项）
+bindings/native/                        三种托管绑定共用的原生垫片（C#/Java/Python）
 MANUAL.md / MANUAL.docx                使用手册（Word 版由 md 生成，内容一致）
 TRANSFER_PERF.md                       文件通道传输效率报告（同机与跨容器的吞吐实测）
 README.md                              工程概览与测试清单
@@ -46,7 +46,7 @@ LICENSE                                MIT 许可全文
 SHA256SUMS.txt                         包内每个文件的 SHA-256
 ```
 
-实现源码（`src/`）与 25 个测试套件（`tests/`）不在本包内，见第 5 节；
+实现源码（`stack/src/`）与 43 个测试套件（`stack/test/<模块>/`）不在本包内，见第 5 节；
 手册第 3 章另有一份最小可用示例代码，可直接抄进你的工程。
 
 协议客户端的 C 源码、适配器模块（`plugins/`）与设备程序 `ncl_server` 也不在本包内：适配器
@@ -112,19 +112,19 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | 项 | 结果 |
 |----|------|
 | Windows 编译 | x64 与 x86 均零警告（`/W4 /utf-8 /O2`，MSVC 14.44.35207） |
-| Windows 测试 | **25/25**：x64（堆 / 静态内存 / 堆+TLS / 静态内存+TLS 各一套）、x86（堆 / 静态内存） |
+| Windows 测试 | **43/43**：x64（堆 / 静态内存 / 堆+TLS / 静态内存+TLS 各一套）、x86（堆 / 静态内存） |
 | mingw-w64（Windows 目标的 GCC） | 库 / 示例 / 测试全量 **43/43** —— 在容器里用 mingw-w64 gcc 13.2.0-posix（Debian/Ubuntu 包，msvcrt）编，再把 PE 产物拿回 Windows 上跑（`CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar CXX=x86_64-w64-mingw32-g++ NCL_RUN_TESTS=0 sh build-linux.sh build-mingw`），Go 绑定的 cgo 走的就是这份库 |
 | 内存检查 | Linux：ASan + LeakSanitizer（`tools/asan-linux.sh`，含并发用例）**0 发现**、ThreadSanitizer **0 数据竞争**；Windows：MSVC `/fsanitize=address` 构建同样可跑 |
 | 断开握手 | 客户端断开前先收干净在途字节再 FIN（避免 RST 吞掉 DISCONNECT），`mqtt_client` 套件由 40 次里 10 次失败 → 40/40 通过 |
 | 测试并发提示 | 套件之间用固定端口（FTP 2323/3131 等）与相对路径，**同一构建目录里别并发跑两份 ctest**，否则互相抢端口/文件 |
 | Linux 编译 | 零警告（gcc 13.4.0，`-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes`） |
-| Linux 测试 | **25/25**（堆 / 静态内存 / TLS / 静态内存+TLS，gcc 13 + OpenSSL 3.0.20） |
+| Linux 测试 | **43/43**（堆 / 静态内存 / TLS / 静态内存+TLS，gcc 13 + OpenSSL 3.0.20） |
 | 示例实跑 | 包内三种产物（Windows x64 / Windows x86 / Linux x86_64）都与 **EMQX 5.8.9** 对跑通过：模型交换、读写、参数校验、文件传输、事件推送、两个采样通道（1 s 状态；1 ms 采样 / 100 ms 上报的功率振动，共 12 列，主轴两路传感器）。窗口节奏实测：Linux ≈118 ms 一条；Windows ≈222 ms 一条（短等待走高精度计时器，1 ms 等待实测 1.56 ms，见手册 4.5）；Linux 下给设备端发 SIGTERM 也能优雅退出（退出码 0） |
-| broker 互操作 | `tests/test_broker` 对 EMQX 5.8.9 实测 **44 项检查、0 失败**：QoS 0/1/2、通配订阅、40 KB 报文、退订、空闲保活、会话顶替、重连后订阅恢复（`tools/interop.sh` 可在 Docker 里同时跑 EMQX 与 Mosquitto） |
+| broker 互操作 | `stack/test/test_broker` 对 EMQX 5.8.9 实测 **44 项检查、0 失败**：QoS 0/1/2、通配订阅、40 KB 报文、退订、空闲保活、会话顶替、重连后订阅恢复（`tools/interop.sh` 可在 Docker 里同时跑 EMQX 与 Mosquitto） |
 | x86（32 位） | 库 / 示例 / 测试全部通过；产物 PE 头 Machine = 0x014c（i386），与 x64 同一套源码、同一套编译选项 |
-| TLS | Windows（MSVC + OpenSSL 3.0.18 静态链接）与 Linux（gcc + OpenSSL 3.0.20）四套 TLS 构建都编过并 **25/25** 通过；**x86 暂未出 TLS 版** |
-| 托管绑定自检 | C# 106 项（`bindings/csharp/tests/Nclink.SelfTest`，net472 与 net8.0 各跑一遍）、Java 107 项、Python 46 项，全部 0 失败；覆盖客户端、设备端（工具注册 / 采样通道 / 事件 / 离线 dispatch / 自研传输）、HTTP/REST 端点（OpenAPI、swagger-ui、工具端点、配置端点、自定义路由）与文件小工具（压缩判断、分片数、SHA-256、属性），都不需要 broker |
-| Go 绑定自检 | `cd bindings/go && go test ./...`（cgo）：**Windows（mingw-w64 gcc 13.2.0-posix）与 Linux（gcc 12/13）两侧都跑通**，客户端 + 设备端（工具注册与路径绑定、离线 dispatch、采样通道、事件、内建工具、文件工具、HTTP 端点与自定义路由、关闭语义、注册上限），离线跑，不需要 broker；`-tags nclink_tls` 那份在 **Windows 与 Linux 两侧也都跑通**（链 `libnclink_core_tls.a` + OpenSSL，`nclink.TLSAvailable()` 为 true） |
+| TLS | Windows（MSVC + OpenSSL 3.0.18 静态链接）与 Linux（gcc + OpenSSL 3.0.20）四套 TLS 构建都编过并 **43/43** 通过；**x86 暂未出 TLS 版** |
+| 托管绑定自检 | C# 106 项（`examples/sdk/csharp/tests/Nclink.SelfTest`，net472 与 net8.0 各跑一遍）、Java 107 项、Python 46 项，全部 0 失败；覆盖客户端、设备端（工具注册 / 采样通道 / 事件 / 离线 dispatch / 自研传输）、HTTP/REST 端点（OpenAPI、swagger-ui、工具端点、配置端点、自定义路由）与文件小工具（压缩判断、分片数、SHA-256、属性），都不需要 broker |
+| Go 绑定自检 | `cd examples/sdk/go && go test ./...`（cgo）：**Windows（mingw-w64 gcc 13.2.0-posix）与 Linux（gcc 12/13）两侧都跑通**，客户端 + 设备端（工具注册与路径绑定、离线 dispatch、采样通道、事件、内建工具、文件工具、HTTP 端点与自定义路由、关闭语义、注册上限），离线跑，不需要 broker；`-tags nclink_tls` 那份在 **Windows 与 Linux 两侧也都跑通**（链 `libnclink_core_tls.a` + OpenSSL，`nclink.TLSAvailable()` 为 true） |
 | 绑定对真 broker | `NCLINK_TEST_BROKER=tcp://host:port` 打开的可选用例（设备端 + 客户端同进程，报文真的过 MQTT）：C# 132 项、Java 12 项、Python 46 项，对 **Mosquitto 2** 与 **EMQX 5.8.9** 各跑一遍都 0 失败（probe、路径绑定读写、methodCall、采样、事件、文件通道上传下载与带文件参数的方法调用） |
 | 文件通道 | 3.4.0 起要**显式握手**（`file/openFileChannel`）或由设备钉静态对端（`ncl_server_set_file_peer`）；托管绑定：上传 / 列目录 / 下载 / 建目录 / 删文件 / 带文件参数的方法调用（含"工具返回文件"的反向）、自定义 FTP 端口与显式指定对端，都实测通过；跨语言也过一遍：C 客户端示例对 **C# 设备端示例** 的 `上传 /demo.txt` → `文件回读路径` → `远端文件 demo.txt (14 字节)` 全通 |
 | 绑定 + TLS | 三份托管绑定都过一遍（`build-shim.ps1 -Tls` / Java 的 `build-native.ps1 -Tls`）+ Mosquitto 的 8883 TLS 监听：`ssl://` 设备端与客户端都用 CA 连通（C# 134 项、Java 13 项、Python 46 项，对 Mosquitto 2 与 EMQX 5.8.9 都 0 失败），不给 CA 时握手被拒（证书校验），`verify_peer=false` 放行；库没编 TLS 时 `ssl://` 返回明确的 `NCL_ERR_NOT_SUPPORTED` |
@@ -156,8 +156,8 @@ tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认�
 
 | 项目 | 结果 |
 |------|------|
-| Windows（MSVC 14.44.35207，Release） | x64 全量 **25/25**（`file` 套件 **271 项断言**：握手、`conf/ftp.txt`、64 MiB 大文件、两种续传起点、数据连接中途掐断后的续传重试）；x86 / 静态内存 / TLS / 静态内存+TLS / x86 静态内存 各 **25/25** |
-| Linux（gcc 13.4，容器内） | 默认堆 / TLS / 静态内存 / 静态内存+TLS 四套各 **25/25**（`docker run --rm -v <repo>:/work -w /work gcc:13 sh build-linux.sh <目录>`） |
+| Windows（MSVC 14.44.35207，Release） | x64 全量 **43/43**（`file` 套件 **308 项断言**：握手、`conf/ftp.txt`、64 MiB 大文件、两种续传起点、数据连接中途掐断后的续传重试）；x86 / 静态内存 / TLS / 静态内存+TLS / x86 静态内存 各 **43/43** |
+| Linux（gcc 13.4，容器内） | 默认堆 / TLS / 静态内存 / 静态内存+TLS 四套各 **43/43**（`docker run --rm -v <repo>:/work -w /work gcc:13 sh build-linux.sh <目录>`） |
 | mingw-w64（gcc 13.2.0-posix，msvcrt；容器内交叉编，PE 产物回 Windows 跑） | 库 / 示例 / 测试 **43/43**（`CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar CXX=x86_64-w64-mingw32-g++ NCL_RUN_TESTS=0 sh build-linux.sh build-mingw`，`NCL_RUN_TESTS=0` 只编译不执行）；TLS 变体（`NCL_WITH_TLS=1 NCL_OPENSSL_ROOT=/opt/mingw-openssl NCL_EXTRA_LIBS=-lcrypt32`，链 OpenSSL 3 的导入库 —— 运行时需要 `libssl-3-x64.dll`/`libcrypto-3-x64.dll`）同样 **43/43**，`test_tls` 通过 |
 | 内存检查 | Linux ASan + LeakSanitizer（`tools/asan-linux.sh --docker`，6 个套件）**0 发现**；ThreadSanitizer（分配器并发用例）**0 数据竞争** |
 | 托管绑定自检（离线） | C# 106 项、Java 107 项、Python 46 项，**0 失败** |
@@ -263,9 +263,9 @@ examples\bin\windows-x86-msvc\ncl_device_demo.exe D:\sim           # 32 位版
 
 ```sh
 # Linux
-gcc -std=c11 -O2 -Iinclude examples/ncl_device_demo.c \
+gcc -std=c11 -O2 -Iinclude examples/device/c/ncl_device_demo.c examples/device/c/device_model.c \
     lib/linux-x86_64-gcc/libnclink_core.a -lpthread -o ncl_device_demo
-gcc -std=c11 -O2 -Iinclude examples/ncl_client_demo.c \
+gcc -std=c11 -O2 -Iinclude examples/client/c/ncl_client_demo.c \
     lib/linux-x86_64-gcc/libnclink_core.a -lpthread -o ncl_client_demo
 
 ./ncl_device_demo <安装根目录> 20        # 设备端：起服务、采样、发事件
@@ -274,7 +274,7 @@ gcc -std=c11 -O2 -Iinclude examples/ncl_client_demo.c \
 
 ```bat
 :: Windows
-cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
+cl /nologo /W4 /utf-8 /MD /Iinclude examples\device\c\ncl_device_demo.c examples\device\c\device_model.c ^
    lib\windows-x64-msvc\nclink_core.lib ws2_32.lib iphlpapi.lib
 ```
 
@@ -283,8 +283,8 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 
 ## 5. 源码与自行重新编译
 
-本发布包**不含实现源码**（`src/`）；示例程序在包内，测试套件与构建脚本需要从
-工程仓库获取（`src/`、`tests/`、`tools/` 与 `CMakeLists.txt`、`build.ps1`、
+本发布包**不含实现源码**（`stack/src/`）；示例程序在包内，测试套件与构建脚本需要从
+工程仓库获取（`stack/src/`、`stack/test/`、`tools/` 与 `CMakeLists.txt`、`build.ps1`、
 `build-linux.sh`），然后：
 
 ```powershell
@@ -301,11 +301,11 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\ncl_device_demo.c ^
 
 ```powershell
 .\tools\make_release.ps1                # 默认：头文件 + 库 + 文档 + 示例（本包）
-.\tools\make_release.ps1 -WithSource    # 额外带上 src/tests/tools 与构建脚本
+.\tools\make_release.ps1 -WithSource    # 额外带上 stack/src/tests/tools 与构建脚本
 .\tools\make_adapter_release.ps1        # 适配器包：一个目录（host + 各驱动模块 + 配置 + 脚本）
 ```
 
-从源码手工编译时的三个要点（详见手册 2.3）：`-Iinclude -Isrc`、
+从源码手工编译时的三个要点（详见手册 2.3）：`-Istack/include -Istack/src`、
 `-D_POSIX_C_SOURCE=200809L`（Linux）、`/utf-8`（MSVC）。
 
 可选开关：`-DNCLINK_WITH_ZLIB=ON` 启用 zlib 压缩编解码；

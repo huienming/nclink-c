@@ -10,7 +10,7 @@
 set -e
 
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../../.." && pwd)
+root=$(cd "$here/../../../.." && pwd)
 core=${1:-$root/build-linux/libnclink_core.a}
 out=${2:-$here/bin}
 
@@ -26,8 +26,8 @@ fi
 
 mkdir -p "$out"
 cc -shared -fPIC -O2 -Wall \
-   -I"$root/include" -I"$root/bindings/native" \
+   -I"$root/stack/include" -I"$root/examples/sdk/native" \
    -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
    -o "$out/libnclink_jni.so" \
-   "$here/nclink_jni.c" "$root/bindings/native/nclink_shim.c" "$core" -lpthread
+   "$here/nclink_jni.c" "$root/examples/sdk/native/nclink_shim.c" "$core" -lpthread
 echo "java native library: $out/libnclink_jni.so"

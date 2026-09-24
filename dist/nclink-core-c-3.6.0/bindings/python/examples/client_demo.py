@@ -19,7 +19,9 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 绑定库在旁边（examples/sdk/python）：示例与 SDK 分开放，这里把它加进搜索路径。
+sys.path.insert(0, os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "sdk", "python")))
 
 import nclink  # noqa: E402
 

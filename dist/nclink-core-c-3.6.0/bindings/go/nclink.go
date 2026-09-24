@@ -9,12 +9,16 @@
 //
 // Linking: by default the package links the prebuilt static library that ships
 // with the release package (lib/<goos>-<goarch>). Build with -tags nclink_embed
-// to compile the C sources directly instead (see bindings/go/README.md).
+// to compile the C sources directly instead (see README.md next to this file).
 
 package nclink
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../include
+// -I: the repository keeps the headers in stack/include (three levels up from
+// this directory); the release package keeps them in <package>/include (two up,
+// which is where the staged layout puts this file). Both are passed; a missing
+// include directory is not an error for the compiler.
+#cgo CFLAGS: -I${SRCDIR}/../../../stack/include -I${SRCDIR}/../../include
 
 // -tags nclink_tls swaps in the TLS build of the core library (staged by
 // tools/stage-go-libs.sh as libnclink_core_tls.a) and links OpenSSL with it.

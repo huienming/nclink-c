@@ -10,7 +10,7 @@
 set -e
 
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
+root=$(cd "$here/../../.." && pwd)
 core=${1:-$root/build-linux/libnclink_core.a}
 out=${2:-$here/bin}
 
@@ -20,6 +20,6 @@ if [ ! -f "$core" ]; then
 fi
 
 mkdir -p "$out"
-cc -shared -fPIC -O2 -Wall -I"$root/include" \
+cc -shared -fPIC -O2 -Wall -I"$root/stack/include" \
    -o "$out/libnclink_shim.so" "$here/nclink_shim.c" "$core" -lpthread
 echo "native shim: $out/libnclink_shim.so"
