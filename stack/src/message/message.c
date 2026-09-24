@@ -1176,34 +1176,16 @@ static ncl_err ncl_sample_paths_from_model(ncl_message *msg, ncl_node *root)
     return NCL_OK;
 }
 
-/**
- * 空数组列 → 等长 null 标量列。
- *
- * 设备用整列 `[]` 表示"本周期该项没有数据"，这里把它换成等长的 null。按列处理，
- * 不关心别的列是什么形状：内层本来就是各列自理（见 is_complete 的说明）。
- */
-static bool ncl_sample_fill_empty_columns(ncl_message *msg)
+size_t ncl_message_sample_fill_empty_columns(ncl_message *msg)
 {
     size_t columns = ncl_ptrvec_len(&msg->as.sample.data);
     size_t i;
     size_t slot;
-    bool any_empty = false;
+    size_t filled = 0;
 
-    if (columns == 0) {
-        return false;
+    if (msg == NULL || msg->type != NCL_MSG_SAMPLE) {
+        return 0;
     }
-    for (i = 0; i < columns; i++) {
-        const ncl_sample_item *item =
-            (const ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, i);
-
-        if (ncl_sample_column_is_empty_batch(item)) {
-            any_empty = true;
-        }
-    }
-    if (!any_empty) {
-        return false;
-    }
-
     for (i = 0; i < columns; i++) {
         ncl_sample_item *item =
             (ncl_sample_item *)ncl_ptrvec_at(&msg->as.sample.data, i);
@@ -1212,17 +1194,18 @@ static bool ncl_sample_fill_empty_columns(ncl_message *msg)
         if (!ncl_sample_column_is_empty_batch(item)) {
             continue;
         }
+        filled++;
         slots = ncl_json_arr_len(item->data);
         for (slot = 0; slot < slots; slot++) {
             ncl_json_free(ncl_json_arr_take(item->data, 0));
         }
         for (slot = 0; slot < slots; slot++) {
             if (ncl_json_arr_push(item->data, ncl_json_new_null()) != NCL_OK) {
-                return false; /* 内存不足：该列短了，外层对齐判据会拦住它 */
+                return filled; /* 内存不足：该列短了，外层对齐判据会拦住它 */
             }
         }
     }
-    return true;
+    return filled;
 }
 
 ncl_err ncl_message_sample_normalise(ncl_message *msg, ncl_node *root)
@@ -1239,7 +1222,7 @@ ncl_err ncl_message_sample_normalise(ncl_message *msg, ncl_node *root)
             return err;
         }
     }
-    ncl_sample_fill_empty_columns(msg);
+    (void)ncl_message_sample_fill_empty_columns(msg);
 
     return ncl_message_sample_is_complete(msg) ? NCL_OK : NCL_ERR_STATE;
 }

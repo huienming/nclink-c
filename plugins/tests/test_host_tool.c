@@ -694,11 +694,12 @@ NCL_TEST_MAIN_BEGIN()
             &err);
         NCL_CHECK(pseudo_params != NULL);
         {
-            ncl_json *model = ncl_tool_model(pseudo_decl, NULL, &err);
+            ncl_json *pseudo_model = ncl_tool_model(pseudo_decl, NULL, &err);
 
-            NCL_CHECK(model != NULL);
-            pseudo_model_json = model != NULL ? ncl_json_write_string(model) : NULL;
-            ncl_json_free(model);
+            NCL_CHECK(pseudo_model != NULL);
+            pseudo_model_json =
+                pseudo_model != NULL ? ncl_json_write_string(pseudo_model) : NULL;
+            ncl_json_free(pseudo_model);
         }
         NCL_CHECK(pseudo_model_json != NULL);
         memset(&options, 0, sizeof(options));

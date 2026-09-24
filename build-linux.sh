@@ -259,9 +259,10 @@ done
 if [ -e plugins/tests/test_host_tool.c ]; then
     name=test_host_tool
     # shellcheck disable=SC2086
-    if ! $CC $CFLAGS -Istack/test plugins/tests/test_host_tool.c \
+        if ! $CC $CFLAGS -Istack/test plugins/tests/test_host_tool.c \
             -DNCL_TEST_PLUGIN_DIR="\"$TEST_OUT_DIR/plugins-tool-fixture\"" \
             -DNCL_TEST_MODULE_DIR="\"$TEST_OUT_DIR/plugins-refused-fixture\"" \
+            -DNCL_TEST_PSEUDO_DIR="\"$TEST_OUT_DIR/plugins\"" \
             -o "$OUT/bin/$name" "$OUT/libnclink_core.a" $LDLIBS \
             2>"$OUT/bin/$name.build.log"; then
         echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"; fail=$((fail+1))

@@ -2184,9 +2184,21 @@ static void ncl_sample_thread(void *arg)
         }
         ncl_sample_collect(task, sample);
 
-        /* 只发完整报文：表头（paths）与数据块列数一致、每列取值个数一致。
-         * 不完整就丢弃并记错，绝不让消费端拿到半截数据。 */
+        /*
+         * 发布前两步，顺序不能反：
+         *
+         *   1. **占位列换成 null**（`ncl_message_sample_fill_empty_columns`）。
+         *      整列 `[]` 是"本周期该项没有数据"的占位，但一个**空表值**（比如
+         *      报警列表为空）编码出来跟它一模一样 —— 拿"有一列是 `[]`"当"这一包
+         *      没采到"会把整包错杀掉：通道里只要有一项的值可能是空表，这个通道就
+         *      永远发不出去（伪机床的报警列就是这么把它自己钉死的）。换成 null
+         *      之后两种情形都成立：真没采到 → 一条完整的 null 报文（"设备活着、
+         *      这一刻没有数据"），空表值 → 语义等价的 null。
+         *   2. 外层结构（表头与列数一致、各列槽位对齐）对不上才是真的残缺：
+         *      丢弃并记错，绝不让消费端拿到半截数据。
+         */
         if (!ncl_sample_stopping(task)) {
+            (void)ncl_message_sample_fill_empty_columns(sample);
             if (ncl_message_sample_is_complete(sample)) {
                 ncl_server_publish(server, task->topic, sample);
                 ncl_mutex_lock(server->mutex);

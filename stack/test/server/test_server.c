@@ -538,6 +538,7 @@ typedef struct {
     int ext_calls;
     int trace_calls;
     int jitter_calls;
+    int empty_calls;
 } sample_tool;
 
 static ncl_err sample_get_status(void *instance, const ncl_json *params,
@@ -612,6 +613,25 @@ static ncl_err sample_get_jitter(void *instance, const ncl_json *params,
         ncl_json_arr_push(batch, ncl_json_new_int(i));
     }
     *result = batch;
+    return NCL_OK;
+}
+
+/**
+ * 一项的值**本身就是空表**（例如"当前没有报警"的报警列表）。
+ *
+ * 它编码出来跟"本周期没有数据"的占位 `[]` 长得一模一样 —— 这正是曾经的坑：
+ * 设备拿 is_complete() 当发布闸门，于是这一列被判成占位，**整个通道再也发不
+ * 出去**（伪机床的报警列就是这么把自己钉死的：没有报警时每次都是空表）。
+ */
+static ncl_err sample_get_empty_list(void *instance, const ncl_json *params,
+                                     ncl_json **result, char **reason)
+{
+    sample_tool *tool = (sample_tool *)instance;
+
+    (void)params;
+    (void)reason;
+    tool->empty_calls++;
+    *result = ncl_json_new_array();
     return NCL_OK;
 }
 
@@ -1002,11 +1022,13 @@ static void test_sub_millisecond_samples(void)
         {"getValue", sample_get_status, NULL},
         {"getTrace", sample_get_trace, NULL},
         {"getJitter", sample_get_jitter, NULL},
+        {"getEmptyList", sample_get_empty_list, NULL},
     };
     static const ncl_tool_binding bindings[] = {
         {"/PLC/STATUS", NCL_OP_GET_VALUE, "getValue", NULL},
         {"/TRACE@0", NCL_OP_GET_VALUE, "getTrace", NULL},
         {"/JITTER@0", NCL_OP_GET_VALUE, "getJitter", NULL},
+        {"/EMPTY@0", NCL_OP_GET_VALUE, "getEmptyList", NULL},
     };
 
     memset(&tool, 0, sizeof(tool));
@@ -1261,6 +1283,39 @@ static void test_sub_millisecond_samples(void)
         NCL_CHECK(tool.jitter_calls > calls_before);
         NCL_CHECK(ncl_server_sample_upload_count(server) > uploads_before);
         NCL_CHECK_EQ_INT(ncl_server_remove_sample(server, "chJitter"), NCL_OK);
+    }
+
+    /*
+     * 回归：某一项的值**是空表**时，整包不能因此被丢。
+     *
+     * 空表（`[]`）在采样编码里与"本周期该项没有数据"的占位同形。早先设备直接拿
+     * ncl_message_sample_is_complete() 当发布闸门 → 这一列被判成占位 → 整包丢弃
+     * → 通道里只要有一项可能为空表，这个通道就**永远发不出去**（伪机床的报警列
+     * 就是这么把它自己钉死的）。现在发布前先 fill_empty_columns：那一列换成
+     * null，报文照发。
+     */
+    NCL_TEST_CASE("一项的值是空表：那一列换成 null 照发，不按占位丢包");
+    {
+        ncl_node *config = config_from_json(
+            "{\"id\":\"chEmptyList\",\"type\":\"SAMPLE_CHANNEL\","
+            "\"sampleInterval\":40,\"uploadInterval\":80,"
+            "\"ids\":[{\"id\":\"/EMPTY@0\"},{\"id\":\"/PLC/STATUS\"}]}");
+        int calls_before = tool.empty_calls;
+        size_t uploads_before = ncl_server_sample_upload_count(server);
+
+        NCL_CHECK(config != NULL);
+        if (config != NULL) {
+            NCL_CHECK_EQ_INT(ncl_server_add_sample(server, config), NCL_OK);
+            ncl_node_free(config);
+        }
+        for (i = 0;
+             i < 200 && ncl_server_sample_upload_count(server) == uploads_before;
+             i++) {
+            ncl_sleep_millis(20);
+        }
+        NCL_CHECK(tool.empty_calls > calls_before); /* 值真的采到了 */
+        NCL_CHECK(ncl_server_sample_upload_count(server) > uploads_before);
+        NCL_CHECK_EQ_INT(ncl_server_remove_sample(server, "chEmptyList"), NCL_OK);
     }
 
     ncl_server_free(server);
