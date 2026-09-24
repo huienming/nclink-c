@@ -107,7 +107,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### Linux（已验证：gcc 13.4）
+### Linux（已验证：gcc 13.5.0）
 
 容器内 gcc 13 复验：3.4.0 时全量 **39/39**（25 个核心套件 + 14 个适配器套件），
 且蒙特卡洛统计与 MSVC 逐位一致。适配器进来后全量是 **42 个套件**（26 核心 + 16 适配器，

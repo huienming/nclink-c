@@ -137,7 +137,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-### 2.3 Linux（已验证：gcc 13.4）
+### 2.3 Linux（已验证：gcc 13.5.0）
 
 补充验证（gcc 13，容器内）：3.4.0 时 `./build-linux.sh` 全量 **39/39 通过**（25 个核心
 套件 + 14 个适配器套件），`mem_mc` 的统计与 Windows/MSVC 逐位一致（确定性序列）。

@@ -89,7 +89,7 @@ lib/linux-x86_64-gcc-staticmem-tls/libnclink_core.a  同上（Linux，链接 -ls
 | 项目 | Windows x64 | Windows x86（32 位） | Linux |
 |------|--------------|------------------------|-------|
 | 库文件 | `nclink_core.lib`（静态） | `nclink_core.lib`（静态） | `libnclink_core.a`（静态） |
-| 编译器 | MSVC 14.44.35207（`vcvars64`） | 同一套 MSVC（`vcvars32`） | gcc 13.4.0 (Debian bookworm) |
+| 编译器 | MSVC 14.44.35207（`vcvars64`） | 同一套 MSVC（`vcvars32`） | gcc 13.5.0 (Debian bookworm) |
 | 目标 | x64 | Win32 / x86 | x86_64 |
 | 编译选项 | `/W4 /utf-8 /O2`，Release，**/MD（动态 CRT）** | 同左 | `-std=c11 -O2 -Wall -Wextra` |
 | 依赖 | 系统库 `ws2_32`、`iphlpapi`、`winmm`（源码内已带 `#pragma comment`） | 同左 | `-lpthread`（glibc） |
@@ -117,7 +117,7 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 | 内存检查 | Linux：ASan + LeakSanitizer（`tools/asan-linux.sh`，含并发用例）**0 发现**、ThreadSanitizer **0 数据竞争**；Windows：MSVC `/fsanitize=address` 构建同样可跑 |
 | 断开握手 | 客户端断开前先收干净在途字节再 FIN（避免 RST 吞掉 DISCONNECT），`mqtt_client` 套件由 40 次里 10 次失败 → 40/40 通过 |
 | 测试并发提示 | 套件之间用固定端口（FTP 2323/3131 等）与相对路径，**同一构建目录里别并发跑两份 ctest**，否则互相抢端口/文件 |
-| Linux 编译 | 零警告（gcc 13.4.0，`-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes`） |
+| Linux 编译 | 零警告（gcc 13.5.0，`-Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes`） |
 | Linux 测试 | **43/43**（堆 / 静态内存 / TLS / 静态内存+TLS，gcc 13 + OpenSSL 3.0.20） |
 | 示例实跑 | 包内三种产物（Windows x64 / Windows x86 / Linux x86_64）都与 **EMQX 5.8.9** 对跑通过：模型交换、读写、参数校验、文件传输、事件推送、两个采样通道（1 s 状态；1 ms 采样 / 100 ms 上报的功率振动，共 12 列，主轴两路传感器）。窗口节奏实测：Linux ≈118 ms 一条；Windows ≈222 ms 一条（短等待走高精度计时器，1 ms 等待实测 1.56 ms，见手册 4.5）；Linux 下给设备端发 SIGTERM 也能优雅退出（退出码 0） |
 | broker 互操作 | `stack/test/test_broker` 对 EMQX 5.8.9 实测 **44 项检查、0 失败**：QoS 0/1/2、通配订阅、40 KB 报文、退订、空闲保活、会话顶替、重连后订阅恢复（`tools/interop.sh` 可在 Docker 里同时跑 EMQX 与 Mosquitto） |
@@ -157,7 +157,7 @@ tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认�
 | 项目 | 结果 |
 |------|------|
 | Windows（MSVC 14.44.35207，Release） | x64 全量 **43/43**（`file` 套件 **308 项断言**：握手、`conf/ftp.txt`、64 MiB 大文件、两种续传起点、数据连接中途掐断后的续传重试）；x86 / 静态内存 / TLS / 静态内存+TLS / x86 静态内存 各 **43/43** |
-| Linux（gcc 13.4，容器内） | 默认堆 / TLS / 静态内存 / 静态内存+TLS 四套各 **43/43**（`docker run --rm -v <repo>:/work -w /work gcc:13 sh build-linux.sh <目录>`） |
+| Linux（gcc 13.5.0，容器内） | 默认堆 / TLS / 静态内存 / 静态内存+TLS 四套各 **43/43**（`docker run --rm -v <repo>:/work -w /work gcc:13 sh build-linux.sh <目录>`；`gcc:13` 是滚动 tag，这里的数字是实测值） |
 | mingw-w64（gcc 13.2.0-posix，msvcrt；容器内交叉编，PE 产物回 Windows 跑） | 库 / 示例 / 测试 **43/43**（`CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar CXX=x86_64-w64-mingw32-g++ NCL_RUN_TESTS=0 sh build-linux.sh builds/build-mingw`，`NCL_RUN_TESTS=0` 只编译不执行）；TLS 变体（`NCL_WITH_TLS=1 NCL_OPENSSL_ROOT=/opt/mingw-openssl NCL_EXTRA_LIBS=-lcrypt32`，链 OpenSSL 3 的导入库 —— 运行时需要 `libssl-3-x64.dll`/`libcrypto-3-x64.dll`）同样 **43/43**，`test_tls` 通过 |
 | 内存检查 | Linux ASan + LeakSanitizer（`tools/asan-linux.sh --docker`，6 个套件）**0 发现**；ThreadSanitizer（分配器并发用例）**0 数据竞争** |
 | 托管绑定自检（离线） | C# 106 项、Java 107 项、Python 46 项，**0 失败** |
@@ -322,7 +322,7 @@ cl /nologo /W4 /utf-8 /MD /Iinclude examples\device\c\ncl_device_demo.c examples
 | 边缘接口 | `Edge/*` 主题与 4 个 `ncl_topic_edge_*()` 构造函数在 3.4.0 **移除**（不使用）；需要时按 GB/T 41970-2022 自行拼主题即可 |
 | JSON Schema | 校验器为 draft-07 子集，不支持 `patternProperties`/`dependencies`/外部 `$ref` 等 |
 | FTP | 实现 RFC 959/2389 子集（覆盖 NC-Link 文件通道用到的命令与两种数据连接模式） |
-| POSIX 分支 | 已在 gcc 13.4 + glibc 验证；musl、FreeBSD 等未验证 |
+| POSIX 分支 | 已在 gcc 13.5.0 + glibc 验证；musl、FreeBSD 等未验证 |
 | x86 的 TLS | 32 位只出非 TLS 版：要用 `ssl://` 得自编 32 位 OpenSSL 静态库，再 `-Arch x86 -Tls -OpenSslRoot <dir>` |
 | Go 绑定的 TLS 变体（Windows） | 包内给了 `libnclink_core_tls.a`，但它和 Linux 的 TLS 版一样是**动态依赖 OpenSSL**：链接时需要 OpenSSL 3 的导入库（`-lssl -lcrypto`，例如 Strawberry Perl 的 `c/lib`），运行时需要 `libssl-3-x64*.dll` / `libcrypto-3-x64*.dll`；MSVC 那份 TLS 库用的静态 OpenSSL 在 Windows 的 Go 工具链下用不了 |
 | 静态内存版的池大小 | 编译期常量：包内两份静态内存库都按默认 **20 MiB** 编译（换尺寸要重编，见第 1 节）；池不支持运行时扩容 |

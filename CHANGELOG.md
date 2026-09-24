@@ -5,6 +5,20 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 3.6.0
 
+### 文档：Linux 工具链口径 gcc 13.4 → 13.5.0
+
+  * **原因**：`gcc:13` 是滚动 tag，现在拉到的镜像已经是 **13.5.0**（判定方式：包内 Linux
+    产物的 `.comment` 与容器 `gcc -dumpversion` 两边都是 13.5.0）；文档里写的 "gcc 13.4"
+    与实际编出这批二进制的编译器不符。
+  * **改正的 6 处**：README「Linux（已验证）」、MANUAL 2.3、RELEASE 的平台表「编译器」行、
+    「Linux 编译」零警告行、3.2 验证表的 Linux 行、边界表的 POSIX 行。RELEASE 的验证行
+    顺带补了一句说明 —— `gcc:13` 是滚动 tag，表里的数字是实测值 —— 免得镜像下次再动时
+    又对不上。
+  * **验证结论不变**：43/43、零警告这些结论本来就成立于 13.5.0（当初就是在现在这个镜像
+    里跑的），这次只修版本号。CHANGELOG 里 3.4.0 那条 "gcc 13.4" 是历史记录，按原样保留。
+  * **dist**：包内的 README / MANUAL / RELEASE 随之重打（`tools/make_release.ps1`），
+    SHA256SUMS 与 zip 重算入库。
+
 ### 目录重排：stack / examples / clients / plugins / tools / dist，测试与模块一一对应
 
   原来的顶层是 `include/ + src/ + tests/ + examples/ + bindings/`，测试全堆在 `tests/` 里。
