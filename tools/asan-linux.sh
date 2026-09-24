@@ -16,11 +16,11 @@
 # what found the leaked reader thread on MQTT reconnect and the REST attach
 # context (see CHANGELOG).
 #
-# Output: build-asan/<name>.log per suite, printed summary at the end.
+# Output: builds/build-asan/<name>.log per suite, printed summary at the end.
 set -e
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-D=${NCL_ASAN_DIR:-$ROOT/build-asan-linux}
+D=${NCL_ASAN_DIR:-$ROOT/builds/build-asan-linux}
 CF="-std=c11 -O0 -g -fsanitize=address -I$ROOT/stack/include -Istack/src -D_POSIX_C_SOURCE=200809L"
 CF="$CF -Wno-format-truncation -Wno-implicit-function-declaration"
 
@@ -36,11 +36,11 @@ done
 
 if [ "$MODE" = "tsan" ]; then
     SAN="-fsanitize=thread"
-    D=${NCL_TSAN_DIR:-$ROOT/build-tsan}
+    D=${NCL_TSAN_DIR:-$ROOT/builds/build-tsan}
     SUITES="test_mem_mt"
 else
     SAN="-fsanitize=address"
-    D=${NCL_ASAN_DIR:-$ROOT/build-asan-linux}
+    D=${NCL_ASAN_DIR:-$ROOT/builds/build-asan-linux}
     SUITES="test_mem test_mem_mt test_message test_mqtt_client test_rest test_client"
 fi
 CF="-std=c11 -O1 -g $SAN -I$ROOT/stack/include -I$ROOT/stack/src -D_POSIX_C_SOURCE=200809L"

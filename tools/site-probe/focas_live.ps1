@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 huienming
 
 # 编译并运行 focas_live：拿**这一份 client**（不是官方 SDK）去接一台真 FOCAS 服务端，
@@ -15,7 +15,7 @@ param(
     [int]$Port = 8193,
     [switch]$Raw,
     [switch]$SessionOnly,
-    [string]$BuildDir = "build"
+    [string]$BuildDir = "builds/build"
 )
 
 $ErrorActionPreference = "Stop"

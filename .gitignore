@@ -1,4 +1,6 @@
-# 构建产物（Windows / Linux / ASan 三套并行目录）
+# 构建产物（Windows / Linux / ASan 等并行目录）统一收在 builds/ 下
+/builds/
+# 根目录的 build/ 与 build-*/ 只是旧写法留下的退路，一并挡掉
 /build/
 /build-*/
 
@@ -83,3 +85,6 @@ tools/site-probe/cap_*.txt
 !dist/**/*.dll
 !dist/**/*.exe
 !dist/**/*.so
+
+# 构建/验证留档压缩包（本地证据，不入库）
+logs-archive-*.zip

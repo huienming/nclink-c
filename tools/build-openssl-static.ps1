@@ -10,7 +10,7 @@
 # 依赖：`perl`（Strawberry/ActivePerl 均可，Git 自带的 Cygwin 精简版不行）、
 # MSVC Build Tools（nmake 来自 vcvars64）、curl/tar（Windows 10+ 自带）。
 # 装好 OpenSSL 后：
-#   cmake -S . -B build-tls-static -DNCLINK_WITH_TLS=ON `
+#   cmake -S . -B builds/build-tls-static -DNCLINK_WITH_TLS=ON `
 #         -DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=<Prefix>
 #
 [CmdletBinding()]

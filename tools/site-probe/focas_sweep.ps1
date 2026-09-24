@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 huienming
 
 # 编译并运行 focas_sweep：拿**这一份 client**（不是官方 SDK）接一台真 FOCAS 服务端 /
@@ -15,7 +15,7 @@
 param(
     [Parameter(Mandatory = $true, Position = 0)][string]$Machine,
     [int]$Port = 8193,
-    [string]$BuildDir = "build"
+    [string]$BuildDir = "builds/build"
 )
 
 $ErrorActionPreference = "Stop"

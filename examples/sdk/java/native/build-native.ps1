@@ -4,7 +4,7 @@
 # Build the Java native library (nclink_jni.dll on Windows): the JNI glue plus
 # the shared shim, linked against the core static library.
 #
-#   .\build-native.ps1                  # links build\nclink_core.lib from the repo root
+#   .\build-native.ps1                  # links builds\build\nclink_core.lib from the repo root
 #   .\build-native.ps1 -CoreLib <path>  # links another static core library
 #   .\build-native.ps1 -JavaHome <dir>  # where jni.h lives (default: autodetect)
 #
@@ -26,8 +26,8 @@ $out = if ($OutDir -ne "") { $OutDir }
         elseif ($Tls) { Join-Path $here "bin-tls" }
         else { Join-Path $here "bin" }
 $lib = if ($CoreLib -ne "") { $CoreLib }
-       elseif ($Tls) { Join-Path $root "build-tls\nclink_core.lib" }
-       else { Join-Path $root "build\nclink_core.lib" }
+       elseif ($Tls) { Join-Path $root "builds/build-tls\nclink_core.lib" }
+       else { Join-Path $root "builds\build\nclink_core.lib" }
 
 if (-not (Test-Path -LiteralPath $lib)) {
     if ($Tls) {

@@ -9,7 +9,7 @@
 
 先起设备端（另开一个窗口）：
 
-    build\\examples\\ncl_device_demo.exe D:\\sim-py 30
+    builds\\build\\examples\\ncl_device_demo.exe D:\\sim-py 30
 
 probe 模型 → 打印各轴功率/振动含义 → 读 / 写 /STATUS → 订阅采样与事件
 → 按行消费采样（前 8 行）→ 等若干秒 → 打印计数。

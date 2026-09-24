@@ -4,17 +4,17 @@
 
 # NC-Link core - Linux build without CMake.
 #
-#   ./build-linux.sh [输出目录]        # 默认 build-linux
+#   ./build-linux.sh [输出目录]        # 默认 builds/build-linux
 #
 # 可选：NCL_WITH_TLS=1 打开 ssl:// 支持（需要 OpenSSL 的头文件与库），
-# 例如 NCL_WITH_TLS=1 ./build-linux.sh build-linux-tls
+# 例如 NCL_WITH_TLS=1 ./build-linux.sh builds/build-linux-tls
 #
 # 可选：NCL_STATIC_MEM=1 让库内每次分配都从固定静态池里拿（不调用 malloc），
 # 池大小用 NCL_MEM_POOL_BYTES 指定，默认 20 MiB（20971520 字节）；
 # NCL_MEM_SINGLE_THREAD=1 可去掉池的锁（单上下文/裸机）；
 # NCL_MEM_REPORT=1 让每个测试进程在退出时打印池的峰值占用与最大请求，
 # 这是给设备定池大小的实测依据（与 build.ps1 -MemReport 同一份统计）。
-# 例如 NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 ./build-linux.sh build-linux-static
+# 例如 NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 ./build-linux.sh builds/build-linux-static
 #
 # 产出：
 #   <输出目录>/libnclink_core.a        核心库（含 tool 层：驱动骨架/审计/宿主/模块装载）

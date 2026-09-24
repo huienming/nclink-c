@@ -239,7 +239,7 @@ python tools/site-probe/focas_machine.py 8193 --pos 12.345,67.89,-3.5,0,0 `
     --feed 500.5 --spindle 3000 --count 952 --prog O1234 --srv-delay 1.234 `
     --status running --mode auto
 # 2) 用我们自己的 client 读一遍（--offline = 不接 broker；conf 里 host 指向 127.0.0.1:8193）
-build\Release\ncl_server.exe -c <conf> -P build\plugins\Release --offline --once
+builds\build\Release\ncl_server.exe -c <conf> -P builds\build\plugins\Release --offline --once
 ```
 
 实测：`STATUS`、`WORK_MODE`（auto/manual 都对）、`PART_COUNT`、`PROGRAM` /

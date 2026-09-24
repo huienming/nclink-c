@@ -28,21 +28,21 @@
 #
 # Libraries and example executables are collected from the locations below;
 # a missing one is skipped with a note:
-#   build/nclink_core.lib            lib/windows-x64-msvc/ + examples/bin/windows-x64-msvc/
-#   build-x86/nclink_core.lib        lib/windows-x86-msvc/ + examples/bin/windows-x86-msvc/
-#   build-tls/nclink_core.lib        lib/windows-x64-msvc-tls/
-#   build-linux/libnclink_core.a     lib/linux-x86_64-gcc/ + examples/bin/linux-x86_64-gcc/
-#   build-linux-tls/libnclink_core.a lib/linux-x86_64-gcc-tls/
-#   build-mingw/libnclink_core.a     lib/windows-amd64-mingw/
+#   builds/build/nclink_core.lib            lib/windows-x64-msvc/ + examples/bin/windows-x64-msvc/
+#   builds/build-x86/nclink_core.lib        lib/windows-x86-msvc/ + examples/bin/windows-x86-msvc/
+#   builds/build-tls/nclink_core.lib        lib/windows-x64-msvc-tls/
+#   builds/build-linux/libnclink_core.a     lib/linux-x86_64-gcc/ + examples/bin/linux-x86_64-gcc/
+#   builds/build-linux-tls/libnclink_core.a lib/linux-x86_64-gcc-tls/
+#   builds/build-mingw/libnclink_core.a     lib/windows-amd64-mingw/
 #
 # The static memory variant (-StaticMem) ships next to the default heap build,
 # in a directory of its own so nothing that already links the default path
 # changes meaning:
-#   build-staticmem/nclink_core.lib          lib/windows-x64-msvc-staticmem/
-#   build-x86-staticmem/nclink_core.lib      lib/windows-x86-msvc-staticmem/
-#   build-linux-staticmem/libnclink_core.a   lib/linux-x86_64-gcc-staticmem/
-#   build-staticmem-tls/nclink_core.lib      lib/windows-x64-msvc-staticmem-tls/
-#   build-linux-staticmem-tls/libnclink_core.a  lib/linux-x86_64-gcc-staticmem-tls/
+#   builds/build-staticmem/nclink_core.lib          lib/windows-x64-msvc-staticmem/
+#   builds/build-x86-staticmem/nclink_core.lib      lib/windows-x86-msvc-staticmem/
+#   builds/build-linux-staticmem/libnclink_core.a   lib/linux-x86_64-gcc-staticmem/
+#   builds/build-staticmem-tls/nclink_core.lib      lib/windows-x64-msvc-staticmem-tls/
+#   builds/build-linux-staticmem-tls/libnclink_core.a  lib/linux-x86_64-gcc-staticmem-tls/
 # plus the matching example binaries under examples/bin/<platform>-staticmem/.
 # The static memory library carries a fixed pool inside its .bss (20 MiB with
 # the default NCLINK_MEM_POOL_BYTES), so it is a separate artifact rather than a
@@ -75,17 +75,17 @@ if ($Name -eq "") { $Name = "nclink-core-c-$Version" }
 $pkg = Join-Path $root "dist\$Name"
 $zip = Join-Path $root "dist\$Name.zip"
 
-$msvcLib = Join-Path $root "build\nclink_core.lib"
-$msvcTlsLib = Join-Path $root "build-tls\nclink_core.lib"
-$gccLib = Join-Path $root "build-linux\libnclink_core.a"
-$gccTlsLib = Join-Path $root "build-linux-tls\libnclink_core.a"
-$mingwLib = Join-Path $root "build-mingw\libnclink_core.a"
-$mingwTlsLib = Join-Path $root "build-mingw-tls\libnclink_core.a"
-$msvcStaticLib = Join-Path $root "build-staticmem\nclink_core.lib"
-$x86StaticLib = Join-Path $root "build-x86-staticmem\nclink_core.lib"
-$gccStaticLib = Join-Path $root "build-linux-staticmem\libnclink_core.a"
-$msvcStaticTlsLib = Join-Path $root "build-staticmem-tls\nclink_core.lib"
-$gccStaticTlsLib = Join-Path $root "build-linux-staticmem-tls\libnclink_core.a"
+$msvcLib = Join-Path $root "builds\build\nclink_core.lib"
+$msvcTlsLib = Join-Path $root "builds/build-tls\nclink_core.lib"
+$gccLib = Join-Path $root "builds/build-linux\libnclink_core.a"
+$gccTlsLib = Join-Path $root "builds/build-linux-tls\libnclink_core.a"
+$mingwLib = Join-Path $root "builds/build-mingw\libnclink_core.a"
+$mingwTlsLib = Join-Path $root "builds/build-mingw-tls\libnclink_core.a"
+$msvcStaticLib = Join-Path $root "builds/build-staticmem\nclink_core.lib"
+$x86StaticLib = Join-Path $root "builds/build-x86-staticmem\nclink_core.lib"
+$gccStaticLib = Join-Path $root "builds/build-linux-staticmem\libnclink_core.a"
+$msvcStaticTlsLib = Join-Path $root "builds/build-staticmem-tls\nclink_core.lib"
+$gccStaticTlsLib = Join-Path $root "builds/build-linux-staticmem-tls\libnclink_core.a"
 
 # The two platforms the package must carry; the static memory variant ships as
 # well because it cannot be produced from the heap library afterwards.
@@ -140,17 +140,17 @@ Copy-Item -LiteralPath (Join-Path $root "examples\CMakeLists.txt") `
     -Destination (Join-Path $pkg "examples\CMakeLists.txt") -Force
 
 # Prebuilt example executables: run them straight from the package.
-#   build\examples\*.exe    -> examples/bin/windows-x64-msvc/  (same MSVC x64 Release as the lib)
-#   build-linux\bin\ncl_*   -> examples/bin/linux-x86_64-gcc/  (gcc 13 + glibc, built in Docker)
+#   builds\build\examples\*.exe    -> examples/bin/windows-x64-msvc/  (same MSVC x64 Release as the lib)
+#   builds/build-linux\bin\ncl_*   -> examples/bin/linux-x86_64-gcc/  (gcc 13 + glibc, built in Docker)
 $exeSources = @(
-    @{ From = "build\examples";  Dst = "examples\bin\windows-x64-msvc"; Filter = "ncl_*.exe" },
-    @{ From = "build-x86\examples"; Dst = "examples\bin\windows-x86-msvc"; Filter = "ncl_*.exe" },
-    @{ From = "build-linux\bin"; Dst = "examples\bin\linux-x86_64-gcc"; Filter = "ncl_*" }
-    @{ From = "build-staticmem\examples"; Dst = "examples\bin\windows-x64-msvc-staticmem"; Filter = "ncl_*.exe" },
-    @{ From = "build-x86-staticmem\examples"; Dst = "examples\bin\windows-x86-msvc-staticmem"; Filter = "ncl_*.exe" },
-    @{ From = "build-linux-staticmem\bin"; Dst = "examples\bin\linux-x86_64-gcc-staticmem"; Filter = "ncl_*" },
-    @{ From = "build-staticmem-tls\examples"; Dst = "examples\bin\windows-x64-msvc-staticmem-tls"; Filter = "ncl_*.exe" },
-    @{ From = "build-linux-staticmem-tls\bin"; Dst = "examples\bin\linux-x86_64-gcc-staticmem-tls"; Filter = "ncl_*" }
+    @{ From = "builds\build\examples";  Dst = "examples\bin\windows-x64-msvc"; Filter = "ncl_*.exe" },
+    @{ From = "builds/build-x86\examples"; Dst = "examples\bin\windows-x86-msvc"; Filter = "ncl_*.exe" },
+    @{ From = "builds/build-linux\bin"; Dst = "examples\bin\linux-x86_64-gcc"; Filter = "ncl_*" }
+    @{ From = "builds/build-staticmem\examples"; Dst = "examples\bin\windows-x64-msvc-staticmem"; Filter = "ncl_*.exe" },
+    @{ From = "builds/build-x86-staticmem\examples"; Dst = "examples\bin\windows-x86-msvc-staticmem"; Filter = "ncl_*.exe" },
+    @{ From = "builds/build-linux-staticmem\bin"; Dst = "examples\bin\linux-x86_64-gcc-staticmem"; Filter = "ncl_*" },
+    @{ From = "builds/build-staticmem-tls\examples"; Dst = "examples\bin\windows-x64-msvc-staticmem-tls"; Filter = "ncl_*.exe" },
+    @{ From = "builds/build-linux-staticmem-tls\bin"; Dst = "examples\bin\linux-x86_64-gcc-staticmem-tls"; Filter = "ncl_*" }
 )
 foreach ($exe in $exeSources) {
     $from = Join-Path $root $exe.From
@@ -199,14 +199,14 @@ foreach ($exe in $exeSources) {
 Copy-Tree "clients/include/nclink/clients" "include/nclink/clients" @("*.h")
 
 $vendorPlatforms = @(
-    @{ Build = "build";               Platform = "windows-x64-msvc" },
-    @{ Build = "build-tls";           Platform = "windows-x64-msvc-tls" },
-    @{ Build = "build-x86";           Platform = "windows-x86-msvc" },
-    @{ Build = "build-staticmem";     Platform = "windows-x64-msvc-staticmem" },
-    @{ Build = "build-staticmem-tls"; Platform = "windows-x64-msvc-staticmem-tls" },
-    @{ Build = "build-x86-staticmem"; Platform = "windows-x86-msvc-staticmem" },
-    @{ Build = "build-mingw";         Platform = "windows-amd64-mingw" },
-    @{ Build = "build-linux";         Platform = "linux-x86_64-gcc" }
+    @{ Build = "builds/build";               Platform = "windows-x64-msvc" },
+    @{ Build = "builds/build-tls";           Platform = "windows-x64-msvc-tls" },
+    @{ Build = "builds/build-x86";           Platform = "windows-x86-msvc" },
+    @{ Build = "builds/build-staticmem";     Platform = "windows-x64-msvc-staticmem" },
+    @{ Build = "builds/build-staticmem-tls"; Platform = "windows-x64-msvc-staticmem-tls" },
+    @{ Build = "builds/build-x86-staticmem"; Platform = "windows-x86-msvc-staticmem" },
+    @{ Build = "builds/build-mingw";         Platform = "windows-amd64-mingw" },
+    @{ Build = "builds/build-linux";         Platform = "linux-x86_64-gcc" }
 )
 foreach ($vendor in $vendorPlatforms) {
     # The clients library: nclink_clients.lib from MSVC, libnclink_clients.a
@@ -291,7 +291,7 @@ if (Test-Path -LiteralPath $msvcTlsLib) {
     New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x64-msvc-tls") -Force | Out-Null
     Copy-Item -LiteralPath $msvcTlsLib -Destination (Join-Path $pkg "lib\windows-x64-msvc-tls\nclink_core.lib") -Force
 } else {
-    Write-Host "  note: build-tls/nclink_core.lib not found, the Windows TLS variant is not packaged"
+    Write-Host "  note: builds/build-tls/nclink_core.lib not found, the Windows TLS variant is not packaged"
 }
 Copy-Item -LiteralPath $gccLib -Destination (Join-Path $pkg "lib\linux-x86_64-gcc\libnclink_core.a") -Force
 
@@ -309,7 +309,7 @@ if (Test-Path -LiteralPath $x86StaticLib) {
     New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x86-msvc-staticmem") -Force | Out-Null
     Copy-Item -LiteralPath $x86StaticLib -Destination (Join-Path $pkg "lib\windows-x86-msvc-staticmem\nclink_core.lib") -Force
 } else {
-    Write-Host "  note: build-x86-staticmem not found, the 32-bit static memory library is not packaged"
+    Write-Host "  note: builds/build-x86-staticmem not found, the 32-bit static memory library is not packaged"
 }
 
 # Static memory with TLS: the pool covers the library, OpenSSL keeps using the
@@ -333,16 +333,16 @@ if (Test-Path -LiteralPath $gccTlsLib) {
     New-Item -ItemType Directory -Path (Join-Path $pkg "lib\linux-x86_64-gcc-tls") -Force | Out-Null
     Copy-Item -LiteralPath $gccTlsLib -Destination (Join-Path $pkg "lib\linux-x86_64-gcc-tls\libnclink_core.a") -Force
 } else {
-    Write-Host "  note: build-linux-tls/libnclink_core.a not found, the TLS variant is not packaged"
+    Write-Host "  note: builds/build-linux-tls/libnclink_core.a not found, the TLS variant is not packaged"
 }
 
-# Optional: the 32-bit (Win32/x86) MSVC build: .\build.ps1 -Arch x86 -BuildDir build-x86
-$x86Lib = Join-Path $root "build-x86\nclink_core.lib"
+# Optional: the 32-bit (Win32/x86) MSVC build: .\build.ps1 -Arch x86 -BuildDir builds/build-x86
+$x86Lib = Join-Path $root "builds/build-x86\nclink_core.lib"
 if (Test-Path -LiteralPath $x86Lib) {
     New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-x86-msvc") -Force | Out-Null
     Copy-Item -LiteralPath $x86Lib -Destination (Join-Path $pkg "lib\windows-x86-msvc\nclink_core.lib") -Force
 } else {
-    Write-Host "  note: build-x86/nclink_core.lib not found, the 32-bit library is not packaged"
+    Write-Host "  note: builds/build-x86/nclink_core.lib not found, the 32-bit library is not packaged"
 }
 
 # Optional: the mingw build of the Windows library, used by the Go bindings
@@ -351,7 +351,7 @@ if (Test-Path -LiteralPath $mingwLib) {
     New-Item -ItemType Directory -Path (Join-Path $pkg "lib\windows-amd64-mingw") -Force | Out-Null
     Copy-Item -LiteralPath $mingwLib -Destination (Join-Path $pkg "lib\windows-amd64-mingw\libnclink_core.a") -Force
 } else {
-    Write-Host "  note: build-mingw/libnclink_core.a not found, the Go binding needs it staged separately"
+    Write-Host "  note: builds/build-mingw/libnclink_core.a not found, the Go binding needs it staged separately"
 }
 # The TLS flavour of the same library, for cgo -tags nclink_tls. Its OpenSSL
 # dependency stays dynamic (import libraries + DLLs), exactly like the Linux
@@ -360,7 +360,7 @@ if (Test-Path -LiteralPath $mingwLib) {
 if (Test-Path -LiteralPath $mingwTlsLib) {
     Copy-Item -LiteralPath $mingwTlsLib -Destination (Join-Path $pkg "lib\windows-amd64-mingw\libnclink_core_tls.a") -Force
 } else {
-    Write-Host "  note: build-mingw-tls/libnclink_core.a not found, the Windows Go TLS variant is not packaged"
+    Write-Host "  note: builds/build-mingw-tls/libnclink_core.a not found, the Windows Go TLS variant is not packaged"
 }
 
 # docs

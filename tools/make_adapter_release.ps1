@@ -34,7 +34,7 @@
 [CmdletBinding()]
 param(
     [string]$Version = "",
-    [string]$BuildDir = "build",
+    [string]$BuildDir = "builds/build",
     [string]$Name = "",
     [switch]$NoZip,
     [switch]$WithProtocolDocs

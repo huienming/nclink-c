@@ -72,7 +72,7 @@ plugins/                 厂商适配器源码：一个 .c 一个适配器，编
 plugins/tests/           适配器端到端：声明 → 模型 → 绑定 → 请求应答（含装载器必须拒收的两个夹具）
 tools/                   许可头检查、broker 互操作、文档生成与发布打包脚本
 dist/                    发布包（库包 + 适配器包，已入库）
-build/ build-*/          构建目录（不入库）
+builds/                 构建目录（不入库）
 build.ps1                Windows 一键：配置 + 编译 + ctest
 build-linux.sh           Linux / mingw 交叉构建（免 cmake）
 ```
@@ -105,7 +105,7 @@ MANUAL.md/.docx     本手册；README/RELEASE/CHANGELOG 见同名文件
 .\build.ps1                 # 配置 + 编译 + 跑全部测试
 .\build.ps1 -Clean          # 先清空 build 目录再全量编译
 .\build.ps1 -NoTest         # 只编译
-.\build.ps1 -Arch x86 -BuildDir build-x86   # 32 位（Win32）：库 + 示例 + 测试
+.\build.ps1 -Arch x86 -BuildDir builds/build-x86   # 32 位（Win32）：库 + 示例 + 测试
 ```
 
 除了 MSVC，**mingw-w64（GCC）在 Windows 目标上也整套验证过**（gcc 13.2.0-posix，
@@ -116,10 +116,10 @@ Debian/Ubuntu 的 `gcc-mingw-w64-x86-64-posix` 包，msvcrt）：库、示例与
 ```sh
 docker run --rm -v <仓库>:/work -w /work ncl-mingw:gcc13 sh -c \
   "CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar CXX=x86_64-w64-mingw32-g++ \
-   NCL_RUN_TESTS=0 sh build-linux.sh build-mingw"
+   NCL_RUN_TESTS=0 sh build-linux.sh builds/build-mingw"
 ```
 
-`NCL_RUN_TESTS=0` 只编译不执行（PE 产物在 Linux 里跑不起来），把 `build-mingw/bin/*.exe`
+`NCL_RUN_TESTS=0` 只编译不执行（PE 产物在 Linux 里跑不起来），把 `builds/build-mingw/bin/*.exe`
 拷回 Windows 跑即可；TLS 那份再加
 `NCL_WITH_TLS=1 NCL_OPENSSL_ROOT=/opt/mingw-openssl NCL_EXTRA_LIBS=-lcrypt32`。
 镜像本身是 `ubuntu:24.04` + `apt-get install gcc-mingw-w64-x86-64-posix
@@ -132,7 +132,7 @@ OpenSSL 3 的头文件/导入库（`/opt/mingw-openssl`）与 mingw 运行时 DL
 
 ```bat
 call "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B builds/build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
@@ -163,16 +163,16 @@ join 已结束的收包线程、`ncl_rest_attach()` 的上下文无人释放，�
 全部测试（Windows 见 2.2，Linux 见下）。
 
 ```sh
-./build-linux.sh                 # 不需要 cmake：产出 build-linux/libnclink_core.a 并跑全部测试
+./build-linux.sh                 # 不需要 cmake：产出 builds/build-linux/libnclink_core.a 并跑全部测试
 CC=clang ./build-linux.sh out    # 换编译器 / 换输出目录
 ```
 
 用 CMake 也行：
 
 ```sh
-cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release
-cmake --build build-linux -j
-ctest --test-dir build-linux --output-on-failure
+cmake -S . -B builds/build-linux -DCMAKE_BUILD_TYPE=Release
+cmake --build builds/build-linux -j
+ctest --test-dir builds/build-linux --output-on-failure
 ```
 
 手工编译（不走上面两个脚本）时注意：
@@ -245,11 +245,11 @@ client.SubscribeSamples(2, func(topic string, msg *nclink.Message) {
 })
 ```
 
-链接：`tools/stage-go-libs.sh` 把 `build-linux/libnclink_core.a`（Linux）与
-`build-mingw/libnclink_core.a`（Windows）暂存到 `examples/sdk/go/lib/<goos>-<goarch>/`
+链接：`tools/stage-go-libs.sh` 把 `builds/build-linux/libnclink_core.a`（Linux）与
+`builds/build-mingw/libnclink_core.a`（Windows）暂存到 `examples/sdk/go/lib/<goos>-<goarch>/`
 （不入库）。**Windows 上 cgo 只认 mingw 工具链，且必须链 mingw 编的库**——
 MSVC 的 `nclink_core.lib` 链不上；装 mingw 后用
-`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh build-mingw` 编一份即可，本机没有
+`CC=<mingw>/gcc AR=<mingw>/ar sh build-linux.sh builds/build-mingw` 编一份即可，本机没有
 mingw 就用现成镜像 `ncl-mingw:gcc13`（命令见 2.2；`build-linux.sh` 在 mingw 目标下
 会自动补上 `-lws2_32 -liphlpapi -lwinmm`）；发布包的
 `lib/windows-amd64-mingw/` 里已经带了一份 mingw 编的 x64 库，可以直接暂存或链过去。
@@ -484,11 +484,11 @@ Windows 用 MSVC 时还要注意 ABI 一致：发布包里的 `nclink_core.lib` 
 
 ```powershell
 .\build.ps1
-build\examples\ncl_device_demo.exe                     # 设备端：一直运行到 Ctrl+C
-build\examples\ncl_device_demo.exe - - 60              # 只想跑一会儿（离线、60 秒）
+builds\build\examples\ncl_device_demo.exe                     # 设备端：一直运行到 Ctrl+C
+builds\build\examples\ncl_device_demo.exe - - 60              # 只想跑一会儿（离线、60 秒）
 # 参数顺序 [broker] [sn] [seconds] [http-port]，五个语言的示例一致；
 # 安装根目录走环境变量 NCL_DEVICE_ROOT（省略 = 当前目录）
-build\examples\ncl_client_demo.exe <broker> <设备SN> <秒数>  # 客户端
+builds\build\examples\ncl_client_demo.exe <broker> <设备SN> <秒数>  # 客户端
 ```
 
 设备端示例默认**一直运行**（真实设备就是这个跑法），只有 Ctrl+C（或 POSIX 的
@@ -720,9 +720,9 @@ check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
 
 ```powershell
 $env:NCL_DEVICE_ROOT = "D:\sim4"                   # 安装根目录（第一次会自己建好）
-build\examples\ncl_device_demo.exe                # 第一次：准备 D:\sim4，然后一直运行
-build\examples\ncl_device_demo.exe                # 第二次：沿用上一次的 SN 与配置
-build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 秒就自己退出
+builds\build\examples\ncl_device_demo.exe                # 第一次：准备 D:\sim4，然后一直运行
+builds\build\examples\ncl_device_demo.exe                # 第二次：沿用上一次的 SN 与配置
+builds\build\examples\ncl_device_demo.exe - - 60         # 也可以给秒数：跑 60 秒就自己退出
 ```
 
 秒数省略（或写 0）就一直运行到 Ctrl+C —— 现场就是这么跑的；给正数则跑完自动退出，
@@ -1373,8 +1373,8 @@ C 没有 GC，规则统一为「谁申请谁负责，转移要显式」：
 ```
 
 ```sh
-NCL_STATIC_MEM=1 ./build-linux.sh build-linux-static          # 默认 20 MiB
-NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 ./build-linux.sh build-linux-static-64k
+NCL_STATIC_MEM=1 ./build-linux.sh builds/build-linux-static          # 默认 20 MiB
+NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 ./build-linux.sh builds/build-linux-static-64k
 ```
 
 > 发布包里的 `lib/*-staticmem/` 就是按**默认 20 MiB** 编好的静态内存版（同一个包里默认堆版与它并存，目录名区分），细节见包内 RELEASE.md。
@@ -1403,7 +1403,7 @@ Linux 上再加 `-DNCL_MEM_TRACE=1`（`stack/src/core/ncl_mem.c`，glibc `backtr
 侧对应 `NCL_MEM_REPORT=1`（与 `build.ps1 -MemReport` 同一份统计）：
 
 ```sh
-NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 NCL_MEM_REPORT=1 ./build-linux.sh build-linux-rep
+NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 NCL_MEM_REPORT=1 ./build-linux.sh builds/build-linux-rep
 ```
 
 运行时也可以读 `ncl_mem_get_stats()`：池大小、当前用量、峰值、活块数、**总空闲字节与
@@ -1616,7 +1616,7 @@ NCL_SOAK_MT=1 NCL_SOAK_SECONDS=600 NCL_MEM_MT_THREADS=8 ./tools/soak-linux.sh --
 
 每一份都是蒙特卡洛流量（随机尺寸跨三个数量级、随机分配/释放/重分配），**每次操作后**校验
 池不变量与账目恒等式，**每一轮**把池彻底排空并要求它回到"一整块空闲"，任何一条不满足就
-判失败并非零退出。日志在 `build-soak/<模式>/<尺寸>.log`（每 30 s 一行心跳，末行是累计值）。
+判失败并非零退出。日志在 `builds/build-soak/<模式>/<尺寸>.log`（每 30 s 一行心跳，末行是累计值）。
 
 实测（2026-09-17，单机 18 逻辑核，7 个进程并行，3600 s，容器 exit=0）：
 
@@ -1664,7 +1664,7 @@ NCL_SOAK_MT=1 NCL_SOAK_SECONDS=600 NCL_MEM_MT_THREADS=8 ./tools/soak-linux.sh --
 
 ```powershell
 .\build.ps1 -StaticMem -MemPoolBytes 65536      # 常规：4 线程 × 40000 次操作
-cd build-static-64k\tests; .\ncl_test_mem_mt.exe
+cd builds/build-static-64k\tests; .\ncl_test_mem_mt.exe
 ```
 
 工具侧：`./tools/asan-linux.sh --docker` 已把 `test_mem_mt` 纳入（ASan + 泄漏检测）；

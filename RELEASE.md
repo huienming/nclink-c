@@ -113,7 +113,7 @@ gcc/clang 链接（如需 musl，也请自行重编）。
 |----|------|
 | Windows 编译 | x64 与 x86 均零警告（`/W4 /utf-8 /O2`，MSVC 14.44.35207） |
 | Windows 测试 | **43/43**：x64（堆 / 静态内存 / 堆+TLS / 静态内存+TLS 各一套）、x86（堆 / 静态内存） |
-| mingw-w64（Windows 目标的 GCC） | 库 / 示例 / 测试全量 **43/43** —— 在容器里用 mingw-w64 gcc 13.2.0-posix（Debian/Ubuntu 包，msvcrt）编，再把 PE 产物拿回 Windows 上跑（`CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar CXX=x86_64-w64-mingw32-g++ NCL_RUN_TESTS=0 sh build-linux.sh build-mingw`），Go 绑定的 cgo 走的就是这份库 |
+| mingw-w64（Windows 目标的 GCC） | 库 / 示例 / 测试全量 **43/43** —— 在容器里用 mingw-w64 gcc 13.2.0-posix（Debian/Ubuntu 包，msvcrt）编，再把 PE 产物拿回 Windows 上跑（`CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar CXX=x86_64-w64-mingw32-g++ NCL_RUN_TESTS=0 sh build-linux.sh builds/build-mingw`），Go 绑定的 cgo 走的就是这份库 |
 | 内存检查 | Linux：ASan + LeakSanitizer（`tools/asan-linux.sh`，含并发用例）**0 发现**、ThreadSanitizer **0 数据竞争**；Windows：MSVC `/fsanitize=address` 构建同样可跑 |
 | 断开握手 | 客户端断开前先收干净在途字节再 FIN（避免 RST 吞掉 DISCONNECT），`mqtt_client` 套件由 40 次里 10 次失败 → 40/40 通过 |
 | 测试并发提示 | 套件之间用固定端口（FTP 2323/3131 等）与相对路径，**同一构建目录里别并发跑两份 ctest**，否则互相抢端口/文件 |
@@ -158,7 +158,7 @@ tls、cpp（broker 需要真实 broker，`tools/interop.sh` 一键起，默认�
 |------|------|
 | Windows（MSVC 14.44.35207，Release） | x64 全量 **43/43**（`file` 套件 **308 项断言**：握手、`conf/ftp.txt`、64 MiB 大文件、两种续传起点、数据连接中途掐断后的续传重试）；x86 / 静态内存 / TLS / 静态内存+TLS / x86 静态内存 各 **43/43** |
 | Linux（gcc 13.4，容器内） | 默认堆 / TLS / 静态内存 / 静态内存+TLS 四套各 **43/43**（`docker run --rm -v <repo>:/work -w /work gcc:13 sh build-linux.sh <目录>`） |
-| mingw-w64（gcc 13.2.0-posix，msvcrt；容器内交叉编，PE 产物回 Windows 跑） | 库 / 示例 / 测试 **43/43**（`CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar CXX=x86_64-w64-mingw32-g++ NCL_RUN_TESTS=0 sh build-linux.sh build-mingw`，`NCL_RUN_TESTS=0` 只编译不执行）；TLS 变体（`NCL_WITH_TLS=1 NCL_OPENSSL_ROOT=/opt/mingw-openssl NCL_EXTRA_LIBS=-lcrypt32`，链 OpenSSL 3 的导入库 —— 运行时需要 `libssl-3-x64.dll`/`libcrypto-3-x64.dll`）同样 **43/43**，`test_tls` 通过 |
+| mingw-w64（gcc 13.2.0-posix，msvcrt；容器内交叉编，PE 产物回 Windows 跑） | 库 / 示例 / 测试 **43/43**（`CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar CXX=x86_64-w64-mingw32-g++ NCL_RUN_TESTS=0 sh build-linux.sh builds/build-mingw`，`NCL_RUN_TESTS=0` 只编译不执行）；TLS 变体（`NCL_WITH_TLS=1 NCL_OPENSSL_ROOT=/opt/mingw-openssl NCL_EXTRA_LIBS=-lcrypt32`，链 OpenSSL 3 的导入库 —— 运行时需要 `libssl-3-x64.dll`/`libcrypto-3-x64.dll`）同样 **43/43**，`test_tls` 通过 |
 | 内存检查 | Linux ASan + LeakSanitizer（`tools/asan-linux.sh --docker`，6 个套件）**0 发现**；ThreadSanitizer（分配器并发用例）**0 数据竞争** |
 | 托管绑定自检（离线） | C# 106 项、Java 107 项、Python 46 项，**0 失败** |
 | 异步方法调用 | `Method/Status`、`Method/Result` 两对已实现并接入设备端线程池：`async: true` 立刻回 `code=OK`+`handler`，状态/结果按句柄查询（未完成 `PENDING`、完成 `finished|error` 并释放句柄）；`test_server` 端到端用例通过 |

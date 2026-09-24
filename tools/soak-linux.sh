@@ -18,14 +18,14 @@
 # the pool completely and verifies it came back as a single free block. A round
 # that is not clean fails the process (non-zero exit) and stops it.
 #
-# Logs: build-soak/<size>.log . The script prints a summary line per pool size
+# Logs: builds/build-soak/<size>.log . The script prints a summary line per pool size
 # and exits non-zero if any process found a problem.
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SECONDS_TO_RUN=${NCL_SOAK_SECONDS:-3600}
 SIZES=${NCL_SOAK_SIZES:-"16384 32768 65536 131072 524288 4194304 20971520"}
-OUT="$ROOT/build-soak"
+OUT="$ROOT/builds/build-soak"
 CFLAGS="-std=c11 -O2 -Wall -Wextra -I$ROOT/stack/include -I$ROOT/stack/src"
 CFLAGS="$CFLAGS -D_POSIX_C_SOURCE=200809L -Wno-format-truncation"
 
@@ -50,7 +50,7 @@ else
     OPS_VAR="NCL_MEM_MC_OPS"
     OUT_SUB="st"
 fi
-OUT="$ROOT/build-soak/$OUT_SUB"
+OUT="$ROOT/builds/build-soak/$OUT_SUB"
 
 cd "$ROOT"
 mkdir -p "$OUT"

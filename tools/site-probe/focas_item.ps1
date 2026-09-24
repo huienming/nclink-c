@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 huienming
 
 # 编译并运行 focas_item：**裸读一个 item**，把请求的 d/e/arg2/arg3 直接指定，打印 rc、
@@ -17,7 +17,7 @@ param(
     [Parameter(Position = 2)][string]$D = "",
     [Parameter(Position = 3)][string]$E = "",
     [int]$Port = 8193,
-    [string]$BuildDir = "build"
+    [string]$BuildDir = "builds/build"
 )
 
 $ErrorActionPreference = "Stop"

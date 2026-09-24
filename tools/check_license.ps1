@@ -27,7 +27,9 @@ $extensions = @(".c", ".h", ".py", ".mjs", ".ps1", ".sh")
 # "missing a licence header". Match the *directory* segments, so build.ps1 (a
 # file) is still checked.
 $skipDirs = @("dist", ".git", "__pycache__")
-$skipDirPatterns = @("build", "build-*")
+# The trees moved under builds/, so the container needs a rule of its own;
+# the leaf names below still catch the trees themselves.
+$skipDirPatterns = @("builds", "build", "build-*")
 
 function Test-Skipped([string]$path) {
     $dirs = Split-Path -Parent $path

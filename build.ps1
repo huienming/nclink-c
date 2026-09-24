@@ -15,7 +15,7 @@
 # ninja -t deps，一个头依赖都没记下就把该目录换成 Visual Studio 生成器（它自己
 # 跟踪包含关系，不受影响）。另外配置和构建时会把控制台代码页固定下来
 # （默认 65001，-ConsoleCodePage 可改），从源头让 cl 和 CMake 的口径一致。
-#   .\build.ps1 -Arch x86 -BuildDir build-x86   # 32-bit (Win32/x86) build
+#   .\build.ps1 -Arch x86 -BuildDir builds/build-x86   # 32-bit (Win32/x86) build
 #   .\build.ps1 -Target test # build and run ctest only
 #   .\build.ps1 -Tls         # also enable MQTT over ssl:// (needs OpenSSL)
 #   .\build.ps1 -StaticMem -MemPoolBytes 65536  # no heap: one 64 KiB pool
@@ -27,7 +27,7 @@ param(
     [ValidateSet("x64", "x86")]
     [string]$Arch = "x64",
     [switch]$Clean,
-    [string]$BuildDir = "build",
+    [string]$BuildDir = "builds/build",
     [switch]$NoTest,
     [switch]$Tls,
     [switch]$StaticMem,

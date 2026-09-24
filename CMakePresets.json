@@ -8,20 +8,20 @@
     "configurePresets": [
         {
             "name": "release",
-            "displayName": "Release (Ninja -> build/)",
-            "description": "与 build.ps1 默认一致：Ninja + MSVC，Release，构建目录 build/。生成器必须与 build.ps1 相同，否则同一个构建目录会被两种生成器互相顶掉。",
+            "displayName": "Release (Ninja -> builds/build/)",
+            "description": "与 build.ps1 默认一致：Ninja + MSVC，Release，构建目录 builds/build/。生成器必须与 build.ps1 相同，否则同一个构建目录会被两种生成器互相顶掉。",
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build",
+            "binaryDir": "${sourceDir}/builds/build",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }
         },
         {
             "name": "debug",
-            "displayName": "Debug (Ninja -> build-debug/)",
-            "description": "与 build.ps1 -BuildDir build-debug -Configuration Debug 一致，供 F5 调试使用。",
+            "displayName": "Debug (Ninja -> builds/build-debug/)",
+            "description": "与 build.ps1 -BuildDir builds/build-debug -Configuration Debug 一致，供 F5 调试使用。",
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build-debug",
+            "binaryDir": "${sourceDir}/builds/build-debug",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug"
             }

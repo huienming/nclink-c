@@ -14,7 +14,7 @@
 # images are pulled on first use.
 #
 # The test binary is located through $NCL_TEST_BROKER_BIN, otherwise the usual
-# build outputs are tried (build-linux, CMake build dir, Windows build dir).
+# build outputs are tried (builds/build-linux, CMake build dir, Windows build dir).
 #
 # Environment overrides:
 #   NCL_INTEROP_MOSQUITTO_IMAGE   default eclipse-mosquitto:2
@@ -28,7 +28,7 @@ EMQX_IMAGE=${NCL_INTEROP_EMQX_IMAGE:-emqx/emqx:5.8.9}
 MOSQUITTO_PORT=18830
 EMQX_PORT=18831
 MOSQUITTO_TLS_PORT=18832
-MOSQUITTO_TLS_DIR=${NCL_INTEROP_TLS_DIR:-$ROOT/build-linux/interop-tls}
+MOSQUITTO_TLS_DIR=${NCL_INTEROP_TLS_DIR:-$ROOT/builds/build-linux/interop-tls}
 TLS_CERT=$ROOT/stack/test/data/tls_localhost_cert.pem
 
 # Git Bash rewrites absolute paths in arguments; hand Docker real Windows paths
@@ -50,11 +50,11 @@ find_binary() {
         return
     fi
     for candidate in \
-        "$ROOT/build-linux/bin/test_broker" \
-        "$ROOT/build/bin/ncl_test_broker" \
-        "$ROOT/build/stack/test/ncl_test_broker.exe" \
-        "$ROOT/build/bin/ncl_test_broker.exe" \
-        "$ROOT/build-asan/stack/test/ncl_test_broker.exe"; do
+        "$ROOT/builds/build-linux/bin/test_broker" \
+        "$ROOT/builds/build/bin/ncl_test_broker" \
+        "$ROOT/builds/build/stack/test/ncl_test_broker.exe" \
+        "$ROOT/builds/build/bin/ncl_test_broker.exe" \
+        "$ROOT/builds/build-asan/stack/test/ncl_test_broker.exe"; do
         if [ -x "$candidate" ]; then
             echo "$candidate"
             return
@@ -66,8 +66,8 @@ find_binary() {
 # The TLS run needs a binary built with NCL_WITH_TLS=1.
 find_tls_binary() {
     for candidate in \
-        "$ROOT/build-linux-tls/bin/test_broker" \
-        "$ROOT/build-tls/bin/ncl_test_broker"; do
+        "$ROOT/builds/build-linux-tls/bin/test_broker" \
+        "$ROOT/builds/build-tls/bin/ncl_test_broker"; do
         # -f, not -x: a Linux binary built inside Docker and read back through a
         # Windows filesystem has no executable bit, yet we only exec it in a
         # container.

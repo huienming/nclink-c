@@ -6,12 +6,12 @@
 #
 #   sh build-native.sh [path/to/libnclink_core.a] [out_dir]
 #
-# Defaults to <repo>/build-linux/libnclink_core.a and <here>/bin.
+# Defaults to <repo>/builds/build-linux/libnclink_core.a and <here>/bin.
 set -e
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../../.." && pwd)
-core=${1:-$root/build-linux/libnclink_core.a}
+core=${1:-$root/builds/build-linux/libnclink_core.a}
 out=${2:-$here/bin}
 
 if [ ! -f "$core" ]; then

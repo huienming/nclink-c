@@ -301,7 +301,7 @@ sh build-linux.sh                # Linux：同样全跑一遍
 小池回归（最容易踩的是"按协议上限要临时表"这类固定大块，见上一条）：
 
 ```sh
-NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 NCL_MEM_REPORT=1 ./build-linux.sh build-linux-64k
+NCL_STATIC_MEM=1 NCL_MEM_POOL_BYTES=65536 NCL_MEM_REPORT=1 ./build-linux.sh builds/build-linux-64k
 ```
 
 64 KiB 池下应当只有 `file` 一套失败（它自己的整块读回比较要 1 MiB 连续块）；
