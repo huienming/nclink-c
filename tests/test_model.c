@@ -374,6 +374,64 @@ static void test_data_item_number_paths(void)
     ncl_node_free(root);
 }
 
+/*
+ * 表头形态：路径去掉设备段（"/MACHINE/AXIS@S/POWER@1" -> "/AXIS@S/POWER@1"）。
+ * 模型路径、绑定键、REST 地址仍是绝对路径，只有采样表头用设备内路径 —— 一条通道
+ * 都在同一台设备上，设备段写出来只是重复。
+ */
+static void test_device_relative_paths(void)
+{
+    ncl_node *root = ncl_root_node_parse(kSensorNumberModel);
+    ncl_node *device;
+    ncl_node *axis;
+    char *path;
+
+    NCL_TEST_CASE("设备查询：往上走到设备段");
+    NCL_CHECK(root != NULL);
+    if (root == NULL) {
+        return;
+    }
+    device = ncl_node_device_at(root, 0);
+    axis = ncl_node_component_at(device, 0);
+    NCL_CHECK_EQ_STR(ncl_node_device_path(device), "/MACHINE");
+    NCL_CHECK_EQ_STR(ncl_node_device_path(axis), "/MACHINE");
+    NCL_CHECK_EQ_STR(ncl_node_device_path(ncl_node_data_item_at(axis, 0)),
+                     "/MACHINE");
+    /* 根节点不在任何设备上 */
+    NCL_CHECK(ncl_node_device_path(root) == NULL);
+
+    NCL_TEST_CASE("设备内路径：去掉设备段");
+    path = ncl_node_path_in_device(ncl_node_data_item_at(axis, 0));
+    NCL_CHECK_EQ_STR(path, "/AXIS@S/POWER@1");
+    ncl_free_safe(path);
+    path = ncl_node_path_in_device(ncl_node_data_item_at(device, 0));
+    NCL_CHECK_EQ_STR(path, "/STATUS@1");
+    ncl_free_safe(path);
+    /* 设备自己：除掉设备段只剩根分隔符 */
+    path = ncl_node_path_in_device(device);
+    NCL_CHECK_EQ_STR(path, "/");
+    ncl_free_safe(path);
+
+    NCL_TEST_CASE("字符串版：只认整段相同的前缀");
+    path = ncl_path_without_device("/MACHINE/STATUS", "/MACHINE");
+    NCL_CHECK_EQ_STR(path, "/STATUS");
+    ncl_free_safe(path);
+    /* 同前缀但不同段（/MACHINEX 不在 /MACHINE 底下）原样保留 */
+    path = ncl_path_without_device("/MACHINEX/STATUS", "/MACHINE");
+    NCL_CHECK_EQ_STR(path, "/MACHINEX/STATUS");
+    ncl_free_safe(path);
+    /* 别家的点位（设备段对不上）原样保留 */
+    path = ncl_path_without_device("/EXT/A@0", "/MACHINE");
+    NCL_CHECK_EQ_STR(path, "/EXT/A@0");
+    ncl_free_safe(path);
+    /* 没有设备段可去时给的是拷贝，不是空指针 */
+    path = ncl_path_without_device("/STATUS", NULL);
+    NCL_CHECK_EQ_STR(path, "/STATUS");
+    ncl_free_safe(path);
+
+    ncl_node_free(root);
+}
+
 static void test_data_item_number_serialisation(void)
 {
     ncl_node *root = ncl_node_new(NCL_NODE_ROOT);
@@ -424,6 +482,7 @@ static void test_data_item_number_serialisation(void)
 NCL_TEST_MAIN_BEGIN()
     test_component_paths_and_sample_header();
     test_data_item_number_paths();
+    test_device_relative_paths();
     test_data_item_number_serialisation();
     test_round_trip();
     test_default_model();

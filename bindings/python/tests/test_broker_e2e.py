@@ -163,8 +163,9 @@ class BrokerE2ETest(unittest.TestCase):
             client.unsubscribe_events()
 
             sample = samples[-1]
+            # 表头是设备内路径：设备段（/MACHINE）不重复写（哪台设备看主题里的 SN）
             self.assertEqual([column.path for column in sample.columns],
-                             ["/MACHINE/STATUS", "/MACHINE/PART_COUNT"])
+                             ["/STATUS", "/PART_COUNT"])
             self.assertEqual(sample.value_at(0, 0), 1)
             self.assertGreaterEqual(device.sample_upload_count, 1)
             self.assertEqual(events[-1].key, "PART_COUNT")

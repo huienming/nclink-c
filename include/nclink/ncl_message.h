@@ -372,6 +372,12 @@ void *ncl_message_item_at(const ncl_message *msg, size_t index);
  *
  *     "paths": ["/STATUS", "/AXIS@0/POSITION"]
  *
+ * The paths are **device-internal**: the device segment ("/MACHINE") is left
+ * out, because every column of one channel sits on the same device and the
+ * topic's <sn> already names it (ncl_node_path_in_device() is the rule). The
+ * model's own paths, binding keys and REST addresses stay absolute - prefix the
+ * header entry with the device path (ncl_node_device_path()) to get there.
+ *
  * and the array is directly reachable as `msg->as.sample.paths` (an ncl_strvec,
  * index-aligned with the sample items in `data`). This helper is only for
  * consumers that want one delimited line - logs, CSV headers, table widgets:

@@ -23,7 +23,7 @@ namespace Nclink
             _values = values;
         }
 
-        /// <summary>数据项路径（表头里的名字）。</summary>
+        /// <summary>数据项路径（表头里的名字）。设备段（/MACHINE）不写在这里，要拼回模型的绝对路径就加上它。</summary>
         public string Path { get; private set; }
 
         /// <summary>槽位数（本轮上报包含多少次采样）。</summary>

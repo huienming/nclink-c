@@ -722,7 +722,9 @@ static void test_sample_channel_shapes(void)
         NCL_CHECK(ncl_fake_server_publish_at(broker, 0, topic, sizeof(topic),
                                              payload, sizeof(payload)));
         NCL_CHECK_EQ_STR(topic, "Sample/" TEST_SN "/chExt");
-        NCL_CHECK(strstr(payload, "\"paths\":[\"/EXT/A@0\",\"/PLC/STATUS\"]") != NULL);
+        /* 表头去设备段：这条通道不在模型里，按服务端那台设备（/PLC）剥；
+         * /EXT/A@0 不在 /PLC 底下，原样留着。 */
+        NCL_CHECK(strstr(payload, "\"paths\":[\"/EXT/A@0\",\"/STATUS\"]") != NULL);
 
         /* 消费端拿到的是完整报文：表头项数 == 数据块列数，各列取值个数一致 */
         {
@@ -730,7 +732,7 @@ static void test_sample_channel_shapes(void)
             NCL_CHECK(sample != NULL);
             if (sample != NULL) {
                 char *header = ncl_message_sample_header(sample, ";");
-                NCL_CHECK_EQ_STR(header, "/EXT/A@0;/PLC/STATUS");
+                NCL_CHECK_EQ_STR(header, "/EXT/A@0;/STATUS");
                 ncl_free_safe(header);
                 NCL_CHECK(ncl_message_sample_is_complete(sample));
                 NCL_CHECK_EQ_INT(ncl_message_item_count(sample), 2);
@@ -907,13 +909,13 @@ static void test_sampling(void)
             NCL_CHECK_EQ_INT(sample->as.sample.upload_interval, 120);
             NCL_CHECK_EQ_INT(ncl_message_item_count(sample), 2);
             NCL_CHECK_EQ_INT(ncl_strvec_len(&sample->as.sample.paths), 2);
-            /* 表头：线上必须是数组 "paths":["/PLC/STATUS","/PLC/PART_COUNT"]，
-             * 且顺序与采样项一致。 */
+            /* 表头：线上必须是数组 "paths":["/STATUS","/PART_COUNT"]（设备内
+             * 路径，不重复设备段 /PLC），且顺序与采样项一致。 */
             NCL_CHECK_EQ_STR(ncl_strvec_at(&sample->as.sample.paths, 0),
-                             "/PLC/STATUS");
+                             "/STATUS");
             NCL_CHECK_EQ_STR(ncl_strvec_at(&sample->as.sample.paths, 1),
-                             "/PLC/PART_COUNT");
-            NCL_CHECK(strstr(payload, "\"paths\":[\"/PLC/STATUS\",\"/PLC/PART_COUNT\"]")
+                             "/PART_COUNT");
+            NCL_CHECK(strstr(payload, "\"paths\":[\"/STATUS\",\"/PART_COUNT\"]")
                       != NULL);
             /* beginTime 必须是墙上时钟（不是单调时钟），
              * 而不是本进程开机后的单调值。 */
@@ -925,10 +927,10 @@ static void test_sampling(void)
             }
             {
                 char *header = ncl_message_sample_header(sample, ";");
-                NCL_CHECK_EQ_STR(header, "/PLC/STATUS;/PLC/PART_COUNT");
+                NCL_CHECK_EQ_STR(header, "/STATUS;/PART_COUNT");
                 ncl_free_safe(header);
                 header = ncl_message_sample_header(sample, NULL);
-                NCL_CHECK_EQ_STR(header, "/PLC/STATUS;/PLC/PART_COUNT");
+                NCL_CHECK_EQ_STR(header, "/STATUS;/PART_COUNT");
                 ncl_free_safe(header);
             }
             {
@@ -1118,7 +1120,7 @@ static void test_sub_millisecond_samples(void)
         NCL_CHECK(ncl_server_sample_upload_count(server) > uploads_before);
         NCL_CHECK(ncl_fake_server_publish_at(broker, 0, topic, sizeof(topic),
                                              payload, sizeof(payload)));
-        NCL_CHECK(strstr(payload, "\"paths\":[\"/PLC/STATUS\",\"/TRACE@0\"]") != NULL);
+        NCL_CHECK(strstr(payload, "\"paths\":[\"/STATUS\",\"/TRACE@0\"]") != NULL);
         {
             ncl_message *sample = ncl_message_parse(topic, payload, strlen(payload));
             NCL_CHECK(sample != NULL);

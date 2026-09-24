@@ -19,6 +19,7 @@ public final class SampleColumn {
         this.values = values;
     }
 
+    /** 数据项路径。设备段（/MACHINE）不写在这里，要拼回模型的绝对路径就加上它。 */
     public String path() {
         return path;
     }

@@ -625,8 +625,8 @@ MQTT 5.0 broker（mochi-mqtt v2.7.9，匿名 1883；更早几次实测用的是 
     [6] /MACHINE/MACHINING_MODE
     [7] /MACHINE/CONTROLLER/WARNING
 模型里的采集通道 EdgeSersors: 8 个采样项
-    [0] /AXIS@X/POWER@1
-    [1] /AXIS@S/ACCELERATION@X
+    [0] /MACHINE/AXIS@X/POWER@1
+    [1] /MACHINE/AXIS@S/ACCELERATION@X
     ...（5 个功率 + 主轴 3 路振动 = 8 项）
 GET /MACHINE/STATUS = 1
 SET /MACHINE/STATUS = 42 成功
@@ -634,31 +634,31 @@ check 结果: code=NG reason=[#/value: expected maximum: 65535, found 99999]
 文件回传路径: D:\...\166587125\demo.txt
   远端文件 demo.txt (14 字节)
 收到采样 [Sample/166587125/EdgeSersors] 通道=EdgeSersors 采样周期=1ms 上报周期=100ms 采样项=8
-    表头 paths(8 项) = ["/MACHINE/AXIS@X/POWER@1",...,"/MACHINE/AXIS@S/ACCELERATION@Z"]
+    表头 paths(8 项) = ["/AXIS@X/POWER@1",...,"/AXIS@S/ACCELERATION@Z"]
     原始报文: {"paths":[...同上 8 项...],"id":"EdgeSersors","beginTime":"1789573512114",
               "data":[{"data":[800.0,812.5,...(中间省略)...,1100.0]},        ← 功率：100 个值
                       {"data":[[-1.0,-0.875,-0.75,-0.625],...]},          ← 振动：每槽一批
                       ...],"interval":1,"uploadInterval":100}
     /AXIS@X/POWER@1  编码=raw 本轮 100 个值: [800.0, 812.5, 825.0, 837.5, ...]
     ...
-    /MACHINE/AXIS@S/POWER@1  编码=raw 本轮 100 个值: [2175.0, 2187.5, 2200.0, ...]
-    /MACHINE/AXIS@S/ACCELERATION@Y 批量采样: 100 个槽位 × 每槽约 4 点 = 400 点，首个=0.875
+    /AXIS@S/POWER@1  编码=raw 本轮 100 个值: [2175.0, 2187.5, 2200.0, ...]
+    /AXIS@S/ACCELERATION@Y 批量采样: 100 个槽位 × 每槽约 4 点 = 400 点，首个=0.875
     按行消费: 400 行（数据最多的那一列的点数）
       行[0] /AXIS@X/POWER@1=800.0  /AXIS@S/ACCELERATION@X=-1.0  /AXIS@Y/POWER@1=1137.5  ...
       行[1] /AXIS@X/POWER@1=800.0  /AXIS@S/ACCELERATION@X=-0.875  /AXIS@Y/POWER@1=1137.5  ...
       ...（共 400 行，这里只打前 8 行）
 收到采样 [Sample/166587125/sample_channel0] 通道=sample_channel0 采样周期=1000ms 上报周期=1000ms 采样项=8
-    表头 paths(8 项) = ["/MACHINE/PART_COUNT","/MACHINE/FEED_OVERRIDE","/MACHINE/CONTROLLER/PROGRAM","/MACHINE/CONTROLLER/TOOL_NUMBER","/MACHINE/AXIS@S/SPEED","/MACHINE/STATUS","/MACHINE/MACHINING_MODE","/MACHINE/CONTROLLER/WARNING"]
-    /MACHINE/PART_COUNT      编码=raw 本轮 1 个值: [30]
-    /MACHINE/FEED_OVERRIDE   编码=raw 本轮 1 个值: [70]
-    /MACHINE/CONTROLLER/PROGRAM 编码=raw 本轮 1 个值: [1002]
-    /MACHINE/CONTROLLER/TOOL_NUMBER 编码=raw 本轮 1 个值: [3]
-    /MACHINE/AXIS@S/SPEED    编码=raw 本轮 1 个值: [4200]
-    /MACHINE/STATUS          编码=raw 本轮 1 个值: [1]
-    /MACHINE/MACHINING_MODE  编码=raw 本轮 1 个值: [1]
-    /MACHINE/CONTROLLER/WARNING 编码=raw 本轮 1 个值: [0]
+    表头 paths(8 项) = ["/PART_COUNT","/FEED_OVERRIDE","/CONTROLLER/PROGRAM","/CONTROLLER/TOOL_NUMBER","/AXIS@S/SPEED","/STATUS","/MACHINING_MODE","/CONTROLLER/WARNING"]
+    /PART_COUNT      编码=raw 本轮 1 个值: [30]
+    /FEED_OVERRIDE   编码=raw 本轮 1 个值: [70]
+    /CONTROLLER/PROGRAM 编码=raw 本轮 1 个值: [1002]
+    /CONTROLLER/TOOL_NUMBER 编码=raw 本轮 1 个值: [3]
+    /AXIS@S/SPEED    编码=raw 本轮 1 个值: [4200]
+    /STATUS          编码=raw 本轮 1 个值: [1]
+    /MACHINING_MODE  编码=raw 本轮 1 个值: [1]
+    /CONTROLLER/WARNING 编码=raw 本轮 1 个值: [0]
     按行消费: 1 行（数据最多的那一列的点数）
-      行[0] /MACHINE/PART_COUNT=30  /MACHINE/FEED_OVERRIDE=70  /MACHINE/CONTROLLER/PROGRAM=1002  /MACHINE/CONTROLLER/TOOL_NUMBER=3  /MACHINE/AXIS@S/SPEED=4200  /MACHINE/STATUS=1  /MACHINE/MACHINING_MODE=1  /MACHINE/CONTROLLER/WARNING=0
+      行[0] /PART_COUNT=30  /FEED_OVERRIDE=70  /CONTROLLER/PROGRAM=1002  /CONTROLLER/TOOL_NUMBER=3  /AXIS@S/SPEED=4200  /STATUS=1  /MACHINING_MODE=1  /CONTROLLER/WARNING=0
 收到事件 [Event/166587125] id=010307 key=PART_COUNT value=60
 ...
 共收到 12 条事件、65 条采样上报
@@ -1089,8 +1089,12 @@ ncl_server_stop_all_samples(server);
 
 | 形态 | 数据从哪来 | 表头来源 |
 |------|-----------|----------|
-| **1. 模型文件里有定义** | 模型里的 `SAMPLE_CHANNEL`，`ids` 写节点 id（或路径） | 由节点 id 在模型里解析出路径 |
-| **2. 模型里没有定义，但给了表头** | `ids` 直接写路径 | 路径原样作为表头，走该路径上的工具绑定取值 |
+| **1. 模型文件里有定义** | 模型里的 `SAMPLE_CHANNEL`，`ids` 写节点 id（或路径） | 由节点 id 在模型里解析出路径，**去掉设备段**（`/MACHINE/STATUS` → `/STATUS`） |
+| **2. 模型里没有定义，但给了表头** | `ids` 直接写路径 | 同样去设备段：按服务端那台设备（模型的 device 路径）剥；对不上的路径原样作为表头 |
+
+两种形态都是"**取值用绝对路径，上报用设备内路径**"：一条通道里的每一项都在同一台
+设备上，表头里每一列都写一遍 `/MACHINE` 纯属重复（消费端按 topic 里的 SN 就知道是
+哪台设备）。路径怎么从设备内回到模型里的绝对路径见 4.5。
 
 ```c
 /* 情况 2：模型里完全没有这个通道，也无所谓 —— 表头直接给路径 */
@@ -1223,7 +1227,7 @@ if (!ncl_message_sample_is_complete(msg)) {
 | 字段 | 含义 |
 |------|------|
 | 主题末段 / `sample->as.sample.id` | 采样通道 id |
-| `sample->as.sample.paths` | **表头**：本次采集的数据项路径**数组**，与 `data` 按下标一一对应 |
+| `sample->as.sample.paths` | **表头**：本次采集的数据项路径**数组**（**设备内路径**，见下），与 `data` 按下标一一对应 |
 | `sample->as.sample.data[i]` | 第 i 项的数据：`{encoding, data:[本轮各次采样值]}`，未编码时 `encoding` 为空 |
 | `sample->as.sample.interval` | **采样周期**，取模型里该通道的 `sampleInterval`；注意报文键名是 `interval`，不是 `sampleInterval` |
 | `sample->as.sample.upload_interval` | 上报周期，取模型里的 `uploadInterval` |
@@ -1232,7 +1236,7 @@ if (!ncl_message_sample_is_complete(msg)) {
 一条真实报文（字段顺序按规范固定）：
 
 ```json
-{"paths":["/MACHINE/STATUS","/MACHINE/PART_COUNT"],"id":"ch1","beginTime":"1789450135470",
+{"paths":["/STATUS","/PART_COUNT"],"id":"ch1","beginTime":"1789450135470",
  "data":[{"data":[0,0]},{"data":[129,139]}],"interval":1000,"uploadInterval":2000}
 ```
 
@@ -1240,6 +1244,18 @@ if (!ncl_message_sample_is_complete(msg)) {
 先后采到的值；`interval` = 模型 `sampleInterval`，`uploadInterval` = 模型
 `uploadInterval`。若上层要一行字符串形式的表头（日志/CSV），用
 `ncl_message_sample_header(msg, ";")` 把同一个数组拼起来即可。
+
+**表头里的路径是"设备内路径"**：设备段（`/MACHINE`）被去掉，一条通道里的每一项都
+在同一台设备上，写一遍只是重复（是哪台设备看 topic 的 SN）。要拿它去查模型、打
+REST、发查询，把设备段补回去就是模型里的绝对路径：
+
+```c
+const char *device = ncl_node_path(ncl_node_device_at(ncl_client_root_node(c), 0));
+/* "/MACHINE" + "/STATUS" = "/MACHINE/STATUS" */
+```
+
+模型里的路径（`sampleItemPaths` / `get_path` / REST 地址 / 绑定键）仍然是绝对路径，
+只有采样表头用设备内路径。
 
 两点容易误解的地方：
 
@@ -2079,7 +2095,8 @@ ncl_client_holder_restart();
 static void on_sample(ncl_client *client, const char *topic,
                       const ncl_message *msg, void *user) {
     size_t i, items = ncl_message_item_count(msg);   /* = 采样项个数 */
-    /* 表头：本次采集了哪些数据项。线上是数组 "paths":[...] */
+    /* 表头：本次采集了哪些数据项。线上是数组 "paths":[...]，路径是设备内路径
+     * （"/STATUS"，去掉了设备段 "/MACHINE"）——要拿它查模型就补回设备段。 */
     ncl_json *header = ncl_strvec_to_json(&msg->as.sample.paths);
     char *header_text = header != NULL ? ncl_json_write_string(header) : NULL;
     ncl_log_info("通道 %s，采样 %lldms（=模型 sampleInterval），上报 %lldms，表头 %s",
@@ -2119,6 +2136,7 @@ size_t got = ncl_client_sample_count(client);   /* 收到过多少条上报 */
 | 触发时机 | 上报由设备侧驱动，`uploadInterval` 一到就发；客户端只是被动接收 |
 | 采样项对应 | `paths[i]` 与 `data[i]` 一一对应，顺序与设备模型里 `ids` 的顺序一致 |
 | 表头 | `paths` 是数组（不是拼接字符串）；要一行字符串用 `ncl_message_sample_header(msg, ";")` |
+| 表头的路径 | **设备内路径**：设备段（`/MACHINE`）不写在每一列上。查模型 / 打 REST 时把设备段补回去（`ncl_node_path(ncl_node_device_at(root, 0))` 就是那一段），片段见 4.5 |
 | `interval` | 就是模型里的 `sampleInterval`（报文键名是 `interval`） |
 | 时间戳 | 报文里带 `beginTime`（窗口起点，epoch 毫秒字符串），需要严格时间对齐时用它 |
 | 完整性 | 设备端只发完整报文（**外层**：表头与各列槽位对齐）；消费端可用 `ncl_message_sample_is_complete()` 复核 |
@@ -2692,7 +2710,8 @@ ncl_client_set_sample_handler(client, on_sample, NULL);
 ncl_client_subscribe_samples(client, 0);     /* Sample/<sn>/# */
 ```
 
-**读表头**：报文里的 `paths` 是**数组**，列出这次采集了哪些数据项（与 `data` 按下标对应）：
+**读表头**：报文里的 `paths` 是**数组**，列出这次采集了哪些数据项（与 `data` 按下标
+对应）。路径是**设备内路径**（`/STATUS`），设备段不重复写：
 
 ```c
 const ncl_strvec *paths = &msg->as.sample.paths;
@@ -2700,9 +2719,13 @@ for (size_t i = 0; i < ncl_strvec_len(paths); i++) {
     ncl_log_info("第 %u 列: %s", (unsigned)i, ncl_strvec_at(paths, i));
 }
 /* 需要一行字符串（日志/CSV 表头）时： */
-char *line = ncl_message_sample_header(msg, ";");   /* "/MACHINE/STATUS;/AXIS@0/POSITION" */
+char *line = ncl_message_sample_header(msg, ";");   /* "/STATUS;/AXIS@0/POSITION" */
 free(line);
 ```
+
+**从表头回到模型路径**：模型里的路径（`ncl_host_point_path()` / REST / 绑定键）是
+绝对路径，补上设备段即可 —— `snprintf(buf, sizeof(buf), "%s%s", device_path, path)`，
+其中 `device_path` 就是模型里 device 节点的路径（`/MACHINE`）。
 
 **只要某一个通道**：自己订更精确的主题，回调仍是同一个（按主题里的通道 id 分发）。
 
@@ -2748,7 +2771,8 @@ ncl_mqtt_client_subscribe(mqtt, "Sample/+/ch1", 0);   /* 所有设备的 ch1 通
 设备端的 HTTP 服务（见 5.7）可以直接增删采样通道，返回体就是 `Result`：
 
 ```bash
-# 起一个通道：模型里没有定义也行，ids 直接给路径（表头）
+# 起一个通道：模型里没有定义也行，ids 直接给路径（取值按它查绑定；上报的表头是
+# 去掉设备段的设备内路径，这条通道报 /STATUS、/AXIS@0/POSITION）
 curl -X POST http://<设备IP>:9008/api/nclinkServer/addSample \
      -H 'Content-Type: application/json' \
      -d '{"request":{"id":"ch1","type":"SAMPLE_CHANNEL",
@@ -3368,6 +3392,9 @@ Copyright (c) 2026 huienming
 - `bool ncl_node_is_sample_node(const ncl_node *node);` — True when the node type string equals NCL_NODE_TYPE_SAMPLE_CHANNEL.
 - `ncl_err ncl_node_set_path(ncl_node *node, const char *parent_path);` — Recompute the path of @p node and of its subtree, applying the "parent of a
 - `const char *ncl_node_path(const ncl_node *node);` — Effective path: the root derives it from its type, others return the stored
+- `const char *ncl_node_device_path(const ncl_node *node);` — The path of the device @p node sits on ("/MACHINE"), or NULL when it sits on
+- `char *ncl_node_path_in_device(const ncl_node *node);` — @p node 's path with the device segment dropped - the form a Sample report
+- `char *ncl_path_without_device(const char *path, const char *device_path);` — String form of the same rule: @p path with @p device_path dropped from the
 - `void ncl_node_build_relations(ncl_node *node);` — Wire the parent pointers through the subtree rooted at @p node.
 - `bool ncl_node_is_valid(const ncl_node *node);` — True when the node and its subtree satisfy the model rules.
 - `ncl_node *ncl_root_node_parse(const char *text);` — Parse @p text into a root node and run ncl_root_node_post_construct().

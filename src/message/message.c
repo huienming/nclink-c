@@ -1125,10 +1125,15 @@ bool ncl_message_sample_is_complete(const ncl_message *msg)
 /**
  * 按模型补表头：拿通道 id 找到 SAMPLE_CHANNEL，用它声明的采样项顺序填 paths。
  * 模型项数与数据列数不一致就放弃（宁可保持"不完整"，也不猜错对应关系）。
+ *
+ * 补出来的是**设备内路径**（`/STATUS`），跟设备端上报的形态一致：表头里每一
+ * 项都在同一台设备上，设备段（`/MACHINE`）写出来只是重复。要回到模型里的绝对
+ * 路径（REST / 查询用的那种）就把它补回去。
  */
 static ncl_err ncl_sample_paths_from_model(ncl_message *msg, ncl_node *root)
 {
     ncl_node *channel;
+    const char *device_path;
     size_t count;
     size_t i;
 
@@ -1144,12 +1149,19 @@ static ncl_err ncl_sample_paths_from_model(ncl_message *msg, ncl_node *root)
         return NCL_ERR_NOT_FOUND;
     }
 
+    device_path = ncl_node_device_path(channel);
+    if (device_path == NULL) {
+        device_path = ncl_node_device_path(ncl_node_device_at(root, 0));
+    }
+
     ncl_strvec_clear(&msg->as.sample.paths);
     for (i = 0; i < count; i++) {
         ncl_sample_ref *ref = ncl_node_sample_at(channel, i);
-        char *path = ref != NULL ? ncl_sample_ref_path(ref) : NULL;
+        char *absolute = ref != NULL ? ncl_sample_ref_path(ref) : NULL;
+        char *path = ncl_path_without_device(absolute, device_path);
         ncl_err err;
 
+        ncl_mem_free(absolute);
         if (path == NULL) {
             ncl_strvec_clear(&msg->as.sample.paths);
             return NCL_ERR_NOT_FOUND;

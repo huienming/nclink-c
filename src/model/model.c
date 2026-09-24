@@ -748,6 +748,53 @@ const char *ncl_node_path(const ncl_node *node)
 }
 
 /**
+ * The device a node sits on. The model is root -> device -> component ->
+ * data item, so walking the parents up to the device segment is what gives the
+ * one segment a consumer can take for granted.
+ */
+const char *ncl_node_device_path(const ncl_node *node)
+{
+    const ncl_node *walk = node;
+
+    while (walk != NULL && walk->type != NCL_NODE_DEVICE) {
+        walk = walk->parent;
+    }
+    return walk != NULL ? ncl_node_path(walk) : NULL;
+}
+
+char *ncl_path_without_device(const char *path, const char *device_path)
+{
+    size_t length;
+
+    if (path == NULL) {
+        return NULL;
+    }
+    /* Nothing to drop: no device above the node, or the root's own "/". */
+    if (device_path == NULL || device_path[0] == '\0' ||
+        strcmp(device_path, NCL_PATH_SEPARATOR) == 0) {
+        return ncl_strdup(path);
+    }
+    length = strlen(device_path);
+    if (strncmp(path, device_path, length) != 0) {
+        return ncl_strdup(path);
+    }
+    if (path[length] == '\0') {
+        /* The device itself - nothing left but the separator. */
+        return ncl_strdup(NCL_PATH_SEPARATOR);
+    }
+    if (path[length] != NCL_PATH_SEPARATOR[0]) {
+        /* Same prefix, different segment (e.g. /PLCX under /PLC): keep it. */
+        return ncl_strdup(path);
+    }
+    return ncl_strdup(path + length);
+}
+
+char *ncl_node_path_in_device(const ncl_node *node)
+{
+    return ncl_path_without_device(ncl_node_path(node), ncl_node_device_path(node));
+}
+
+/**
  * The prefix a node's own path hangs from. NULL, "" and "/" all mean "nothing
  * above this node" - the root separator is not a segment (otherwise a device
  * would come out as "//MACHINE").

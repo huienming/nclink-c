@@ -48,7 +48,10 @@ typedef struct ncl_sample_task {
     char       *topic;
     ncl_node   *config;      /**< deep copy of the config node */
 
-    ncl_strvec  paths;       /**< resolved sample paths, one per sample item */
+    ncl_strvec  paths;       /**< absolute paths, one per sample item: the
+                              *   lookup keys the bindings are registered under */
+    ncl_strvec  header;      /**< the same paths with the device segment
+                              *   dropped ("/STATUS"): what goes on the wire */
     ncl_thread *thread;
 
     ncl_mutex  *mutex;
@@ -1982,6 +1985,7 @@ static void ncl_sample_task_free(ncl_sample_task *task)
     ncl_mem_free(task->topic);
     ncl_node_free(task->config);
     ncl_strvec_free(&task->paths);
+    ncl_strvec_free(&task->header);
     ncl_mutex_destroy(task->mutex);
     ncl_cond_destroy(task->cond);
     ncl_mem_free(task);
@@ -2152,8 +2156,10 @@ static void ncl_sample_collect(ncl_sample_task *task, ncl_message *sample)
     }
     ncl_message_set_sample_interval(sample, sample_interval);
     ncl_message_set_upload_interval(sample, upload_interval);
+    /* 表头用设备内路径（header），取值用绝对路径（paths）。两者在构造阶段
+     * 就已经等长且同序，这里只按第一者的长度走一遍。 */
     for (item = 0; item < count; item++) {
-        ncl_message_add_sample_path(sample, ncl_strvec_at(&task->paths, item));
+        ncl_message_add_sample_path(sample, ncl_strvec_at(&task->header, item));
     }
 }
 
@@ -2202,15 +2208,20 @@ static void ncl_sample_thread(void *arg)
 
 /**
  * Build the sampling task for @p config: validate the channel, resolve the
- * sample paths (the report header) and remember the channel.
+ * sample paths (the lookup keys) and the report header, then remember the
+ * channel.
  *
  * Two shapes are supported and nothing else:
  *
  *   1. 采样通道在模型文件里有定义 - every sample item names a node (id), which is
  *      looked up in the loaded model to obtain its path.
  *   2. 采样通道在模型里没有定义，但给了表头 - every sample item is already a
- *      path ("/..."), used verbatim as the header and queried through the tool
- *      bindings of that path.
+ *      path ("/..."), queried through the tool bindings of that path.
+ *
+ * Either way the two forms differ by the device segment: bindings answer on the
+ * absolute path ("/MACHINE/STATUS"), the header on the wire drops the segment
+ * ("/STATUS") - every column of one channel sits on the same device, so the
+ * prefix would just be repeated on every entry (see ncl_path_without_device).
  *
  * Anything else (empty id, no sample items, missing/non-positive intervals, a
  * relative id that the model cannot resolve) fails with a specific error
@@ -2221,6 +2232,7 @@ static ncl_err ncl_sample_task_create(ncl_server *server,
                                       ncl_sample_task **out)
 {
     ncl_sample_task *task;
+    const char *device_path;
     size_t i;
 
     *out = NULL;
@@ -2251,6 +2263,7 @@ static ncl_err ncl_sample_task_create(ncl_server *server,
     task->mutex = ncl_mutex_create();
     task->cond = ncl_cond_create();
     ncl_strvec_init(&task->paths);
+    ncl_strvec_init(&task->header);
 
     if (task->id == NULL || task->config == NULL || task->mutex == NULL ||
         task->cond == NULL) {
@@ -2264,9 +2277,17 @@ static ncl_err ncl_sample_task_create(ncl_server *server,
         return NCL_ERR_NOMEM;
     }
 
+    /* The device the header is relative to: the channel's own device when it
+     * came from the model, otherwise the one device the server serves. */
+    device_path = ncl_node_device_path(config);
+    if (device_path == NULL && server->root_node != NULL) {
+        device_path = ncl_node_device_path(ncl_node_device_at(server->root_node, 0));
+    }
+
     for (i = 0; i < ncl_node_sample_count(config); i++) {
         const ncl_sample_ref *ref = ncl_node_sample_at(config, i);
         char *path = NULL;
+        char *header = NULL;
 
         if (ref == NULL || ref->id == NULL || ncl_str_is_blank(ref->id)) {
             ncl_log_error("采样通道 %s 的第 %u 个采样项缺少 id", config->id,
@@ -2298,9 +2319,18 @@ static ncl_err ncl_sample_task_create(ncl_server *server,
             return NCL_ERR_NOMEM;
         }
         ncl_mem_free(path);
+
+        header = ncl_path_without_device(ncl_strvec_at(&task->paths, i),
+                                         device_path);
+        if (header == NULL || ncl_strvec_push(&task->header, header) != NCL_OK) {
+            ncl_mem_free(header);
+            ncl_sample_task_free(task);
+            return NCL_ERR_NOMEM;
+        }
+        ncl_mem_free(header);
     }
 
-    /* 表头在构造阶段就已完整：paths 的项数 == 采样项个数。 */
+    /* 表头在构造阶段就已完整：header 的项数 == 采样项个数。 */
     *out = task;
     return NCL_OK;
 }

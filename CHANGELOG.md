@@ -5,6 +5,27 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 3.6.0
 
+### 采样表头：路径去掉设备段（`/MACHINE/STATUS` → `/STATUS`）
+
+  * **现象**：一条采样报文里每一列的 `paths` 都带同一段设备前缀（`/MACHINE/...`）。
+    一条通道里的所有采样项都在同一台设备上，是哪台设备看主题里的 `<sn>` 就够了 ——
+    前缀在表头里只是逐列重复，消费端还得先把它剥掉才能对上自己的列名。
+  * **现在**：表头是**设备内路径**（`/STATUS`、`/AXIS@X/POSITION@REAL`）。**取值那条路
+    一点没动**：绑定键、模型路径、REST 地址、`ncl_host_point_path()`、`sampleItemPaths`
+    仍是绝对路径。两种采样通道形态都按"服务端那台设备"剥前缀（模型里定义的通道按它自己
+    那台设备）；对不上的路径（别家的点位）原样保留。
+  * **新增**：`ncl_node_device_path()`（节点往上找设备段）、`ncl_node_path_in_device()`、
+    `ncl_path_without_device()`（字符串版，只认整段相同的前缀：`/PLX` 不会被 `/PLC` 吃掉）。
+    设备端（`ncl_sample_task_create`）与客户端的模型补齐（`ncl_message_sample_normalise`）
+    走同一条规则，所以"设备带了表头"与"客户端按模型补表头"两种情形形态一致。
+  * **影响面**：`src/server/server.c`（表头与取值分成两个向量：`paths` 查绑定、`header`
+    上线）、`src/message/message.c`、`src/model/model.c`、`include/nclink/ncl_model.h` /
+    `ncl_server.h` / `ncl_message.h`；测试 `test_server` / `test_message` / `test_client`
+    的期望值跟着改，`test_model` 新增"设备内路径"用例。验证：`build.ps1` **43/43**。
+  * **消费端**：拿表头去查模型 / 打 REST / 发查询时补上设备段即可（`device_path` 就是模型里
+    device 节点的路径："`/MACHINE`" + "`/STATUS`"）。MANUAL 4.5 / 5.5 / 6.6、C# / Java /
+    Python 绑定的注释与 C# 实测输出同步。
+
 ### 发布：dist 入库、clients 出库 + 头文件、适配器一个包多驱动
 
   * **`dist/` 入库**（原来只在本地）：`nclink-core-c-3.6.0`（库包）与

@@ -447,7 +447,7 @@ bindings\csharp\samples\Nclink.Demo.Device\bin\Release\net8.0\Nclink.Demo.Device
 ```
 HTTP: http://localhost:9008/api/schema（Swagger UI: http://localhost:9008/swagger-ui）
 设备端已就绪：SN=V2CS0000001 broker=(不接 MQTT)，工具 6 个操作，采样通道 1 个
-publish Sample/V2CS0000001/cs_channel {"paths":["/MACHINE/STATUS","/MACHINE/PART_COUNT","/MACHINE/CONTROLLER/WARNNING"], ...
+publish Sample/V2CS0000001/cs_channel {"paths":["/STATUS","/PART_COUNT","/CONTROLLER/WARNNING"], ...
 publish Event/V2CS0000001 {"@id":"d9fd5cb3-...","id":"010307","time":"1789609920540","event":{"key":"PART_COUNT","value":13}}
 离线模式：没有 MQTT，客户端读不到；REST 端点照常用。
 

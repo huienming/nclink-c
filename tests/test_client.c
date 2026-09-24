@@ -516,8 +516,8 @@ static void test_client_full_flow(void)
         }
         NCL_CHECK_EQ_INT(seen.samples, base + 1);
         NCL_CHECK_EQ_INT(seen.path_count, 2);
-        NCL_CHECK_EQ_STR(seen.path, "/PLC/STATUS");
-        NCL_CHECK_EQ_STR(seen.path_last, "/PLC/PART_COUNT");
+        NCL_CHECK_EQ_STR(seen.path, "/STATUS");
+        NCL_CHECK_EQ_STR(seen.path_last, "/PART_COUNT");
         NCL_CHECK_EQ_INT(seen.complete, 1);
         ncl_client_set_sample_handler(client, NULL, NULL);
     }
