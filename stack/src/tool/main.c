@@ -36,6 +36,10 @@
 #include "nclink/ncl_host.h"
 #include "nclink/ncl_module.h"
 
+#if !defined(NCL_OS_WINDOWS)
+#  include <dirent.h>
+#endif
+
 #include "tool/text.h"
 
 typedef struct {
@@ -60,7 +64,10 @@ typedef struct {
 static void usage(const char *program)
 {
     printf("用法: %s [选项]\n", program);
-    printf("  -r, --root <目录>     安装根目录（conf/ bin/ plugins/ log/ 都在它下面；默认当前目录）\n");
+    printf("  -r, --root <目录>     安装根目录（conf/ bin/ plugins/ log/ 都在它下面；\n");
+    printf("                        默认：当前目录，或它的上一级/上两级里第一个带\n");
+    printf("                        conf/ 或 plugins/ 的目录 —— 发布包就是\n");
+    printf("                        <root>\\bin\\ncl_server.exe 这个形状，双击也能跑）\n");
     printf("  -c, --config <文件>   设备配置（默认 <root>/conf/device.json）\n");
     printf("  -b, --broker <URL>    MQTT broker；\"-\" 表示不接（省略 = conf/mqtt.cfg）\n");
     printf("  -P, --plugin-dir <目录>  适配器模块目录（默认 <root>/plugins）\n");
@@ -77,6 +84,161 @@ static void usage(const char *program)
     printf("      --operator <名字> 写审计里的操作者（默认不写）\n");
     printf("      --port <端口>     REST 端口，0 表示随机（默认 8080）\n");
     printf("      --interval <毫秒> 轮询周期（默认 1000）\n");
+}
+
+/* ------------------------------------------------------------- 安装根 ---- */
+
+/** <dir>/conf 或 <dir>/plugins 在 → 这个目录像"安装根"。 */
+static bool looks_like_root(const char *dir)
+{
+    char probe[NCL_PATH_MAX_BUF];
+
+    if (dir == NULL || dir[0] == '\0') {
+        return false;
+    }
+    snprintf(probe, sizeof(probe), "%s/conf", dir);
+    if (ncl_path_exists(probe)) {
+        return true;
+    }
+    snprintf(probe, sizeof(probe), "%s/plugins", dir);
+    return ncl_path_exists(probe);
+}
+
+/** 绝对路径化；失败就原样返回（@p buffer 要活得比返回值久）。 */
+static const char *absolute_path(const char *path, char *buffer, size_t cap)
+{
+    if (path == NULL || path[0] == '\0') {
+        return path;
+    }
+#if defined(NCL_OS_WINDOWS)
+    if (GetFullPathNameA(path, (DWORD)cap, buffer, NULL) == 0) {
+        return path;
+    }
+#else
+    if (realpath(path, buffer) == NULL) {
+        return path;
+    }
+#endif
+    return buffer;
+}
+
+/**
+ * 安装根目录。-r 给了就用它；没给就挑一个"像安装根"的：当前目录，再往上两级
+ * —— 发布包是 `<root>\bin\ncl_server.exe` 这个形状，双击 exe 时当前目录是
+ * bin\，而 conf\ 与 plugins\ 在它的上一层。都不像就用当前目录（老默认）。
+ */
+static const char *resolve_root(const char *given)
+{
+    static char buffer[NCL_PATH_MAX_BUF];
+    static const char *const candidates[] = { ".", "..", "../.." };
+    const char *picked = ".";
+    size_t i;
+
+    if (given != NULL && given[0] != '\0') {
+        return absolute_path(given, buffer, sizeof(buffer));
+    }
+    for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        if (looks_like_root(candidates[i])) {
+            picked = candidates[i];
+            break;
+        }
+    }
+    return absolute_path(picked, buffer, sizeof(buffer));
+}
+
+static void append_name(char *out, size_t cap, const char *name)
+{
+    size_t used = strlen(out);
+
+    if (used + 1 >= cap) {
+        return;
+    }
+    snprintf(out + used, cap - used, used > 0 ? " %s" : "%s", name);
+}
+
+/** 绝对路径？Windows 认 `X:\` 与 `\\`，POSIX 认开头的 `/`。 */
+static bool path_is_absolute(const char *path)
+{
+    if (path == NULL || path[0] == '\0') {
+        return false;
+    }
+#if defined(NCL_OS_WINDOWS)
+    if (path[0] == '/' || (path[0] == '\\' && path[1] == '\\')) {
+        return true;
+    }
+    return ((path[0] >= 'A' && path[0] <= 'Z') ||
+            (path[0] >= 'a' && path[0] <= 'z')) &&
+           path[1] == ':' && (path[2] == '\\' || path[2] == '/');
+#else
+    return path[0] == '/';
+#endif
+}
+
+/**
+ * conf 目录里有哪些 *.json —— 配置读不到的时候，把"手上有哪几份可以 -c 指过去"
+ * 直接列出来，比只回一句"cannot read"有用得多。@p first 收第一份的名字（用来
+ * 拼一条现成的命令行）。返回列出的份数。
+ */
+static size_t conf_samples(char *out, size_t cap, size_t max, char *first,
+                           size_t first_cap)
+{
+    const char *conf = ncl_env_conf_path();
+    size_t count = 0;
+
+    out[0] = '\0';
+    first[0] = '\0';
+#if defined(NCL_OS_WINDOWS)
+    {
+        WIN32_FIND_DATAA entry;
+        char pattern[NCL_PATH_MAX_BUF];
+        HANDLE handle;
+
+        snprintf(pattern, sizeof(pattern), "%s\\*.json", conf);
+        handle = FindFirstFileA(pattern, &entry);
+        if (handle == INVALID_HANDLE_VALUE) {
+            return 0;
+        }
+        do {
+            if (count >= max) {
+                append_name(out, cap, "…");
+                break;
+            }
+            if (count == 0) {
+                snprintf(first, first_cap, "%s", entry.cFileName);
+            }
+            append_name(out, cap, entry.cFileName);
+            count++;
+        } while (FindNextFileA(handle, &entry));
+        FindClose(handle);
+    }
+#else
+    {
+        DIR *dir = opendir(conf);
+        const struct dirent *entry;
+
+        if (dir == NULL) {
+            return 0;
+        }
+        while ((entry = readdir(dir)) != NULL) {
+            size_t len = strlen(entry->d_name);
+
+            if (len < 5 || strcmp(entry->d_name + (len - 5), ".json") != 0) {
+                continue;
+            }
+            if (count >= max) {
+                append_name(out, cap, "…");
+                break;
+            }
+            if (count == 0) {
+                snprintf(first, first_cap, "%s", entry->d_name);
+            }
+            append_name(out, cap, entry->d_name);
+            count++;
+        }
+        closedir(dir);
+    }
+#endif
+    return count;
 }
 
 static bool parse_args(int argc, char **argv, host_args *args)
@@ -430,7 +592,7 @@ int main(int argc, char **argv)
     }
     /* The root comes first: everything below (the default config path, the
      * plugin directory, bin/sn.txt, log/) is resolved against it. */
-    ncl_env_set_root(args.root);
+    ncl_env_set_root(resolve_root(args.root));
     if (args.config == NULL) {
         snprintf(default_config, sizeof(default_config), "%s/device.json",
                  ncl_env_conf_path());
@@ -452,6 +614,23 @@ int main(int argc, char **argv)
     }
     ncl_strbuf_init(&err);
     config = ncl_tool_json_from_file(args.config, &err);
+    if (config == NULL && args.config != default_config &&
+        !path_is_absolute(args.config)) {
+        /* -c 是相对当前目录的；当前目录里没有就按**安装根目录**再找一次 ——
+         * 于是从包里任意一级子目录（比如 bin\）跑，`-c conf/pseudo.json`
+         * 也指得对。 */
+        char from_root[NCL_PATH_MAX_BUF];
+
+        snprintf(from_root, sizeof(from_root), "%s/%s", ncl_env_root(),
+                 args.config);
+        if (strcmp(from_root, args.config) != 0) {
+            config = ncl_tool_json_from_file(from_root, &err);
+            if (config != NULL) {
+                ncl_log_warn("-c %s 在当前目录下没有，按安装根目录读到了 %s",
+                             args.config, from_root);
+            }
+        }
+    }
     if (config == NULL && args.plugins_list) {
         /* `--plugins` answers "what can this program talk to", which must not
          * depend on a readable device configuration. */
@@ -460,7 +639,26 @@ int main(int argc, char **argv)
         config = ncl_json_new_object();
     }
     if (config == NULL) {
+        char samples[512];
+        char first[128];
+        size_t found;
+
         ncl_log_error("适配器启动失败: %s", ncl_strbuf_cstr(&err));
+        ncl_log_error("安装根目录 = %s（-r/--root 指的就是它；没给就挑当前目录、"
+                      "它的上一级、上两级里第一个带 conf/ 或 plugins/ 的）",
+                      ncl_env_root());
+        found = conf_samples(samples, sizeof(samples), 6, first, sizeof(first));
+        if (found > 0) {
+            ncl_log_error("conf 目录（%s）里有这些配置：%s", ncl_env_conf_path(),
+                          samples);
+            ncl_log_error("用 -c 指一份，例如：%s -c conf/%s", argv[0], first);
+            ncl_log_error("或者把你要的那一份复制成 conf/device.json，"
+                          "它就是不带 -c 时的默认");
+        } else {
+            ncl_log_error("conf 目录（%s）里没有 .json —— 设备配置要站点自己写，"
+                          "格式见随包的 README 第 2 节",
+                          ncl_env_conf_path());
+        }
         ncl_strbuf_free(&err);
         return 1;
     }

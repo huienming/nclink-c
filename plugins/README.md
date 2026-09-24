@@ -253,7 +253,10 @@ ncl_server -c conf/fanuc.json --offline       # 或 -b -：不接 broker
 ncl_server -c conf/fanuc.json --stats --raw   # 跑完自检再打 §6 审计计数（含原始报文）
 ```
 
-`-P/--plugin-dir` 换模块目录，`--interval` 轮询周期，`--port` REST 端口，`--root` 安装根目录。
+`-P/--plugin-dir` 换模块目录，`--interval` 轮询周期，`--port` REST 端口，`--root` 安装根目录
+（不写就按"当前目录 → 上一级 → 上两级里第一个带 `conf/` 或 `plugins/` 的"挑，发布包那个
+`<root>\bin\ncl_server.exe` 的形状双击也能跑）；`-c` 给的相对路径先按当前目录找，找不到
+再按安装根目录找一次，所以从 `bin\` 里敲 `-c conf/x.json` 一样对。
 broker 没起来不致命：宿主按退避重试（1 s 起、上限 30 s），连上后补订阅。
 
 ## 6. 自检与审计（§6）

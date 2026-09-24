@@ -9,6 +9,12 @@
 /dist/**/obj/
 /dist/**/__pycache__/
 
+# 包内运行期产物：试跑自检会建 bin/sn.txt、log/，站点会自己放 conf/device.json
+# —— 它们不在包的 SHA256SUMS 里，别跟着 dist 一起入库
+/dist/**/bin/sn.txt
+/dist/**/conf/device.json
+/dist/**/log/
+
 # 文档转换/预览的中间产物
 *.pdf
 __pycache__/

@@ -63,10 +63,13 @@ SHA256SUMS.txt                包内每个文件的 SHA-256
 | `tools[].parameters` | 驱动自己的参数 | 各驱动支持哪些见它的现场手册：host / port / timeoutMs / connectTimeoutMs / retries … |
 | `plugins.dir` | 模块目录 | 不写就是包里的 `plugins\`（`run.ps1` 会带 `-P <包根>\plugins`）；要放别处就写绝对路径 |
 
-> 不带 `-c` 时 `ncl_server` 读 `<root>\conf\device.json`（`bin\ncl_server.exe --help` 里写着这个默认）；
-> 包里给的是按驱动命名的样例（`conf\fanuc.json` / `conf\syntec.json` / `conf\pseudo.json`），所以要么用 `-c` 指过去
+> **配置怎么找**：不带 `-c` 时读 `<root>\conf\device.json`；`<root>` 没给 `-r` 就自动挑一个
+> —— 当前目录、它的上一级、上两级里**第一个带 `conf\` 或 `plugins\` 的目录**（包里双击
+> `bin\ncl_server.exe` 也能定位到包根）。包里给的是按驱动命名的样例
+> （`conf\fanuc.json` / `conf\syntec.json` / `conf\pseudo.json`），所以要么用 `-c` 指过去
 > （`run.ps1` / `run-once.ps1` 默认就带 `-c conf\fanuc.json`），要么把自己的那份复制成
-> `conf\device.json` 当默认。
+> `conf\device.json` 当默认。指错了也不会只说一句 "cannot read"：报错里会写清用了哪个根目录、
+> `conf\` 里现成有哪些配置、以及可以直接抄的命令。
 
 换机床只换配置：`.\run.ps1 -Config conf\syntec.json`。要加第三个厂商的驱动，把编译好的
 `ncl_driver_<工具>.dll` 放进 `plugins\`、在 `plugins` 里加上它的名字即可，宿主不用换。
