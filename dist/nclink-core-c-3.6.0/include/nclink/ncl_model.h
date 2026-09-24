@@ -207,6 +207,28 @@ ncl_err ncl_node_set_path(ncl_node *node, const char *parent_path);
  *  path. */
 const char *ncl_node_path(const ncl_node *node);
 
+/**
+ * The path of the device @p node sits on ("/MACHINE"), or NULL when it sits on
+ * none (the root, a root-level config, a node that was never wired up).
+ */
+const char *ncl_node_device_path(const ncl_node *node);
+
+/**
+ * @p node 's path with the device segment dropped - the form a Sample report
+ * header uses: "/MACHINE/AXIS@X/POSITION" -> "/AXIS@X/POSITION". Caller owns
+ * the returned string. A node with no device above it keeps its path.
+ */
+char *ncl_node_path_in_device(const ncl_node *node);
+
+/**
+ * String form of the same rule: @p path with @p device_path dropped from the
+ * front. Only an exact segment match counts - "/PLX/A" under "/PLC" is left
+ * alone - and a path that is exactly @p device_path comes back as "/". Caller
+ * owns the returned string. Passing a NULL/empty/"/" @p device_path copies
+ * @p path as it is.
+ */
+char *ncl_path_without_device(const char *path, const char *device_path);
+
 /** Wire the parent pointers through the subtree rooted at @p node. */
 void ncl_node_build_relations(ncl_node *node);
 

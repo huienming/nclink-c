@@ -50,7 +50,11 @@
 #
 [CmdletBinding()]
 param(
-    [string]$Version = "3.4.0",
+    # Empty means "read NCL_VERSION from include/nclink/ncl_common.h" - same
+    # rule the adapter package uses, so the two can never disagree with the
+    # header (a hardcoded default quietly names the package after an old
+    # release).
+    [string]$Version = "",
     [string]$Name = "",
     [switch]$NoZip,
     [switch]$WithSource
@@ -58,6 +62,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+if ($Version -eq "") {
+    $common = Join-Path $root "include\nclink\ncl_common.h"
+    $match = [regex]::Match((Get-Content -LiteralPath $common -Raw),
+                            'NCL_VERSION\s+"([0-9]+\.[0-9]+\.[0-9]+)"')
+    if (-not $match.Success) {
+        throw "cannot read NCL_VERSION from $common"
+    }
+    $Version = $match.Groups[1].Value
+}
 if ($Name -eq "") { $Name = "nclink-core-c-$Version" }
 $pkg = Join-Path $root "dist\$Name"
 $zip = Join-Path $root "dist\$Name.zip"

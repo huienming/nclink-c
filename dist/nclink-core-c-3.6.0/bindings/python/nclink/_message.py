@@ -59,7 +59,7 @@ class SampleColumn:
     __slots__ = ("path", "slots", "is_nested", "encoding", "values")
 
     def __init__(self, path, slots, is_nested, encoding, values):
-        self.path = path
+        self.path = path                # 数据项路径（设备内路径：不带 /MACHINE 段）
         self.slots = slots              # 槽位数（通道 sampleInterval 的个数）
         self.is_nested = is_nested      # 每槽是多点（批量）还是一点
         self.encoding = encoding        # 原始编码方式（没有就是 None）

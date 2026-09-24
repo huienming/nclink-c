@@ -261,6 +261,10 @@ void ncl_server_set_publish_sink(ncl_server *server, ncl_server_publish_fn fn,
  * Register a sample channel and start its sampling/upload task. The channel is
  * deep copied, so @p config stays owned by the caller. Restarting an existing
  * id replaces the task.
+ *
+ * Every sample item names either a node id resolved through the model or an
+ * absolute path ("/MACHINE/STATUS", the binding key). The published report
+ * header drops the device segment ("/STATUS") - see ncl_node_path_in_device().
  */
 ncl_err ncl_server_add_sample(ncl_server *server, const ncl_node *config);
 

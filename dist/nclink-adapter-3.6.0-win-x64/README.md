@@ -61,6 +61,11 @@ SHA256SUMS.txt                包内每个文件的 SHA-256
 | `tools[].parameters` | 驱动自己的参数 | 各驱动支持哪些见它的现场手册：host / port / timeoutMs / connectTimeoutMs / retries … |
 | `plugins.dir` | 模块目录 | 不写就是包里的 `plugins\`（`run.ps1` 会带 `-P <包根>\plugins`）；要放别处就写绝对路径 |
 
+> 不带 `-c` 时 `ncl_server` 读 `<root>\conf\device.json`（`bin\ncl_server.exe --help` 里写着这个默认）；
+> 包里给的是按驱动命名的样例（`conf\fanuc.json` / `conf\syntec.json`），所以要么用 `-c` 指过去
+> （`run.ps1` / `run-once.ps1` 默认就带 `-c conf\fanuc.json`），要么把自己的那份复制成
+> `conf\device.json` 当默认。
+
 换机床只换配置：`.\run.ps1 -Config conf\syntec.json`。要加第三个厂商的驱动，把编译好的
 `ncl_driver_<工具>.dll` 放进 `plugins\`、在 `plugins` 里加上它的名字即可，宿主不用换。
 
