@@ -78,6 +78,16 @@ if [ "${NCL_WITH_TLS:-0}" = "1" ]; then
     CFLAGS="$CFLAGS -DNCL_WITH_TLS=1"
     LDLIBS="$LDLIBS -lssl -lcrypto"
 fi
+# 交叉构建（mingw 之类）时 OpenSSL 不在系统里：给 NCL_OPENSSL_ROOT 指一份自编的
+# （默认前缀，即 <root>/include/openssl 与 <root>/lib/libssl.a），与 build.ps1 的
+# -OpenSslRoot 同一个意思。静态 OpenSSL 还要自己带系统库：NCL_EXTRA_LIBS。
+if [ -n "${NCL_OPENSSL_ROOT:-}" ]; then
+    CFLAGS="$CFLAGS -I$NCL_OPENSSL_ROOT/include"
+    LDLIBS="$LDLIBS -L$NCL_OPENSSL_ROOT/lib"
+fi
+if [ -n "${NCL_EXTRA_LIBS:-}" ]; then
+    LDLIBS="$LDLIBS $NCL_EXTRA_LIBS"
+fi
 
 # 静态内存：库内所有分配走 ncl_mem_*，打开后由固定池供给，
 # 池的地址空间也在静态区里，整个库不再向堆要一个字节。
@@ -173,6 +183,11 @@ done
 echo "== 编译并运行测试 =="
 pass=0
 fail=0
+built=0
+# NCL_RUN_TESTS=0：照旧逐个编译测试，但不执行（交叉构建出来的 PE/别的目标本机跑
+# 不起来；产物拷到目标平台上再跑一遍）。编译失败照样算 fail。
+RUN_TESTS=${NCL_RUN_TESTS:-1}
+CXX=${CXX:-g++}
 
 # 动态加载的夹具模块（tests/test_library.c 要装载它；文件名与测试里的拼法一致）
 $CC $CFLAGS -shared -o "$OUT/bin/ncl_test_module$MODSUF" tests/test_module.c
@@ -214,6 +229,9 @@ for t in tests/test_*.c; do
             "$OUT/libnclink_clients.a" "$OUT/libnclink_core.a" $LDLIBS 2>"$OUT/bin/$name.build.log"; then
         echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"; fail=$((fail+1)); continue
     fi
+    if [ "$RUN_TESTS" = "0" ]; then
+        echo "   [仅编译] $name"; built=$((built+1)); continue
+    fi
     if (cd "$OUT/bin" && ./"$name" >"$name.log" 2>&1); then
         echo "   [通过] $name"
         pass=$((pass+1))
@@ -232,6 +250,9 @@ for t in clients/tests/test_*.c; do
             2>"$OUT/bin/$name.build.log"; then
         echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"; fail=$((fail+1)); continue
     fi
+    if [ "$RUN_TESTS" = "0" ]; then
+        echo "   [仅编译] $name"; built=$((built+1)); continue
+    fi
     if (cd "$OUT/bin" && ./"$name" >"$name.log" 2>&1); then
         echo "   [通过] $name"
         pass=$((pass+1))
@@ -240,16 +261,19 @@ for t in clients/tests/test_*.c; do
     fi
 done
 
-if [ "${NCL_BUILD_CPP:-1}" = "1" ] && command -v g++ >/dev/null 2>&1; then
+if [ "${NCL_BUILD_CPP:-1}" = "1" ] && command -v "$CXX" >/dev/null 2>&1; then
     for t in tests/test_*.cpp; do
         [ -e "$t" ] || continue
         name=$(basename "$t" .cpp)
         # shellcheck disable=SC2086
-        if ! g++ -std=c++"${NCLINK_CXX_STANDARD:-17}" -Wall -Wextra -Iinclude -Itests "$t" \
+        if ! $CXX -std=c++"${NCLINK_CXX_STANDARD:-17}" -Wall -Wextra -Iinclude -Itests "$t" \
                 "$OUT/libnclink_core.a" $LDLIBS -o "$OUT/bin/$name" \
                 2>"$OUT/bin/$name.build.log"; then
             echo "   [编译失败] $name"; tail -5 "$OUT/bin/$name.build.log"
             fail=$((fail+1)); continue
+        fi
+        if [ "$RUN_TESTS" = "0" ]; then
+            echo "   [仅编译] $name"; built=$((built+1)); continue
         fi
         if (cd "$OUT/bin" && ./"$name" >"$name.log" 2>&1); then
             echo "   [通过] $name"; pass=$((pass+1))
@@ -261,5 +285,9 @@ if [ "${NCL_BUILD_CPP:-1}" = "1" ] && command -v g++ >/dev/null 2>&1; then
 fi
 
 echo
-echo "测试：通过 $pass，失败 $fail"
+if [ "$RUN_TESTS" = "0" ]; then
+    echo "测试：已编译 $built，失败 $fail（NCL_RUN_TESTS=0，本机不执行；产物在目标平台跑）"
+else
+    echo "测试：通过 $pass，失败 $fail"
+fi
 [ "$fail" -eq 0 ]

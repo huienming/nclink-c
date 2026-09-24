@@ -5,6 +5,23 @@ NC-Link 规范版本：**3.0.0** 对应 GB/T 41970-2022 协议 3.0.0。
 
 ## 3.6.0
 
+### 构建：mingw 库换工具链重建（GCC 13.2.0-posix，容器内交叉编）
+
+  * **原因**：`lib/windows-amd64-mingw/` 两份 `.a` 是另一台机器上用 mingw-w64 16.2.0
+    （UCRT）编的，跟包里其余产物不是同一次构建 —— 上一轮打包时它们就没跟上
+    "采样表头去设备段"那个改动（符号里查不到 `ncl_path_without_device`）。
+  * **现在**：在本机的 `ncl-mingw:gcc13` 镜像里（ubuntu:24.04 +
+    `gcc-mingw-w64-x86-64-posix` 13.2.0，msvcrt）交叉编，PE 产物拷回 Windows 跑：
+    库 / 示例 / 测试 **43/43**；TLS 那份同样 **43/43**（链 OpenSSL 3 的导入库，运行时
+    需要 `libssl-3-x64.dll` / `libcrypto-3-x64.dll`，与原有口径一致）。
+  * **`build-linux.sh` 新增三个环境变量**（都服务交叉构建，不设就是原来的行为）：
+    `NCL_RUN_TESTS=0` 只编译不执行测试（PE 在 Linux 里跑不起来，产物拿到目标平台跑）、
+    `NCL_OPENSSL_ROOT=<前缀>` 指 OpenSSL 的头文件与库（跟 `build.ps1 -OpenSslRoot`
+    一个意思）、`NCL_EXTRA_LIBS` 补链接参数（静态 OpenSSL 要的 `-lcrypt32` 之类）。
+  * **文档**：RELEASE.md 与 MANUAL.md 的 mingw 口径按实际工具链改写（版本、C 运行库、
+    容器内怎么编、`NCL_RUN_TESTS=0` 之后怎么在 Windows 上跑），并写上现成镜像的一条
+    命令 —— 本机不再重复搭环境。
+
 ### 采样表头：路径去掉设备段（`/MACHINE/STATUS` → `/STATUS`）
 
   * **现象**：一条采样报文里每一列的 `paths` 都带同一段设备前缀（`/MACHINE/...`）。

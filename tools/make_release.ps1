@@ -413,22 +413,52 @@ foreach ($junk in @("obj", "bin", "__pycache__")) {
         }
 }
 
+# The sweep above is best effort: an editor with the C# projects loaded (VS Code
+# + C# Dev Kit, MSBuild node reuse) starts building the bindings the moment they
+# appear, so obj/ and bin/ can be back on disk before the archive is written.
+# Ship from a list that never contains them instead of racing the build: both
+# the checksums and the zip are made from "$ship".
+$bindingsRoot = Join-Path $pkg "bindings"
+$ship = @(Get-ChildItem -Path $pkg -Recurse -File | Where-Object {
+    $relative = $_.FullName.Substring($pkg.Length + 1)
+    -not ($_.FullName.StartsWith($bindingsRoot) -and
+          ($relative -match '\\obj\\' -or $relative -match '\\bin\\' -or
+           $relative -match '__pycache__'))
+})
+
 # checksums
 $lines = @()
-Get-ChildItem -Path $pkg -Recurse -File | Sort-Object FullName | ForEach-Object {
+$ship | Sort-Object FullName | ForEach-Object {
     $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower()
     $relative = $_.FullName.Substring($pkg.Length + 1).Replace("\", "/")
+    if ($relative -eq "SHA256SUMS.txt") { return }
     $lines += "$hash  $relative"
 }
 Set-Content -LiteralPath (Join-Path $pkg "SHA256SUMS.txt") -Value $lines -Encoding ASCII
 
-$files = (Get-ChildItem -Path $pkg -Recurse -File | Measure-Object).Count
-$bytes = (Get-ChildItem -Path $pkg -Recurse -File | Measure-Object -Property Length -Sum).Sum
+$files = ($ship | Measure-Object).Count
+$bytes = ($ship | Measure-Object -Property Length -Sum).Sum
 Write-Host ("  {0} files, {1:N1} KB" -f $files, ($bytes / 1KB))
 
 if (-not $NoZip) {
     if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-    Compress-Archive -Path $pkg -DestinationPath $zip -CompressionLevel Optimal
+    # An explicit entry list, not Compress-Archive: it would take whatever the
+    # background build left behind.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $stream = [System.IO.File]::Create($zip)
+    $archive = New-Object System.IO.Compression.ZipArchive(
+        $stream, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in $ship) {
+            $relative = $file.FullName.Substring($pkg.Length + 1).Replace("\", "/")
+            [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive, $file.FullName, "$Name/$relative",
+                [System.IO.Compression.CompressionLevel]::Optimal)
+        }
+    } finally {
+        $archive.Dispose()
+        $stream.Dispose()
+    }
     Write-Host ("  zip {0} ({1:N1} KB)" -f $zip, ((Get-Item -LiteralPath $zip).Length / 1KB))
     # The companion checksum file some pipelines expect next to the archive.
     $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
