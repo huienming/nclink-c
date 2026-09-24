@@ -799,8 +799,8 @@ READ_position(out string[] AxisName, out short DecPoint, out string[] Unit,
 ```
 
 `AxisName` / `DecPoint` / `Unit` + **四组按轴的数值**：机械 `Mach`、绝对 `Abs`、
-相对 `Rel`、**剩余距离 `Dist`**。`D:\codex\syntec_re\api_codes.txt`（薄壳交给 worker
-的常量表）也印证了分组：`AxisName←_Pc=[0,1]`、`Unit←_4C=[0,0,1]`、`Mach←_Jb=[1,0,1]`、
+相对 `Rel`、**剩余距离 `Dist`**。我们自己的反编译留档（薄壳交给 worker 的那份常量表
+`api_codes.txt`）也印证了分组：`AxisName←_Pc=[0,1]`、`Unit←_4C=[0,0,1]`、`Mach←_Jb=[1,0,1]`、
 `Abs/Rel/Dist←_cd/_nc/_oc` —— **四组各一次调用**，所以一次 `READ_position` 会开多条连接
 （与 §3.2"每项自己建一条连接"同源）。
 

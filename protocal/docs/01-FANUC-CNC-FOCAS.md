@@ -1427,15 +1427,16 @@ focas_sdk_probe64.exe 127.0.0.1 8194 cnc_wrparam --dll .\Fwlib64.dll
 
 ```powershell
 # 探针（官方 SDK）： cwd 必须在 DLL 目录，否则依赖 DLL 找不到 → cnc_allclibhndl3 回 -15
-cd D:\downloads\focas-test2x64
+cd <SDK 解压处>\focas-test2x64
 
 # 一次抓一串：内部起代理（默认 8194 → 机床），一条调用一个进程，把请求/应答摊开印
-python D:\codex\nclink-c\tools\site-probe\focas_capture.py `
+# （下面 <仓库根> 指本仓库所在目录 —— cwd 还在 SDK 目录里，所以脚本要写全路径）
+python <仓库根>\tools\site-probe\focas_capture.py `
     "cnc_wrtofs 1 1 8 8" "cnc_rdtofs --shape s3p 1 1 8"
 
 # 两个客户端的会话逐帧对齐（SDK vs 本仓库 client）：一帧一行，命令帧打 Cb 与 d/e/a2/a3
-python D:\codex\nclink-c\tools\site-probe\focas_tap.py 8199 127.0.0.1 8193 sdk.log
-python D:\codex\nclink-c\tools\site-probe\focas_log_summary.py sdk.log
+python <仓库根>\tools\site-probe\focas_tap.py 8199 127.0.0.1 8193 sdk.log
+python <仓库根>\tools\site-probe\focas_log_summary.py sdk.log
 ```
 
 这一轮给探针补了 `--in HEX`（把出参那块 4 KiB 缓冲**先铺初值**——写的那几条全靠它，
