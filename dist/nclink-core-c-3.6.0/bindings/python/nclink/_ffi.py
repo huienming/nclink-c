@@ -11,7 +11,7 @@
 
 1. 环境变量 ``NCLINK_SHIM`` 指向的文件；
 2. 本包目录（把 nclink_shim.dll / libnclink_shim.so 放在 ``nclink/`` 旁边）；
-3. 仓库布局：``bindings/native/bin/``、``build/``、``build/bin/``、``build-linux/``；
+3. 仓库布局：``bindings/native/bin/``、``builds/build/``、``builds/build/bin/``、``builds/build-linux/``；
 4. 交给系统：``ctypes.util.find_library("nclink_shim")`` 与裸名字（PATH /
    LD_LIBRARY_PATH）。
 """
@@ -107,10 +107,10 @@ def _candidates():
         here,                                   # 包目录（pip 安装 / 手工拷贝）
         # 仓库布局
         os.path.join(repo, "examples", "sdk", "native", "bin"),
-        os.path.join(repo, "build"),
-        os.path.join(repo, "build", "bin"),
-        os.path.join(repo, "build-linux"),
-        os.path.join(repo, "build-linux", "bin"),
+        os.path.join(repo, "builds", "build"),
+        os.path.join(repo, "builds", "build", "bin"),
+        os.path.join(repo, "builds/build-linux"),
+        os.path.join(repo, "builds/build-linux", "bin"),
         # 发布包布局
         os.path.join(os.path.dirname(sdk_dir), "bindings", "native", "bin"),
         os.path.join(os.path.dirname(sdk_dir), "bindings", "native", "bin-tls"),

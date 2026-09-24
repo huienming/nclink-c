@@ -21,7 +21,7 @@ nclink.device_model()，首次启动拷进 <root>/conf/model/nclink.json）、�
 
 用仓库里任意一个客户端都能读它，例如 C 的示例：
 
-    build\\examples\\ncl_client_demo.exe tcp://127.0.0.1:1883 <SN> 8
+    builds\\build\\examples\\ncl_client_demo.exe tcp://127.0.0.1:1883 <SN> 8
 """
 
 import os

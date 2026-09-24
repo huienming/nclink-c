@@ -21,7 +21,7 @@ import com.nclink.SampleColumn;
  *        com.nclink.demo.ClientDemo [broker] [设备SN] [秒数]
  * </pre>
  *
- * 先起设备端（另开一个窗口）：{@code build\examples\ncl_device_demo.exe D:\sim-java 30}
+ * 先起设备端（另开一个窗口）：{@code builds\build\examples\ncl_device_demo.exe D:\sim-java 30}
  */
 public final class ClientDemo {
     private ClientDemo() {

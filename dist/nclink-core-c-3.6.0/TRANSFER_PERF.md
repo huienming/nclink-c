@@ -80,10 +80,10 @@
 docker network create nclbench && docker network connect nclbench emqx
 docker run -d --name ncl-device --network nclbench -v <repo>:/work:ro -w /tmp gcc:13 \
     sh -c "mkdir -p /tmp/dev && cd /tmp/dev && NCL_DEVICE_ROOT=/tmp/dev \
-           /work/build-linux/bin/ncl_file_bench device tcp://emqx:1883 V2BENCH0002 600"
+           /work/builds/build-linux/bin/ncl_file_bench device tcp://emqx:1883 V2BENCH0002 600"
 docker run --rm --name ncl-client --hostname ncl-client --network nclbench \
     -v <repo>:/work:ro -w /tmp gcc:13 \
-    sh -c "mkdir -p /tmp/cli && cd /tmp/cli && /work/build-linux/bin/ncl_file_bench \
+    sh -c "mkdir -p /tmp/cli && cd /tmp/cli && /work/builds/build-linux/bin/ncl_file_bench \
            client tcp://emqx:1883 V2BENCH0002 512 ncl-client 2323 passive"
 ```
 

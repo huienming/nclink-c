@@ -44,7 +44,7 @@ NCLINK_TEST_BROKER=tcp://127.0.0.1:1883 python -m unittest discover -s examples/
 Linux：
 
 ```sh
-./build-linux.sh build-linux          # 出 build-linux/libnclink_core.a
+./build-linux.sh builds/build-linux          # 出 builds/build-linux/libnclink_core.a
 sh examples/sdk/native/build-shim.sh      # 出 examples/sdk/native/bin/libnclink_shim.so
 python -m unittest discover -s examples/sdk/python/tests -v
 ```
@@ -58,7 +58,7 @@ python -m unittest discover -s examples/sdk/python/tests -v
 
 1. 环境变量 `NCLINK_SHIM` 指向的文件；
 2. 包目录（把 DLL 放在 `nclink/` 旁边，pip/拷贝安装就用这种）；
-3. 仓库布局 `examples/sdk/native/bin/`、`build/`、`build/bin/`、`build-linux/`；
+3. 仓库布局 `examples/sdk/native/bin/`、`builds/build/`、`builds/build/bin/`、`builds/build-linux/`；
 4. 交给系统（`find_library` / `PATH` / `LD_LIBRARY_PATH`）。
 
 把本目录加进 `sys.path`（或拷进工程）即可 `import nclink`，不需要装包。
@@ -99,7 +99,7 @@ nclink.shutdown()
 跑法（对着设备端示例，另开一个窗口）：
 
 ```powershell
-build\examples\ncl_device_demo.exe D:\sim-py 30
+builds\build\examples\ncl_device_demo.exe D:\sim-py 30
 python bindings\python\examples\client_demo.py tcp://127.0.0.1:1883 <设备SN> 6
 ```
 
@@ -175,7 +175,7 @@ device.close()
   自己当传输（每条出站报文交给你）。
 - 设备端示例：`python examples/device_demo.py tcp://127.0.0.1:1883 V2PY0000001 30`
   （它注册 4 个方法 + 一个采样通道 + 每秒一条事件，仓库里任意客户端都能读它，例如
-  `build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2PY0000001 8`）。
+  `builds\build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2PY0000001 8`）。
 
 ### HTTP / REST 端点
 

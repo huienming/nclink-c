@@ -77,7 +77,7 @@ nclink-c/
 │   └── tests/                   # 适配器端到端：夹具模块 + 宿主装载
 ├── tools/                       # 许可头检查、broker 互操作、文档生成与发布打包脚本
 ├── dist/                        # 发布包（入库：库包 + 适配器包）
-└── build/ build-*/              # 构建目录（不入库）
+└── builds/                     # 构建目录（不入库）
 ```
 
 ## 构建与测试
@@ -93,7 +93,7 @@ nclink-c/
 ```powershell
 .\build.ps1                 # 配置 + 编译 + 运行全部测试
 .\build.ps1 -Clean          # 先清空 build 目录
-.\build.ps1 -Arch x86 -BuildDir build-x86   # 32 位（Win32）：库 + 示例 + 测试
+.\build.ps1 -Arch x86 -BuildDir builds/build-x86   # 32 位（Win32）：库 + 示例 + 测试
 ```
 
 `build.ps1` 会自动定位 Visual Studio Build Tools 自带的 CMake 与 Ninja，
@@ -102,7 +102,7 @@ nclink-c/
 ### 手工构建（任意平台）
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B builds/build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
@@ -120,15 +120,15 @@ ctest --test-dir build --output-on-failure
 没有 CMake 也能编（只需要 gcc/binutils 与 sh）：
 
 ```bash
-./build-linux.sh                 # 产出 build-linux/libnclink_core.a + 示例 + 跑全部测试
+./build-linux.sh                 # 产出 builds/build-linux/libnclink_core.a + 示例 + 跑全部测试
 CC=clang ./build-linux.sh out    # 换编译器/输出目录
 ```
 
 用 CMake 时同样可以：
 
 ```bash
-cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release
-cmake --build build-linux -j && ctest --test-dir build-linux --output-on-failure
+cmake -S . -B builds/build-linux -DCMAKE_BUILD_TYPE=Release
+cmake --build builds/build-linux -j && ctest --test-dir builds/build-linux --output-on-failure
 ```
 
 自行手工编译（不用上面两个脚本）时注意两点：`-Istack/include -Istack/src`，以及
@@ -151,8 +151,8 @@ EMQX 与 Mosquitto（各自监听 18830 / 18831，不动你本机 1883 上的 br
 也可以手工指定任意 broker：
 
 ```bash
-NCL_TEST_MQTT_BROKER=tcp://host:1883 ./build-linux/bin/test_broker
-NCL_TEST_MQTT_BROKER=tcp://host:1883 .\build\tests\ncl_test_broker.exe   # Windows
+NCL_TEST_MQTT_BROKER=tcp://host:1883 ./builds/build-linux/bin/test_broker
+NCL_TEST_MQTT_BROKER=tcp://host:1883 .\builds\build\tests\ncl_test_broker.exe   # Windows
 ```
 
 ### TLS（可选的 MQTT over ssl://）
@@ -160,9 +160,9 @@ NCL_TEST_MQTT_BROKER=tcp://host:1883 .\build\tests\ncl_test_broker.exe   # Windo
 默认构建**零依赖、不含 TLS**；需要 `ssl://` 时用 OpenSSL 打开（可选，不影响默认交付）：
 
 ```bash
-cmake -S . -B build-tls -DNCLINK_WITH_TLS=ON     # CMake 路线
-NCL_WITH_TLS=1 ./build-linux.sh build-linux-tls   # 免 cmake 路线
-.\build.ps1 -Tls -BuildDir build-tls              # Windows：自动找 OpenSSL
+cmake -S . -B builds/build-tls -DNCLINK_WITH_TLS=ON     # CMake 路线
+NCL_WITH_TLS=1 ./build-linux.sh builds/build-linux-tls   # 免 cmake 路线
+.\build.ps1 -Tls -BuildDir builds/build-tls              # Windows：自动找 OpenSSL
 ```
 
 Linux 链接时加 `-lssl -lcrypto`（包内 `lib/linux-x86_64-gcc-tls/` 就是这份）；
@@ -177,21 +177,21 @@ Windows 需要 OpenSSL 3 的**静态库**（`OPENSSL_ROOT_DIR`、vcpkg 或自编
 
 ```powershell
 .\build.ps1                                    # 1. Windows 静态库 + 示例 exe + 测试
-.\build.ps1 -Tls -BuildDir build-tls           #    （可选）Windows TLS 版
-.\build.ps1 -Arch x86 -BuildDir build-x86  #    （可选）Windows 32 位
+.\build.ps1 -Tls -BuildDir builds/build-tls           #    （可选）Windows TLS 版
+.\build.ps1 -Arch x86 -BuildDir builds/build-x86  #    （可选）Windows 32 位
 ```powershell
-.\build.ps1 -StaticMem -BuildDir build-staticmem            # 静态内存版（无堆）
-.\build.ps1 -Arch x86 -StaticMem -BuildDir build-x86-staticmem
-docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh build-linux-staticmem"
+.\build.ps1 -StaticMem -BuildDir builds/build-staticmem            # 静态内存版（无堆）
+.\build.ps1 -Arch x86 -StaticMem -BuildDir builds/build-x86-staticmem
+docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh builds/build-linux-staticmem"
 ```
 # 2. Linux 静态库与示例（任选其一；TLS 版加 NCL_WITH_TLS=1 与 libssl-dev）
-docker run --rm -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh build-linux"
+docker run --rm -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh builds/build-linux"
 ./build-linux.sh            # 或直接在 Linux 机器上
 # 3'. （可选）静态内存版（无堆）：打包时会一并收进 lib/*-staticmem/ 与 examples/bin/*-staticmem/
-.\build.ps1 -StaticMem -BuildDir build-staticmem
-.\build.ps1 -Arch x86 -StaticMem -BuildDir build-x86-staticmem
-docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh build-linux-staticmem"
-# 3. 组装（会带上 build/ 与 build-linux/bin 里编好的示例可执行文件）
+.\build.ps1 -StaticMem -BuildDir builds/build-staticmem
+.\build.ps1 -Arch x86 -StaticMem -BuildDir builds/build-x86-staticmem
+docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh build-linux.sh builds/build-linux-staticmem"
+# 3. 组装（会带上 builds/build/ 与 builds/build-linux/bin 里编好的示例可执行文件）
 .\tools\make_release.ps1 -Version 3.6.0
 ```
 
@@ -215,7 +215,7 @@ docker run --rm -e NCL_STATIC_MEM=1 -v ${PWD}:/work -w /work gcc:13 bash -lc "sh
 | `NCLINK_MEM_CLASS_BYTES` | `-1` | 小对象尺寸类区域（`-1` = 池的 1/4，`0` = 关闭） |
 
 静态内存（无堆）构建：`.\build.ps1 -StaticMem`，Linux 上是
-`NCL_STATIC_MEM=1 ./build-linux.sh build-linux-static`；池**默认 20 MiB**，小设备用
+`NCL_STATIC_MEM=1 ./build-linux.sh builds/build-linux-static`；池**默认 20 MiB**，小设备用
 `-MemPoolBytes 65536`（Linux 用 `NCL_MEM_POOL_BYTES=65536`）往下压。
 库内的 471 处分配已经全部走 `ncl_mem_*()` 这一层，池耗尽返回 `NCL_ERR_NOMEM` 而不是
 回退到堆；池用**最佳适配 + 释放时双向合并**，所以同一套流量反复跑不会留下永久空洞

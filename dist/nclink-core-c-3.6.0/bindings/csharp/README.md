@@ -46,7 +46,7 @@ powershell -ExecutionPolicy Bypass -File .\bindings\csharp\build.ps1
 Linux：
 
 ```sh
-./build-linux.sh build-linux               # 出 build-linux/libnclink_core.a
+./build-linux.sh builds/build-linux               # 出 builds/build-linux/libnclink_core.a
 sh examples/sdk/native/build-shim.sh           # 出 examples/sdk/native/bin/libnclink_shim.so
 dotnet build examples/sdk/csharp/src/Nclink.Core/Nclink.Core.csproj -c Release
 dotnet run --project examples/sdk/csharp/tests/Nclink.SelfTest -c Release    # 自检
@@ -141,7 +141,7 @@ using (NclServer device = new NclServer("V2CS0000001", modelJson, "tcp://127.0.0
   / `device.CheckMethodCall(...)` 离线驱动（返回应答报文的 `NclJson`）。
 - 设备端示例：`Nclink.Demo.Device.exe [broker] [SN] [秒数] [HTTP端口]`（broker 写
   `-` 就是离线：出站报文打到控制台）；仓库里任意客户端都能读它，例如
-  `build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2CS0000001 8`。
+  `builds\build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2CS0000001 8`。
 
 ### HTTP / REST 端点
 
@@ -292,7 +292,7 @@ new NclServer(sn, modelJson, "ssl://broker.example.com:8883", null, null, null,
 **TLS 构建**（库与垫片都得带 TLS）：
 
 ```powershell
-.\build.ps1 -Tls                                   # 出 build-tls\nclink_core.lib
+.\build.ps1 -Tls                                   # 出 builds/build-tls\nclink_core.lib
 powershell -ExecutionPolicy Bypass -File .\bindings\native\build-shim.ps1 -Tls
 # → bindings\native\bin-tls\nclink_shim.dll（连 libssl-3-x64.dll / libcrypto-3-x64.dll 一起拷好了）
 # 把那个 DLL 放到你的程序旁边（P/Invoke 按 DLL 名解析，所以要么同目录、
@@ -423,7 +423,7 @@ received 2 samples, 4 events
 跑法：
 
 ```powershell
-build\examples\ncl_device_demo.exe D:\sim-cs 30         # 设备端（另开一个窗口）
+builds\build\examples\ncl_device_demo.exe D:\sim-cs 30         # 设备端（另开一个窗口）
 bindings\csharp\samples\Nclink.Demo.Cli\bin\Release\net8.0\Nclink.Demo.Cli.dll `
     tcp://127.0.0.1:1883 <设备SN> 6
 # .NET Framework 版：

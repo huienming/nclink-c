@@ -49,7 +49,7 @@ java "-Djava.library.path=examples/sdk/java/native/bin-tls" `
 Linux：
 
 ```sh
-./build-linux.sh build-linux        # 出 build-linux/libnclink_core.a
+./build-linux.sh builds/build-linux        # 出 builds/build-linux/libnclink_core.a
 ./examples/sdk/java/build.sh            # 需要 JAVA_HOME（找 jni.h）
 ```
 
@@ -102,7 +102,7 @@ Nclink.shutdown();
 跑法（对着设备端示例，另开一个窗口）：
 
 ```powershell
-build\examples\ncl_device_demo.exe D:\sim-java 30
+builds\build\examples\ncl_device_demo.exe D:\sim-java 30
 java -Djava.library.path=bindings\java\native\bin -cp bindings\java\build\classes `
      com.nclink.demo.ClientDemo tcp://127.0.0.1:1883 <设备SN> 6
 ```
@@ -181,7 +181,7 @@ try (Server device = new Server("V2JAVA00001", modelJson, "tcp://127.0.0.1:1883"
   自己当传输。
 - 示例：`com.nclink.demo.DeviceDemo tcp://127.0.0.1:1883 V2JAVA00001 30`（4 个方法 +
   一个采样通道 + 每秒一条事件；仓库里任意客户端都能读它，例如
-  `build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2JAVA00001 8`）。
+  `builds\build\examples\ncl_client_demo.exe tcp://127.0.0.1:1883 V2JAVA00001 8`）。
 
 ### HTTP / REST 端点
 
@@ -320,7 +320,7 @@ new Server(sn, modelJson, "ssl://broker.example.com:8883", null, null, null,
 **TLS 构建**（库与 JNI 库都得带 TLS）：
 
 ```powershell
-.\build.ps1 -Tls                                     # 出 build-tls\nclink_core.lib
+.\build.ps1 -Tls                                     # 出 builds/build-tls\nclink_core.lib
 .\bindings\java\native\build-native.ps1 -Tls       # 出 bindings\java\native\bin-tls\nclink_jni.dll
 ```
 跑的时候把原生库指到那个目录：`-Djava.library.path=examples/sdk/java/native/bin-tls`（或

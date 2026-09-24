@@ -30,8 +30,8 @@ $out = if ($OutDir -ne "") { $OutDir }
        elseif ($Tls) { Join-Path $here "bin-tls" }
        else { Join-Path $here "bin" }
 $lib = if ($CoreLib -ne "") { $CoreLib }
-       elseif ($Tls) { Join-Path $root "build-tls\nclink_core.lib" }
-       else { Join-Path $root "build\nclink_core.lib" }
+       elseif ($Tls) { Join-Path $root "builds/build-tls\nclink_core.lib" }
+       else { Join-Path $root "builds\build\nclink_core.lib" }
 
 if (-not (Test-Path -LiteralPath $lib)) {
     if ($Tls) {
